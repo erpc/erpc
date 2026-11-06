@@ -516,7 +516,7 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 	require.NoError(t, err)
 	got := make(chan uint64, 16)
 	go func() {
-		_ = indexer.NewTaps("test", nil).RunChain(ctx, network.networkId, "test", indexer.SubTypeNewHeads, network.chainTracker, &start, indexer.ReadOpts{},
+		_ = indexer.NewTaps(network.logger, "test", nil).RunChain(ctx, network.networkId, "test", indexer.SubTypeNewHeads, network.chainTracker, &start, indexer.ReadOpts{},
 			func(b indexer.Batch) (int, error) {
 				for _, blk := range b.Applied {
 					got <- blk.Number

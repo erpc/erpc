@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,6 +29,8 @@ func (capacityNetUpstream) Id() string { return "vendor-b" }
 
 func (*capacityNet) ProjectId() string { return "test" }
 func (*capacityNet) Label() string     { return "evm:1" }
+
+func (n *capacityNet) Logger() *zerolog.Logger { l := zerolog.Nop(); return &l }
 
 func (n *capacityNet) set(param string, refuses, fails bool) {
 	n.mu.Lock()

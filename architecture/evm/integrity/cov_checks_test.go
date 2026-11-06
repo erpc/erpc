@@ -577,7 +577,7 @@ func TestCovChecks_EngineContainment(t *testing.T) {
 		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(`[{"blockHash":"0xbb","logs":[]}]`), nil)
 		rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 		res := Validate(context.Background(), Input{
-			Method: "eth_getBlockReceipts", Upstream: common.NewFakeUpstream("u"), Response: rs,
+			Logger: &testLogger, Method: "eth_getBlockReceipts", Upstream: common.NewFakeUpstream("u"), Response: rs,
 			Checks: only("receiptsRootRecompute", nil), Resolver: covChecksPanicResolver{}, Reorg: DefaultReorgPolicy(),
 		})
 		assert.NoError(t, res.Err)

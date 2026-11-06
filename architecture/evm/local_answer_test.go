@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +22,7 @@ type localAnswerNetwork struct {
 
 func (n *localAnswerNetwork) Config() *common.NetworkConfig { return n.cfg }
 func (n *localAnswerNetwork) ProjectId() string             { return "test" }
+func (n *localAnswerNetwork) Logger() *zerolog.Logger       { l := zerolog.Nop(); return &l }
 func (n *localAnswerNetwork) EvmRoutableUpstreams(ctx context.Context) iter.Seq[common.Upstream] {
 	return func(yield func(common.Upstream) bool) {
 		sel := ""

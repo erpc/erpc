@@ -219,7 +219,7 @@ type MempoolFeed interface {
 
 // Taps runs read loops: read, emit, repeat. A loop ends when ctx ends, emit
 // fails, or the feed returns an error. transport and kind label metrics.
-func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps // the callback never blocks
+func NewTaps(logger *zerolog.Logger, projectId string, onDemandChange func(networkId string)) *Taps // the callback never blocks
 func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
     f ChainFeed, start *Cursor, o ReadOpts, emit func(Batch) error) error // start nil: f.Head
 func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,

@@ -12,7 +12,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -25,6 +25,7 @@ var MempoolWakeEvery = util.NewDuration(50 * time.Millisecond)
 // Taps runs read loops: read, emit, repeat. It counts open taps per network,
 // topic and pace, so sources know what to feed and how often.
 type Taps struct {
+	logger         *zerolog.Logger
 	projectId      string
 	onDemandChange func(networkId string)
 
@@ -32,11 +33,12 @@ type Taps struct {
 	open map[string]map[Topic]map[time.Duration]int // networkId -> topic -> pace -> open taps
 }
 
-// NewTaps returns an empty Taps of one project; projectId labels metrics.
+// NewTaps returns an empty Taps of one project; projectId labels metrics
+// and logger takes its log lines.
 // onDemandChange, if set, is called whenever a network's demand gains or
 // loses a topic, or a topic's pace changes; it must never block.
-func NewTaps(projectId string, onDemandChange func(networkId string)) *Taps {
-	return &Taps{projectId: projectId, onDemandChange: onDemandChange, open: make(map[string]map[Topic]map[time.Duration]int)}
+func NewTaps(logger *zerolog.Logger, projectId string, onDemandChange func(networkId string)) *Taps {
+	return &Taps{logger: logger, projectId: projectId, onDemandChange: onDemandChange, open: make(map[string]map[Topic]map[time.Duration]int)}
 }
 
 // RunChain runs one tap on f until ctx ends, emit fails, or f returns an
@@ -144,7 +146,7 @@ func linked(c Cursor, b Batch) bool {
 
 // gap counts and logs a batch that does not continue the tap's cursor c.
 func (t *Taps) gap(networkId, transport, kind string, c Cursor, b Batch) {
-	ev := common.ViolateInvariant(&log.Logger, t.projectId, networkId, common.InvariantTapGap).
+	ev := common.ViolateInvariant(t.logger, t.projectId, networkId, common.InvariantTapGap).
 		Str("tapTransport", transport).Str("tapKind", kind).
 		Uint64("cursor", c.Number).Hex("cursorHash", c.Hash[:]).
 		Int("reverted", len(b.Reverted)).Int("applied", len(b.Applied))

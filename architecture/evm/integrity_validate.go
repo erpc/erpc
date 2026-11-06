@@ -7,7 +7,6 @@ import (
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -52,6 +51,7 @@ type integrityRun struct {
 // rq is nil for a source header.
 func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, r integrityRun) integrity.Result {
 	input := integrity.Input{
+		Logger:      n.Logger(),
 		Method:      r.method,
 		Upstream:    u,
 		Response:    rs,
@@ -140,7 +140,7 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 		telemetry.MetricIntegrityViolation.WithLabelValues(
 			n.ProjectId(), u.VendorName(), n.Label(), u.Id(), r.category, rec.CheckID, verdict, rec.Finality,
 		).Inc()
-		log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
+		n.Logger().Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
 			Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", r.category).
 			Str("check", rec.CheckID).Str("finality", rec.Finality).Str("reason", rec.Reason).
 			Msg(msg)
@@ -156,7 +156,7 @@ func runIntegrity(ctx context.Context, n common.Network, u common.Upstream, rq *
 	telemetry.MetricIntegrityViolation.WithLabelValues(
 		n.ProjectId(), u.VendorName(), n.Label(), u.Id(), r.category, res.RejectedCheckID, rejectVerdict, res.Finality,
 	).Inc()
-	log.Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
+	n.Logger().Warn().Str("project", n.ProjectId()).Str("network", n.Label()).
 		Str("upstream", u.Id()).Str("vendor", u.VendorName()).Str("method", r.category).
 		Str("check", res.RejectedCheckID).Str("finality", res.Finality).
 		Str("reason", res.Err.Error()).Msg("integrity: rejected response (caught bad data)")

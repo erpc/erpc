@@ -21,7 +21,6 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 // maxOrphansPerHeight bounds the held headers at one height that are not
@@ -747,7 +746,7 @@ func (t *ChainTracker) guard(step string, fn func(), onPanic func()) (ok bool) {
 			fmt.Sprintf("project:%s network:%s group:%s", t.projectId(), t.networkLabel(), t.group),
 			common.ErrorFingerprint(rec),
 		).Inc()
-		log.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
+		t.network.Logger().Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
 			Str("network", t.networkLabel()).Str("group", t.group).Str("step", step).Msg("chain tracker step panicked")
 		if onPanic != nil {
 			onPanic()
@@ -2095,7 +2094,7 @@ func (t *ChainTracker) signalMove(mv move) {
 	if mv.alarm.hi > 0 {
 		var ev *zerolog.Event
 		if t.selector == "" {
-			ev = common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged).Str("group", t.group)
+			ev = common.ViolateInvariant(t.network.Logger(), t.projectId(), t.networkLabel(), common.InvariantFinalHashChanged).Str("group", t.group)
 		} else {
 			ev = t.transition(zerolog.ErrorLevel, "invariant_violation").
 				Str("invariant", string(common.InvariantFinalHashChanged))
@@ -2480,7 +2479,7 @@ func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 		if bad > 0 {
 			below, p := s.pins[bad-1], s.pins[bad]
 			t.badLink = p
-			common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
+			common.ViolateInvariant(t.network.Logger(), t.projectId(), t.networkLabel(), common.InvariantPinsUnlinked).
 				Str("group", t.group).Uint64("block", p.number).Str("blockHash", hexHash(p.hash)).
 				Str("parentHash", hexHash(p.parentHash)).Uint64("below", below.number).Str("belowHash", hexHash(below.hash)).
 				Msg("chain tracker published pins that are not one parentHash chain")
@@ -2490,7 +2489,7 @@ func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 	// Only a pins move lowers the view (spec §6.5 Head rule 5): a Head
 	// that fell while its pin stands is a bug of the view.
 	if h != nil && prev != nil && h.number < prev.number && s.pinAt(prev.number) == prev {
-		common.ViolateInvariant(&log.Logger, t.projectId(), t.networkLabel(), common.InvariantLatestRegressed).
+		common.ViolateInvariant(t.network.Logger(), t.projectId(), t.networkLabel(), common.InvariantLatestRegressed).
 			Str("group", t.group).Uint64("head", h.number).Uint64("previous", prev.number).Str("previousHash", hexHash(prev.hash)).
 			Msg("chain tracker view fell below a Head that is still pinned")
 	}
@@ -2833,7 +2832,7 @@ func (t *ChainTracker) callNetwork(what string, fn func()) {
 		if rec := recover(); rec != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues("chain-tracker-"+what,
 				fmt.Sprintf("project:%s network:%s", t.projectId(), t.networkLabel()), common.ErrorFingerprint(rec)).Inc()
-			log.Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
+			t.network.Logger().Error().Interface("panic", rec).Str("stack", string(debug.Stack())).
 				Str("network", t.networkLabel()).Msg("chain tracker call into the network panicked")
 		}
 	}()
@@ -4024,7 +4023,7 @@ func (t *ChainTracker) networkLabel() string {
 // transition is the log line of one state transition of the tracker,
 // rate limited per network and kind (spec §17).
 func (t *ChainTracker) transition(level zerolog.Level, kind string) *zerolog.Event {
-	return common.TransitionLog(&log.Logger, level, t.networkLabel(), kind).Str("group", t.group)
+	return common.TransitionLog(t.network.Logger(), level, t.networkLabel(), kind).Str("group", t.group)
 }
 
 // observeBlockView hands a validated block response to the tracker as an

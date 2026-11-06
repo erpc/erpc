@@ -22,6 +22,7 @@ import (
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -48,6 +49,15 @@ func voteChain(t *testing.T, c *ChainTracker, src, tag string, from, to uint64, 
 	}
 	c.Sync(context.Background())
 }
+
+// logOnlyNetwork is a tracker test's network that has nothing to fetch
+// from: it cannot sweep upstreams, has no config and empty labels.
+type logOnlyNetwork struct{ common.Network }
+
+func (logOnlyNetwork) Logger() *zerolog.Logger       { l := zerolog.Nop(); return &l }
+func (logOnlyNetwork) ProjectId() string             { return "" }
+func (logOnlyNetwork) Label() string                 { return "" }
+func (logOnlyNetwork) Config() *common.NetworkConfig { return nil }
 
 // servedChain serves header fetches by number and by hash from the blocks
 // it was given; a fetch of a held ref waits until the ref is released.
@@ -168,7 +178,7 @@ func (n *forkedChain) EvmAskHead(ctx context.Context, _ string, _ common.HeadNee
 
 func TestChainTracker(t *testing.T) {
 	t.Run("a vote pins its block", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		_, ok := c.HashAt(1)
 		assert.False(t, ok)
 		voteChain(t, c, "a", "a", 1, 1, testHash("f", 0))
@@ -178,7 +188,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("a vote on another branch moves the pins and drops descendants", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "a", 5, 7, testHash("f", 4))
 		// The source now votes for another block at 5: its tree has the vote.
 		voteChain(t, c, "a", "b", 5, 5, testHash("f", 4))
@@ -192,7 +202,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("an ancestor of the current vote does not move it back", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "a", 5, 6, testHash("f", 4))
 		c.Observe("a", testHeader(5, testHash("a", 5), testHash("f", 4)), true)
 		c.Sync(context.Background())
@@ -202,7 +212,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("the majority branch wins; a tie keeps the pins", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "a", 10, 11, testHash("f", 9))
 		voteChain(t, c, "b", "a", 10, 11, testHash("f", 9))
 		// c and then d follow a fork at 11.
@@ -249,7 +259,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("a malformed header is dropped", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"","parentHash":"0x1"}`), true)
 		c.Observe("a", json.RawMessage(`{"number":"0x3","hash":"0xabc","parentHash":"0x1"}`), true)
 		c.Sync(context.Background())
@@ -286,7 +296,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("evicts below the head minus the window", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 2, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 2, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "a", 1, 5, testHash("f", 0))
 		for _, gone := range []int64{1, 2} {
 			_, ok := c.HashAt(gone)
@@ -300,7 +310,7 @@ func TestChainTracker(t *testing.T) {
 	// A held header is served without a fetch: with a nil network any fetch
 	// would fail, so a hit must come from what the tracker holds.
 	t.Run("held headers serve without fetching", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "b", 0x10, 0x10, testHash("f", 0xf))
 
 		byHash, ok := c.headerByHash(context.Background(), testHash("b", 0x10))
@@ -313,7 +323,7 @@ func TestChainTracker(t *testing.T) {
 	})
 
 	t.Run("cache miss with no network fails closed", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		_, ok := c.headerByHash(context.Background(), testHash("e", 1))
 		assert.False(t, ok)
 	})
@@ -715,7 +725,7 @@ func TestChainTracker(t *testing.T) {
 			return testutil.ToFloat64(telemetry.MetricChainTrackerInvariantViolationsTotal.WithLabelValues("", "", string(common.InvariantFinalHashChanged)))
 		}
 		run := func(covered string) *ChainTracker {
-			c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", head, newFetchScheduler(t.Context(), nil))
+			c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", head, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 			voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
 			evidence(c, fin, covered)
 			voteChain(t, c, "a", "c", fin, 11, testHash("a", fin-1))
@@ -759,7 +769,7 @@ func putReceipts(c *ChainTracker, blockHash string, receipts []integrity.Receipt
 
 func TestChainTracker_Receipts(t *testing.T) {
 	t.Run("receipts cache hit serves without fetching", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil)) // nil network: any fetch would fail
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{})) // nil network: any fetch would fail
 		putReceipts(c, testHash("b", 1), []integrity.Receipt{{TransactionHash: "0xaa", BlockHash: testHash("b", 1)}})
 		got, ok := c.receiptsByHash(context.Background(), testHash("B", 1), 1)
 		require.True(t, ok)
@@ -768,13 +778,13 @@ func TestChainTracker_Receipts(t *testing.T) {
 	})
 
 	t.Run("receipts cache miss with no network fails closed", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		_, ok := c.receiptsByHash(context.Background(), testHash("e", 1), 1)
 		assert.False(t, ok)
 	})
 
 	t.Run("receipts evicted with the window", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 2, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 2, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		for i := range c.receiptsCap() + 1 {
 			putReceipts(c, testHash("b", uint64(i)), []integrity.Receipt{{TransactionHash: "0xaa"}})
 		}
@@ -789,7 +799,7 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 		c.Sync(context.Background())
 	}
 	t.Run("finalized block → anchored", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		anchors(c, 0x20, fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s","transactionHash":"0xaa"}`, testHash("b", 0x10)))
 		v, ok := c.HashAt(0x10)
 		require.True(t, ok)
@@ -797,21 +807,21 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 	})
 
 	t.Run("unfinalized block → not anchored (tip-thrash safety)", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		anchors(c, 0x20, fmt.Sprintf(`{"blockNumber":"0x30","blockHash":"%s"}`, testHash("c", 0x30)))
 		_, ok := c.HashAt(0x30)
 		assert.False(t, ok)
 	})
 
 	t.Run("finality unknown (fin<=0) → no-op", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		anchors(c, 0, fmt.Sprintf(`{"blockNumber":"0x10","blockHash":"%s"}`, testHash("b", 0x10)))
 		_, ok := c.HashAt(0x10)
 		assert.False(t, ok)
 	})
 
 	t.Run("array response (block receipts) → each finalized anchor", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		h := testHash("b", 0x10)
 		anchors(c, 0x20, fmt.Sprintf(`[{"blockNumber":"0x10","blockHash":"%s"},{"blockNumber":"0x11","blockHash":"%s"}]`, h, h))
 		v, ok := c.HashAt(0x10)
@@ -827,7 +837,7 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 	t.Run("an anchor one vendor alone answered never hard-rejects", func(t *testing.T) {
 		const n = 0x10
 		wrong, honest := testHash("e", n), testHash("b", n)
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		// 2 sources pin 0x20..0x30, so 0x10 lies below the window.
 		voteChain(t, c, "a", "c", 0x20, 0x30, testHash("c", 0x1f))
 		voteChain(t, c, "b", "c", 0x20, 0x30, testHash("c", 0x1f))
@@ -871,7 +881,7 @@ func TestChainTracker_NarrowAnchors(t *testing.T) {
 	// tracker is busy: integrity records each anchor on the request path,
 	// and an answer below the window never reaches the mailbox (spec §3).
 	t.Run("a burst of anchors and old answers queues nothing on a stalled tracker", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "c", 0x20, 0x30, testHash("c", 0x1f))
 		stalled, release := make(chan struct{}), make(chan struct{})
 		hook := func(tr *ChainTracker, upstreamId string, _ *indexer.Cursor, _ bool) {
@@ -922,12 +932,12 @@ func TestChainTracker_GroupScoping(t *testing.T) {
 }
 
 func TestChainTracker_FinalityLabel(t *testing.T) {
-	c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: 100} }, newFetchScheduler(t.Context(), nil))
+	c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: 100} }, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 	assert.Equal(t, "finalized", c.finalityLabel(50))
 	assert.Equal(t, "finalized", c.finalityLabel(100))
 	assert.Equal(t, "unfinalized", c.finalityLabel(150))
 	assert.Equal(t, "unknown", c.finalityLabel(-1))
-	assert.Equal(t, "unknown", newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil)).finalityLabel(50))
+	assert.Equal(t, "unknown", newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{})).finalityLabel(50))
 }
 
 // Answers are held, never voted: a client's block response, by number or by
@@ -941,7 +951,7 @@ func TestObserveBlockView(t *testing.T) {
 	}
 
 	t.Run("answers are held but never move the pins", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "a", 0x10, 0x11, testHash("f", 0xf))
 
 		observeBlockView(context.Background(), c, nil, blockResponse("eth_getBlockByHash", 0x10, testHash("e", 0x10), testHash("f", 0xf)))
@@ -960,7 +970,7 @@ func TestObserveBlockView(t *testing.T) {
 	})
 
 	t.Run("an answer for an unseen number creates no pin", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		observeBlockView(context.Background(), c, nil, blockResponse("eth_getBlockByNumber", 0x20, testHash("c", 0x20), testHash("c", 0x1f)))
 		c.Sync(context.Background())
 		_, ok := c.HashAt(0x20)
@@ -968,7 +978,7 @@ func TestObserveBlockView(t *testing.T) {
 	})
 
 	t.Run("an answer holds its header only, and a held hash keeps its first header", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "a", 0x10, 0x11, testHash("f", 0xf))
 		answer := func(miner string) *common.NormalizedResponse {
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByHash","params":["x",true]}`))
@@ -1011,7 +1021,7 @@ func BenchmarkObserveLatestAnswer(b *testing.B) {
 			hash, testHash("a", 0x10), strings.Join(txs, ",")))
 	}
 	setup := func(b *testing.B) *ChainTracker {
-		c := newChainTracker(b.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(b.Context(), nil))
+		c := newChainTracker(b.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(b.Context(), &logOnlyNetwork{}))
 		parent := testHash("f", 0xf)
 		for n := uint64(0x10); n <= 0x11; n++ {
 			c.Observe("a", testHeader(n, testHash("a", n), parent), true)
@@ -1108,7 +1118,7 @@ func TestChainTracker_DeepWindow(t *testing.T) {
 	}
 	t.Run("odd timestamps drop and dropped headers are freed", func(t *testing.T) {
 		ctx := context.Background()
-		c := newChainTracker(t.Context(), nil, 4, 100*time.Second, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 4, 100*time.Second, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		ts := func(n uint64) uint64 {
 			switch n {
 			case 250:
@@ -1146,7 +1156,7 @@ func TestChainTracker_DeepWindow(t *testing.T) {
 		}
 	})
 	t.Run("unlinked pins count on every move", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 4, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 4, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		hs := make([]*chainHeader, 6)
 		for n := uint64(1); n < 6; n++ {
 			h, err := parseChainHeader(header(n, base+n))
@@ -1227,7 +1237,7 @@ func TestHeaderMatchesRef(t *testing.T) {
 // responses in ~700ms on mainnet 25589196 (2026-07-22).
 func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 	pinned := func(t *testing.T) *ChainTracker {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, c, "a", "a", 0x10, 0x10, testHash("f", 0xf)) // one source backs the pin
 		return c
 	}
@@ -1276,7 +1286,7 @@ func TestReconfirmPin_CooldownIsRateLimitedNotConfirmed(t *testing.T) {
 	})
 
 	t.Run("a negative number is unverifiable", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		_, status := c.ReconfirmPin(context.Background(), -1)
 		assert.Equal(t, integrity.PinUnverifiable, status)
 	})
@@ -1393,7 +1403,7 @@ func TestRollbackWriteOnlyFromFreshVotesOnALowerBranch(t *testing.T) {
 	net := &rewindNetwork{capturingNetwork: newCapturingNetwork(t, 0, testHash("f", 0)), rewound: map[string]int64{},
 		hv: HashVoters{Voters: ids, Hash: []string{"a", "b", "s"}, Need: 2,
 			Vendors: &Vendors{Of: map[string]string{"a": "vendor-a", "b": "vendor-b", "c": "vendor-c", "s": "vendor-s", "p": "vendor-p"}, Distinct: 5}}}
-	c := newChainTracker(t.Context(), net, 64, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+	c := newChainTracker(t.Context(), net, 64, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 	beforeGap := time.Now().Add(-2 * time.Minute)
 	voteAt := func(at time.Time, src, tag string, from, to uint64, parentOfFirst string) {
 		parent := parentOfFirst

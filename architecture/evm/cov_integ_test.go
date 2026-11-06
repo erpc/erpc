@@ -18,6 +18,7 @@ import (
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,6 +43,7 @@ func (n *covIntegNet) Id() string                    { return n.id }
 func (n *covIntegNet) Label() string                 { return "covnet" }
 func (n *covIntegNet) ProjectId() string             { return "test" }
 func (n *covIntegNet) Config() *common.NetworkConfig { return n.cfg }
+func (n *covIntegNet) Logger() *zerolog.Logger       { l := zerolog.Nop(); return &l }
 func (n *covIntegNet) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	n.mu.Lock()
 	n.dirs = append(n.dirs, req.Directives())
@@ -229,7 +231,7 @@ func covIntegStreak(p *stateProber, id string) int64 {
 
 func TestCovInteg_ChainTrackerHeldData(t *testing.T) {
 	t.Run("CachedReceipts serves only warm blocks", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		putReceipts(c, testHash("b", 1), []integrity.Receipt{{TransactionHash: "0x1"}})
 		got, ok := c.CachedReceipts(testHash("b", 1))
 		require.True(t, ok)
@@ -239,7 +241,7 @@ func TestCovInteg_ChainTrackerHeldData(t *testing.T) {
 	})
 
 	t.Run("finality unknown when the getter reports no finalized height", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: 0} }, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", func() common.EvmHead { return common.EvmHead{Finalized: 0} }, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		assert.Equal(t, "unknown", c.finalityLabel(5))
 	})
 }
@@ -399,7 +401,7 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("observeBlockView ignores nil inputs and non-header results", func(t *testing.T) {
-		c := newChainTracker(t.Context(), nil, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		observeBlockView(ctx, nil, nil, covIntegResp(string(testHeader(1, testHash("a", 1), testHash("a", 0)))))
 		observeBlockView(ctx, c, nil, nil)
 		observeBlockView(ctx, c, nil, covIntegResp(`"0x1"`))
@@ -416,7 +418,7 @@ func TestCovInteg_ObserveViews(t *testing.T) {
 		evmUp := common.NewFakeUpstream("u", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(0x30, 0x20)))
 
 		laneHead := func() common.EvmHead { return common.EvmHead{Latest: 0x30, Finalized: 0x20} }
-		c := newChainTracker(t.Context(), nil, 32, 0, "", "", "", laneHead, newFetchScheduler(t.Context(), nil))
+		c := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", laneHead, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		observeNarrowView(ctx, nil, evmUp, anchor)
 		observeNarrowView(ctx, c, evmUp, nil)
 		observeNarrowView(ctx, c, covIntegPlainUp{evmUp}, anchor)
@@ -477,7 +479,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 	// The prober's view pins the head only: probes judge the upstreams, never
 	// fetch through the tracker.
 	mkProber := func(net common.Network, interval time.Duration) *stateProber {
-		v := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		v := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		voteChain(t, v, "a", "e", uint64(head), uint64(head), testHash("f", uint64(head-1)))
 		return &stateProber{
 			network: net, view: v, interval: interval, pinnedProbes: true,
@@ -690,7 +692,7 @@ func TestCovInteg_StateProber(t *testing.T) {
 			}
 			return covIntegResp(fmt.Sprintf(`"0x%064x"`, n)), nil
 		})}
-		v := newChainTracker(t.Context(), nil, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), nil))
+		v := newChainTracker(t.Context(), &logOnlyNetwork{}, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), &logOnlyNetwork{}))
 		v.Observe("a", json.RawMessage(fmt.Sprintf(`{"number":"0x%x","hash":"%s","parentHash":"%s","stateRoot":"%s"}`,
 			head, testHash("e", uint64(head)), testHash("f", uint64(head-1)), root)), true)
 		v.Sync(t.Context())
@@ -737,8 +739,8 @@ func TestCovInteg_StartStateProber(t *testing.T) {
 	cfg := &common.NetworkConfig{Evm: &common.EvmNetworkConfig{ChainId: 42161}}
 	net := newCovIntegNet("cov-integ-start", cfg, nil)
 	assert.Nil(t, stateProberFor(net))
-	v1 := newChainTracker(ctx, nil, 8, 0, "", "", "", nil, newFetchScheduler(ctx, nil))
-	v2 := newChainTracker(ctx, nil, 8, 0, "", "", "", nil, newFetchScheduler(ctx, nil))
+	v1 := newChainTracker(ctx, &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(ctx, &logOnlyNetwork{}))
+	v2 := newChainTracker(ctx, &logOnlyNetwork{}, 8, 0, "", "", "", nil, newFetchScheduler(ctx, &logOnlyNetwork{}))
 	startStateProber(ctx, net, v1, &common.IntegrityStateProbeConfig{Interval: common.Duration(3 * time.Second)})
 	p := stateProberFor(net)
 	require.NotNil(t, p)

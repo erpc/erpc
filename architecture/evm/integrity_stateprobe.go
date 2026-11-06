@@ -16,7 +16,6 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 // The state prober answers a question nothing else in erpc can: does this
@@ -305,7 +304,7 @@ func (p *stateProber) probeContext(ctx context.Context, u common.Upstream, n int
 			outcome = "pin_ignored"
 		}
 		p.count(u, "context", outcome)
-		log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
+		p.network.Logger().Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
 			Int64("pinnedBlock", n).Int64("executedBlock", got).Str("mode", outcome).
 			Msg("state probe: upstream executed a pinned call in a DIFFERENT block context")
 		return probeMismatch
@@ -468,7 +467,7 @@ func (p *stateProber) logTagState(id string, stale bool, block, latest int64) {
 	if stale {
 		msg = "tag-state gate skips upstream for tag requests: its \"latest\" state is stale"
 	}
-	common.TransitionLog(&log.Logger, zerolog.InfoLevel, p.network.Label(), "tag_state").Str("upstream", id).
+	common.TransitionLog(p.network.Logger(), zerolog.InfoLevel, p.network.Label(), "tag_state").Str("upstream", id).
 		Bool("stale", stale).Int64("block", block).Int64("latest", latest).Msg(msg)
 }
 
@@ -672,7 +671,7 @@ func (p *stateProber) probeLatest(ctx context.Context, u common.Upstream) {
 	bt, w := p.tagTiming()
 	if (tagSample{block: got, sentAt: sentAt}).staleAgainst(latest, time.Now(), bt, w) {
 		p.count(u, "latest", "stale")
-		log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
+		p.network.Logger().Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
 			Int64("latest", latest).Int64("executedBlock", got).
 			Msg("state probe: upstream executes \"latest\" calls in state older than the network's Latest")
 		return
@@ -917,7 +916,7 @@ func (p *stateProber) probeProof(ctx context.Context, u common.Upstream, n int64
 	}
 	if string(gethcrypto.Keccak256(node0)) != string(want) {
 		p.count(u, "proof", "mismatch")
-		log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
+		p.network.Logger().Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).
 			Int64("block", n).Str("verifiedStateRoot", h.StateRoot).
 			Msg("state probe: account proof does not root at the verified stateRoot (absent or stale trie)")
 		return probeMismatch
@@ -947,7 +946,7 @@ func (p *stateProber) proofErred(u common.Upstream) {
 	}
 	v.(*atomic.Int64).Store(0)
 	p.stopProofs(u.Id())
-	log.Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).Int("errors", stateProbeProofErrors).
+	p.network.Logger().Warn().Str("network", p.network.Label()).Str("upstream", u.Id()).Int("errors", stateProbeProofErrors).
 		Dur("for", stateProbeProofOffFor).Msg("state probe: eth_getProof keeps failing, stopping proof probes for a while")
 }
 
