@@ -219,6 +219,16 @@ func (ns *networkState) snapshotIngresses() (map[string]EventIngress, IngressSel
 	return ings, ns.selector
 }
 
+// Reconcile rechecks where networkId's filters belong, as every head does,
+// for callers that learn between heads that the ingresses changed (e.g. the
+// primaries' subscriptions dropped), so filters move without waiting for the
+// next head.
+func (i *Indexer) Reconcile(networkId string) {
+	if nsRaw, ok := i.networks.Load(networkId); ok {
+		i.triggerReconcile(nsRaw.(*networkState))
+	}
+}
+
 // triggerReconcile starts a reconcile of ns's filters unless one is running
 // or there are none. Triggers it skips are covered by the next one.
 func (i *Indexer) triggerReconcile(ns *networkState) {

@@ -64,6 +64,10 @@ type Adapter struct {
 
 	stripSubscribeFromBlockZero bool
 
+	// headsOnDemand: newHeads is subscribed only while headsWanted (see
+	// SetHeadsWanted) instead of on every connection.
+	headsOnDemand bool
+
 	// polledHead is the upstream's latest block as polled over RPC, 0 if
 	// unknown; nil disables watchHeads.
 	polledHead func() int64
@@ -83,6 +87,8 @@ type Adapter struct {
 	resubDone  bool
 	resubAgain bool
 	heads      upstreamSub
+	// headsWanted is whether an on-demand adapter should hold newHeads.
+	headsWanted bool
 	// filters (by filterKey) survive disconnects to be resubscribed.
 	filters map[string]*filterSub
 }
@@ -104,6 +110,9 @@ type Options struct {
 	// StripSubscribeFromBlockZero removes a zero fromBlock from logs
 	// filters; see common.EvmNetworkConfig.StripSubscribeFromBlockZero.
 	StripSubscribeFromBlockZero bool
+	// HeadsOnDemand subscribes newHeads only while SetHeadsWanted(true),
+	// e.g. on a fallback that bills each notification.
+	HeadsOnDemand bool
 }
 
 type filterSub struct {
@@ -135,6 +144,7 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 		retryMax:                    resubRetryMax,
 		attemptTimeout:              resubAttemptTimeout,
 		stripSubscribeFromBlockZero: opts.StripSubscribeFromBlockZero,
+		headsOnDemand:               opts.HeadsOnDemand,
 		polledHead: func() int64 {
 			if p := up.EvmStatePoller(); p != nil && !p.IsObjectNull() {
 				return p.LatestBlock()
@@ -152,6 +162,55 @@ func (a *Adapter) HeadsLive() bool {
 	a.subsMu.Lock()
 	defer a.subsMu.Unlock()
 	return a.heads.id != ""
+}
+
+// HeadsOnDemand reports whether newHeads is subscribed only on request.
+func (a *Adapter) HeadsOnDemand() bool { return a.headsOnDemand }
+
+// SetHeadsWanted subscribes (want) or unsubscribes newHeads on an on-demand
+// adapter; a no-op otherwise or when nothing changes. The connection stays
+// open either way, and a wanted subscription is resubscribed after every
+// reconnect like any other.
+func (a *Adapter) SetHeadsWanted(ctx context.Context, want bool) {
+	if !a.headsOnDemand {
+		return
+	}
+	a.subsMu.Lock()
+	if a.headsWanted == want {
+		a.subsMu.Unlock()
+		return
+	}
+	a.headsWanted = want
+	// Mark it removed under the same lock, so a SetHeadsWanted(true) right
+	// after can't be undone by this one.
+	var id string
+	var epoch uint64
+	if want {
+		a.heads.removed = false
+	} else {
+		id, epoch = a.dropLocked(&a.heads, indexer.SubTypeNewHeads)
+	}
+	a.subsMu.Unlock()
+
+	if want {
+		a.logger.Info().Msg("subscribing newHeads on demand")
+		a.startResubscribe()
+		return
+	}
+	a.logger.Info().Msg("unsubscribing on-demand newHeads")
+	if id != "" {
+		a.release(ctx, id, epoch)
+	}
+}
+
+// wantHeads reports whether newHeads should be subscribed.
+func (a *Adapter) wantHeads() bool {
+	if !a.headsOnDemand {
+		return true
+	}
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	return a.headsWanted
 }
 
 // Start registers the connection hooks and subscribes newHeads in the
@@ -316,7 +375,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 			return
 		}
 		done := true
-		if !headsUnsupported {
+		if !headsUnsupported && a.wantHeads() {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			a.heads.mu.Lock()
 			err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads)
@@ -439,15 +498,22 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 // instead of committing it, and releases its live subscription if any.
 func (a *Adapter) drop(ctx context.Context, sub *upstreamSub, kind string) {
 	a.subsMu.Lock()
+	id, epoch := a.dropLocked(sub, kind)
+	a.subsMu.Unlock()
+	if id != "" {
+		a.release(ctx, id, epoch)
+	}
+}
+
+// dropLocked marks sub removed and returns its live subscription, if any,
+// for the caller to release. The caller holds subsMu.
+func (a *Adapter) dropLocked(sub *upstreamSub, kind string) (string, uint64) {
 	id, epoch := sub.id, sub.epoch
 	sub.id, sub.removed = "", true
 	if id != "" {
 		a.liveGauge(kind).Dec()
 	}
-	a.subsMu.Unlock()
-	if id != "" {
-		a.release(ctx, id, epoch)
-	}
+	return id, epoch
 }
 
 // release drops a subscription's handler and cancels it upstream. Both are

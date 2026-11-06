@@ -302,15 +302,23 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 	if cfg := nw.cfg; cfg != nil && cfg.Evm != nil && cfg.Evm.StripSubscribeFromBlockZero != nil {
 		adapterOpts.StripSubscribeFromBlockZero = *cfg.Evm.StripSubscribeFromBlockZero
 	}
+	onDemand := nw.cfg != nil && nw.cfg.Failover.FallbackHeadsOnDemand()
 	adapters := make(map[string]*wsupstream.Adapter, len(wsUpstreams))
 	heads := make(map[string]headSource, len(wsUpstreams))
+	var onDemandHeads []headsSwitch
 	for _, up := range wsUpstreams {
-		if adapter := wsupstream.New(up, key, sm.logger, adapterOpts); adapter != nil {
+		opts := adapterOpts
+		opts.HeadsOnDemand = onDemand && isFallbackTier(up)
+		if adapter := wsupstream.New(up, key, sm.logger, opts); adapter != nil {
 			adapters[up.Id()] = adapter
 			heads[up.Id()] = adapter
+			if opts.HeadsOnDemand {
+				onDemandHeads = append(onDemandHeads, adapter)
+			}
 		}
 	}
-	sm.idx.RegisterNetwork(&networkHandle{nw: nw, heads: heads})
+	handle := &networkHandle{nw: nw, heads: heads}
+	sm.idx.RegisterNetwork(handle)
 	sm.idx.RegisterNetworkSelector(key, &subIngressSelector{nw: nw})
 	for _, up := range wsUpstreams {
 		adapter := adapters[up.Id()]
@@ -323,7 +331,78 @@ func (sm *SubscriptionManager) bootstrapNetwork(ctx context.Context, nw *Network
 		}
 	}
 	sm.networks.Store(key, struct{}{})
+	if len(onDemandHeads) > 0 {
+		go gateFallbackHeads(nw.appCtx, handle.primaryHeadsLive, onDemandHeads, func() { sm.idx.Reconcile(key) })
+	}
 	return nil
+}
+
+// On-demand fallback heads timings; vars so tests can shorten them.
+var (
+	// fallbackHeadsCheckInterval is how often the gate looks at the primaries.
+	fallbackHeadsCheckInterval = 1 * time.Second
+	// fallbackHeadsStartupGrace lets the primaries connect and subscribe
+	// before their missing heads count as an outage.
+	fallbackHeadsStartupGrace = 15 * time.Second
+	// fallbackHeadsReleaseAfter is how long a primary must stream heads
+	// again before the fallbacks' subscriptions are released.
+	fallbackHeadsReleaseAfter = 60 * time.Second
+)
+
+// headsSwitch is an ingress whose newHeads subscription is made on demand.
+type headsSwitch interface {
+	SetHeadsWanted(ctx context.Context, want bool)
+}
+
+// gateFallbackHeads subscribes newHeads on the on-demand fallback-tier
+// ingresses as soon as no routable primary streams heads (the rule of
+// networkHandle.deliversHeadsFrom), and unsubscribes them once a primary has
+// streamed heads for fallbackHeadsReleaseAfter. Whenever the primaries'
+// heads drop or return it calls reconcile, so logs filters move to the
+// fallbacks (and back) at once instead of on the next head, which would lose
+// the logs of the block in between. Runs until ctx is done.
+func gateFallbackHeads(ctx context.Context, primaryHeadsLive func(context.Context) bool, fallbacks []headsSwitch, reconcile func()) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(fallbackHeadsStartupGrace):
+	}
+	ticker := time.NewTicker(fallbackHeadsCheckInterval)
+	defer ticker.Stop()
+	wanted, wasLive := false, true
+	var primaryLiveSince time.Time
+	set := func(want bool) {
+		wanted = want
+		for _, f := range fallbacks {
+			f.SetHeadsWanted(ctx, want)
+		}
+	}
+	for {
+		now := time.Now()
+		live := primaryHeadsLive(ctx)
+		if live {
+			if primaryLiveSince.IsZero() {
+				primaryLiveSince = now
+			}
+			if wanted && now.Sub(primaryLiveSince) >= fallbackHeadsReleaseAfter {
+				set(false)
+			}
+		} else {
+			primaryLiveSince = time.Time{}
+			if !wanted {
+				set(true)
+			}
+		}
+		if live != wasLive {
+			wasLive = live
+			reconcile()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // subIngressSelector picks the ingresses that carry a filter subscription.
@@ -569,12 +648,18 @@ func (h *networkHandle) deliversHeadsFrom(ctx context.Context, u common.Upstream
 	if h.nw.cfg == nil || !h.nw.cfg.Failover.Enabled() || !isFallbackTier(u) {
 		return true
 	}
+	return !h.primaryHeadsLive(ctx)
+}
+
+// primaryHeadsLive reports whether an upstream outside the fallback tier,
+// which the selection policy routes to, has a live newHeads subscription.
+func (h *networkHandle) primaryHeadsLive(ctx context.Context) bool {
 	for c := range h.nw.EvmRoutableUpstreams(ctx) {
 		if s := h.heads[c.Id()]; s != nil && !isFallbackTier(c) && s.HeadsLive() {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 var (
