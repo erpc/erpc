@@ -165,7 +165,7 @@ func (s *scenario) judgeRequests(b *strings.Builder, fs fetchSpan) {
 // liveRead is one method's reads on every pod and its bounds against the
 // old image: the slacks on served age and latency at p50 and p90, and
 // noSlower: latency p50 and p90 at most the old image's plus
-// latencyNoise; tail: latency p99 at most the old image's plus the p90
+// latencyNoise; tail: latency p99 at most the old image's plus P19's p90
 // slack, the canary's measure, and no read failing on the new image.
 type liveRead struct {
 	name     string
@@ -272,8 +272,8 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 				}
 			}
 		}
-		if rd.tail && pctl(n.took, 99) > pctl(o.took, 99)+rd.slack[1] {
-			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p99 %s, above the old image's %s + %s", rd.name, pctl(n.took, 99), pctl(o.took, 99), rd.slack[1])))
+		if rd.tail && pctl(n.took, 99) > pctl(o.took, 99)+p19P90Slack {
+			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p99 %s, above the old image's %s + %s", rd.name, pctl(n.took, 99), pctl(o.took, 99), p19P90Slack)))
 		}
 		if rd.tail && n.errs > 0 {
 			s.violate(s.name, "new image %s: %d reads failed (old image %d)", rd.name, n.errs, o.errs)
@@ -355,15 +355,17 @@ func liveCompare(s *scenario) {
 // liveCompareTail is liveCompare plus, at the same rate, the receipt of
 // the newest block's first transaction (tipReceipt), every read also
 // judged at p99 (tail) and never failing on the new image; head fetches
-// per new block at most fetchBound.
+// per new block at most fetchBound. The slacks are P19's in blocks, a
+// fifth and two fifths of one.
 func liveCompareTail(fetchBound float64) func(*scenario) {
 	return func(s *scenario) {
 		s.blocks(10)
-		reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
+		bt := s.chain.BlockTime()
+		reads := liveReads(liveRate, bt, &viewLog{})
 		r := reads[0]
 		reads = append(reads, liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, r.slack, r.noSlower, true})
 		for i := range reads {
-			reads[i].tail = true
+			reads[i].tail, reads[i].slack = true, [2]time.Duration{bt / 5, 2 * bt / 5}
 		}
 		liveJudge(s, reads, fetchBound)
 	}
