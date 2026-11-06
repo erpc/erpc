@@ -918,6 +918,16 @@ export interface FailoverConfig {
    * other upstream failed with an error retryable toward the network.
    */
   onDefaultsExhausted?: boolean;
+  /**
+   * EmptyTriesNextFallback: once a request escalated to the fallback
+   * tier, an empty answer from one fallback (eth_getLogs [], a zero balance)
+   * does not end it: the next fallback is asked, and the empty answer is
+   * returned only when every fallback gave it. A provider that load-balances
+   * over pruned nodes answers old eth_getLogs with [] now and then.
+   * Each further fallback asked costs one request, so it is off by default.
+   * Takes effect only with onDefaultsExhausted. DEFAULT: false.
+   */
+  emptyTriesNextFallback?: boolean;
 }
 export interface CORSConfig {
   allowedOrigins: string[];

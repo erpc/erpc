@@ -374,6 +374,32 @@ const _standalonePredicate: PolicyEvalPredicate = any(
 // `policyReason` is readable for diagnostics.
 const _reason: string | undefined = _standalonePredicate.policyReason;
 
+/* ───────────────────────── 9. Network failover ─────────────────────────── */
+
+createConfig({
+  projects: [
+    {
+      id: "failover",
+      networkDefaults: {
+        // An empty fallback answer asks the next fallback.
+        failover: { onDefaultsExhausted: true, emptyTriesNextFallback: true },
+      },
+    },
+  ],
+});
+
+createConfig({
+  projects: [
+    {
+      id: "bad-failover",
+      networkDefaults: {
+        // @ts-expect-error — emptyTriesNextFallback is a boolean switch
+        failover: { onDefaultsExhausted: true, emptyTriesNextFallback: "yes" },
+      },
+    },
+  ],
+});
+
 // Suppress "declared but never read" for the smoke values.
 void _realisticConfig;
 void _stringEvalFunc;
