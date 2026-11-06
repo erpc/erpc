@@ -866,11 +866,14 @@ var byHashFamily = map[string]struct{ number, hash []interface{} }{
 // upstream at once for its hash vote, which moves the Head within its
 // round trip (a cache answer Asks the lane's first voter whose counter
 // holds the block). That fetch is the block's one: it sights the block,
-// so the block clock fetches the next one. The answer is sent once the
-// view includes its block, and its upstream then counts as the block's
-// holder (noteHeld); it is null once the view pins another block at that
-// number, or when W passed, or ctx ended, with neither. Each wait counts
-// its outcome. held: resp was replaced by null.
+// so the block clock fetches the next one. The wait is a read that needs
+// the view to move, so it is the clock's demand (MarkRead), from its
+// Ask's answer on: a header that serves only at q holders (a mismatch,
+// §6.5) gets them from the clock's holder fetch (§6.8). The answer is
+// sent once the view includes its block, and its upstream then counts as
+// the block's holder (noteHeld); it is null once the view pins another
+// block at that number, or when W passed, or ctx ended, with neither.
+// Each wait counts its outcome. held: resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn, bh := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -923,8 +926,21 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	if prover != nil {
 		id = prover.Id()
 	}
-	if sp != nil && (t == nil || !t.ClockFetchesBefore(id, time.Now())) && n.claimByHashAsk(sel, bn) {
-		go sp.Ask(asks, common.HeadNeedHash, bt, time.Now(), common.AskRefusal)
+	switch {
+	case sp == nil || t != nil && t.ClockFetchesBefore(id, time.Now()):
+		// The clock brings the block.
+		if t != nil {
+			t.MarkRead()
+		}
+	case n.claimByHashAsk(sel, bn):
+		go func() {
+			// Demand only once the Ask answered: a clock started before it
+			// would fetch the same block.
+			sp.Ask(asks, common.HeadNeedHash, bt, time.Now(), common.AskRefusal)
+			if t != nil {
+				t.MarkRead()
+			}
+		}()
 	}
 	for {
 		in, off, moved := includes()

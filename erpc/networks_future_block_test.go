@@ -1079,11 +1079,13 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 // instances share a cache, and instance 1, one block ahead, cached a
 // receipt of its Latest. eth_getLogs by blockHash is of the family, and a
 // request that ends during the wait gets null too. The wait Asks the
-// voters Latest lacks for a head fetched after it began: on instance 3,
-// whose voters' counters are fresh but whose nodes already hold the block,
-// the answer is served; on instance 4, whose nodes hold it but answer that
-// fetch only after 1 bt, as a loaded host or a slow link does, the wait
-// waits for the answer and serves it. Each wait counts its outcome.
+// answering upstream for its head: on instance 3, whose voters' counters
+// are fresh but whose nodes already hold the block, a mismatch that
+// serves at q holders, that vote and the block clock's holder fetch of
+// the other voter serve it; on instance 4, whose nodes hold a verified
+// block but answer that fetch only after 1 bt, as a loaded host or a slow
+// link does, the wait waits for the answer and serves it. Each wait
+// counts its outcome.
 func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -1131,7 +1133,11 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	require.Equal(t, int64(101), servedHead(ahead, ctx).Latest)
 	require.Equal(t, int64(100), servedHead(behind, ctx).Latest)
 
-	const receipt = `{"blockNumber":"0x65","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a1","status":"0x1"}`
+	// receiptIn is the receipt of transaction a1 in block 101 hash.
+	receiptIn := func(hash string) string {
+		return `{"blockNumber":"0x65","blockHash":"` + hash + `","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a1","status":"0x1"}`
+	}
+	receipt := receiptIn("0x00000000000000000000000000000000000000000000000000000000000000b1")
 	var aheadCalls, behindCalls atomic.Int64
 	mockMethodAnswer("eth_getTransactionReceipt", receipt, &aheadCalls, "hc1", "hc2")
 	mockMethodAnswer("eth_getTransactionReceipt", receipt, &behindCalls, "hd1", "hd2")
@@ -1210,7 +1216,7 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	}
 	require.Equal(t, int64(100), servedHead(fresh, ctx).Latest)
 	var freshCalls atomic.Int64
-	mockMethodAnswer("eth_getTransactionReceipt", receipt, &freshCalls, "hf1", "hf2")
+	mockMethodAnswer("eth_getTransactionReceipt", receiptIn(tipHash("a", 101)), &freshCalls, "hf1", "hf2")
 	head.Store(101)
 	resp, err = fresh.Forward(ctx, common.NewNormalizedRequest([]byte(receiptReq)))
 	require.NoError(t, err)
@@ -1221,10 +1227,12 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	assert.Equal(t, served+1, held("held_served"), "the wait on instance 3 ended served")
 	assert.Equal(t, nulls, held("held_null"))
 
-	// Instance 4: as instance 3, but its nodes answer the wait's fetch of
-	// latest 1.5 bt after it is sent (bt is the cold 1s here, W 3s). The
-	// fetch is the only evidence that the nodes lack the block, so the wait
-	// outlives 1 bt until it answers.
+	// Instance 4: as instance 3, but block 101 verifies, so its one vote
+	// serves it, and its nodes answer the wait's fetch of latest 1.5 bt
+	// after it is sent (bt is the cold 1s here, W 3s). The fetch is the
+	// only evidence that the nodes lack the block, so the wait outlives
+	// 1 bt until it answers.
+	verifyTipAt(t, "a", 101)
 	var slowHead atomic.Int64
 	slowHead.Store(100)
 	var slowAnswers atomic.Bool
@@ -1257,7 +1265,7 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	}
 	require.Equal(t, int64(100), servedHead(slow, ctx).Latest)
 	var slowCalls atomic.Int64
-	mockMethodAnswer("eth_getTransactionReceipt", receipt, &slowCalls, "hl1", "hl2")
+	mockMethodAnswer("eth_getTransactionReceipt", receiptIn(tipHash("a", 101)), &slowCalls, "hl1", "hl2")
 	slowHead.Store(101)
 	slowAnswers.Store(true)
 	nulls, served = held("held_null"), held("held_served")

@@ -28,8 +28,9 @@ const clockUnknownRTT = 150 * time.Millisecond
 // each rung one due voter's fetch, then tail rungs at the lane's turn
 // rate until the block comes; the first sight stops the ladder, and the
 // turns not sent vote at once. It runs while the lane has demand: a
-// tap that needs newHeads, or a read of latest within 2 W. Only the
-// tracker's goroutine touches it.
+// tap that needs newHeads, or a read of latest or one that needs the
+// view to move (MarkRead) within 2 W. Only the tracker's goroutine
+// touches it.
 type headClock struct {
 	// sights are the first local sights of the newest numbers, ascending,
 	// at most clockFit.
@@ -1231,9 +1232,9 @@ func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
 	}
 }
 
-// MarkRead marks a lane tap's read, which needs the lane's view to move:
-// the block clock runs for readDemand after it, without the idle edge's
-// wait.
+// MarkRead marks a read that needs the lane's view to move, a lane tap's
+// or a by-hash wait's: the block clock runs for readDemand after it,
+// without the idle edge's wait.
 func (t *ChainTracker) MarkRead() {
 	if prev := t.latestReadAt.Swap(time.Now().UnixNano()); prev == 0 || time.Since(time.Unix(0, prev)) >= t.readDemand() {
 		t.mb.put(trackerMsg{kind: msgTick})
