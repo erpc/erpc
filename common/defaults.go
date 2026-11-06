@@ -14,13 +14,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// ConsensusDefaultEvalTimeout is the wall-clock cap applied when
-// customPolicy.evalTimeout is omitted (0). Kept in sync with
-// ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
-// caller that skips SetDefaults) cannot disable the selector timeout by
-// accident.
-const ConsensusDefaultEvalTimeout = 50 * time.Millisecond
-
 // MatchFinalities checks if two finality arrays match.
 // Empty arrays (nil or len=0) match any finality.
 func MatchFinalities(finalities1, finalities2 []DataFinalityState) bool {
