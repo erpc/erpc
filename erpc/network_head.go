@@ -286,10 +286,11 @@ func (n *Network) startHeads() {
 
 // watchHeadCounters makes every move of ups's head counters, by a poll, a
 // push or another instance, and every change of its chain-identity cordon,
-// which moves it in or out of the ceiling, mark its lanes dirty (spec
-// §6.4); a move of its latest counter also wakes its lanes' trackers,
-// whose Firm reads it (§6.5). The registry calls it once per upstream as
-// it joins the network, which is itself a change of the voters.
+// which moves it in or out of the ceiling and the voters, mark its lanes
+// dirty (spec §6.4); a move of its latest counter also wakes its lanes'
+// trackers, whose Firm reads it (§6.5), and a cordon change makes every
+// tracker read its voters again. The registry calls it once per upstream
+// as it joins the network, which is itself a change of the voters.
 func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 	if p, ok := ups.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
 		p.OnLatestBlock(func(int64) {
@@ -297,7 +298,12 @@ func (n *Network) watchHeadCounters(ups *upstream.Upstream) {
 			evm.HoldersMoved(n, ups)
 		})
 		p.OnFinalizedBlock(func(int64) { n.headMoved(ups) })
-		p.OnChainIdCordonChanged(func() { n.headMoved(ups) })
+		p.OnChainIdCordonChanged(func() {
+			n.headMoved(ups)
+			if n.intake != nil {
+				n.intake.chainIdCordonChanged()
+			}
+		})
 	}
 	n.headsChanged()
 }
@@ -659,7 +665,7 @@ func (n *Network) walkCounted(sel string, yield func(*upstream.Upstream) bool) {
 				continue
 			}
 		}
-		if c, ok := u.EvmStatePoller().(interface{ ChainIdCordoned() bool }); ok && c.ChainIdCordoned() {
+		if chainIdCordoned(u) {
 			continue
 		}
 		if n.intake != nil && n.intake.pollsFailing(u.Id()) {
