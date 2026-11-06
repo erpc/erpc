@@ -2086,7 +2086,7 @@ func (n *Network) anyRegisteredLiveHead(member func(common.Upstream) bool, useFi
 // "finalized") is a label rather than part of the metric name to keep the
 // gauge set small. lane="all" is the network-wide lane; a named lane is a
 // use-upstream group's own. The latest axis is the view's Head, its lag
-// behind the lane's ceiling.
+// behind the ballot's Freshest while the lane has demand, else 0.
 type laneGauges struct {
 	latest, finalized servedTipGauges
 }

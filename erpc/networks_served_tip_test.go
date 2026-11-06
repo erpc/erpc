@@ -440,7 +440,7 @@ func TestServedTip_DefaultQuorum_LoneFarAheadUpstreamDoesNotDefineHead(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
 		{id: "u1", chainID: 123, latestBlock: 32_610_710},
 		{id: "u2", chainID: 123, latestBlock: 32_610_709},
 		{id: "rogue", chainID: 123, latestBlock: 62_381_379},
@@ -454,6 +454,20 @@ func TestServedTip_DefaultQuorum_LoneFarAheadUpstreamDoesNotDefineHead(t *testin
 	assert.True(t, known)
 	assert.Equal(t, int64(62_381_379), ceiling,
 		"the raw max stays visible for the future-block short-circuit")
+
+	// The latest lag is main's, Freshest − served: the rogue's far head
+	// never inflates it, and a lane nobody reads lags by nothing.
+	lag := func() float64 {
+		network.refreshHeads()
+		return promUtil.ToFloat64(telemetry.MetricNetworkServedTipLagBlocks.
+			WithLabelValues(network.projectId, network.Label(), "all", "latest"))
+	}
+	assert.Zero(t, lag(), "no read demand: the clock stopped, so the lane lags by nothing")
+	network.laneTracker("").MarkRead()
+	assert.Equal(t, float64(1), lag(), "read demand: served 32,610,709 below Freshest 32,610,710")
+	voteHead(t, network, ups[1], 32_610_710)
+	assert.Equal(t, int64(32_610_710), servedHead(network, ctx).Latest)
+	assert.Zero(t, lag(), "served at the ballot's Freshest: no lag, whatever the rogue reports")
 }
 
 // A selection-policy-EXCLUDED upstream must drop out of the served tip — head

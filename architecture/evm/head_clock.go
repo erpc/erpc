@@ -576,6 +576,13 @@ func (t *ChainTracker) clockDemand(now time.Time) (pace time.Duration, ok bool) 
 	return t.demand()
 }
 
+// ClockRuns reports whether the lane has demand now, so its block clock
+// runs (clockDemand).
+func (t *ChainTracker) ClockRuns() bool {
+	_, ok := t.clockDemand(time.Now())
+	return ok
+}
+
 // readDemand is how long a read of latest keeps the clock running: 2 W.
 // Reads W to 2 W apart then meet a running clock, not an idle edge: an
 // edge then costs q fetches, and a view up to W old serves no wait; reads

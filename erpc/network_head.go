@@ -324,26 +324,44 @@ func (n *Network) refreshLane(l *servedTipLane) {
 	if h.Ceiling > 0 && h.Ceiling < old.CeilingPeak && (old.Ceiling == 0 || h.Ceiling < old.Ceiling) {
 		h.CeilingFellAt = time.Now()
 	}
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	pick, _ := n.evmTipBallot(tipScope{sel: l.selector}, false, q, nil)
+	t := n.trackerOf(l)
+	var view int64
+	if t != nil {
+		if head, ok := t.View().Head(); ok {
+			view = int64(head.Number)
+		}
+	}
+	// The latest axis's lag is main's: the ballot's Freshest less the
+	// served Head. A lane without read demand stops its clock while the
+	// polls move the ballot, and its next read fetches a fresh head, so
+	// it lags by nothing a client reads.
+	var freshest int64
+	if t != nil && t.ClockRuns() {
+		freshest = pick.Freshest
+	}
+	if l.gauges == nil {
+		l.gauges = n.bindLaneGauges(l.label)
+	}
+	l.gauges.latest.observe(view, freshest, l.latest.age())
 	// The step's timing reads the first voter's report of a block: a lane
 	// whose clock fetches about one voter a block has its q-th report a
 	// block or more after it, and the view later still, while each
 	// voter's finalized moves with its own head. A report more than W of
 	// blocks above the view counts at that bound, so a far-ahead head
 	// cannot spend the step's polls before the chain gets there.
-	var q common.ServedTipQuorum
-	if n.cfg != nil {
-		q = n.cfg.Evm.ServedTipQuorum()
-	}
-	if pick, _ := n.evmTipBallot(tipScope{sel: l.selector}, false, q, nil); pick.Max > 0 {
+	if pick.Max > 0 {
 		sight := pick.Max
-		if t := n.trackerOf(l); t != nil {
-			if head, ok := t.View().Head(); ok {
-				ahead := int64(1)
-				if bt := n.EvmBlockTime(); bt > 0 {
-					ahead = max(ahead, int64(health.FreshnessWindow(bt)/bt))
-				}
-				sight = min(sight, int64(head.Number)+ahead)
+		if view > 0 {
+			ahead := int64(1)
+			if bt := n.EvmBlockTime(); bt > 0 {
+				ahead = max(ahead, int64(health.FreshnessWindow(bt)/bt))
 			}
+			sight = min(sight, view+ahead)
 		}
 		if old.Finalized > 0 && h.Finalized > old.Finalized && sight >= h.Finalized {
 			l.learnFinalizedStep(h.Finalized-old.Finalized, sight-h.Finalized)
@@ -379,14 +397,8 @@ func (n *Network) computeHead(l *servedTipLane, s tipScope) common.EvmHead {
 	h := common.EvmHead{Finalized: n.laneFinalized(l, s, latest)}
 	h.Leader = n.laneLeader(s, latest)
 	h.Ceiling, h.OldestReportAt = n.laneCeiling(s.sel)
-	if l != nil {
-		if l.gauges == nil {
-			l.gauges = n.bindLaneGauges(l.label)
-		}
-		if latest > 0 {
-			l.latest.observe(latest)
-		}
-		l.gauges.latest.observe(latest, h.Ceiling, l.latest.age())
+	if l != nil && latest > 0 {
+		l.latest.observe(latest)
 	}
 	return h
 }
