@@ -295,6 +295,13 @@ export interface ServerConfig {
    * CreditUnitsProvider and UpstreamConfig.CreditUnits.
    */
   costHeaders?: boolean;
+  /**
+   * LogClientIP adds the caller's IP (resolved through trustedIPForwarders
+   * and trustedIPHeaders) as `clientIP` to the per-request proxy logs and
+   * the websocket connection log. An IP address is personal data under
+   * GDPR and similar rules, so this is off by default.
+   */
+  logClientIp?: boolean;
 }
 export interface WebSocketServerConfig {
   /**
