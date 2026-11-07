@@ -10,10 +10,12 @@ import (
 )
 
 // headRefuser is the network's side of the refusal rule (spec §6.4, §6.8):
-// its block time, the Ask of the reports older than 1 bt, the near-future
-// wait for the ceiling, and the band's Ask of the upstreams below a block.
+// its block time, whether its lane's view pins a block, the Ask of the
+// reports older than 1 bt, the near-future wait for the ceiling, and the
+// band's Ask of the upstreams below a block.
 type headRefuser interface {
 	EvmBlockTime() time.Duration
+	EvmPinned(selector string, block int64) bool
 	EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time)
 	EvmAwaitCeiling(ctx context.Context, selector string, block int64) (ceiling int64, oldestReportAt time.Time)
 	EvmAskBand(selector string, block int64)
@@ -61,9 +63,12 @@ func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 }
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of
-// selector sel's lane: above the ceiling with a report 1 bt old or older,
-// those reports are Asked first and n decided again, each report's age
-// taken at the Ask's start: a report fresh then was not Asked, and must
+// selector sel's lane. A block above Firm that the lane's view pins exists:
+// it is thin and Held, and nothing Asks an upstream for it, whatever h's
+// Latest and ceiling, which a method only some upstreams serve keeps below
+// it (spec §6.4 held). Else above the ceiling with a report 1 bt old or
+// older, those reports are Asked first and n decided again, each report's
+// age taken at the Ask's start: a report fresh then was not Asked, and must
 // not turn stale by the Ask's own duration. Still stale after the Ask, n
 // is in the band, the cheaper way to be wrong. Until the first block time
 // sample, every report counts as older than 1 bt (spec §6.4).
@@ -85,6 +90,10 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 	}
 	asked := time.Now()
 	v := &common.HeadRefusal{Block: n, Latest: h.Latest, Rule: h.Rule(n, bt, asked)}
+	if v.Rule != common.HeadServe && net != nil && net.EvmPinned(sel, n) {
+		v.Rule, v.Held, v.Ceiling = common.HeadThin, true, h.Ceiling
+		return v
+	}
 	if v.Rule == common.HeadStale && net != nil {
 		h.Ceiling, h.OldestReportAt = net.EvmAskStale(ctx, sel)
 		if cold {

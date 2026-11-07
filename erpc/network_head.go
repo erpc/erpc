@@ -761,6 +761,65 @@ func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int
 	return n.laneCeiling(selector)
 }
 
+// EvmPinned reports whether selector's lane view pins block, at or below
+// its Head: the block exists (spec §6.4 held), whichever upstreams hold it.
+func (n *Network) EvmPinned(selector string, block int64) bool {
+	t := n.laneTracker(selector)
+	if t == nil || block <= 0 {
+		return false
+	}
+	v := t.View()
+	head, ok := v.Head()
+	if !ok || uint64(block) > head.Number {
+		return false
+	}
+	_, pinned := v.PinAt(uint64(block))
+	return pinned
+}
+
+// awaitHolder orders ups for block bn, which req's lane view pins
+// (HeadRefusal.Held), by when each most likely holds it: those whose
+// evidence shows bn now first, then by bn's first sight plus each one's
+// measured lack (ChainTracker.HeldAt), an unmeasured one at the first
+// sight, so its answer measures it; and waits for the first, at most W or
+// until ctx ends (spec §6.4 held). The request itself is the probe: no
+// head fetch is sent for it.
+func (n *Network) awaitHolder(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream, bn int64) []common.Upstream {
+	t := n.laneTracker(selectorOf(req))
+	if t == nil || len(ups) == 0 {
+		return ups
+	}
+	credit := creditCap(n.requestHead(ctx, req))
+	at := make(map[string]time.Time, len(ups))
+	for _, u := range ups {
+		if n.mayHold(u, bn, credit, nil) {
+			continue
+		}
+		if a, ok := t.HeldAt(u.Id(), uint64(bn)); ok {
+			at[u.Id()] = a
+		}
+	}
+	out := slices.Clone(ups)
+	slices.SortStableFunc(out, func(a, b common.Upstream) int { return at[a.Id()].Compare(at[b.Id()]) })
+	if wait := min(time.Until(at[out[0].Id()]), health.FreshnessWindow(n.EvmBlockTime())); wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+	}
+	return out
+}
+
+// selectorOf is req's use-upstream selector, "" for the network-wide lane.
+func selectorOf(req *common.NormalizedRequest) string {
+	if d := req.Directives(); d != nil {
+		return d.UseUpstream
+	}
+	return ""
+}
+
 // EvmAwaitCeiling waits for selector sel's lane ceiling to reach block, at
 // most W or until ctx ends, Asking the lane's number voters below block
 // at once and every bt after (spec §6.4 near future), each after the

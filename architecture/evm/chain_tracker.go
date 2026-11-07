@@ -869,12 +869,12 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		} else if prev := t.votes[msg.upstream]; t.alive(prev) && prev.h.number < h.number && now.Sub(t.voteAt[msg.upstream]) <= t.BlockTime() {
 			if seen := t.clock.sightOf(h.number); h.number <= t.clock.top() && !seen.IsZero() {
 				t.clock.sampleLate(msg.upstream, now.Sub(seen))
-				t.clock.bound(msg.upstream, now.Sub(seen))
+				t.clock.bound(msg.upstream, now.Sub(seen), true)
 			}
 		}
 		if h.number > t.clock.top() {
 			t.clock.sampleLate(msg.upstream, 0)
-			t.clock.bound(msg.upstream, 0)
+			t.clock.bound(msg.upstream, 0, true)
 		}
 	}
 	t.clock.saw(h.number, now, from, msg.via, t.BlockTime())

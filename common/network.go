@@ -133,6 +133,11 @@ type HeadRefusal struct {
 	// Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
 	// future).
 	Waited bool
+	// Held: Block is pinned in the lane's view, so it exists; only who
+	// holds it is open. Nothing Asks an upstream for it: each attempt
+	// waits for the upstream that most likely holds it soonest (spec §6.4
+	// held).
+	Held bool
 	// missed: a leg of the request took its retryable miss.
 	missed atomic.Bool
 	// answered: a leg took its answer after the miss.

@@ -2549,7 +2549,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// mirrored to excluded upstreams. A request that ends during the wait
 	// ends as any request whose context ends.
 	if n.cfg.Architecture == common.ArchitectureEvm {
-		evm.HeadRefusalOf(ctx, req)
+		// A block the view pins waits for its likeliest holder instead
+		// (spec §6.4 held): its first attempt goes there.
+		if v := evm.HeadRefusalOf(ctx, req); v != nil && v.Held {
+			req.SetUpstreams(n.awaitHolder(ctx, req, req.Upstreams(), v.Block))
+		}
 		if err := ctx.Err(); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				err = common.NewErrNetworkRequestTimeout(time.Since(startTime), err)
@@ -2827,6 +2831,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					).Inc()
 				}
 
+				sent := time.Now()
 				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, snap.Retries)
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
@@ -2865,19 +2870,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				refusal := effectiveReq.HeadRefusal()
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
 				missing := emptyAnswer || missingDataErr(err)
+				// A held block's answers, served or missing, measure how
+				// long after its first sight u holds it (spec §6.4 held).
+				if refusal != nil && refusal.Held && (err == nil || missing) {
+					if t := n.laneTracker(selectorOf(effectiveReq)); t != nil {
+						t.ObserveHold(u.Id(), uint64(refusal.Block), sent, !missing)
+					}
+				}
 				finalEmpty := false
 				if refusal.AboveFirm() && missing {
 					switch refusal.Miss(leg) {
 					case common.MissRetry:
-						if refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin {
+						if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
 							// The retry waits for the Ask of the voters
 							// that lack the block until it answers, at most
 							// W, and orders on the heads it brings.
-							sel := ""
-							if d := effectiveReq.Directives(); d != nil {
-								sel = d.UseUpstream
-							}
-							n.awaitBandAsk(loopCtx, sel, refusal.Block)
+							n.awaitBandAsk(loopCtx, selectorOf(effectiveReq), refusal.Block)
 						}
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
 						// One more pick for the retry, a slot's included.
@@ -3573,10 +3581,14 @@ func (n *Network) handleBlockSkip(
 	// number need in the background (spec §6.4, §6.8), as main polled it:
 	// the request never waits on it, and the retry after
 	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
-	// A block at or below the request Head's Latest Asks nothing: the clock
-	// already fetched it for the network, and an Ask per skipped upstream
-	// cost a block up to one fetch per voter.
+	// A block at or below the request Head's Latest, or one the view pins
+	// (Held), Asks nothing: the clock already fetched it for the network,
+	// and an Ask per skipped upstream cost a block up to one fetch per
+	// voter.
 	if isRetryable {
+		if r := req.HeadRefusal(); r != nil && r.Held {
+			return
+		}
 		if bn := requestBlockNumber(ctx, req); bn > 0 && bn <= n.requestHead(ctx, req).Latest {
 			return
 		}
@@ -4340,8 +4352,10 @@ func isFallbackTier(u common.Upstream) bool {
 
 // headFirst picks req's retry above Firm (spec §6.4): its routed upstreams
 // not yet attempted that NextUpstream may still select, ordered by their
-// heads as they are now, those holding bn first, with no I/O. Upstreams
-// the policy did not route stay the fallback escape's.
+// heads as they are now, those holding bn first, with no I/O; for a Held
+// block, by when each most likely holds it, after waiting for the first
+// (awaitHolder). Upstreams the policy did not route stay the fallback
+// escape's.
 func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
 	var rest []common.Upstream
 	for _, u := range req.Upstreams() {
@@ -4349,7 +4363,11 @@ func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, 
 			rest = append(rest, u)
 		}
 	}
-	rest = n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil)
+	if r := req.HeadRefusal(); r != nil && r.Held {
+		rest = n.awaitHolder(ctx, req, rest, bn)
+	} else {
+		rest = n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil)
+	}
 	return func() (common.Upstream, error) {
 		for len(rest) > 0 {
 			u := rest[0]
