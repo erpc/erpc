@@ -441,13 +441,11 @@ func p16Pause() spec {
 		for i := range reads {
 			reads[i].slack = [2]time.Duration{p16P50Slack * p16Scale, p16P90Slack * p16Scale}
 		}
-		before := s.clockMix()
 		imgs, all, _, from, to := s.liveRun(p16PauseRun, reads, nil)
 		var b strings.Builder
 		s.judgeAgeLatency(&b, reads, imgs, from, to)
 		s.judgeFetches(&b, "over the run", all, turnBound(ups, 1, s.chain.BlockTime()))
 		s.judgeRequests(&b, all)
-		reportClockMix(&b, before, s.clockMix(), all.blocks)
 		s.logf("%s", b.String())
 	})
 }
@@ -490,13 +488,11 @@ func p16Sparse() spec {
 		for i := range reads {
 			reads[i].slack = [2]time.Duration{p16P50Slack * p16Scale, p16P90Slack * p16Scale}
 		}
-		before := s.clockMix()
 		imgs, all, _, from, to := s.liveRun(p16SparseRun, reads, nil)
 		var b strings.Builder
 		s.judgeAgeLatency(&b, reads, imgs, from, to)
 		s.judgeFetches(&b, "over the run", all, turnBound(p16SparseUps, 1, s.chain.BlockTime()))
 		s.judgeRequests(&b, all)
-		reportClockMix(&b, before, s.clockMix(), all.blocks)
 		s.logf("%s", b.String())
 	})
 }
@@ -554,13 +550,11 @@ func p16SpreadBody(s *scenario, ups []freshUp, blip bool) {
 			}
 		}
 	}
-	before := s.clockMix()
 	imgs, all, w, from, to := s.liveRun(p16Run, reads, fault)
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)
 	s.judgeFetches(&b, "over the run", all, turnBound(ups, p16Scale, s.chain.BlockTime()))
 	s.judgeRequests(&b, all)
-	reportClockMix(&b, before, s.clockMix(), all.blocks)
 	if blip {
 		for i, rd := range reads {
 			var ims []*freshImage
@@ -596,11 +590,12 @@ func turnBound(ups []freshUp, scale int, bt time.Duration) float64 {
 	return max(1, turns) + 0.05
 }
 
-// clockMix is, per new-image pod, where its head fetches went: its block
-// clock's Asks by kind and outcome (erpc_head_clock_total) and its head
-// Asks that fetched, by reason (erpc_head_ask_total).
-func (s *scenario) clockMix() map[int]map[string]float64 {
-	out := map[int]map[string]float64{}
+// clockMix is, per pod, where a new-image pod's head fetches went: its
+// block clock's Asks by kind and outcome (erpc_head_clock_total) and its
+// head Asks that fetched, by reason (erpc_head_ask_total); nil for an
+// old-image pod or a failed scrape.
+func (s *scenario) clockMix() []map[string]float64 {
+	out := make([]map[string]float64, len(s.h.pods))
 	for _, p := range s.h.pods {
 		if p.old {
 			continue
@@ -624,28 +619,6 @@ func (s *scenario) clockMix() map[int]map[string]float64 {
 		out[p.idx] = m
 	}
 	return out
-}
-
-// reportClockMix writes each pod's clockMix between before and after per
-// new block, over blocks.
-func reportClockMix(b *strings.Builder, before, after map[int]map[string]float64, blocks uint64) {
-	if blocks == 0 {
-		return
-	}
-	for pod, m := range after {
-		var keys []string
-		for k := range m {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		fmt.Fprintf(b, "pod-%d head fetches per new block by cause:", pod+1)
-		for _, k := range keys {
-			if d := m[k] - before[pod][k]; d > 0 {
-				fmt.Fprintf(b, " %s %.3f;", k, d/float64(blocks))
-			}
-		}
-		b.WriteString("\n")
-	}
 }
 
 // freshJudge flags a new image later than the old one past the slacks, or
