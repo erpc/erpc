@@ -181,7 +181,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 		upstreamID:   "test-ws-upstream",
 		networkID:    "evm:123",
 		projectID:    "test-project",
-		networkLabel: "evm:123",
+		networkLabel: func() string { return "evm:123" },
 		wsClient:     wsc,
 		logger:       &logger,
 		filters:      make(map[string]*filterSub),

@@ -47,9 +47,11 @@ var errNotConnected = errors.New("upstream websocket is not connected")
 type Adapter struct {
 	upstreamID string
 	networkID  string
-	// projectID and networkLabel label the adapter's metrics.
+	// projectID and networkLabel label the adapter's metrics. The label is
+	// read at each use: an upstream joins its network before it learns the
+	// network's label, so a label read once at construction can stay "n/a".
 	projectID    string
-	networkLabel string
+	networkLabel func() string
 	wsClient     *clients.WsJsonRpcClient
 	logger       *zerolog.Logger
 
@@ -93,10 +95,23 @@ type upstreamSub struct {
 	// loop can't create duplicates.
 	mu sync.Mutex
 	// id and epoch identify the live upstream subscription (id "" when
-	// none); removed is set once it is dropped. Guarded by Adapter.subsMu.
+	// none); live is the upstream_subscriptions_active series it is counted
+	// in, so it leaves the series it entered even if the label changed
+	// since. removed is set once it is dropped. Guarded by Adapter.subsMu.
 	id      string
 	epoch   uint64
+	live    prometheus.Gauge
 	removed bool
+}
+
+// clearLocked forgets sub's live subscription and uncounts it; the caller
+// holds Adapter.subsMu.
+func (sub *upstreamSub) clearLocked() {
+	if sub.live != nil {
+		sub.live.Dec()
+		sub.live = nil
+	}
+	sub.id = ""
 }
 
 // Options are the network-level settings of an Adapter.
@@ -124,7 +139,7 @@ func New(up *upstream.Upstream, networkID string, logger *zerolog.Logger, opts O
 		upstreamID:   up.Id(),
 		networkID:    networkID,
 		projectID:    up.ProjectId,
-		networkLabel: up.NetworkLabel(),
+		networkLabel: up.NetworkLabel,
 		wsClient:     wsClient,
 		logger:       &lg,
 		filters:      make(map[string]*filterSub),
@@ -176,15 +191,9 @@ func (a *Adapter) Start(_ context.Context, nw indexer.NetworkHandle, sink indexe
 			a.resubCancel()
 		}
 		a.resubDone = false
-		if a.heads.id != "" {
-			a.liveGauge(indexer.SubTypeNewHeads).Dec()
-		}
-		a.heads.id = ""
+		a.heads.clearLocked()
 		for _, sub := range a.filters {
-			if sub.id != "" {
-				a.liveGauge(sub.subType).Dec()
-			}
-			sub.id = ""
+			sub.clearLocked()
 		}
 		a.subsMu.Unlock()
 	})
@@ -219,7 +228,7 @@ func (a *Adapter) watchHeads() {
 		if id != "" && id == prevID && epoch == prevEpoch && seen == prevSeen && prevPolled > lastHead {
 			a.logger.Warn().Str("upstreamSubId", id).Int64("lastHead", lastHead).Int64("polledHead", prevPolled).
 				Msg("newHeads subscription silent while upstream head advances, reconnecting")
-			telemetry.CounterHandle(telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal, a.projectID, a.networkLabel, a.upstreamID).Inc()
+			telemetry.CounterHandle(telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal, a.projectID, a.networkLabel(), a.upstreamID).Inc()
 			a.wsClient.Reconnect(epoch)
 		}
 		prevID, prevEpoch, prevSeen, prevPolled = id, epoch, seen, a.polledHead()
@@ -418,9 +427,9 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 	connUp := ws.Epoch == a.wsClient.Epoch()
 	commit := connUp && !sub.removed
 	if commit {
-		sub.id, sub.epoch = ws.ID, ws.Epoch
 		// params[0] is the eth_subscribe subscription type.
-		a.liveGauge(params[0].(string)).Inc()
+		sub.id, sub.epoch, sub.live = ws.ID, ws.Epoch, a.liveGauge(params[0].(string))
+		sub.live.Inc()
 	}
 	a.subsMu.Unlock()
 
@@ -440,10 +449,8 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 func (a *Adapter) drop(ctx context.Context, sub *upstreamSub, kind string) {
 	a.subsMu.Lock()
 	id, epoch := sub.id, sub.epoch
-	sub.id, sub.removed = "", true
-	if id != "" {
-		a.liveGauge(kind).Dec()
-	}
+	sub.clearLocked()
+	sub.removed = true
 	a.subsMu.Unlock()
 	if id != "" {
 		a.release(ctx, id, epoch)
@@ -495,17 +502,18 @@ type notificationParams struct {
 	Result json.RawMessage `json:"result"`
 }
 
-// liveGauge is the upstream_subscriptions_active series of kind; changed
-// only under subsMu, wherever a subscription's id is set or cleared.
+// liveGauge is the upstream_subscriptions_active series of kind under the
+// current label; changed only under subsMu, where a subscription's id is
+// set (commit) or cleared (clearLocked).
 func (a *Adapter) liveGauge(kind string) prometheus.Gauge {
-	return telemetry.GaugeHandle(telemetry.MetricUpstreamSubscriptionsActive, a.projectID, a.networkLabel, a.upstreamID, kind)
+	return telemetry.GaugeHandle(telemetry.MetricUpstreamSubscriptionsActive, a.projectID, a.networkLabel(), a.upstreamID, kind)
 }
 
 // countEvent counts a notification received from the upstream, before
 // parsing and dedup.
 func (a *Adapter) countEvent(kind string, raw []byte) {
-	telemetry.CounterHandle(telemetry.MetricUpstreamSubscriptionEventsTotal, a.projectID, a.networkLabel, a.upstreamID, kind).Inc()
-	telemetry.CounterHandle(telemetry.MetricUpstreamSubscriptionEventBytesTotal, a.projectID, a.networkLabel, a.upstreamID, kind).Add(float64(len(raw)))
+	telemetry.CounterHandle(telemetry.MetricUpstreamSubscriptionEventsTotal, a.projectID, a.networkLabel(), a.upstreamID, kind).Inc()
+	telemetry.CounterHandle(telemetry.MetricUpstreamSubscriptionEventBytesTotal, a.projectID, a.networkLabel(), a.upstreamID, kind).Add(float64(len(raw)))
 }
 
 func (a *Adapter) handleNewHeads(raw []byte) {
