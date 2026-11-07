@@ -171,31 +171,27 @@ func (f *clockFire) ladder() bool {
 }
 
 // clockVoter is what the clock learned of one voter: its round trip's EMA
-// and mean deviation, and late, an EMA of how far behind the first sight
-// its answers were, so a lagging voter takes no rung. bounds are its last
-// clockFit bounds on how long after a block's first sight it held the
-// block (lacked: not yet at d; held: by d): routing counts it a holder
-// once the longest has passed (HoldsLikely). A lower bound alone, or the
-// latest bound, would count it a holder of a block it trails by more
-// than a past one: a fetch samples the gap sparsely, and the gap moves
-// with the first sight's timing each block (P20-flash: 7% of thin reads
-// missed, each one refusal retry, latest p99 95 ms against 35 ms). late
-// averages lower bounds only, the fetches sent while it lacked the
-// block, and those cluster right after the sight, so it would count a
-// voter that trails by most of a block a holder too soon. A held block's
-// attempts read the bounds apart (heldWait). asked and askedAt are its
+// and mean deviation. bounds are its last clockFit bounds on how long
+// after a block's first sight it held the block (lacked: not yet at d;
+// held: by d): routing counts it a holder once the longest has passed
+// (HoldsLikely). A lower bound alone, or the latest bound, would count it
+// a holder of a block it trails by more than a past one: a fetch samples
+// the gap sparsely, and the gap moves with the first sight's timing each
+// block (P20-flash: 7% of thin reads missed, each one refusal retry,
+// latest p99 95 ms against 35 ms). A held block's attempts, held votes and
+// rung scores read the bounds apart (heldWait). asked and askedAt are its
 // last fetch's answer and send time, open until a first sight above it
 // decides whether it lagged (answered). firedAt is the send of the
 // clock's last fetch of it, out that fetch while unanswered.
 type clockVoter struct {
-	rtt, dev, late time.Duration
-	bounds         []holdBound
-	samples        int
-	asked          uint64
-	askedAt        time.Time
-	open           bool
-	firedAt        time.Time
-	out            *clockFire
+	rtt, dev time.Duration
+	bounds   []holdBound
+	samples  int
+	asked    uint64
+	askedAt  time.Time
+	open     bool
+	firedAt  time.Time
+	out      *clockFire
 }
 
 // holdBound is how long after a block's first sight a voter was seen with
@@ -299,7 +295,6 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 		if v.open && v.asked < number {
 			v.open = false
 			if v.askedAt.After(from) {
-				c.sampleLate(id, v.askedAt.Sub(from))
 				c.bound(id, v.askedAt.Sub(from), false)
 			}
 		}
@@ -334,7 +329,6 @@ func (c *headClock) answered(id string, number uint64, sent time.Time) {
 	}
 	v.open = false
 	if sent.After(from) {
-		c.sampleLate(id, sent.Sub(from))
 		c.bound(id, sent.Sub(from), false)
 	}
 }
@@ -513,12 +507,6 @@ func (c *headClock) sampleRTT(id string, rtt time.Duration) {
 	v.samples++
 }
 
-// sampleLate folds how far behind the first sight id's answer was.
-func (c *headClock) sampleLate(id string, late time.Duration) {
-	v := c.voter(id)
-	v.late += (late - v.late) / 4
-}
-
 func abs(d time.Duration) time.Duration {
 	if d < 0 {
 		return -d
@@ -584,8 +572,8 @@ func (t *ChainTracker) clockCandidates() []clockCandidate {
 	return out
 }
 
-// fastest is the candidate with the lowest score, round trip plus
-// lateness, and no clock fetch in flight: each millisecond of a slower
+// fastest is the candidate with the lowest score, round trip plus held
+// wait, and no clock fetch in flight: each millisecond of a slower
 // one adds to the served age. ok false with none.
 func (c *headClock) fastest(cands []clockCandidate) (clockCandidate, bool) {
 	var best clockCandidate
@@ -666,11 +654,15 @@ func (c *headClock) lastFetch(cand clockCandidate) time.Time {
 }
 
 // score is id's expected first sight after a fire: its round trip plus
-// its lateness.
+// its held wait (clockVoter.heldWait). An EMA of its lower bounds alone
+// (votes at the sight, 0-30 ms) missed a 200 ms lag, so a trailing
+// vendor's turn took the block's probe, answered early and sampled
+// nothing to correct it (P20-pair: 130 of 145 early probes to vendors
+// c-g, 1.035-1.085 head fetches per block).
 func (c *headClock) score(id string) time.Duration {
 	s := c.rttOf(id)
 	if v := c.ups[id]; v != nil {
-		s += v.late
+		s += v.heldWait()
 	}
 	return s
 }
@@ -1086,7 +1078,7 @@ func (t *ChainTracker) fireRung(cands []clockCandidate, r clockRung, now time.Ti
 }
 
 // edgeVoters are the voters an idle edge's fetch to first is sent beside:
-// the next fastest by round trip plus lateness, so q voters answer at
+// the next fastest by round trip plus held wait, so q voters answer at
 // once. After an idle W the top sight is blocks old and the edge's answer
 // jumps over blocks the pins lack: one vote on it is a root of its own
 // that the older votes outweigh, so q answers link it in one round trip,

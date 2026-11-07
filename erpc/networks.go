@@ -2230,7 +2230,7 @@ func (n *Network) byClockRTT(req *common.NormalizedRequest, ups []common.Upstrea
 
 // thinHolds is, for bn in head's thin region (Firm < bn ≤ Latest), which
 // upstreams most likely hold bn although none of their evidence shows it
-// yet: those whose clock lateness passed since bn's first sight
+// yet: those whose thin hold wait passed since bn's first sight
 // (ChainTracker.HoldsLikely). It orders a request's first attempt only:
 // Firm, and the refusal rule's retry (headFirst), keep to evidence, so a
 // rare miss is that retry's. nil outside the thin region.
