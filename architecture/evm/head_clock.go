@@ -815,12 +815,14 @@ func (t *ChainTracker) runClock() {
 // the predicted sight P; a lane whose demand sets a pace fires once,
 // no sooner than the pace after the last fire, and takes no turns.
 // Else the ladder: each voter whose turn is due by the last rung's sight
-// S_k = P + off·bt takes one turn, a rung when its score is within bt/4
-// of the fastest voter's or unmeasured, else a vote at the target's
-// sight. The k rungs, fastest first, sight at S_k − (k−j)·Δ, Δ the span
-// from the fit's earliest residual to S_k over k, each sent its voter's
-// round trip before. With no rung due, the fastest voter fetches at S_k:
-// the block's one fetch.
+// S_k = P + off·bt takes one turn, a rung when it has hold bounds and its
+// score is within bt/4 of the fastest such voter's, else a vote at the
+// target's sight, which measures it: a voter with no measured hold gets
+// no credit (P20-pair: 5 of 146 trailing turns took rungs unmeasured).
+// The k rungs, fastest first, sight at S_k − (k−j)·Δ, Δ the span from
+// the fit's earliest residual to S_k over k, each sent its voter's round
+// trip before. With no rung due, the fastest voter fetches at S_k: the
+// block's one fetch.
 func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	c := &t.clock
 	if !c.offSet {
@@ -851,8 +853,10 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	}
 	best := time.Duration(-1)
 	for _, cand := range cands {
-		if s := c.score(cand.id); best < 0 || s < best {
-			best = s
+		if v := c.ups[cand.id]; v != nil && len(v.bounds) > 0 {
+			if s := c.score(cand.id); best < 0 || s < best {
+				best = s
+			}
 		}
 	}
 	due, wait := c.dueTurns(cands, sk, bt)
@@ -861,7 +865,7 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	}
 	var turns []clockCandidate
 	for _, cand := range c.byScore(due) {
-		if v := c.ups[cand.id]; v == nil || v.samples == 0 || c.score(cand.id) <= best+bt/4 {
+		if v := c.ups[cand.id]; v != nil && len(v.bounds) > 0 && c.score(cand.id) <= best+bt/4 {
 			turns = append(turns, cand)
 		} else {
 			c.votes = append(c.votes, cand.id)
