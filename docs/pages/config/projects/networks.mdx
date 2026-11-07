@@ -198,6 +198,8 @@ The escape:
 
 The validation report warns when `onDefaultsExhausted` is enabled but no upstream is tagged `tier:fallback`.
 
+`failover.onDemandFallbackHeads: true` (default `false`, needs `onDefaultsExhausted`) keeps a `tier:fallback` WebSocket upstream connected but subscribes `newHeads` on it only while no other upstream the selection policy routes to has a live `newHeads` subscription, and unsubscribes once one has streamed heads again for 60 s. Use it when the fallback bills each notification. When the primaries lose heads, clients get no new heads until the fallback's subscription is up: about a second (the check interval) plus the subscribe round trip. See [WebSocket](/operation/websocket).
+
 ## Agent reference
 
 Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one

@@ -799,6 +799,12 @@ type FailoverConfig struct {
 	// advances to the fallback tier within the same request only once every
 	// other upstream failed with an error retryable toward the network.
 	OnDefaultsExhausted *bool `yaml:"onDefaultsExhausted,omitempty" json:"onDefaultsExhausted"`
+	// OnDemandFallbackHeads subscribes newHeads on `tier:fallback` WebSocket
+	// upstreams only while no other routable upstream streams heads, and
+	// unsubscribes once one has streamed them for a while again. The
+	// connection itself stays open. Useful when the fallback bills each
+	// notification. Takes effect only with OnDefaultsExhausted.
+	OnDemandFallbackHeads *bool `yaml:"onDemandFallbackHeads,omitempty" json:"onDemandFallbackHeads"`
 }
 
 // Enabled reports whether any failover behaviour is configured.
@@ -807,6 +813,12 @@ func (f *FailoverConfig) Enabled() bool {
 		return false
 	}
 	return f.OnDefaultsExhausted != nil && *f.OnDefaultsExhausted
+}
+
+// FallbackHeadsOnDemand reports whether fallback-tier newHeads subscriptions
+// are made only while no other upstream streams heads.
+func (f *FailoverConfig) FallbackHeadsOnDemand() bool {
+	return f.Enabled() && f.OnDemandFallbackHeads != nil && *f.OnDemandFallbackHeads
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format
