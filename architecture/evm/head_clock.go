@@ -103,11 +103,15 @@ type headClock struct {
 	edgeTo   uint64
 	edgeBy   time.Time
 	edgeDone bool
-	// proven is the highest block a by-hash answer showed above the top
-	// sight (Proven), provenBy the voter it prefers for the probe; 0 once
-	// spent (proveTarget).
-	proven   uint64
-	provenBy string
+	// proven is the highest block shown to exist above the top sight, by a
+	// by-hash answer (Proven) or the cache's head (Sighted), at provenAt;
+	// provenBy the voter it prefers for the probe; 0 once spent
+	// (proveTarget). provedFor is the last target a proof's probe was
+	// planned for: one per target.
+	proven    uint64
+	provenBy  string
+	provenAt  time.Time
+	provedFor uint64
 	// seq names the clock's generation: a reset moves it on, so an answer
 	// from before the reset is dropped.
 	seq uint64
@@ -208,9 +212,11 @@ func (c *headClock) reset() {
 // it did and at most one tail rung was sent, and not at all when the
 // sight came later, or half a block or more after its predicted sight: a
 // late proposal, a missed slot or a halt says nothing of the arrival
-// spread. A sight a block or more after its predicted sight comes that
-// many slots later: the slots between were missed. Each open fetch answer
-// below number is decided (answered).
+// spread; nor when a proof's probe took the ladder's place
+// (proveTarget), which fired off its rungs. A sight a block or more
+// after its predicted sight comes that many slots later: the slots
+// between were missed. Each open fetch answer below number is decided
+// (answered).
 func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		return
@@ -219,15 +225,15 @@ func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.
 		if c.scheduled {
 			c.skips++
 		}
-		if c.ladder {
+		if c.ladder && c.provedFor != c.target {
 			switch {
 			case !c.kEarly:
 				c.off = max(c.off-1.0/400, -0.5)
 			case at.Before(c.predicted.Add(bt/2)) && c.tailsSent <= 1:
 				c.off = min(c.off+32.0/400, 1)
 			}
-			c.ladder = false
 		}
+		c.ladder = false
 	}
 	c.scheduled = false
 	s := clockSight{number: number, slot: c.slotOf(number), at: at, from: from, pushed: pushed}
@@ -1261,47 +1267,85 @@ func (t *ChainTracker) MarkRead() {
 }
 
 // Proven takes a by-hash answer that showed block n to exist above the
-// view (spec §6.4 by-hash wait): it is the lane's demand from now on,
-// and, unless a clock fetch is out, the clock fetches n's head at once
-// as its probe for n, from voter by when by is a free candidate (the
-// upstream that answered, or a voter whose counter holds n), else from
-// its fastest free voter (proveTarget). That fetch is the block's one: it
-// takes the place of the target's rungs, whose turns vote at its sight.
+// view (spec §6.4 by-hash wait): it is the lane's demand from now on, and
+// the clock's proof of n (prove): voter by is the upstream that answered,
+// or for a cache answer the cache's own voter or a voter whose counter
+// holds n.
 func (t *ChainTracker) Proven(n uint64, by string) {
 	t.latestReadAt.Store(time.Now().UnixNano())
+	t.prove(n, by)
+}
+
+// Sighted takes the cache's head reaching block n (spec §6.8 cache
+// sighting): the clock's proof of n (prove), by the cache's own voter
+// when it has one. It adds no demand: a lane nobody reads fetches
+// nothing for it, and the cache's head never moves the view.
+func (t *ChainTracker) Sighted(n uint64, by string) {
+	t.prove(n, by)
+}
+
+// prove records that block n exists, so the target's probe goes once n
+// reaches it (proveTarget).
+func (t *ChainTracker) prove(n uint64, by string) {
+	at := time.Now()
 	t.mb.put(trackerMsg{kind: msgCall, fn: func() {
 		if c := &t.clock; n > c.top() && n > c.proven {
-			c.proven, c.provenBy = n, by
+			c.proven, c.provenBy, c.provenAt = n, by, at
 		}
 	}})
 }
 
-// proveTarget fires the target's probe now once a by-hash answer proved
-// it or a block above it (Proven): to the prover when it is a free
-// candidate, else to the fastest free voter. With a fetch of the target
-// out it waits for that fetch, which brings the block as soon; a proof at
-// or below the top sight is spent.
+// proveTarget plans the target's one probe once a proof shows it or a
+// block above it exists (Proven, Sighted), in place of the ladder's fires
+// (spec §6.8): to a voter whose turn the ladder planned, so the block's
+// fetch is that turn and no turn votes after it, sent once that voter
+// likely holds the block, its longest hold bound after the proof
+// (holdAfter), now when it has none; the prover's turn first. With no
+// turn planned, to the prover now when it is a free candidate, else to
+// the fastest free voter. The other turns vote at the target's sight.
+// One proof probe per target: a later proof of it is spent, and a probe
+// that answers early leaves the block to the ladder's tail. With a fetch
+// of the target out it waits for that fetch, which brings the block as
+// soon; a proof below the target is spent.
 func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 	c := &t.clock
-	if c.proven < c.target {
+	if c.proven < c.target || c.provedFor == c.target {
 		c.proven, c.provenBy = 0, ""
 		return
 	}
 	if slices.ContainsFunc(c.sent, func(f *clockFire) bool { return !f.done && !f.hedged }) {
 		return
 	}
-	id := ""
-	if by := c.provenBy; !c.busy(by) && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == by }) {
-		id = by
+	free := func(id string) bool {
+		return id != "" && !c.busy(id) && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id })
 	}
-	c.proven, c.provenBy = 0, ""
-	for _, r := range c.rungs {
-		if r.turn && r.id != id {
-			c.votes = append(c.votes, r.id)
+	r := clockRung{at: now, kind: "probe"}
+	if free(c.provenBy) {
+		r.id = c.provenBy
+	}
+	if !slices.ContainsFunc(c.rungs, func(rr clockRung) bool { return rr.turn && rr.id == r.id }) {
+		for _, turn := range c.rungs {
+			if !turn.turn || !free(turn.id) {
+				continue
+			}
+			at := now
+			if after, ok := c.voter(turn.id).holdAfter(); ok && c.provenAt.Add(after).After(now) {
+				at = c.provenAt.Add(after)
+			}
+			if !r.turn || at.Before(r.at) {
+				r = clockRung{id: turn.id, at: at, kind: "probe", turn: true}
+			}
+		}
+	} else {
+		r.turn = true
+	}
+	c.proven, c.provenBy, c.provedFor = 0, "", c.target
+	for _, turn := range c.rungs {
+		if turn.turn && turn.id != r.id {
+			c.votes = append(c.votes, turn.id)
 		}
 	}
-	c.rungs = nil
-	t.fireRung(cands, clockRung{id: id, at: now, kind: "probe"}, now)
+	c.rungs = []clockRung{r}
 }
 
 // holdCredit is what the clock published for readers on other goroutines:

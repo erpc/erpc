@@ -39,6 +39,8 @@ type GrpcConnector struct {
 	mu     sync.RWMutex
 	// networkId -> single client
 	clientByNetwork map[string]clients.GrpcBdsClient
+	// networkId -> its client's server, host:port
+	serverByNetwork map[string]string
 	// earliest/finalized block number per network (0 if unknown)
 	earliestByNetwork  map[string]uint64
 	finalizedByNetwork map[string]uint64
@@ -114,6 +116,7 @@ func NewGrpcConnector(
 		logger:             &lg,
 		appCtx:             ctx,
 		clientByNetwork:    make(map[string]clients.GrpcBdsClient),
+		serverByNetwork:    make(map[string]string),
 		earliestByNetwork:  make(map[string]uint64),
 		finalizedByNetwork: make(map[string]uint64),
 		latestByNetwork:    make(map[string]latestBlock),
@@ -227,6 +230,7 @@ func NewGrpcConnector(
 					return nil
 				}
 				gc.clientByNetwork[networkId] = cli
+				gc.serverByNetwork[networkId] = parsed.Host
 				retained = true
 				gc.logger.Info().Str("server", serverURL).Str("networkId", networkId).Msg("gRPC client initialized for network")
 				return nil
@@ -281,6 +285,13 @@ func (g *GrpcConnector) RefreshLatestBlock(ctx context.Context, networkId string
 	if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
 		g.recordLatest(networkId, num, ts)
 	}
+}
+
+// CacheServer is the host:port of the server networkId's client dials, "" before one serves it.
+func (g *GrpcConnector) CacheServer(networkId string) string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.serverByNetwork[networkId]
 }
 
 // recordLatest stores networkId's latest block and its gauges. The timestamp is stored with the

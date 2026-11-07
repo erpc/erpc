@@ -276,13 +276,16 @@ func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
 	assert.Equal(t, n.chain.CanonAt(tip+2).Hash.Hex(), hash)
 }
 
-// Without evm.servedTip.followCacheHead the same cache anchors nothing: no
-// anchor, no poll, reads take the view's head.
+// Without evm.servedTip.followCacheHead the same cache anchors nothing: its
+// head is polled, for the block clock's sightings, but reads take the
+// view's head.
 func TestNetworkCacheHead_OffServesTheView(t *testing.T) {
 	n := newCacheHeadNode(t, "bds-off", 3*time.Second, false)
-	assert.Nil(t, n.nw.cacheHead)
+	require.NotNil(t, n.nw.cacheHead, "a realtime grpc policy with a TTL makes the cache head")
 	tip := n.chain.Tip().Number
 	n.bds.set(tip-2, 0)
+	require.Eventually(t, func() bool { return cacheConnectorHead("bds-off") == float64(tip-2) }, 10*time.Second, 20*time.Millisecond,
+		"the cache head's poll observes the fresh head")
 	for range 10 {
 		require.Equal(t, tip, n.blockNumber())
 		time.Sleep(100 * time.Millisecond)
@@ -290,5 +293,4 @@ func TestNetworkCacheHead_OffServesTheView(t *testing.T) {
 	number, hash, _ := n.latestBlock()
 	assert.Equal(t, tip, number)
 	assert.Equal(t, n.chain.CanonAt(tip).Hash.Hex(), hash)
-	assert.Zero(t, cacheConnectorHead("bds-off"), "nothing polls the cache head")
 }

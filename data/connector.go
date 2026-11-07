@@ -127,9 +127,10 @@ type Connector interface {
 
 // CacheHeadReporter is an optional capability implemented by read-through connectors that know the
 // newest block they serve per network. The realtime cache age guard reads it for responses that
-// carry no block timestamp of their own (eth_blockNumber, eth_gasPrice, eth_getLogs), and a
-// network with evm.servedTip.followCacheHead serves its tags at it while that guard would admit
-// it. Connectors that serve locally-written data do not implement it.
+// carry no block timestamp of their own (eth_blockNumber, eth_gasPrice, eth_getLogs); a network's
+// block clock takes each new head as a sighting of its block, by the upstream at the same server
+// when it is a voter; and a network with evm.servedTip.followCacheHead serves its tags at it while
+// that guard would admit it. Connectors that serve locally-written data do not implement it.
 type CacheHeadReporter interface {
 	// CacheLatestBlock returns the number and unix timestamp (seconds) of the newest block this
 	// connector last observed for networkId, and whether it is known.
@@ -137,6 +138,8 @@ type CacheHeadReporter interface {
 	// RefreshLatestBlock fetches networkId's newest block now and records it. A failed fetch
 	// keeps the last observation.
 	RefreshLatestBlock(ctx context.Context, networkId string)
+	// CacheServer is the host:port this connector reads networkId from, "" while unknown.
+	CacheServer(networkId string) string
 }
 
 // ReadOnlyConnector is an optional capability implemented by connectors that only serve reads

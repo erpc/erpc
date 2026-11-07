@@ -51,10 +51,12 @@ type Network struct {
 	bareExecutor         *networkExecutor
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
-	// cacheHead lowers network-wide reads' Latest to the cache's fresh head
-	// (anchorHead); nil without evm.servedTip.followCacheHead. servedLatest
-	// is the Latest those reads took last, its Clamp's floor.
-	cacheHead         *evm.CacheHeadAnchor
+	// cacheHead is the cache's fresh head (evm.CacheHead), nil without a
+	// head-aware realtime policy: its poll sights blocks for the block
+	// clock (cacheSighted), and with evm.servedTip.followCacheHead it
+	// lowers network-wide reads' Latest (anchorHead). servedLatest is the
+	// Latest those reads took last, its Clamp's floor.
+	cacheHead         *evm.CacheHead
 	servedLatest      atomic.Int64
 	metricsTracker    *health.Tracker
 	upstreamsRegistry *upstream.UpstreamsRegistry

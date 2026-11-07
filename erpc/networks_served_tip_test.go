@@ -54,6 +54,8 @@ type servedTipFixture struct {
 	// statePollerInterval sets evm.statePollerInterval; the tracker credits a
 	// head for one poll period after each report.
 	statePollerInterval time.Duration
+	// endpoint, when set, replaces http://<id>.localhost.
+	endpoint string
 }
 
 // setupServedTipNetwork bootstraps a Network with the supplied upstream
@@ -98,6 +100,9 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 			cid = chainID
 		}
 		endpoint := "http://" + f.id + ".localhost"
+		if f.endpoint != "" {
+			endpoint = f.endpoint
+		}
 		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce), StatePollerInterval: common.Duration(f.statePollerInterval)}
 		if f.upperExactBlock > 0 {
 			upper := f.upperExactBlock

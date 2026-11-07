@@ -30,6 +30,8 @@ func (h *headReportingConnector) CacheLatestBlock(networkId string) (int64, int6
 
 func (h *headReportingConnector) RefreshLatestBlock(context.Context, string) {}
 
+func (h *headReportingConnector) CacheServer(string) string { return "" }
+
 func newHeadReportingConnector(id string, latestTs int64, known bool) *headReportingConnector {
 	mc := &data.MockConnector{}
 	mc.On("Id").Return(id)

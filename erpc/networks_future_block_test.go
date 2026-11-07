@@ -15,6 +15,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/test/chainsim"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
@@ -1360,6 +1361,84 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	assert.Less(t, time.Unix(0, firstFetch.Load()).Sub(start), 100*time.Millisecond, "the voter's head is fetched within a round trip of the hold's start")
 	assert.Less(t, took, 300*time.Millisecond, "the receipt is served within a round trip and slack")
 	assert.Equal(t, served+1, held("held_served"), "the wait on instance 5 ended served")
+
+	// Instance 6: as instance 5, but the receipt comes from a cache whose
+	// head-aware connector reads a BDS server that voter hq9 also names, the
+	// cache's own upstream, which holds the block; hq2, before it in id and
+	// selection order and so the clock's fastest at equal scores, lacks it.
+	// The proof's probe goes to hq9.
+	bdsChain := chainsim.NewChain(chainsim.Config{ChainID: 123, BlockTime: time.Second, Seed: 11, History: 20, First: 90, Halted: true})
+	t.Cleanup(bdsChain.Close)
+	bds, bdsAddr := startCacheHeadBds(t, bdsChain, false)
+	bds.set(100, 0)
+	bdsHost := strings.TrimPrefix(bdsAddr, "grpc://")
+	headCfg := cacheHeadCache("bds-proof", bdsAddr, 2*time.Second, false)
+	headCfg.Connectors = append(headCfg.Connectors, cacheCfg.Connectors...)
+	headCfg.Policies = append(headCfg.Policies, cacheCfg.Policies...)
+	require.NoError(t, headCfg.SetDefaults())
+	headCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, headCfg)
+	require.NoError(t, err)
+	var ownHead atomic.Int64
+	ownHead.Store(100)
+	var ownArmed atomic.Bool
+	var ownFetches, otherFetches atomic.Int64
+	for _, m := range []struct {
+		host  string
+		head  func() int64
+		count *atomic.Int64
+	}{{bdsHost, ownHead.Load, &ownFetches}, {"hq2.localhost", func() int64 { return 100 }, &otherFetches}} {
+		gock.New("http://" + m.host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == m.host && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				if ownArmed.Load() {
+					m.count.Add(1)
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, tipHead("a", uint64(m.head())))
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	own, ownUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hq2", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour},
+		{id: "hq9", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour, endpoint: "http://" + bdsHost},
+	})
+	own.sources.start(ctx)
+	for _, u := range ownUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Eventually(t, func() bool { return servedHead(own, ctx).Finalized == 90 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(100), servedHead(own, ctx).Latest)
+	own.cacheDal = headCache.WithProjectId("test")
+	own.cacheHead = headCache.CacheHead(own.networkId, own.EvmBlockTime)
+	require.NotNil(t, own.cacheHead, "the BDS connector's realtime policy makes the cache head")
+	require.Eventually(t, func() bool { return own.cacheHead.Server() == bdsHost }, 5*time.Second, 20*time.Millisecond, "the connector reads the BDS server")
+	require.Equal(t, "hq9", own.cacheVoter(""), "hq9 names the cache's server")
+	const ownReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a6"]}`
+	ownReceipt := `{"blockNumber":"0x65","blockHash":"` + tipHash("a", 101) + `","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a6","status":"0x1"}`
+	oreq := common.NewNormalizedRequest([]byte(ownReq))
+	oreq.SetNetwork(own)
+	require.NoError(t, headCache.WithProjectId("test").Set(ctx, oreq, common.NewNormalizedResponse().WithRequest(oreq).WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(ownReceipt), nil))))
+	var ownCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", ownReceipt, &ownCalls, "hq2")
+	ownHead.Store(101)
+	served = held("held_served")
+	ownArmed.Store(true)
+	resp, err = own.Forward(ctx, common.NewNormalizedRequest([]byte(ownReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt is served once its own voter's head shows 101")
+	assert.Zero(t, ownCalls.Load(), "served from the cache")
+	assert.Positive(t, ownFetches.Load(), "the proof's probe went to the cache's own voter")
+	assert.Zero(t, otherFetches.Load(), "the voter lacking the block was not probed")
+	assert.Equal(t, served+1, held("held_served"), "the wait on instance 6 ended served")
 }
 
 // sampleBlockTime gives network its first block time sample: before it,

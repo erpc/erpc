@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"iter"
+	"net/url"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,7 +69,7 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 	h := n.headFor(s)
-	if n.cacheHead == nil || s.sel != "" || len(s.excluded) > 0 {
+	if !n.followsCacheHead() || n.cacheHead == nil || s.sel != "" || len(s.excluded) > 0 {
 		return req.TakeEvmHead(h)
 	}
 	h = req.TakeEvmHead(n.anchorHead(h))
@@ -78,9 +80,9 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 }
 
 // anchorHead is h, a network-wide read's Head, with Latest lowered to the
-// cache's fresh head (evm.servedTip.followCacheHead, evm.CacheHeadAnchor
-// .Clamp against the latest last served): Latest takes the view's pin at
-// that number, its hash, and Finalized and Firm stay at or below it, as
+// cache's fresh head (evm.servedTip.followCacheHead, evm.CacheHead.Clamp
+// against the latest last served): Latest takes the view's pin at that
+// number, its hash, and Finalized and Firm stay at or below it, as
 // viewHead does for a limit. Only the read Head: headFor, the view, pins,
 // intake, hash votes, the block clock, the refusal ceiling and every
 // stream stay on the tracker's own head.
@@ -101,6 +103,45 @@ func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
 	a.Firm = min(a.Firm, latest)
 	a.Finalized = min(a.Finalized, latest)
 	return &a
+}
+
+// followsCacheHead reports whether evm.servedTip.followCacheHead is set.
+func (n *Network) followsCacheHead() bool {
+	return n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil && n.cfg.Evm.ServedTip.FollowCacheHead
+}
+
+// cacheSighted takes the cache's new fresh head as a sighting of block
+// number for the network-wide lane's block clock (ChainTracker.Sighted),
+// by the cache's own voter (cacheVoter).
+func (n *Network) cacheSighted(number int64) {
+	if t := n.chainTracker; t != nil && number > 0 {
+		t.Sighted(uint64(number), n.cacheVoter(""))
+	}
+}
+
+// cacheVoter is the id of selector's lane voter at the server the cache
+// reads (evm.CacheHead.Server), its endpoint's host:port: the cache's own
+// upstream, which holds what the cache serves. "" when none is a voter.
+func (n *Network) cacheVoter(selector string) (id string) {
+	server := ""
+	if n.cacheHead != nil {
+		server = n.cacheHead.Server()
+	}
+	if server == "" {
+		return ""
+	}
+	n.voters(tipScope{sel: selector}, voterQuery{kind: numberVote}).each(func(u common.Upstream, _ int64) bool {
+		cfg := u.Config()
+		if cfg == nil {
+			return true
+		}
+		if e, err := url.Parse(cfg.Endpoint); err == nil && strings.EqualFold(e.Host, server) {
+			id = u.Id()
+			return false
+		}
+		return true
+	})
+	return id
 }
 
 // requestScope is whose heads req's Head counts: the upstreams its
@@ -252,9 +293,10 @@ func (n *Network) markLanes(u common.Upstream) {
 // startHeads computes every lane's Head now, so a network bootstrapped on
 // upstreams with known heads serves its first request with a Head, then
 // computes the dirty lanes on each wake (markLanes) and marks every lane
-// each headRefresh until the app stops, and runs the cache-head anchor's
-// poll (evm.CacheHeadAnchor.Run) as long. Once per network: its bootstrap
-// can run again after it succeeded.
+// each headRefresh until the app stops, and runs the cache head's poll
+// (evm.CacheHead.Run), whose sightings go to the block clock
+// (cacheSighted), as long. Once per network: its bootstrap can run again
+// after it succeeded.
 func (n *Network) startHeads() {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.appCtx == nil {
 		return
@@ -266,7 +308,7 @@ func (n *Network) startHeads() {
 	n.headLoopOnce.Do(func() {
 		n.refreshHeads()
 		if n.cacheHead != nil {
-			n.bg.Go(func() { n.cacheHead.Run(n.appCtx) })
+			n.bg.Go(func() { n.cacheHead.Run(n.appCtx, n.cacheSighted) })
 		}
 		n.bg.Go(func() {
 			ticker := time.NewTicker(every)
@@ -868,17 +910,18 @@ var byHashFamily = map[string]struct{ number, hash []interface{} }{
 // an upstream or the cache (spec §6.4). A by-hash answer from a block
 // above its lane's Latest, the view's Head, proves that block exists:
 // the wait is the lane's demand, and the block clock takes the proof
-// (ChainTracker.Proven), fetching the block's head at once as its probe
-// for it, unless a clock fetch is out: from the upstream that answered,
-// or for a cache answer the lane's first voter whose counter holds the
-// block, when it is a free voter, else from the clock's fastest free
-// voter. That fetch is the block's one: it sights the block, so the clock
-// fetches the next one, and a header that serves only at q holders (a
-// mismatch, §6.5) gets them from the clock's holder fetch (§6.8). The
-// answer is sent once the view includes its block, and its upstream then
-// counts as the block's holder (noteHeld); it is null once the view pins
-// another block at that number, or when W passed, or ctx ended, with
-// neither. Each wait counts its outcome. held: resp was replaced by null.
+// (ChainTracker.Proven), fetching the block's head as the block's one
+// probe, unless a clock fetch is out. The prover it prefers is the
+// upstream that answered; for a cache answer, the cache's own upstream
+// when it is a lane voter (cacheVoter), which holds what the cache
+// served, else the lane's first voter whose counter holds the block.
+// That fetch sights the block, so the clock fetches the next one, and a
+// header that serves only at q holders (a mismatch, §6.5) gets them from
+// the clock's holder fetch (§6.8). The answer is sent once the view
+// includes its block, and its upstream then counts as the block's holder
+// (noteHeld); it is null once the view pins another block at that
+// number, or when W passed, or ctx ended, with neither. Each wait counts
+// its outcome. held: resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn, bh := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -922,7 +965,7 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	by := ""
 	if fromUpstream {
 		by = prover.Id()
-	} else {
+	} else if by = n.cacheVoter(sel); by == "" {
 		by = n.firstHolder(sel, bn)
 	}
 	t.Proven(uint64(bn), by)
