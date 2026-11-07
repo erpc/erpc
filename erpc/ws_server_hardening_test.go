@@ -18,7 +18,9 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,14 +171,58 @@ func wsGauges(kind string) (conns, clientSubs, upstreamSubs float64) {
 		testutil.ToFloat64(telemetry.MetricUpstreamSubscriptionsActive.WithLabelValues("test_ws", "evm:123", "ws-upstream", kind))
 }
 
+// upstreamSubsOn sums the subscriptions of kind live on upstreamId of the
+// test_ws project, under whichever network label each was counted.
+func upstreamSubsOn(upstreamId, kind string) float64 {
+	ch := make(chan prometheus.Metric, 64)
+	go func() {
+		telemetry.MetricUpstreamSubscriptionsActive.Collect(ch)
+		close(ch)
+	}()
+	total := 0.0
+	for m := range ch {
+		var pb dto.Metric
+		if m.Write(&pb) != nil {
+			continue
+		}
+		labels := make(map[string]string, len(pb.GetLabel()))
+		for _, lp := range pb.GetLabel() {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		if labels["project"] == "test_ws" && labels["upstream"] == upstreamId && labels["kind"] == kind {
+			total += pb.GetGauge().GetValue()
+		}
+	}
+	return total
+}
+
 // A client that subscribes and immediately closes must not leave an egress
-// adapter attached to the indexer (it would receive every event forever).
+// adapter attached to the indexer (it would receive every event forever),
+// and shutting the server down uncounts the upstream subscriptions it made.
 func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 	setupGock()
 	defer util.ResetGock()
 
-	srv, addr, cancel := startTestERPCServer(t, standardWsConfig(subscribingWsUpstream(t)))
-	defer func() { _ = srv.Shutdown(&log.Logger); cancel() }()
+	// An upstream id of its own: no other test's server counts under it.
+	const upsId = "ws-upstream-shutdown"
+	cfg := standardWsConfig(subscribingWsUpstream(t))
+	cfg.Projects[0].Upstreams[1].Id = upsId
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = srv.Shutdown(&log.Logger)
+			cancel()
+		}
+	}()
+
+	conn := dialWs(t, addr)
+	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+	_, ok := resp["result"].(string)
+	require.True(t, ok, "subscribe failed: %v", resp)
+	require.Eventually(t, func() bool { return upstreamSubsOn(upsId, "newHeads") == 1 },
+		5*time.Second, 50*time.Millisecond, "the upstream newHeads subscription is counted")
+	_ = conn.Close()
 
 	for i := 0; i < 20; i++ {
 		conn := dialWs(t, addr)
@@ -190,6 +236,12 @@ func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
 		conns, clientSubs, _ := wsGauges("newHeads")
 		return active == 0 && subscribed == 0 && conns == 0 && clientSubs == 0
 	}, 5*time.Second, 50*time.Millisecond, "connections must be fully cleaned up")
+
+	_ = srv.Shutdown(&log.Logger)
+	cancel()
+	stopped = true
+	require.Eventually(t, func() bool { return upstreamSubsOn(upsId, "newHeads") == 0 },
+		5*time.Second, 50*time.Millisecond, "shutdown uncounts the upstream subscription")
 }
 
 // eth_unsubscribe only reaches the caller's own subscriptions. The pressure
