@@ -1115,12 +1115,16 @@ var p21AvaxUps = []freshUp{
 // P21-avax: P21's pods on avalanche's shape: 1 s slots whose blocks come
 // up to 0.6 s late or not at all, p21AvaxUps, and Prism, a voter polled
 // every 5 s and the network's cache, which learns each block at its mint
-// and serves its receipts. Reads as P21's plus the receipt of the newest
-// block (tipReceipt), which Prism serves before any vendor holds it. As
-// P21: served age and latency within P19's slacks of the old image's
-// (the receipt's latency excepted: it waits for the view, rule 5), at
-// most 1.05 head fetches per new block, at most 5% of block-clock
-// fetches early.
+// and serves its receipts. Reads as P21's, plus the receipt of the newest
+// block (tipReceipt), which Prism serves before any vendor holds it, and
+// eth_call at latest (callLatest) and at the block a read of latest just
+// answered (callAfterRead), which only vendors serve. As P21: served age
+// and latency within P19's slacks of the old image's (the receipt's
+// latency excepted: it waits for the view, rule 5), the calls' latency
+// also no slower at p50 and p90, within the slack at p99, and never
+// failing; at most 1.05 head fetches per new block, at most 5% of
+// block-clock fetches early. It logs each pod's Prism head polls per
+// second and per block.
 func p21Avax() spec {
 	slot := func() (time.Duration, bool) {
 		if rand.Float64() < p21AvaxMissed {
@@ -1132,7 +1136,11 @@ func p21Avax() spec {
 		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p21AvaxHeadJitter}, func(s *scenario) {
 			s.blocks(10)
 			reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
-			receipt := liveRead{"eth_getTransactionReceipt(tip)", freshLoad{reads[0].load.period, "latest", tipReceipt}, [2]time.Duration{}, false, false}
+			r := reads[0]
+			reads = append(reads,
+				liveRead{"eth_call(latest)", freshLoad{r.load.period, "latest", callLatest}, r.slack, true, true},
+				liveRead{"eth_getBlockByNumber(latest) then eth_call at it", freshLoad{r.load.period, "latest", callAfterRead}, r.slack, true, true})
+			receipt := liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, [2]time.Duration{}, false, false}
 			cacheCalls := func(pod int) (all, latest int64) {
 				return s.prism.reads(pod, true, anyRead), s.prism.reads(pod, true, "latest")
 			}
@@ -1148,8 +1156,9 @@ func p21Avax() spec {
 			s.judgeRequests(&b, all)
 			for _, p := range s.h.pods {
 				n, latest := cacheCalls(p.idx)
-				fmt.Fprintf(&b, "pod-%d (%s image): %.2f Prism cache calls/s, %.2f of them latest heads\n", p.idx+1, s.image(p.idx),
-					float64(n-before[p.idx][0])/all.dur.Seconds(), float64(latest-before[p.idx][1])/all.dur.Seconds())
+				latest -= before[p.idx][1]
+				fmt.Fprintf(&b, "pod-%d (%s image): %.2f Prism cache calls/s; Prism head polls %.2f/s, %.2f per new block\n", p.idx+1, s.image(p.idx),
+					float64(n-before[p.idx][0])/all.dur.Seconds(), float64(latest)/all.dur.Seconds(), float64(latest)/float64(max(all.blocks, 1)))
 			}
 			s.logf("%s", b.String())
 			s.judgeClockEarly()
@@ -1157,6 +1166,34 @@ func p21Avax() spec {
 	sp.upEvm[prismKeyName] = map[string]interface{}{"statePollerInterval": (5 * time.Second).String()}
 	sp.pods, sp.oldPods, sp.memory, sp.splitState, sp.cache, sp.prism = 4, []int{0, 1}, false, true, true, true
 	return sp
+}
+
+// callLatest reads on pod eth_call(latest) to Multicall3 getBlockNumber():
+// the block the call executed at.
+func callLatest(s *scenario, pod int) (uint64, error) {
+	n, problem := raCallAt(s, pod, "latest")
+	if problem != "" {
+		return 0, errors.New(problem)
+	}
+	return n, nil
+}
+
+// callAfterRead reads on pod eth_getBlockByNumber(latest), then at once
+// eth_call to Multicall3 getBlockNumber() at the block it answered, as a
+// client that reads the head and then state at it (rule 4): that block's
+// number; a call that fails or executes at another block is an error.
+func callAfterRead(s *scenario, pod int) (uint64, error) {
+	n, err := freshLatestBlock(s, pod)
+	if err != nil {
+		return 0, err
+	}
+	switch got, problem := raCallAt(s, pod, hexutil.EncodeUint64(n)); {
+	case problem != "":
+		return 0, fmt.Errorf("eth_call at %d: %s", n, problem)
+	case got != n:
+		return 0, fmt.Errorf("eth_call at %d executed at %d", n, got)
+	}
+	return n, nil
 }
 
 // logReadLatency logs, per image, the answers, errors and latency of
