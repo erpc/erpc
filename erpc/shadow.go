@@ -50,19 +50,22 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 
 	resp.RUnlock()
 
-	// The SERVING upstream's polled head, read once at mirror entry: the
-	// closest observable proxy for the height at which the primary just
-	// evaluated a "latest" tag (used by the PinBlockTag rewrite below when
-	// the response body carries no number of its own). Entry is the right
-	// moment: only a goroutine spawn and the hash above separate it from
-	// the primary's answer — µs-to-ms against a poller that updates ~1/s —
-	// while a read deeper in the per-upstream fan-out would drift further
-	// for no gain.
-	primaryHead := int64(0)
-	if ups := resp.Upstream(); ups != nil {
-		if evmUps, ok := ups.(common.EvmUpstream); ok {
+	// The height the primary evaluated a "latest" selector at, read once at
+	// mirror entry for the PinBlockTag rewrite below: the answer's own number;
+	// else the network head, which an evm.pinLatestTag primary is sent in place
+	// of the tag; else the serving upstream's polled head, the closest
+	// observable proxy. Never the network head for a primary that evaluated
+	// the tag itself: whenever another vendor leads it, that names a height
+	// the primary never evaluated. 0 means unknown: no pin (fail-open).
+	pinHeight, _ := resp.EvmBlockNumber().(int64)
+	if primary := resp.Upstream(); pinHeight <= 0 && primary != nil {
+		pinHeight = 0
+		reqCtx := context.WithValue(ctx, common.RequestContextKey, origReq)
+		if _, height, pinned := evm.PinLatestTag(reqCtx, network, primary, origReq); pinned {
+			pinHeight = height
+		} else if evmUps, ok := primary.(common.EvmUpstream); ok {
 			if sp := evmUps.EvmStatePoller(); sp != nil {
-				primaryHead = sp.LatestBlock()
+				pinHeight = sp.LatestBlock()
 			}
 		}
 	}
@@ -130,73 +133,34 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			shadowCtx, span := common.StartDetailSpan(ctx, "Project.executeShadowRequest")
 			defer span.End()
 
-			// Build a safe copy of the original request so that shadow requests do not race on shared state
-			var shadowReq *common.NormalizedRequest
-			if body := origReq.Body(); body != nil {
-				// Copy the bytes to avoid accidental mutations
-				cpy := append([]byte(nil), body...)
-				shadowReq = common.NewNormalizedRequest(cpy)
-			} else {
-				jrq, errReq := origReq.JsonRpcRequest(shadowCtx)
-				if errReq != nil {
-					p.Logger.Error().Err(errReq).Msg("failed to clone json-rpc request for shadow upstream")
-					return
+			// Mirror the parsed request, never the raw body: parsing clears the
+			// body, and the parsed params are what the primary was sent (with
+			// "latest" already translated where the network translates it).
+			jrq, errReq := origReq.JsonRpcRequest(shadowCtx)
+			if errReq != nil {
+				p.Logger.Error().Err(errReq).Msg("failed to clone json-rpc request for shadow upstream")
+				return
+			}
+			mirrored := jrq.Clone()
+
+			// Pin a "latest" selector to the primary's height
+			// (ShadowUpstreamConfig.PinBlockTag): the shadow runs
+			// wall-clock-later and would evaluate the tag at a different head,
+			// so any read of volatile state diverges by construction and
+			// reports a mismatch that says nothing about correctness.
+			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag && pinHeight > 0 {
+				if idx, ok := evm.LatestTagParamIndex(mirrored.Method); ok {
+					mirrored.Params, _ = evm.PinLatestParams(mirrored.Params, idx, pinHeight)
 				}
-				bodyBytes, errMarshal := common.SonicCfg.Marshal(jrq)
-				if errMarshal != nil {
-					p.Logger.Error().Err(errMarshal).Msg("failed to marshal cloned json-rpc request for shadow upstream")
-					return
-				}
-				shadowReq = common.NewNormalizedRequest(bodyBytes)
-				// Pre-populate the parsed request so Forward() does not need to unmarshal again
-				_, _ = shadowReq.JsonRpcRequest(shadowCtx)
 			}
 
-			// Copy directives so behaviour is consistent
+			shadowReq := common.NewNormalizedRequestFromJsonRpcRequest(mirrored)
 			if dirs := origReq.Directives(); dirs != nil {
 				shadowReq.SetDirectives(dirs.Clone())
 			}
-
-			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
+			// HTTP context (headers, query parameters, user) for metrics.
 			shadowReq.CopyHttpContextFrom(origReq)
-
-			// Set network reference for completeness (not strictly required for forwarding)
 			shadowReq.SetNetwork(origReq.Network())
-
-			// Pin a "latest" selector to a concrete height before forwarding
-			// (ShadowUpstreamConfig.PinBlockTag). The primary evaluated the tag
-			// at ITS head; the shadow runs wall-clock-later and would evaluate
-			// it at a different head, so any read of volatile state diverges by
-			// construction and reports a mismatch that says nothing about
-			// correctness. The primary's resolved number is exact when its
-			// response carries one; otherwise the SERVING upstream's own polled
-			// head, captured synchronously at forward time, is the closest
-			// observable proxy. Never a network-wide head: that is the MAX over
-			// all upstreams, so whenever any other vendor leads the primary it
-			// pins a height the primary never evaluated — a manufactured
-			// mismatch on every block boundary. No usable height means no pin
-			// (fail-open, like every other guard on this path).
-			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag {
-				if idx, ok := evm.LatestTagParamIndex(method); ok {
-					height := int64(0)
-					if bn, ok2 := resp.EvmBlockNumber().(int64); ok2 && bn > 0 {
-						height = bn
-					} else if primaryHead > 0 {
-						height = primaryHead
-					}
-					if height > 0 {
-						if pinned, changed := evm.PinBlockTagInBody(shadowReq.Body(), idx, height); changed {
-							repinned := common.NewNormalizedRequest(pinned)
-							if dirs := origReq.Directives(); dirs != nil {
-								repinned.SetDirectives(dirs.Clone())
-							}
-							repinned.CopyHttpContextFrom(origReq)
-							repinned.SetNetwork(origReq.Network())
-							shadowReq = repinned
-						}
-					}
-				}
-			}
 
 			// Execute the request against the shadow upstream (do bypass exclusion because we have to enforce method exclusion locally here - to ignore the shadow flag checking)
 			shadowResp, errForward := ups.Forward(shadowCtx, shadowReq, true, false)

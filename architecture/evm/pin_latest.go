@@ -52,35 +52,6 @@ func PinLatestParams(params []interface{}, idx int, height int64) ([]interface{}
 	return out, true
 }
 
-// PinBlockTagInBody rewrites params[idx] from "latest" to the given concrete
-// height in a JSON-RPC request body. Returns the rewritten body and whether a
-// rewrite happened; any parse trouble, an absent selector or a non-"latest"
-// selector returns the body unchanged (fail-open, like every other
-// shadow-path guard).
-func PinBlockTagInBody(body []byte, idx int, height int64) ([]byte, bool) {
-	if len(body) == 0 || height <= 0 {
-		return body, false
-	}
-	var req map[string]interface{}
-	if err := common.SonicCfg.Unmarshal(body, &req); err != nil {
-		return body, false
-	}
-	params, ok := req["params"].([]interface{})
-	if !ok || len(params) <= idx {
-		return body, false
-	}
-	pinned, ok := PinLatestParams(params, idx, height)
-	if !ok {
-		return body, false
-	}
-	req["params"] = pinned
-	out, err := common.SonicCfg.Marshal(req)
-	if err != nil {
-		return body, false
-	}
-	return out, true
-}
-
 // PinLatestTag resolves what upstream u must receive for r when u sets
 // evm.pinLatestTag and r asks a pinnable method for latest: r's params with
 // the block selector set to height, the network head that "latest"
