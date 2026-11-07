@@ -1983,6 +1983,19 @@ export interface EvmNetworkConfig {
    */
   shortCircuitFutureBlocks?: boolean;
   /**
+   * ProbeNullReceipts checks, on a null eth_getTransactionReceipt, whether the
+   * answering upstream has the transaction mined (one eth_getTransactionByHash
+   * to that upstream). If it does, the receipt exists but this upstream doesn't
+   * hold it (pruned, or not indexed yet), so the null becomes missing data and
+   * the request moves on to other upstreams, up to the fallback tier. The null
+   * is still returned when no upstream has the receipt.
+   * Every null receipt costs one extra upstream request, and clients polling
+   * for pending transactions produce many of them, so it is off by default.
+   * It takes effect only with a failover tier and outside consensus.
+   * DEFAULT: false.
+   */
+  probeNullReceipts?: boolean;
+  /**
    * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
    * requests carrying the `safe` block tag. Matching upstreams define and
    * serve `safe`; empty (without an inherited network default) keeps existing

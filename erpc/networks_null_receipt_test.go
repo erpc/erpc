@@ -65,15 +65,21 @@ func TestNetwork_NullReceiptOfMinedTx(t *testing.T) {
 	cases := []struct {
 		name        string
 		failover    bool
+		probe       bool   // evm.probeNullReceipts
+		markEmpty   bool   // eth_getTransactionReceipt in markEmptyAsErrorMethods
 		primaryTx   string // the primaries' eth_getTransactionByHash result
 		wantReceipt bool   // the client gets the fallback's receipt
 		sideCalls   int64  // eth_getTransactionByHash calls to the primaries
 	}{
-		{name: "MinedEscalates", failover: true, primaryTx: minedTx, wantReceipt: true, sideCalls: 2},
-		{name: "PendingKeepsNull", failover: true, primaryTx: pendingTx, sideCalls: 2},
-		{name: "UnknownKeepsNull", failover: true, primaryTx: "null", sideCalls: 2},
-		{name: "AnotherTxKeepsNull", failover: true, primaryTx: otherTx, sideCalls: 2},
-		{name: "NoFailoverNoSideCall", failover: false, primaryTx: minedTx, sideCalls: 0},
+		{name: "MinedEscalates", failover: true, probe: true, primaryTx: minedTx, wantReceipt: true, sideCalls: 2},
+		{name: "PendingKeepsNull", failover: true, probe: true, primaryTx: pendingTx, sideCalls: 2},
+		{name: "UnknownKeepsNull", failover: true, probe: true, primaryTx: "null", sideCalls: 2},
+		{name: "AnotherTxKeepsNull", failover: true, probe: true, primaryTx: otherTx, sideCalls: 2},
+		{name: "NoFailoverNoSideCall", failover: false, probe: true, primaryTx: minedTx, sideCalls: 0},
+		{name: "ProbeOffKeepsNull", failover: true, probe: false, primaryTx: minedTx, sideCalls: 0},
+		// markEmptyAsErrorMethods still applies after the probe, with or without it
+		{name: "MarkEmptyWithoutProbe", failover: true, probe: false, markEmpty: true, primaryTx: pendingTx, wantReceipt: true, sideCalls: 0},
+		{name: "MarkEmptyAfterProbe", failover: true, probe: true, markEmpty: true, primaryTx: pendingTx, wantReceipt: true, sideCalls: 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -100,6 +106,12 @@ func TestNetwork_NullReceiptOfMinedTx(t *testing.T) {
 					for _, h := range []string{"rpc3.localhost", "rpc4.localhost"} {
 						mockCountedMethod(h, "eth_getTransactionReceipt", fallback)
 						mockCountedMethod(h, "eth_getTransactionByHash", "null")
+					}
+				},
+				network: func(cfg *common.NetworkConfig) {
+					cfg.Evm.ProbeNullReceipts = util.BoolPtr(tc.probe)
+					if tc.markEmpty {
+						cfg.Evm.MarkEmptyAsErrorMethods = []string{"eth_getTransactionReceipt"}
 					}
 				},
 				// as in production: fallbacks only through the escape, never probed
