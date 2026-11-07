@@ -319,6 +319,9 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	case "trace_filter", "arbtrace_filter":
 		rs, validationErr = upstreamPostForward_trace_filter(ctx, n, u, rq, rs, re)
 
+	case "eth_gettransactionreceipt":
+		rs, validationErr = upstreamPostForward_eth_getTransactionReceipt(ctx, n, u, rq, rs, re)
+
 	default:
 		// For other methods, only apply the mark empty check if configured
 		if shouldMarkEmpty {
