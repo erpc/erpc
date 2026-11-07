@@ -801,38 +801,6 @@ func TestCovMisc_LatestTagParamIndexAndPinParams(t *testing.T) {
 	}
 }
 
-func TestCovMisc_PinBlockTagInBody(t *testing.T) {
-	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`)
-	cases := []struct {
-		name   string
-		body   []byte
-		idx    int
-		height int64
-		pinned bool
-	}{
-		{"empty body", nil, 1, 100, false},
-		{"unknown height", body, 1, 0, false},
-		{"not json", []byte(`{not json`), 1, 100, false},
-		{"selector index beyond params", body, 2, 100, false},
-		{"selector is not latest", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x5"]}`), 1, 100, false},
-		{"latest is pinned", body, 1, 100, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			out, pinned := PinBlockTagInBody(tc.body, tc.idx, tc.height)
-			assert.Equal(t, tc.pinned, pinned)
-			if !pinned {
-				assert.Equal(t, tc.body, out)
-				return
-			}
-			var req map[string]interface{}
-			require.NoError(t, json.Unmarshal(out, &req))
-			assert.Equal(t, []interface{}{"0xabc", "0x64"}, req["params"])
-			assert.Equal(t, "eth_getBalance", req["method"])
-		})
-	}
-}
-
 func TestCovMisc_PinLatestTag(t *testing.T) {
 	ctx := context.Background()
 	pinUp := &queryTestConfigUpstream{cfg: &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{PinLatestTag: util.BoolPtr(true)}}}

@@ -1269,13 +1269,14 @@ type ShadowUpstreamConfig struct {
 	Enabled      bool                `yaml:"enabled" json:"enabled"`
 	SampleRate   *float64            `yaml:"sampleRate,omitempty" json:"sampleRate,omitempty"`
 	IgnoreFields map[string][]string `yaml:"ignoreFields,omitempty" json:"ignoreFields"`
-	// PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
-	// concrete height before forwarding: the primary's resolved block number when its response
-	// carries one, else the network's tracked head at mirror time. Without it the shadow executes
-	// the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
-	// (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
-	// reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
-	// requests, exactly as before.
+	// PinBlockTag rewrites a "latest" block selector (stated or omitted) of eth_call, eth_getBalance,
+	// eth_getCode, eth_getTransactionCount and eth_getStorageAt in the mirrored copy to the height
+	// the primary evaluated it at: its response's block number, else the network head when the
+	// primary pins latest (evm.pinLatestTag), else the primary's polled head. Without it the shadow
+	// executes the tag at its OWN head wall-clock-later than the primary did, so any read of
+	// volatile state (pool reserves, oracle prices — most visibly large multicalls) diverges by
+	// construction and reports a mismatch that says nothing about correctness. Default false: the
+	// shadow is sent the primary's params as they are.
 	PinBlockTag bool `yaml:"pinBlockTag,omitempty" json:"pinBlockTag,omitempty"`
 }
 
