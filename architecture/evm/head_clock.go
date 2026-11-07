@@ -201,17 +201,18 @@ type holdBound struct {
 	held bool
 }
 
-// holdAfter is the longest of v's hold bounds: false while it has none,
-// and the voter is no likely holder.
+// holdAfter is the longest of v's hold bounds: false while none of them
+// saw it hold a block, and the voter is no likely holder. Lower bounds
+// alone say only that it lacked blocks µs after their sights: a node
+// stuck at 90 counted a likely holder of the view's 99 on one 142 µs lack.
 func (v *clockVoter) holdAfter() (time.Duration, bool) {
-	if len(v.bounds) == 0 {
-		return 0, false
-	}
 	var d time.Duration
+	held := false
 	for _, b := range v.bounds {
 		d = max(d, b.d)
+		held = held || b.held
 	}
-	return d, true
+	return d, held
 }
 
 // heldWait is how long after a block's first sight v most likely holds it,
@@ -1399,16 +1400,16 @@ func (t *ChainTracker) prove(n uint64, by string) {
 
 // proveTarget plans the target's one probe once a proof shows it or a
 // block above it exists (Proven, Sighted), in place of the ladder's fires
-// (spec §6.8): to a voter whose turn the ladder planned, so the block's
-// fetch is that turn and no turn votes after it, sent once that voter
-// likely holds the block, its longest hold bound after the proof
-// (holdAfter), now when it has none; the prover's turn first. With no
-// turn planned, to the prover now when it is a free candidate, else to
-// the fastest free voter. The other turns vote at the target's sight.
-// One proof probe per target: a later proof of it is spent, and a probe
-// that answers early leaves the block to the ladder's tail. With a fetch
-// of the target out it waits for that fetch, which brings the block as
-// soon; a proof below the target is spent.
+// (spec §6.8): to a voter whose turn the ladder planned, a rung's or a
+// laggard's vote, so the block's fetch is that turn and no turn votes
+// after it, sent once that voter likely holds the block, its longest hold
+// bound after the proof (holdAfter), now when it has none; the prover's
+// turn first. With no turn planned, to the prover now when it is a free
+// candidate, else to the fastest free voter. The other turns vote at the
+// target's sight. One proof probe per target: a later proof of it is
+// spent, and a probe that answers early leaves the block to the ladder's
+// tail. With a fetch of the target out it waits for that fetch, which
+// brings the block as soon; a proof below the target is spent.
 func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 	c := &t.clock
 	if c.proven < c.target || c.provedFor == c.target {
@@ -1421,32 +1422,34 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 	free := func(id string) bool {
 		return id != "" && !c.busy(id) && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id })
 	}
+	turns := slices.Clone(c.votes)
+	for _, rr := range c.rungs {
+		if rr.turn {
+			turns = append(turns, rr.id)
+		}
+	}
 	r := clockRung{at: now, kind: "probe"}
 	if free(c.provenBy) {
 		r.id = c.provenBy
 	}
-	if !slices.ContainsFunc(c.rungs, func(rr clockRung) bool { return rr.turn && rr.id == r.id }) {
-		for _, turn := range c.rungs {
-			if !turn.turn || !free(turn.id) {
+	if !slices.Contains(turns, r.id) {
+		for _, id := range turns {
+			if !free(id) {
 				continue
 			}
 			at := now
-			if after, ok := c.voter(turn.id).holdAfter(); ok && c.provenAt.Add(after).After(now) {
+			if after, ok := c.voter(id).holdAfter(); ok && c.provenAt.Add(after).After(now) {
 				at = c.provenAt.Add(after)
 			}
 			if !r.turn || at.Before(r.at) {
-				r = clockRung{id: turn.id, at: at, kind: "probe", turn: true}
+				r = clockRung{id: id, at: at, kind: "probe", turn: true}
 			}
 		}
 	} else {
 		r.turn = true
 	}
 	c.proven, c.provenBy, c.provedFor = 0, "", c.target
-	for _, turn := range c.rungs {
-		if turn.turn && turn.id != r.id {
-			c.votes = append(c.votes, turn.id)
-		}
-	}
+	c.votes = slices.DeleteFunc(turns, func(id string) bool { return id == r.id })
 	c.rungs = []clockRung{r}
 }
 

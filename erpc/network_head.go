@@ -621,15 +621,26 @@ func (n *Network) laneHolders(s tipScope) (holders, guarantee int64) {
 // likelyHolders is the Latest a method-only scope s may serve (spec §6.5
 // state lane): the q-th highest block its number voters hold by proof
 // (laneHolders) or most likely hold by their measured lack
-// (ChainTracker.LikelyHeld). Only state reads pin to it: a voter that
-// still lacks the block answers missing, never wrong, and the refusal
-// rule's retry takes a holder. Firm and every proof consumer read
-// laneHolders.
+// (ChainTracker.LikelyHeld), at most the chain's progress since each
+// one's report beyond its lag then (creditedHead): a node 10 blocks
+// behind at its report was else credited the view's head on a 112 µs
+// lack. Only state reads pin to it: a voter that still lacks the block
+// answers missing, never wrong, and the refusal rule's retry takes a
+// holder. Firm and every proof consumer read laneHolders.
 func (n *Network) likelyHolders(s tipScope) int64 {
-	var likely func(string) int64
+	var likely func(common.Upstream, int64) int64
 	if t := n.laneTracker(s.sel); t != nil {
 		now := time.Now()
-		likely = func(id string) int64 { return int64(t.LikelyHeld(id, now)) }
+		var latest int64
+		if h, ok := t.View().Head(); ok {
+			latest = int64(h.Number)
+		}
+		likely = func(u common.Upstream, head int64) int64 {
+			if l := int64(t.LikelyHeld(u.Id(), now)); l > head {
+				return min(l, n.creditedHead(u, head, latest))
+			}
+			return head
+		}
 	}
 	var buf [16]int64
 	tip, _, _ := n.pickHolders(s, likely, buf[:0])
@@ -639,7 +650,7 @@ func (n *Network) likelyHolders(s tipScope) int64 {
 // pickHolders is the q-th highest of heads, per number voter of scope s
 // the highest block it holds by proof, or by likely when set, appended to
 // heads; and whether any voter is live.
-func (n *Network) pickHolders(s tipScope, likely func(id string) int64, heads []int64) (tip int64, _ []int64, live bool) {
+func (n *Network) pickHolders(s tipScope, likely func(u common.Upstream, head int64) int64, heads []int64) (tip int64, _ []int64, live bool) {
 	var q common.ServedTipQuorum
 	if n.cfg != nil {
 		q = n.cfg.Evm.ServedTipQuorum()
@@ -648,7 +659,7 @@ func (n *Network) pickHolders(s tipScope, likely func(id string) int64, heads []
 	vs.each(func(u common.Upstream, head int64) bool {
 		head = max(head, n.heldAtLeast(u.Id()))
 		if likely != nil {
-			head = max(head, likely(u.Id()))
+			head = likely(u, head)
 		}
 		heads = append(heads, head)
 		return true
