@@ -1223,7 +1223,15 @@ const (
 	// HeaderForkPolled: the answer to a fork poll (spec §6.3), fresh
 	// evidence of the node's head whatever its earlier votes say.
 	HeaderForkPolled
+	// HeaderCached: the cache's poll of latest at the voter's own server
+	// (spec §6.8 cache head): it votes as a poll does, and reaches the
+	// block clock as a push does, since no fetch of the voter brought it.
+	HeaderCached
 )
+
+// pushed: no fetch of the voter brought the header, so to the block clock
+// it arrives as a push does.
+func (k HeaderKind) pushed() bool { return k == HeaderStreamed || k == HeaderCached }
 
 // PollIntake takes a bound poller's latest and finalized headers.
 type PollIntake interface {

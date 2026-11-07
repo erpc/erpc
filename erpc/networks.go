@@ -52,10 +52,11 @@ type Network struct {
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	cacheDal             common.CacheDAL
 	// cacheHead is the cache's fresh head (evm.CacheHead), nil without a
-	// head-aware realtime policy: its poll sights blocks for the block
-	// clock (cacheSighted), and with evm.servedTip.followCacheHead it
-	// lowers network-wide reads' Latest (anchorHead). servedLatest is the
-	// Latest those reads took last, its Clamp's floor.
+	// head-aware realtime policy: its poll is its own voter's poll of
+	// latest, else sights blocks for the block clock (cacheHeadPolled), and
+	// with evm.servedTip.followCacheHead it lowers network-wide reads'
+	// Latest (anchorHead). servedLatest is the Latest those reads took
+	// last, its Clamp's floor.
 	cacheHead         *evm.CacheHead
 	servedLatest      atomic.Int64
 	metricsTracker    *health.Tracker
@@ -821,10 +822,10 @@ func (n *Network) uniformMethodFilters(ctx context.Context) bool {
 	if len(all) == 0 {
 		return true
 	}
-	ignore0, allow0 := all[0].MethodFilter()
+	ignore0, allow0, every0 := all[0].MethodFilter()
 	for _, u := range all[1:] {
-		ignore, allow := u.MethodFilter()
-		if !slices.Equal(ignore, ignore0) || !slices.Equal(allow, allow0) {
+		ignore, allow, every := u.MethodFilter()
+		if !slices.Equal(ignore, ignore0) || !slices.Equal(allow, allow0) || every != every0 {
 			return false
 		}
 	}

@@ -1317,8 +1317,10 @@ var methodFilterEpoch atomic.Uint64
 func MethodFilterEpoch() uint64 { return methodFilterEpoch.Load() }
 
 // MethodFilter returns copies of the upstream's ignoreMethods, with its
-// auto-ignored methods appended in order, and allowMethods.
-func (u *Upstream) MethodFilter() (ignore, allow []string) {
+// auto-ignored methods appended in order, and allowMethods; every is
+// false when its client serves only some methods (a BDS server's,
+// configMethodSupport).
+func (u *Upstream) MethodFilter() (ignore, allow []string, every bool) {
 	u.cfgMu.RLock()
 	ignore, allow = slices.Clone(u.config.IgnoreMethods), slices.Clone(u.config.AllowMethods)
 	u.cfgMu.RUnlock()
@@ -1328,7 +1330,13 @@ func (u *Upstream) MethodFilter() (ignore, allow []string) {
 		return true
 	})
 	slices.Sort(auto)
-	return append(ignore, auto...), allow
+	return append(ignore, auto...), allow, !u.servesSome()
+}
+
+// servesSome reports whether the upstream's client serves only some
+// methods: a BDS server serves those its client maps.
+func (u *Upstream) servesSome() bool {
+	return u.Client != nil && u.Client.GetType() == clients.ClientTypeGrpcBds
 }
 
 func (u *Upstream) IgnoreMethod(method string) {
@@ -1411,6 +1419,16 @@ func (u *Upstream) configMethodSupport(method string) (methodSupport, error) {
 	}
 	cfg := u.Config()
 	s := methodSupport{handled: true}
+
+	// A BDS server serves only the methods its client maps (servesSome):
+	// counted as a server of another, it would make a block only it holds
+	// that method's Head, which no upstream that serves the method can
+	// answer yet.
+	if u.servesSome() && !clients.GrpcBdsServes(method) {
+		s.handled = false
+		u.supportedMethods.Store(method, s)
+		return s, nil
+	}
 
 	// First check if method is ignored, and then check if it is explicitly mentioned to be allowed.
 	// This order allows an upstream for example to define "ignore all except eth_getLogs".

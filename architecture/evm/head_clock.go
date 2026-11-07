@@ -42,9 +42,11 @@ type headClock struct {
 	// pushLane: a push brought a first sight since the reset, so only
 	// on-time pushes and fetch answers before the predicted sight move the
 	// phase. missed counts the first sights in a row no on-time push
-	// brought (pushFed).
-	pushLane bool
-	missed   int
+	// brought (pushFed). pushCached: the last push was the cache's poll
+	// of its own voter (cacheFed).
+	pushLane   bool
+	pushCached bool
+	missed     int
 	// off is where the ladder's last rung sights the next block relative
 	// to its predicted sight, in block times, so it holds while the block
 	// time estimate moves from its cold value. It moves once per block, at
@@ -207,17 +209,16 @@ func (c *headClock) reset() {
 }
 
 // saw records the first local sight of number at at, its evidence taken
-// at from. The target's sight moves the offset once (spec §6.8): down a
-// step when the ladder's last rung did not answer below it, up 32 when
-// it did and at most one tail rung was sent, and not at all when the
-// sight came later, or half a block or more after its predicted sight: a
-// late proposal, a missed slot or a halt says nothing of the arrival
-// spread; nor when a proof's probe took the ladder's place
-// (proveTarget), which fired off its rungs. A sight a block or more
-// after its predicted sight comes that many slots later: the slots
-// between were missed. Each open fetch answer below number is decided
-// (answered).
-func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.Duration) {
+// at from and come via. The target's sight moves the offset once (spec
+// §6.8): down a step when the ladder's last rung did not answer below it,
+// up 32 when it did and at most one tail rung was sent, and not at all
+// when the sight came later, or half a block or more after its predicted
+// sight: a late proposal, a missed slot or a halt says nothing of the
+// arrival spread; nor when a proof's probe took the ladder's place
+// (proveTarget), which fired off its rungs. A sight a block or more after
+// its predicted sight comes that many slots later: the slots between were
+// missed. Each open fetch answer below number is decided (answered).
+func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		return
 	}
@@ -236,6 +237,7 @@ func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.
 		c.ladder = false
 	}
 	c.scheduled = false
+	pushed := via.pushed()
 	s := clockSight{number: number, slot: c.slotOf(number), at: at, from: from, pushed: pushed}
 	if len(c.fit) > 0 && bt > 0 {
 		if late := at.Sub(c.predictSlot(s.slot, bt)); late >= bt {
@@ -247,6 +249,9 @@ func (c *headClock) saw(number uint64, at, from time.Time, pushed bool, bt time.
 		c.fit = appendSight(c.fit, s)
 	}
 	c.pushLane = c.pushLane || pushed
+	if pushed {
+		c.pushCached = via == HeaderCached
+	}
 	if s.onTime {
 		c.missed = 0
 	} else {
@@ -413,8 +418,15 @@ func (c *headClock) pushFed() bool {
 
 // pushLate is how long after its predicted sight a pushed block is late:
 // the fit's largest residual over the phase points, about their 95th
-// percentile, at least bt/10 and at most bt.
+// percentile, at least bt/10 and at most bt. On a lane the cache's poll
+// feeds (pushCached) it is bt: that poll brings a block within an eighth
+// of one of the cache holding it, before a fetch of any voter would, so
+// only a missed slot or a stalled cache leaves a block a slot late, and a
+// fetch sooner finds nothing the poll would not bring.
 func (c *headClock) pushLate(bt time.Duration) time.Duration {
+	if c.pushCached {
+		return bt
+	}
 	_, offsets := c.phase(bt)
 	return min(max(offsets[len(offsets)-1]-offsets[len(offsets)/2], bt/10), bt)
 }
@@ -918,12 +930,13 @@ func (t *ChainTracker) climb(cands []clockCandidate, now time.Time, bt time.Dura
 // S_k, one every bt / max(1, Σ min(1, bt/I)): the turns its intervals pay
 // for, never a back-off, so a late proposal or a missed slot's block is
 // seen within a turn of its arrival. Else, after k of them, one to the
-// fastest voter at the last fire plus bt doubled per miss, at most W. A
-// hedge's goes now.
+// fastest voter at the last fire plus bt doubled per miss, at most W; on
+// a lane the cache's poll feeds, that one from the first tail: the block
+// comes by that poll. A hedge's goes now.
 func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Duration, hedge bool) {
 	c := &t.clock
 	r := clockRung{kind: "retry", at: now}
-	if order := c.byScore(cands); (c.ladder || c.tails < c.k) && len(order) > 0 {
+	if order := c.byScore(cands); (c.ladder || c.tails < c.k && !(c.pushFed() && c.pushCached)) && len(order) > 0 {
 		cand := order[c.tails%len(order)]
 		c.tails++
 		r.id = cand.id
@@ -1276,12 +1289,12 @@ func (t *ChainTracker) Proven(n uint64, by string) {
 	t.prove(n, by)
 }
 
-// Sighted takes the cache's head reaching block n (spec §6.8 cache
-// sighting): the clock's proof of n (prove), by the cache's own voter
-// when it has one. It adds no demand: a lane nobody reads fetches
-// nothing for it, and the cache's head never moves the view.
-func (t *ChainTracker) Sighted(n uint64, by string) {
-	t.prove(n, by)
+// Sighted takes the cache's head reaching block n where no lane voter is
+// the cache's own upstream (spec §6.8 cache sighting): the clock's proof
+// of n (prove). It adds no demand: a lane nobody reads fetches nothing
+// for it. Where one is, its head is that voter's poll instead (CacheHead).
+func (t *ChainTracker) Sighted(n uint64) {
+	t.prove(n, "")
 }
 
 // prove records that block n exists, so the target's probe goes once n

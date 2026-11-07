@@ -270,21 +270,26 @@ func (g *GrpcConnector) CacheLatestBlock(networkId string) (int64, int64, bool) 
 	return int64(b.number), b.timestamp, b.timestamp > 0
 }
 
-// RefreshLatestBlock fetches networkId's latest block now and records it. EVM only, like the
-// background poller; a network without a client, or a failed fetch, records nothing.
-func (g *GrpcConnector) RefreshLatestBlock(ctx context.Context, networkId string) {
+// RefreshLatestBlock fetches networkId's latest block now, records it, and returns the fetched
+// result and the request's send time. EVM only, like the background poller; a network without a
+// client, or a failed fetch, records nothing and returns nil.
+func (g *GrpcConnector) RefreshLatestBlock(ctx context.Context, networkId string) ([]byte, time.Time) {
 	if !strings.HasPrefix(networkId, "evm:") {
-		return
+		return nil, time.Time{}
 	}
 	g.mu.RLock()
 	cli := g.clientByNetwork[networkId]
 	g.mu.RUnlock()
 	if cli == nil {
-		return
+		return nil, time.Time{}
 	}
-	if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
-		g.recordLatest(networkId, num, ts)
+	sent := time.Now()
+	block, num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest")
+	if !ok {
+		return nil, time.Time{}
 	}
+	g.recordLatest(networkId, num, ts)
+	return block, sent
 }
 
 // CacheServer is the host:port of the server networkId's client dials, "" before one serves it.
@@ -375,7 +380,7 @@ func (g *GrpcConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 	// eth_blockNumber result shape (a quoted hex string). Freshness is enforced
 	// by the cache layer's realtime gate via the connector's reported head.
 	if method == "eth_blockNumber" {
-		num, _, ok := g.fetchTaggedBlock(callCtx, cli, "latest")
+		_, num, _, ok := g.fetchTaggedBlock(callCtx, cli, "latest")
 		if !ok {
 			span.SetAttributes(attribute.String("grpc.skip_reason", "latest_block_unavailable"))
 			return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, GrpcDriverName)
@@ -462,7 +467,7 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 		// with every other metric; fall back to the raw networkId when no alias is
 		// configured. Internal map keys stay keyed by networkId.
 		lbl := common.NetworkAlias(nid)
-		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "earliest"); ok {
+		if _, num, ts, ok := g.fetchTaggedBlock(ctx, cli, "earliest"); ok {
 			g.mu.Lock()
 			g.earliestByNetwork[nid] = num
 			g.mu.Unlock()
@@ -472,11 +477,11 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 			}
 		}
 
-		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
+		if _, num, ts, ok := g.fetchTaggedBlock(ctx, cli, "latest"); ok {
 			g.recordLatest(nid, num, ts)
 		}
 
-		if num, ts, ok := g.fetchTaggedBlock(ctx, cli, "finalized"); ok {
+		if _, num, ts, ok := g.fetchTaggedBlock(ctx, cli, "finalized"); ok {
 			g.mu.Lock()
 			g.finalizedByNetwork[nid] = num
 			g.mu.Unlock()
@@ -489,35 +494,36 @@ func (g *GrpcConnector) pollBlockHeadsOnce(ctx context.Context) {
 }
 
 // fetchTaggedBlock requests a block by tag ("earliest"/"latest"/"finalized") from
-// a single gRPC client and returns its number and unix timestamp (seconds). ok is
-// false when the call fails or the result has no parsable block number; timestamp
-// is best-effort and may be 0 even when ok is true.
-func (g *GrpcConnector) fetchTaggedBlock(ctx context.Context, cli clients.GrpcBdsClient, tag string) (number uint64, timestamp int64, ok bool) {
+// a single gRPC client and returns its eth_getBlockByNumber result, number and
+// unix timestamp (seconds). ok is false when the call fails or the result has no
+// parsable block number; timestamp is best-effort and may be 0 even when ok is
+// true.
+func (g *GrpcConnector) fetchTaggedBlock(ctx context.Context, cli clients.GrpcBdsClient, tag string) (block []byte, number uint64, timestamp int64, ok bool) {
 	jr := common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{tag, false})
 	nrq := common.NewNormalizedRequestFromJsonRpcRequest(jr)
 	resp, err := cli.SendRequest(ctx, nrq)
 	if err != nil || resp == nil {
-		return 0, 0, false
+		return nil, 0, 0, false
 	}
 	jrr, err := resp.JsonRpcResponse(ctx)
 	if err != nil || jrr == nil {
-		return 0, 0, false
+		return nil, 0, 0, false
 	}
 	result := jrr.GetResultBytes()
 	numStr := parseBlockField(result, "number")
 	if numStr == "" {
-		return 0, 0, false
+		return nil, 0, 0, false
 	}
 	num, err := evm.HexToUint64(numStr)
 	if err != nil {
-		return 0, 0, false
+		return nil, 0, 0, false
 	}
 	if tsStr := parseBlockField(result, "timestamp"); tsStr != "" {
 		if v, terr := common.HexToInt64(tsStr); terr == nil {
 			timestamp = v
 		}
 	}
-	return num, timestamp, true
+	return result, num, timestamp, true
 }
 
 // parseBlockField extracts a top-level string field (e.g. "number" or

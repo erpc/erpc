@@ -92,7 +92,7 @@ func (n *clockNet) vote(id string, num uint64, sent time.Time) json.RawMessage {
 	n.serve(num, testHash("c", num), raw)
 	h, err := parseChainHeader(raw)
 	if err == nil {
-		n.c.observeSource(id, h, sent, false)
+		n.c.observeSource(id, h, sent, HeaderPolled)
 	}
 	return raw
 }

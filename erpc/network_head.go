@@ -110,13 +110,31 @@ func (n *Network) followsCacheHead() bool {
 	return n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil && n.cfg.Evm.ServedTip.FollowCacheHead
 }
 
-// cacheSighted takes the cache's new fresh head as a sighting of block
-// number for the network-wide lane's block clock (ChainTracker.Sighted),
-// by the cache's own voter (cacheVoter).
-func (n *Network) cacheSighted(number int64) {
-	if t := n.chainTracker; t != nil && number > 0 {
-		t.Sighted(uint64(number), n.cacheVoter(""))
+// cacheHeadPolled takes the cache's new fresh head, block number fetched
+// by a request sent at sent (evm.CacheHead.Run): the poll of latest of the
+// cache's own voter (cacheVoter), which intake checks and votes as that
+// voter's own poll, since it is the same request to the same server; with
+// no such voter, a sighting of number for the network-wide lane's block
+// clock (ChainTracker.Sighted).
+func (n *Network) cacheHeadPolled(block []byte, sent time.Time, number int64) {
+	t := n.chainTracker
+	if t == nil || number <= 0 {
+		return
 	}
+	if id := n.cacheVoter(""); id != "" {
+		sh, err := evm.ParseSourceHeader(block)
+		n.intake.Polled(id, sh, err, evm.HeaderCached, sent)
+		return
+	}
+	t.Sighted(uint64(number))
+}
+
+// cacheHeadDemand reports whether the network-wide lane has a reader of
+// its head (ChainTracker.ClockRuns): the cache head's poll then runs at
+// its fast pace.
+func (n *Network) cacheHeadDemand() bool {
+	t := n.chainTracker
+	return t != nil && t.ClockRuns()
 }
 
 // cacheVoter is the id of selector's lane voter at the server the cache
@@ -294,9 +312,9 @@ func (n *Network) markLanes(u common.Upstream) {
 // upstreams with known heads serves its first request with a Head, then
 // computes the dirty lanes on each wake (markLanes) and marks every lane
 // each headRefresh until the app stops, and runs the cache head's poll
-// (evm.CacheHead.Run), whose sightings go to the block clock
-// (cacheSighted), as long. Once per network: its bootstrap can run again
-// after it succeeded.
+// (evm.CacheHead.Run), whose heads are its own voter's polls or the block
+// clock's sightings (cacheHeadPolled), as long. Once per network: its
+// bootstrap can run again after it succeeded.
 func (n *Network) startHeads() {
 	if n.cfg == nil || n.cfg.Architecture != common.ArchitectureEvm || n.appCtx == nil {
 		return
@@ -308,7 +326,7 @@ func (n *Network) startHeads() {
 	n.headLoopOnce.Do(func() {
 		n.refreshHeads()
 		if n.cacheHead != nil {
-			n.bg.Go(func() { n.cacheHead.Run(n.appCtx, n.cacheSighted) })
+			n.bg.Go(func() { n.cacheHead.Run(n.appCtx, n.cacheHeadDemand, n.cacheHeadPolled) })
 		}
 		n.bg.Go(func() {
 			ticker := time.NewTicker(every)

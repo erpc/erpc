@@ -221,10 +221,11 @@ func (f *FailsafeConnector) CacheLatestBlock(networkId string) (int64, int64, bo
 }
 
 // RefreshLatestBlock forwards to the wrapped connector when it is head-aware.
-func (f *FailsafeConnector) RefreshLatestBlock(ctx context.Context, networkId string) {
+func (f *FailsafeConnector) RefreshLatestBlock(ctx context.Context, networkId string) ([]byte, time.Time) {
 	if r, ok := f.wrapped.(CacheHeadReporter); ok {
-		r.RefreshLatestBlock(ctx, networkId)
+		return r.RefreshLatestBlock(ctx, networkId)
 	}
+	return nil, time.Time{}
 }
 
 // CacheServer forwards to the wrapped connector when it is head-aware.

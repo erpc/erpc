@@ -28,7 +28,9 @@ func (h *headReportingConnector) CacheLatestBlock(networkId string) (int64, int6
 	return 1, h.latestTs, h.known
 }
 
-func (h *headReportingConnector) RefreshLatestBlock(context.Context, string) {}
+func (h *headReportingConnector) RefreshLatestBlock(context.Context, string) ([]byte, time.Time) {
+	return nil, time.Time{}
+}
 
 func (h *headReportingConnector) CacheServer(string) string { return "" }
 

@@ -16,21 +16,21 @@ import (
 // number that could disagree with it. One poller (Run) keeps it fresh for
 // its two uses:
 //
-//   - Sightings: each new fresh head is a proof that its block exists
-//     (ChainTracker.Sighted), so the block clock fetches that block's head
-//     at once instead of at its predicted time. A cache that serves blocks
-//     before the upstreams' heads show them (Prism) then brings the clock
-//     its block as soon as it holds it.
+//   - Polls: each new fresh head is the block the cache's server holds.
+//     Where a lane voter's endpoint names that server (the cache's own
+//     upstream, Prism's voter), the network takes it as that voter's poll
+//     of latest: the same request to the same server, which the voter's
+//     own client would send. Else it proves its block exists
+//     (ChainTracker.Sighted), so the block clock fetches it at once.
 //   - Clamp, with evm.servedTip.followCacheHead: a network-wide read's
 //     "latest" stops at it, so a client that reads "latest" and then asks
 //     for that block's receipts, logs or body asks for a block the cache
 //     already holds. The anchor assumes the connector that serves latest
 //     blocks also serves the follow-up reads.
 //
-// Neither feeds a chain tracker's view, pin, hash vote, state poller,
-// stream or reorg decision: a sighting only moves when the clock fetches,
-// and a clamp only lowers what a read takes. A cache that falls behind
-// stops counting by itself.
+// A head moves the view only as its voter's poll, through intake's checks
+// and the tracker's fork choice, as any vote; a clamp only lowers what a
+// read takes. A cache that falls behind stops counting by itself.
 type CacheHead struct {
 	networkId string
 	blockTime func() time.Duration
@@ -116,14 +116,20 @@ func (a *CacheHead) endHold() {
 	}
 }
 
-// Run refreshes the connector's head every eighth of the TTL (50ms to 1s)
-// until ctx ends, so the age polling adds stays a small share of the bound,
-// and calls sighted with each fresh head other than the last it reported:
-// the tracker takes only one above its top sight. The connector's own head
-// poll runs once a minute, which no realtime TTL admits. A fetch may take
-// up to the TTL: one slower than that returns a head the bound no longer
-// admits.
-func (a *CacheHead) Run(ctx context.Context, sighted func(number int64)) {
+// Run refreshes the connector's head while demand reports a reader of the
+// network's head, until ctx ends, and calls polled with each fresh head
+// other than the last it reported: the block the connector fetched (its
+// eth_getBlockByNumber("latest", false) result), when that fetch was
+// sent, and its number. It refreshes every eighth of a block, or of the
+// TTL when that is sooner, 50 ms to 1 s: at most 8 polls a block, so a
+// head the network takes from the cache trails the cache by an eighth of
+// a block at most, and the age polling adds stays a small share of the
+// bound. Without a reader it fetches nothing and looks for one at the
+// same pace: the connector's own head poll runs once a minute, so a
+// realtime age guard and Clamp then read a stale head, and fail open. A
+// fetch may take up to the TTL: one slower than that returns a head the
+// bound no longer admits.
+func (a *CacheHead) Run(ctx context.Context, demand func() bool, polled func(block []byte, sent time.Time, number int64)) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	var last int64
@@ -134,14 +140,16 @@ func (a *CacheHead) Run(ctx context.Context, sighted func(number int64)) {
 		case <-timer.C:
 		}
 		ttl := a.ttl()
-		fetchCtx, cancel := context.WithTimeout(ctx, ttl)
-		a.reporter.RefreshLatestBlock(fetchCtx, a.networkId)
-		cancel()
-		if number, ok := a.fresh(time.Now()); ok && number != last {
-			last = number
-			sighted(number)
+		if demand() {
+			fetchCtx, cancel := context.WithTimeout(ctx, ttl)
+			block, sent := a.reporter.RefreshLatestBlock(fetchCtx, a.networkId)
+			cancel()
+			if number, ok := a.fresh(time.Now()); ok && block != nil && number != last {
+				last = number
+				polled(block, sent, number)
+			}
 		}
-		timer.Reset(min(max(ttl/8, 50*time.Millisecond), time.Second))
+		timer.Reset(min(max(min(a.blockTime(), ttl)/8, 50*time.Millisecond), time.Second))
 	}
 }
 

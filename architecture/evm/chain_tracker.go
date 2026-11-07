@@ -354,7 +354,7 @@ type trackerMsg struct {
 	raw      json.RawMessage
 	hdr      *chainHeader // set when the sender already parsed raw
 	at       time.Time    // a source vote's evidence time
-	pushed   bool         // a source vote its source pushed, not a poll
+	via      HeaderKind   // how a source vote came: a poll's, a push's, the cache's
 	held     *heldReceipts
 	done     chan struct{}
 	fn       func()
@@ -580,9 +580,9 @@ func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
 }
 
 // observeSource is Observe for a source header intake already parsed,
-// with its evidence time.
-func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time, pushed bool) {
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at, pushed: pushed})
+// with its evidence time and how it came.
+func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time, via HeaderKind) {
+	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at, via: via})
 }
 
 // observeFinal takes upstreamId's finalized evidence (finalThrough).
@@ -864,7 +864,7 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 		from = now
 	}
 	if msg.vote == voteSource {
-		if !msg.pushed {
+		if !msg.via.pushed() {
 			t.clock.answered(msg.upstream, h.number, msg.at)
 		} else if prev := t.votes[msg.upstream]; t.alive(prev) && prev.h.number < h.number && now.Sub(t.voteAt[msg.upstream]) <= t.BlockTime() {
 			if seen := t.clock.sightOf(h.number); h.number <= t.clock.top() && !seen.IsZero() {
@@ -877,7 +877,7 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 			t.clock.bound(msg.upstream, 0)
 		}
 	}
-	t.clock.saw(h.number, now, from, msg.pushed, t.BlockTime())
+	t.clock.saw(h.number, now, from, msg.via, t.BlockTime())
 	if msg.vote != voteSource {
 		if len(t.pins) == 0 {
 			t.evict()
@@ -4299,7 +4299,7 @@ func seedLane(ctx context.Context, wide, t *ChainTracker) {
 		}})
 		for id, nd := range wide.votes {
 			if wide.alive(nd) {
-				t.observeSource(id, nd.h, wide.voteAt[id], false)
+				t.observeSource(id, nd.h, wide.voteAt[id], HeaderPolled)
 			}
 		}
 	}})
@@ -4409,15 +4409,15 @@ func GroupTracker(n common.Network, groupKey, selector, lane string) *ChainTrack
 }
 
 // ObserveSourceHeader hands an accepted source header to the network-wide
-// tracker and to every group tracker whose selector matches u, as u's vote.
-// Each tracker drops it unless u is one of its lane's voters. An upstream
-// without a finalized tag brings its derived finalized number along, as its
-// finalized evidence (spec §6.5).
-func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader, at time.Time, pushed bool) {
+// tracker and to every group tracker whose selector matches u, as u's vote
+// that came via. Each tracker drops it unless u is one of its lane's
+// voters. An upstream without a finalized tag brings its derived finalized
+// number along, as its finalized evidence (spec §6.5).
+func ObserveSourceHeader(n common.Network, u common.Upstream, sh SourceHeader, at time.Time, via HeaderKind) {
 	id := u.Id()
 	derived, ok := derivedFinalized(u)
 	lanesOf(n, u, func(t *ChainTracker) {
-		t.observeSource(id, sh.h, at, pushed)
+		t.observeSource(id, sh.h, at, via)
 		if ok {
 			t.observeFinal(id, finalEvidence{number: derived, derived: true})
 		}
