@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -436,10 +437,12 @@ var bdsHandlers = map[string]func(*GenericGrpcBdsClient, context.Context, *bdsCo
 	"getBlocksWithLimit":        (*GenericGrpcBdsClient).handleSvmGetBlocksWithLimit,
 }
 
-// GrpcBdsServes reports whether a BDS server serves method.
+// GrpcBdsServes reports whether a BDS server serves method: a request
+// method its handlers map, or an eth_query* method, which its QueryService
+// streams (QueryClient).
 func GrpcBdsServes(method string) bool {
 	_, ok := bdsHandlers[method]
-	return ok
+	return ok || len(method) >= len("eth_query") && strings.EqualFold(method[:len("eth_query")], "eth_query")
 }
 
 func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {

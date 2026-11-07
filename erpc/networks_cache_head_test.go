@@ -229,6 +229,8 @@ func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
 	// served the view's head: reads take the cache's head, and the block it
 	// names comes from the cache with its pinned hash.
 	n.bds.set(tip-2, 0)
+	// The cache head is polled only while the lane has a reader.
+	n.nw.chainTracker.MarkRead()
 	require.Eventually(t, func() bool { return cacheConnectorHead("bds-anchor") == float64(tip-2) }, 10*time.Second, 20*time.Millisecond,
 		"the anchor's poll observes the fresh head")
 	assert.Equal(t, tip-2, n.blockNumber(), "eth_blockNumber serves the fresh cache head")
@@ -284,6 +286,7 @@ func TestNetworkCacheHead_OffServesTheView(t *testing.T) {
 	require.NotNil(t, n.nw.cacheHead, "a realtime grpc policy with a TTL makes the cache head")
 	tip := n.chain.Tip().Number
 	n.bds.set(tip-2, 0)
+	n.nw.chainTracker.MarkRead()
 	require.Eventually(t, func() bool { return cacheConnectorHead("bds-off") == float64(tip-2) }, 10*time.Second, 20*time.Millisecond,
 		"the cache head's poll observes the fresh head")
 	for range 10 {
