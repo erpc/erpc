@@ -1100,6 +1100,14 @@ export interface EvmUpstreamConfig {
    */
   skipSyncingCheck?: boolean;
   /**
+   * SkipStatePoller turns off background polling (latest/finalized block,
+   * eth_syncing, earliest-block probes) for this upstream, e.g. a fallback
+   * that bills every request. The upstream then has no known block, which
+   * block-availability treats as unknown, so it stays selectable. Heads
+   * pushed by a WebSocket subscription are still accepted.
+   */
+  skipStatePoller?: boolean;
+  /**
    * HeadLagToleranceBlocks lets the block-availability gate send requests pinned up to N blocks
    * ABOVE this upstream's observed head instead of rerouting them as stale. Useful for upstreams
    * that follow the chain tightly but become able to serve a new block a moment after it is
@@ -1825,6 +1833,14 @@ export interface SvmUpstreamConfig {
    * earliestBlockPlus. Unknown floor = unbounded.
    */
   blockAvailability?: SvmBlockAvailabilityConfig;
+  /**
+   * SkipStatePoller turns off background polling (getSlot, getHealth,
+   * getMaxShredInsertSlot, the first-available-slot probe) for this
+   * upstream, e.g. a fallback that bills every request. The upstream then
+   * has no known slot, which the slot filters treat as unknown, so it stays
+   * selectable. Genesis-hash validation (checkGenesisHash) still runs.
+   */
+  skipStatePoller?: boolean;
 }
 /**
  * SvmBlockAvailabilityConfig is the per-upstream declared slot window.
