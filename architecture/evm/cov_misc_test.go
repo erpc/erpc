@@ -849,7 +849,7 @@ func TestCovMisc_StateSelectorAndPinParams(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			before := deepCopyParams(tc.params)
-			got, pinned := pinLatestParams(tc.method, tc.params, 100)
+			got, pinned := PinLatestParams(tc.method, tc.params, 100)
 			assert.Equal(t, tc.pinned, pinned)
 			if tc.want != nil {
 				assert.Equal(t, tc.want, got)
@@ -859,37 +859,6 @@ func TestCovMisc_StateSelectorAndPinParams(t *testing.T) {
 	}
 }
 
-func TestCovMisc_PinBlockTagInBody(t *testing.T) {
-	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`)
-	cases := []struct {
-		name   string
-		body   []byte
-		height int64
-		pinned bool
-	}{
-		{"empty body", nil, 100, false},
-		{"unknown height", body, 0, false},
-		{"not json", []byte(`{not json`), 100, false},
-		{"not family 3", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`), 100, false},
-		{"selector is not latest", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","0x5"]}`), 100, false},
-		{"latest is pinned", body, 100, true},
-		{"absent selector is pinned", []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc"]}`), 100, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			out, pinned := PinBlockTagInBody(tc.body, tc.height)
-			assert.Equal(t, tc.pinned, pinned)
-			if !pinned {
-				assert.Equal(t, tc.body, out)
-				return
-			}
-			var req map[string]interface{}
-			require.NoError(t, json.Unmarshal(out, &req))
-			assert.Equal(t, []interface{}{"0xabc", "0x64"}, req["params"])
-			assert.Equal(t, "eth_getBalance", req["method"])
-		})
-	}
-}
 
 func TestCovMisc_PinLatestTag(t *testing.T) {
 	ctx := context.Background()

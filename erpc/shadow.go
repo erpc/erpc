@@ -121,57 +121,32 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			shadowCtx, span := common.StartDetailSpan(ctx, "Project.executeShadowRequest")
 			defer span.End()
 
-			// Build a safe copy of the original request so that shadow requests do not race on shared state
-			var shadowReq *common.NormalizedRequest
-			if body := origReq.Body(); body != nil {
-				// Copy the bytes to avoid accidental mutations
-				cpy := append([]byte(nil), body...)
-				shadowReq = common.NewNormalizedRequest(cpy)
-			} else {
-				jrq, errReq := origReq.JsonRpcRequest(shadowCtx)
-				if errReq != nil {
-					p.Logger.Error().Err(errReq).Msg("failed to clone json-rpc request for shadow upstream")
-					return
-				}
-				bodyBytes, errMarshal := common.SonicCfg.Marshal(jrq)
-				if errMarshal != nil {
-					p.Logger.Error().Err(errMarshal).Msg("failed to marshal cloned json-rpc request for shadow upstream")
-					return
-				}
-				shadowReq = common.NewNormalizedRequest(bodyBytes)
-				// Pre-populate the parsed request so Forward() does not need to unmarshal again
-				_, _ = shadowReq.JsonRpcRequest(shadowCtx)
+			// Mirror the parsed request, never the raw body: parsing clears the
+			// body, and the parsed params are what the primary was sent (with
+			// "latest" already translated where the network translates it).
+			jrq, errReq := origReq.JsonRpcRequest(shadowCtx)
+			if errReq != nil {
+				p.Logger.Error().Err(errReq).Msg("failed to clone json-rpc request for shadow upstream")
+				return
+			}
+			mirrored := jrq.Clone()
+
+			// Pin a "latest" selector to the primary's height
+			// (ShadowUpstreamConfig.PinBlockTag): the shadow runs
+			// wall-clock-later and would evaluate the tag at a different head,
+			// so any read of volatile state diverges by construction and
+			// reports a mismatch that says nothing about correctness.
+			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag && pinHeight > 0 {
+				mirrored.Params, _ = evm.PinLatestParams(mirrored.Method, mirrored.Params, pinHeight)
 			}
 
-			// Copy directives so behaviour is consistent
+			shadowReq := common.NewNormalizedRequestFromJsonRpcRequest(mirrored)
 			if dirs := origReq.Directives(); dirs != nil {
 				shadowReq.SetDirectives(dirs.Clone())
 			}
-
-			// Copy HTTP context (headers, query parameters, user) for proper metrics tracking
+			// HTTP context (headers, query parameters, user) for metrics.
 			shadowReq.CopyHttpContextFrom(origReq)
-
-			// Set network reference for completeness (not strictly required for forwarding)
 			shadowReq.SetNetwork(origReq.Network())
-
-			// Pin a "latest" selector to the block the primary was sent
-			// (ShadowUpstreamConfig.PinBlockTag): the shadow runs
-			// wall-clock-later and would evaluate the tag at a different
-			// head, so any read of volatile state diverges by construction
-			// and reports a mismatch that says nothing about correctness. No
-			// usable height means no pin (fail-open, like every other guard
-			// on this path).
-			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag {
-				if pinned, changed := evm.PinBlockTagInBody(shadowReq.Body(), pinHeight); changed {
-					repinned := common.NewNormalizedRequest(pinned)
-					if dirs := origReq.Directives(); dirs != nil {
-						repinned.SetDirectives(dirs.Clone())
-					}
-					repinned.CopyHttpContextFrom(origReq)
-					repinned.SetNetwork(origReq.Network())
-					shadowReq = repinned
-				}
-			}
 
 			// Execute the request against the shadow upstream (do bypass exclusion because we have to enforce method exclusion locally here - to ignore the shadow flag checking)
 			shadowResp, errForward := ups.Forward(shadowCtx, shadowReq, true, false)

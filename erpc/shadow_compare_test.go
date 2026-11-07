@@ -33,7 +33,9 @@ type shadowCmpFixture struct {
 	network *Network
 }
 
-func newShadowCmpFixture(t *testing.T, projectId string, shadows ...*common.UpstreamConfig) *shadowCmpFixture {
+// newShadowCmpFixture bootstraps the project; tweak, when set, edits the
+// primary's and the network's config first.
+func newShadowCmpFixture(t *testing.T, projectId string, tweak func(primary *common.UpstreamConfig, network *common.NetworkConfig), shadows ...*common.UpstreamConfig) *shadowCmpFixture {
 	t.Helper()
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -52,7 +54,7 @@ func newShadowCmpFixture(t *testing.T, projectId string, shadows ...*common.Upst
 	rlr, err := upstream.NewRateLimitersRegistry(ctx, &common.RateLimiterConfig{}, &log.Logger)
 	require.NoError(t, err)
 
-	ups := []*common.UpstreamConfig{{
+	primary := &common.UpstreamConfig{
 		Id:       "rpc1",
 		Type:     common.UpstreamTypeEvm,
 		Endpoint: "http://rpc1.localhost",
@@ -61,7 +63,15 @@ func newShadowCmpFixture(t *testing.T, projectId string, shadows ...*common.Upst
 			StatePollerInterval: common.Duration(200 * time.Millisecond),
 			StatePollerDebounce: common.Duration(50 * time.Millisecond),
 		},
-	}}
+	}
+	netCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}
+	if tweak != nil {
+		tweak(primary, netCfg)
+	}
+	ups := []*common.UpstreamConfig{primary}
 	for _, s := range shadows {
 		s.Type = common.UpstreamTypeEvm
 		if s.Evm == nil {
@@ -78,11 +88,8 @@ func newShadowCmpFixture(t *testing.T, projectId string, shadows ...*common.Upst
 	}
 
 	reg, err := NewProjectsRegistry(ctx, &log.Logger, []*common.ProjectConfig{{
-		Id: projectId,
-		Networks: []*common.NetworkConfig{{
-			Architecture: common.ArchitectureEvm,
-			Evm:          &common.EvmNetworkConfig{ChainId: 123},
-		}},
+		Id:        projectId,
+		Networks:  []*common.NetworkConfig{netCfg},
 		Upstreams: ups,
 	}}, ssr, nil, nil, rlr, thirdparty.NewVendorsRegistry(), nil, nil)
 	require.NoError(t, err)
@@ -277,7 +284,7 @@ func shadowCmpForward(t *testing.T, f *shadowCmpFixture, method, params string) 
 // the client answer comes from the primary while each shadow's comparison
 // outcome lands in the matching counter.
 func TestShadowCompare_ForwardPath(t *testing.T) {
-	f := newShadowCmpFixture(t, "shadowcmp_fwd",
+	f := newShadowCmpFixture(t, "shadowcmp_fwd", nil,
 		&common.UpstreamConfig{
 			Id:       "shadowcmp-fwd-ign",
 			Endpoint: "http://rpc2.localhost",
@@ -411,7 +418,7 @@ func TestShadowCompare_ForwardPath(t *testing.T) {
 // invalid-pattern shadows are skipped before any goroutine is spawned.
 func TestShadowCompare_SkipConditions(t *testing.T) {
 	zero := 0.0
-	f := newShadowCmpFixture(t, "shadowcmp_skip",
+	f := newShadowCmpFixture(t, "shadowcmp_skip", nil,
 		&common.UpstreamConfig{
 			Id:            "shadowcmp-skip-ignored",
 			Endpoint:      "http://rpc2.localhost",
@@ -489,7 +496,7 @@ func (w *shadowCmpWriter) Size(...context.Context) (int, error) {
 // refuses before mirroring: no response, no shadows, no request, an
 // unsizable primary, and a panic (recovered and counted).
 func TestShadowCompare_EarlyReturns(t *testing.T) {
-	f := newShadowCmpFixture(t, "shadowcmp_early", &common.UpstreamConfig{
+	f := newShadowCmpFixture(t, "shadowcmp_early", nil, &common.UpstreamConfig{
 		Id:       "shadowcmp-early",
 		Endpoint: "http://rpc2.localhost",
 	})
@@ -544,7 +551,7 @@ func TestShadowCompare_EarlyReturns(t *testing.T) {
 // with a hand-built primary response: both sides reverting, a primary whose
 // hash cannot be computed, a body-less primary request, and PinBlockTag.
 func TestShadowCompare_DirectVerdicts(t *testing.T) {
-	f := newShadowCmpFixture(t, "shadowcmp_direct", &common.UpstreamConfig{
+	f := newShadowCmpFixture(t, "shadowcmp_direct", nil, &common.UpstreamConfig{
 		Id:       "shadowcmp-direct",
 		Endpoint: "http://rpc2.localhost",
 		Shadow: &common.ShadowUpstreamConfig{
@@ -597,14 +604,9 @@ func TestShadowCompare_DirectVerdicts(t *testing.T) {
 		assert.Contains(t, hits.last(), `"0xabc"`, "shadow receives the marshalled params")
 	})
 
-	// The mirror copies the original body only while it is still unparsed;
-	// a request whose block ref/number are already cached is never parsed
-	// by the availability check, so its body survives to be pinned.
 	pinBody := `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`
 	pinResp := func(blockNumber int64) *common.NormalizedResponse {
 		resp := shadowCmpResponse(f.network, pinBody, `"0x5"`, "")
-		resp.Request().SetEvmBlockRef("latest")
-		resp.Request().SetEvmBlockNumber(int64(0x1000))
 		resp.Request().SetDirectives(&common.RequestDirectives{RetryEmpty: true})
 		if blockNumber > 0 {
 			resp.SetEvmBlockNumber(blockNumber)
@@ -671,34 +673,69 @@ func TestShadowCompare_DirectVerdicts(t *testing.T) {
 	})
 }
 
-// TestShadowCompare_ForwardPathPinsLatestTag sends an eth_getBalance at
-// "latest" through PreparedProject.Forward to a primary plus a PinBlockTag
-// shadow: the client gets the primary's answer and the shadow is sent a
-// concrete height in place of the tag.
+// TestShadowCompare_ForwardPathPinsLatestTag sends an eth_call at "latest"
+// through PreparedProject.Forward to a primary plus a PinBlockTag shadow, for
+// each way the primary can be sent the tag: translated to the network head,
+// untranslated (translateLatestTag: false), replaced by the primary's own
+// evm.pinLatestTag, or both. The client gets the primary's answer, and the
+// shadow is sent the primary's height in place of the tag.
 func TestShadowCompare_ForwardPathPinsLatestTag(t *testing.T) {
-	f := newShadowCmpFixture(t, "shadowcmp_pinfwd", &common.UpstreamConfig{
-		Id:       "shadowcmp-pinfwd",
-		Endpoint: "http://rpc2.localhost",
-		Shadow:   &common.ShadowUpstreamConfig{PinBlockTag: true},
-	})
-	for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
-		shadowCmpWaitHead(t, u, 0x11118888)
-		voteHead(t, f.network, u, 0x11118888) // the view moves on hashed heads
+	const head = "0x11118888"
+	for _, tc := range []struct {
+		name                  string
+		translate, primaryPin bool
+	}{
+		{"Translated", true, false},
+		{"Untranslated", false, false},
+		{"PrimaryPins", true, true},
+		{"UntranslatedPrimaryPins", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newShadowCmpFixture(t, "shadowcmp_pinfwd_"+tc.name, func(primary *common.UpstreamConfig, network *common.NetworkConfig) {
+				primary.Evm.PinLatestTag = util.BoolPtr(tc.primaryPin)
+				if !tc.translate {
+					network.Methods = &common.MethodsConfig{
+						PreserveDefaultMethods: true,
+						Definitions: map[string]*common.CacheMethodConfig{
+							"eth_call": {ReqRefs: [][]interface{}{{1}}, RespRefs: [][]interface{}{}, TranslateLatestTag: util.BoolPtr(false)},
+						},
+					}
+				}
+			}, &common.UpstreamConfig{
+				Id:       "shadowcmp-pinfwd",
+				Endpoint: "http://rpc2.localhost",
+				Shadow:   &common.ShadowUpstreamConfig{PinBlockTag: true},
+			})
+			for _, u := range f.prj.upstreamsRegistry.GetNetworkUpstreams(f.ctx, util.EvmNetworkId(123)) {
+				shadowCmpWaitHead(t, u, 0x11118888)
+				voteHead(t, f.network, u, 0x11118888) // the view moves on hashed heads
+			}
+			primaryHits := shadowCmpMock("rpc1.localhost", "eth_call", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
+			shadowHits := shadowCmpMock("rpc2.localhost", "eth_call", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
+			before := shadowCmpOutcomes("shadowcmp-pinfwd", "eth_call")
+
+			got := shadowCmpForward(t, f, "eth_call", `[{"to":"0x0000000000000000000000000000000000000001","data":"0x97ce1c51"},"latest"]`)
+			assert.Equal(t, `"0x5"`, got)
+
+			shadowCmpAwait(t, "shadowcmp-pinfwd", "eth_call", before, shadowCmpOutcome{identical: 1})
+			if tc.translate {
+				assert.Equal(t, head, shadowCmpBlockTag(t, primaryHits.last()), "primary is sent the head")
+			} else {
+				assert.Equal(t, "latest", shadowCmpBlockTag(t, primaryHits.last()), "the tag reaches the primary as is, whatever it pins (spec §7)")
+			}
+			assert.Equal(t, head, shadowCmpBlockTag(t, shadowHits.last()), "shadow is sent the primary's height")
+		})
 	}
-	shadowCmpMock("rpc1.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
-	hits := shadowCmpMock("rpc2.localhost", "eth_getBalance", `{"jsonrpc":"2.0","id":1,"result":"0x5"}`)
-	before := shadowCmpOutcomes("shadowcmp-pinfwd", "eth_getBalance")
+}
 
-	got := shadowCmpForward(t, f, "eth_getBalance", `["0x0000000000000000000000000000000000000001","latest"]`)
-	assert.Equal(t, `"0x5"`, got)
-
-	shadowCmpAwait(t, "shadowcmp-pinfwd", "eth_getBalance", before, shadowCmpOutcome{identical: 1})
+// shadowCmpBlockTag returns the block selector, params[1], of a request body.
+func shadowCmpBlockTag(t *testing.T, body string) string {
+	t.Helper()
 	var sent struct {
 		Params []interface{} `json:"params"`
 	}
-	require.NoError(t, common.SonicCfg.Unmarshal([]byte(hits.last()), &sent))
+	require.NoError(t, common.SonicCfg.Unmarshal([]byte(body), &sent))
 	require.Len(t, sent.Params, 2)
 	tag, _ := sent.Params[1].(string)
-	assert.NotEqual(t, "latest", tag, "shadow copy is pinned")
-	assert.True(t, strings.HasPrefix(tag, "0x"), "shadow copy carries a hex height, got %q", tag)
+	return tag
 }

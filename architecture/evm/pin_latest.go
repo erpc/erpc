@@ -7,46 +7,19 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-// pinLatestParams returns a copy of a family-3 request's params whose block
+// PinLatestParams returns a copy of a family-3 request's params whose block
 // selector, when it means latest (latestStateSelector), is hex(height),
 // rewritten as interpolation rewrites it: the tag, an EIP-1898 blockNumber
 // leaf, or an absent selector. Otherwise it returns params unchanged and
 // false. Methods outside family 3 are never pinned: for eth_getBlockByNumber
 // and friends, pinning the tag would change the QUESTION, not just the
 // evaluation height.
-func pinLatestParams(method string, params []interface{}, height int64) ([]interface{}, bool) {
+func PinLatestParams(method string, params []interface{}, height int64) ([]interface{}, bool) {
 	path, ok := latestStateSelector(method, params)
 	if !ok {
 		return params, false
 	}
 	return replaceParamAtPath(params, path, fmt.Sprintf("0x%x", height))
-}
-
-// PinBlockTagInBody pins the "latest" block selector of a family-3 request
-// body to height (pinLatestParams). Returns the rewritten body and whether a
-// rewrite happened; any parse trouble or a selector that does not mean
-// latest returns the body unchanged (fail-open, like every other shadow-path
-// guard).
-func PinBlockTagInBody(body []byte, height int64) ([]byte, bool) {
-	if len(body) == 0 || height <= 0 {
-		return body, false
-	}
-	var req map[string]interface{}
-	if err := common.SonicCfg.Unmarshal(body, &req); err != nil {
-		return body, false
-	}
-	method, _ := req["method"].(string)
-	params, _ := req["params"].([]interface{})
-	pinned, ok := pinLatestParams(method, params, height)
-	if !ok {
-		return body, false
-	}
-	req["params"] = pinned
-	out, err := common.SonicCfg.Marshal(req)
-	if err != nil {
-		return body, false
-	}
-	return out, true
 }
 
 // LatestSentAs is the block r's "latest" was sent to u as (spec §7): r's
@@ -95,7 +68,7 @@ func PinLatestTag(ctx context.Context, n common.Network, u common.Upstream, r *c
 		return nil, 0, true
 	}
 	jrq.RLock()
-	params, ok = pinLatestParams(jrq.Method, jrq.Params, height)
+	params, ok = PinLatestParams(jrq.Method, jrq.Params, height)
 	jrq.RUnlock()
 	if !ok {
 		return nil, 0, false
