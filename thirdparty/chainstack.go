@@ -85,9 +85,9 @@ func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		return ok, nil
 	}
 
-	recheckInterval := DefaultChainstackRecheckInterval
-	if interval, ok := settings["recheckInterval"].(time.Duration); ok {
-		recheckInterval = interval
+	recheckInterval, err := settings.RecheckInterval(DefaultChainstackRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 	nodes, ok := v.resolveNodes(logger, apiKey, settings, recheckInterval)
 	if !ok {
@@ -146,9 +146,9 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		}
 
 		// Try to use dynamic node discovery first
-		recheckInterval := DefaultChainstackRecheckInterval
-		if interval, ok := settings["recheckInterval"].(time.Duration); ok {
-			recheckInterval = interval
+		recheckInterval, err := settings.RecheckInterval(DefaultChainstackRecheckInterval)
+		if err != nil {
+			return nil, err
 		}
 
 		nodes, ok := v.resolveNodes(logger, apiKey, settings, recheckInterval)

@@ -1083,6 +1083,9 @@ func (u *ProviderConfig) Validate(c *Config) error {
 	if u.OnlyNetworks != nil && u.IgnoreNetworks != nil {
 		return fmt.Errorf("project.*.providers.*.onlyNetworks and project.*.providers.*.ignoreNetworks are mutually exclusive")
 	}
+	if _, err := u.Settings.RecheckInterval(0); err != nil {
+		return fmt.Errorf("provider '%s': %w", u.Id, err)
+	}
 	if u.Overrides != nil {
 		for _, override := range u.Overrides {
 			if err := override.Validate(c, true); err != nil {

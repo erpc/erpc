@@ -256,9 +256,9 @@ func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 		return false, err
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultDrpcRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultDrpcRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 
 	networks := v.resolveNetworks(logger, chainsURL, recheckInterval)
@@ -310,9 +310,9 @@ func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 			return nil, err
 		}
 
-		recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-		if !ok {
-			recheckInterval = DefaultDrpcRecheckInterval
+		recheckInterval, err := settings.RecheckInterval(DefaultDrpcRecheckInterval)
+		if err != nil {
+			return nil, err
 		}
 
 		networks := v.resolveNetworks(logger, chainsURL, recheckInterval)
