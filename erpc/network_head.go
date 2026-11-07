@@ -8,7 +8,6 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -761,14 +760,20 @@ func (n *Network) EvmAskBand(selector string, block int64) {
 // awaitBandAsk joins the band's Ask of selector sel's lane for block
 // (EvmAskBand, AskReaching) and waits for its answers, at most W (spec
 // §6.4): a poll over a slow link takes longer than 1 bt, and the band's
-// retry orders upstreams on the heads it brings.
+// retry orders upstreams on the heads it brings. The first answer that
+// reaches block ends the wait: the retry has a holder, and one slow
+// upstream never holds it back (rule 2). The other fetches run on.
 func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
 	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
 	bt := n.blockTimeOrCold()
 	var wg sync.WaitGroup
 	for _, sp := range n.bandPollers(sel, block) {
-		wg.Go(func() { sp.AskReaching(ctx, block, bt, common.AskRefusal) })
+		wg.Go(func() {
+			if a := sp.AskReaching(ctx, block, bt, common.AskRefusal); a.Err == nil && a.Block >= block {
+				cancel()
+			}
+		})
 	}
 	wg.Wait()
 }
@@ -861,19 +866,19 @@ var byHashFamily = map[string]struct{ number, hash []interface{} }{
 
 // holdByHash returns the answer to send for resp, an answer to req, from
 // an upstream or the cache (spec §6.4). A by-hash answer from a block
-// above its lane's Latest, the view's Head, shows that block at the
-// upstream that sent it: the lane's first wait for that block Asks that
-// upstream at once for its hash vote, which moves the Head within its
-// round trip (a cache answer Asks the lane's first voter whose counter
-// holds the block). That fetch is the block's one: it sights the block,
-// so the block clock fetches the next one. The wait is a read that needs
-// the view to move, so it is the clock's demand (MarkRead), from its
-// Ask's answer on: a header that serves only at q holders (a mismatch,
-// §6.5) gets them from the clock's holder fetch (§6.8). The answer is
-// sent once the view includes its block, and its upstream then counts as
-// the block's holder (noteHeld); it is null once the view pins another
-// block at that number, or when W passed, or ctx ended, with neither.
-// Each wait counts its outcome. held: resp was replaced by null.
+// above its lane's Latest, the view's Head, proves that block exists:
+// the wait is the lane's demand, and the block clock takes the proof
+// (ChainTracker.Proven), fetching the block's head at once as its probe
+// for it, unless a clock fetch is out: from the upstream that answered,
+// or for a cache answer the lane's first voter whose counter holds the
+// block, when it is a free voter, else from the clock's fastest free
+// voter. That fetch is the block's one: it sights the block, so the clock
+// fetches the next one, and a header that serves only at q holders (a
+// mismatch, §6.5) gets them from the clock's holder fetch (§6.8). The
+// answer is sent once the view includes its block, and its upstream then
+// counts as the block's holder (noteHeld); it is null once the view pins
+// another block at that number, or when W passed, or ctx ended, with
+// neither. Each wait counts its outcome. held: resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn, bh := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -884,6 +889,9 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 		sel = d.UseUpstream
 	}
 	t := n.laneTracker(sel)
+	if t == nil {
+		return resp, false
+	}
 	var hash [32]byte
 	named := false
 	if len(bh) == 66 {
@@ -895,13 +903,11 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	// and its pin there, if any, the answer's; off: another block is
 	// pinned there.
 	includes := func() (in, off bool, moved <-chan struct{}) {
-		if t != nil {
-			moved = t.Changed()
-		}
+		moved = t.Changed()
 		if h := n.headFor(tipScope{sel: sel}); h.Latest < bn {
 			return false, false, moved
 		}
-		if t != nil && named {
+		if named {
 			if c, pinned := t.View().PinAt(uint64(bn)); pinned && c.Hash != hash {
 				return false, true, moved
 			}
@@ -912,41 +918,21 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 		return resp, false
 	}
 	prover, _ := resp.Upstream().(common.EvmUpstream)
+	fromUpstream := prover != nil && !resp.SentAt().IsZero()
+	by := ""
+	if fromUpstream {
+		by = prover.Id()
+	} else {
+		by = n.firstHolder(sel, bn)
+	}
+	t.Proven(uint64(bn), by)
 	asks, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
-	bt := n.blockTimeOrCold()
-	var sp common.EvmStatePoller
-	if prover != nil && !resp.SentAt().IsZero() {
-		sp = prover.EvmStatePoller()
-	}
-	if sp == nil || sp.IsObjectNull() {
-		sp = n.firstHolder(sel, bn)
-	}
-	id := ""
-	if prover != nil {
-		id = prover.Id()
-	}
-	switch {
-	case sp == nil || t != nil && t.ClockFetchesBefore(id, time.Now()):
-		// The clock brings the block.
-		if t != nil {
-			t.MarkRead()
-		}
-	case n.claimByHashAsk(sel, bn):
-		go func() {
-			// Demand only once the Ask answered: a clock started before it
-			// would fetch the same block.
-			sp.Ask(asks, common.HeadNeedHash, bt, time.Now(), common.AskRefusal)
-			if t != nil {
-				t.MarkRead()
-			}
-		}()
-	}
 	for {
 		in, off, moved := includes()
 		switch {
 		case in:
-			if prover != nil && !resp.SentAt().IsZero() {
+			if fromUpstream {
 				n.noteHeld(prover, bn)
 			}
 			n.countHeadRefusal("held_served")
@@ -960,33 +946,15 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 			continue
 		case <-asks.Done():
 		}
-		if t != nil {
-			// An Ask returned once intake had its header; the vote may
-			// still wait in the tracker's mailbox.
-			t.Sync(ctx)
-		}
+		// The clock's fetch returned once intake had its header; the
+		// vote may still wait in the tracker's mailbox.
+		t.Sync(ctx)
 		if in, _, _ := includes(); in {
 			continue
 		}
 		n.countHeadRefusal("held_null")
 		return nullAnswer(req, resp)
 	}
-}
-
-// claimByHashAsk reports whether a by-hash wait for block bn in lane sel
-// is the lane's first, and so Asks (holdByHash).
-func (n *Network) claimByHashAsk(sel string, bn int64) bool {
-	v, ok := n.byHashAsked.Load(sel)
-	if !ok {
-		v, _ = n.byHashAsked.LoadOrStore(sel, new(atomic.Int64))
-	}
-	asked := v.(*atomic.Int64)
-	for cur := asked.Load(); bn > cur; cur = asked.Load() {
-		if asked.CompareAndSwap(cur, bn) {
-			return true
-		}
-	}
-	return false
 }
 
 // nullAnswer is a null answer to req, held instead of resp; resp itself

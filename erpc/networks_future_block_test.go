@@ -561,10 +561,11 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 // it and retries; a later hedge, beside that leg, dispatches too, and no
 // hedge's null wins over the block. Consensus slots, each pinned to one
 // upstream: all three slots' upstreams miss, one reporting the block it
-// lacks; the band's Ask finds the fourth upstream's node at the block, and
-// a slot's retry, head first, serves it. A slot's retry picks only the
-// upstreams the request may still select: one whose answer was final
-// (#1348) is not asked again.
+// lacks; the band's Ask finds the fourth upstream's node at the block,
+// while another band poller answers only after W/2, and a slot's retry,
+// head first, serves it from that first holder without waiting for the
+// slow one. A slot's retry picks only the upstreams the request may still
+// select: one whose answer was final (#1348) is not asked again.
 func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -574,9 +575,11 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	defer cancel()
 
 	// Consensus (1 of 3) over four upstreams: cs1 reports 101 but lacks it,
-	// cs2 and cs3 are at 100, cs4's node reaches 101 once Asked.
+	// cs2 and cs3 are at 100, cs4's node reaches 101 once Asked; once
+	// csSlow is set, cs3 answers a head fetch only after W/2 (cold W 3s).
 	var csHead atomic.Int64
 	csHead.Store(100)
+	var csSlow atomic.Bool
 	heads := map[string]func() int64{
 		"cs1": func() int64 { return 101 },
 		"cs2": func() int64 { return 100 },
@@ -594,6 +597,9 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 			}).
 			Reply(200).
 			Map(func(res *http.Response) *http.Response {
+				if id == "cs3" && csSlow.Load() {
+					time.Sleep(1500 * time.Millisecond)
+				}
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, heads[id]())
 				res.Body = io.NopCloser(strings.NewReader(body))
 				res.ContentLength = int64(len(body))
@@ -737,12 +743,17 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	require.Equal(t, int64(100), servedHead(slots, ctx).Latest)
 
 	csHead.Store(101)
+	csSlow.Store(true)
+	start := time.Now()
 	resp = forwardGetBlockByNumber(t, ctx, slots, "0x65")
+	took := time.Since(start)
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "a slot's retry reaches the upstream the band's Ask found at the block")
 	assert.Equal(t, int64(1), csHolder.Load(), "the upstream at the block, asked once")
 	assert.GreaterOrEqual(t, slotMisses.Load(), int64(3), "every slot dispatched its own upstream")
+	assert.Less(t, took, time.Second, "the retry starts at the first band answer that holds the block, not after the slow poller's W/2")
+	csSlow.Store(false)
 
 	final, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "cf1", chainID: 123, latestBlock: 101},
@@ -1078,13 +1089,17 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 // null, from the cache as from an upstream (spec §6.4, §7 family 5): two
 // instances share a cache, and instance 1, one block ahead, cached a
 // receipt of its Latest. eth_getLogs by blockHash is of the family, and a
-// request that ends during the wait gets null too. The wait Asks the
-// answering upstream for its head: on instance 3, whose voters' counters
-// are fresh but whose nodes already hold the block, a mismatch that
-// serves at q holders, that vote and the block clock's holder fetch of
-// the other voter serve it; on instance 4, whose nodes hold a verified
+// request that ends during the wait gets null too. The wait has the block
+// clock fetch the answering upstream's head: on instance 3, whose voters'
+// counters are fresh but whose nodes already hold the block, a mismatch
+// that serves at q holders, that vote and the block clock's holder fetch
+// of the other voter serve it; on instance 4, whose nodes hold a verified
 // block but answer that fetch only after 1 bt, as a loaded host or a slow
-// link does, the wait waits for the answer and serves it. Each wait
+// link does, the wait waits for the answer and serves it. On instance 5
+// only the shared cache holds the receipt, as Prism does before any voter
+// reports its block: the cache answer proves the block, so the clock
+// fetches a voter's head at once, within its round trip, and the receipt
+// is served then, not at the clock's next predicted fire. Each wait
 // counts its outcome.
 func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	util.ResetGock()
@@ -1278,6 +1293,73 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	assert.GreaterOrEqual(t, time.Since(start), 1500*time.Millisecond, "held until the fetch answered")
 	assert.Equal(t, served+1, held("held_served"), "the wait on instance 4 ended served")
 	assert.Equal(t, nulls, held("held_null"))
+
+	// Instance 5: its voters reported 100 at boot, poll once an hour and
+	// hold 101 by the time the request comes; only the cache holds the
+	// receipt of transaction a5 in block 101.
+	var proofHead atomic.Int64
+	proofHead.Store(100)
+	var armed atomic.Bool
+	var firstFetch atomic.Int64
+	for _, id := range []string{"hp1", "hp2"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				if armed.Load() {
+					firstFetch.CompareAndSwap(0, time.Now().UnixNano())
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, tipHead("a", uint64(proofHead.Load())))
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	proof, proofUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hp1", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour},
+		{id: "hp2", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour},
+	})
+	proof.sources.start(ctx)
+	for _, u := range proofUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Eventually(t, func() bool { return servedHead(proof, ctx).Finalized == 90 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(100), servedHead(proof, ctx).Latest)
+	proof.cacheDal = cache.WithProjectId("test")
+	const proofReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a5"]}`
+	cached := `{"blockNumber":"0x65","blockHash":"` + tipHash("a", 101) + `","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a5","status":"0x1"}`
+	creq := common.NewNormalizedRequest([]byte(proofReq))
+	creq.SetNetwork(proof)
+	cresp := common.NewNormalizedResponse().WithRequest(creq).WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(cached), nil))
+	require.NoError(t, cache.WithProjectId("test").Set(ctx, creq, cresp))
+	require.Eventually(t, func() bool {
+		probe := common.NewNormalizedRequest([]byte(proofReq))
+		probe.SetNetwork(proof)
+		got, err := cache.WithProjectId("test").Get(ctx, probe)
+		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
+	}, 2*time.Second, 20*time.Millisecond, "the cache holds the receipt")
+	var proofCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", cached, &proofCalls, "hp1", "hp2")
+	proofHead.Store(101)
+	served = held("held_served")
+	armed.Store(true)
+	start = time.Now()
+	resp, err = proof.Forward(ctx, common.NewNormalizedRequest([]byte(proofReq)))
+	took := time.Since(start)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt is served once the voter's head shows 101")
+	assert.Zero(t, proofCalls.Load(), "served from the cache")
+	require.Positive(t, firstFetch.Load(), "the wait had a voter's head fetched")
+	assert.Less(t, time.Unix(0, firstFetch.Load()).Sub(start), 100*time.Millisecond, "the voter's head is fetched within a round trip of the hold's start")
+	assert.Less(t, took, 300*time.Millisecond, "the receipt is served within a round trip and slack")
+	assert.Equal(t, served+1, held("held_served"), "the wait on instance 5 ended served")
 }
 
 // sampleBlockTime gives network its first block time sample: before it,

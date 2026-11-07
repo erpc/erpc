@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -29,6 +30,13 @@ var blockByTagFamily = map[string]struct{}{
 	"debug_getrawreceipts":                    {},
 	"erigon_getheaderbynumber":                {},
 	"arbtrace_block":                          {},
+}
+
+// ReadsBlock reports whether method reads one block by number or tag
+// (spec §7 family 2).
+func ReadsBlock(method string) bool {
+	_, ok := blockByTagFamily[strings.ToLower(method)]
+	return ok
 }
 
 // OffViewBlock reports whether resp, an upstream's eth_getBlockByNumber

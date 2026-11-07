@@ -116,9 +116,6 @@ type Network struct {
 	// by-number client answers from it held (*atomic.Int64): holder
 	// evidence for Firm and routing only, never a head report (spec §6.5).
 	heldAt sync.Map
-	// byHashAsked is, per lane selector, the highest block a by-hash
-	// wait Asked its prover about (holdByHash): one head fetch per block.
-	byHashAsked sync.Map
 
 	// queryTraceSource remembers which trace method answered the eth_query*
 	// shim on this network (queryTraceSource* values), so a network whose
@@ -1246,22 +1243,22 @@ func (n *Network) finalizedStep(s voterSet, w time.Duration) (top int64, at time
 	return n.finalizedStepTo.Load(), at
 }
 
-// firstHolder is the poller of the first voter of selector's lane, in
-// selection order, whose head counter holds block: a hash fetch of it
-// brings the vote that moves the view's Head there (spec §6.4 by-hash
-// wait); nil while none holds it.
-func (n *Network) firstHolder(selector string, block int64) (out common.EvmStatePoller) {
+// firstHolder is the id of the first voter of selector's lane, in
+// selection order, whose head counter holds block and that has a poller:
+// a hash fetch of it brings the vote that moves the view's Head there
+// (spec §6.4 by-hash wait); "" while none holds it.
+func (n *Network) firstHolder(selector string, block int64) (id string) {
 	n.voters(tipScope{sel: selector}, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 		if head < block {
 			return true
 		}
 		if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			out = sp
+			id = u.Id()
 			return false
 		}
 		return true
 	})
-	return out
+	return id
 }
 
 // EvmPollForks Asks, with a fork need at pace, each voter in ids whose
@@ -2171,15 +2168,30 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 // preferUpstreams reorders ups by hints only, every upstream staying
 // eligible: for bn, the block the client named (routingBlockNumber, read
 // before a tag is pinned to the Head, or the Head itself in the thin
-// region), upstreams known, or in the thin region most likely (thinHolds),
-// to hold it first; then failover tiers, then voters with a stale hash
-// vote, and voters on a minority fork last.
+// region), upstreams that may hold it (mayHold: known to, or in the thin
+// region most likely to, thinHolds) first. A read of the Head's own block,
+// numbered or by tag (a miss of the cache seed at a fresh Head), takes
+// those by the lane clock's measured round trip (byClockRTT): any holder
+// serves it, so the fastest serves it soonest. Then failover tiers, then
+// voters with a stale hash vote, and voters on a minority fork last.
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64) []common.Upstream {
-	if n.Architecture() == common.ArchitectureEvm && bn > 0 {
+	if n.Architecture() == common.ArchitectureEvm && len(upsList) > 1 && (bn > 0 || evm.ReadsBlock(method)) {
 		head := n.requestHead(ctx, req)
-		holds := n.thinHolds(req, head, bn)
-		upsList = n.partitionUpstreamsByLatestBlock(upsList, bn, creditCap(head), holds)
-		upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest, holds)
+		headBlock := head.Latest > 0 && (bn == head.Latest || bn == 0 && evm.ReadsBlock(method) && evm.TagBlockNumber(ctx, req, "latest") == head.Latest)
+		var holds func(common.Upstream) bool
+		front, back := upsList, []common.Upstream(nil)
+		if bn > 0 {
+			holds = n.thinHolds(req, head, bn)
+			front, back = n.splitHolders(upsList, bn, creditCap(head), holds)
+		}
+		if headBlock {
+			front = slices.Clone(front)
+			n.byClockRTT(req, front)
+		}
+		upsList = append(front, back...)
+		if bn > 0 {
+			upsList = n.preferTipLeaderForNearTipGetBlock(upsList, method, bn, head.Leader, head.Latest, holds)
+		}
 	}
 
 	// Failover tiering: try default-tier upstreams before fallback-tier ones,
@@ -2188,6 +2200,29 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 		upsList = tierUpstreamsByGroup(upsList)
 	}
 	return n.lateLast(upsList)
+}
+
+// byClockRTT sorts ups in place by the round trip req's lane clock
+// measured to each (ChainTracker.RoundTrip), fastest first; upstreams it
+// never measured go after the measured, and equals keep their order.
+func (n *Network) byClockRTT(req *common.NormalizedRequest, ups []common.Upstream) {
+	sel := ""
+	if d := req.Directives(); d != nil {
+		sel = d.UseUpstream
+	}
+	t := n.laneTracker(sel)
+	if t == nil {
+		return
+	}
+	rtt := make(map[string]time.Duration, len(ups))
+	for _, u := range ups {
+		if d, ok := t.RoundTrip(u.Id()); ok {
+			rtt[u.Id()] = d
+		} else {
+			rtt[u.Id()] = time.Duration(math.MaxInt64)
+		}
+	}
+	slices.SortStableFunc(ups, func(a, b common.Upstream) int { return cmp.Compare(rtt[a.Id()], rtt[b.Id()]) })
 }
 
 // thinHolds is, for bn in head's thin region (Firm < bn ≤ Latest), which
@@ -3535,7 +3570,13 @@ func (n *Network) handleBlockSkip(
 	// number need in the background (spec §6.4, §6.8), as main polled it:
 	// the request never waits on it, and the retry after
 	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
+	// A block at or below the request Head's Latest Asks nothing: the clock
+	// already fetched it for the network, and an Ask per skipped upstream
+	// cost a block up to one fetch per voter.
 	if isRetryable {
+		if bn := requestBlockNumber(ctx, req); bn > 0 && bn <= n.requestHead(ctx, req).Latest {
+			return
+		}
 		if eu, ok := u.(common.EvmUpstream); ok {
 			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 				sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefusal)
@@ -3700,17 +3741,32 @@ func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u commo
 
 	// Above the configured upper bound. Normalization pins "latest"/"finalized"
 	// to a number, so the target never moves; waiting helps only when the bound
-	// itself moves and the gap is within MaxRetryableBlockDistance.
+	// itself moves and the gap is within MaxRetryableBlockDistance. A bound
+	// that follows the upstream's head reads the head routing reads
+	// (mayHold): a counter polled every 10s is blocks stale, so ordering
+	// put a credited upstream first that a gate on the counter alone then
+	// skipped. One that still lacks the block answers missing, and the
+	// refusal rule's retry takes the next.
+	var upper *common.EvmAvailabilityBoundConfig
+	if cfg := eu.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.BlockAvailability != nil {
+		upper = cfg.Evm.BlockAvailability.Upper
+	}
+	if maxBound != math.MaxInt64 && bn > maxBound && upper != nil && upper.LatestBlockMinus != nil {
+		head := n.requestHead(ctx, req)
+		reached := n.reachedHead(u, creditCap(head))
+		if holds := n.thinHolds(req, head, bn); holds != nil && holds(u) {
+			reached = max(reached, bn)
+		}
+		if lift := reached - upstreamLatestBlock(u); lift > 0 {
+			maxBound += lift
+		}
+	}
 	if maxBound != math.MaxInt64 && bn > maxBound {
 		telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
 			n.projectId, eu.VendorName(), n.Label(), eu.Id(), method, common.AvailbilityConfidenceBlockHead.String(),
 		).Inc()
 		latestBlock, finalizedBlock := n.upstreamHeads(eu)
 		blockErr := common.NewErrUpstreamBlockUnavailable(eu.Id(), bn, latestBlock, finalizedBlock)
-		var upper *common.EvmAvailabilityBoundConfig
-		if cfg := eu.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.BlockAvailability != nil {
-			upper = cfg.Evm.BlockAvailability.Upper
-		}
 		return blockErr, common.UpperBoundSkipRetryable(bn, maxBound, n.maxRetryableBlockDistance(), upper.Moves(), false)
 	}
 
@@ -4313,29 +4369,54 @@ func creditCap(h *common.EvmHead) int64 {
 	return h.Latest
 }
 
-// partitionUpstreamsByLatestBlock moves the upstreams known not to hold
-// block bn (common.EvmHeadReaches) behind the rest, preserving order within
-// each group (spec §6.1, §6.4, §8). A push source is judged by its hash
-// vote on this instance, as its requests ride this instance's socket,
-// which may be half-open while the shared head counter moves; any other
-// upstream by its head counter, credited up to credit (creditedHead);
-// either by a by-number answer this instance took from it (heldAtLeast);
-// and, when holds is set, as holding bn when holds says so (thinHolds).
-// An upstream with no known head keeps its place.
+// partitionUpstreamsByLatestBlock moves the upstreams that may not hold
+// block bn (mayHold) behind the rest, preserving order within each group
+// (spec §6.1, §6.4, §8).
 func (n *Network) partitionUpstreamsByLatestBlock(ups []common.Upstream, bn, credit int64, holds func(common.Upstream) bool) []common.Upstream {
 	if bn <= 0 || len(ups) < 2 {
 		return ups
 	}
-	return stablePartition(ups, func(u common.Upstream) bool {
-		head := upstreamLatestBlock(u)
-		if n.metricsTracker != nil && n.sources.pushSource(u.Id()) {
-			head = n.metricsTracker.HashVoteNumber(u)
+	front, back := n.splitHolders(ups, bn, credit, holds)
+	return append(front, back...)
+}
+
+// splitHolders splits ups, in order, into the upstreams that may hold
+// block bn (mayHold) and the rest.
+func (n *Network) splitHolders(ups []common.Upstream, bn, credit int64, holds func(common.Upstream) bool) (front, back []common.Upstream) {
+	front = make([]common.Upstream, 0, len(ups))
+	for _, u := range ups {
+		if n.mayHold(u, bn, credit, holds) {
+			front = append(front, u)
 		} else {
-			head = n.creditedHead(u, head, credit)
+			back = append(back, u)
 		}
-		head = max(head, n.heldAtLeast(u.Id()))
-		return head > 0 && !common.EvmHeadReaches(u, head, bn) && (holds == nil || !holds(u))
-	})
+	}
+	return front, back
+}
+
+// mayHold reports whether u may hold block bn, the one predicate routing
+// and the availability gate read (spec §6.4): its reachedHead reaches bn,
+// or, when holds is set, holds says so (thinHolds). An upstream with no
+// known head may hold any block.
+func (n *Network) mayHold(u common.Upstream, bn, credit int64, holds func(common.Upstream) bool) bool {
+	head := n.reachedHead(u, credit)
+	return head <= 0 || common.EvmHeadReaches(u, head, bn) || holds != nil && holds(u)
+}
+
+// reachedHead is the head u reached as routing reads it (spec §6.1,
+// §6.4): a push source's hash vote on this instance, as its requests ride
+// this instance's socket, which may be half-open while the shared head
+// counter moves; any other upstream's head counter credited up to credit
+// (creditedHead); at least a by-number answer this instance took from it
+// (heldAtLeast). 0 when unknown.
+func (n *Network) reachedHead(u common.Upstream, credit int64) int64 {
+	head := upstreamLatestBlock(u)
+	if n.metricsTracker != nil && n.sources.pushSource(u.Id()) {
+		head = n.metricsTracker.HashVoteNumber(u)
+	} else {
+		head = n.creditedHead(u, head, credit)
+	}
+	return max(head, n.heldAtLeast(u.Id()))
 }
 
 // stablePartition returns ups with the elements matching last moved to the

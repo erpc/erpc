@@ -970,6 +970,52 @@ func p20Asym() spec {
 	return sp
 }
 
+// P20-asym-slow: P20-asym with the cache on and the selection policy
+// ranking vendor-g, the slowest, first, as the shadow's base-sepolia
+// policy ranks vendors 63-158 ms away above one 9 ms away. A latest read
+// that misses the cache seed at a fresh Head reads the Head's block, which
+// every holder serves, so it goes to the holder the clock measured
+// fastest: the new image's latest-read latency p90 within P19's p90 slack
+// of vendor-a's round trip; as P20-asym, served age within P19's slacks
+// of the old image's, which reads vendor-g, at most p20AsymFetchBound
+// head fetches per new block.
+func p20AsymSlow() spec {
+	sp := p20Asym()
+	sp.name = "P20-asym-slow"
+	sp.cache = true
+	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-g")}
+	sp.body = func(s *scenario) {
+		s.blocks(10)
+		reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
+		imgs, all, _, from, to := s.liveRun(liveRun, reads, nil)
+		var b strings.Builder
+		s.judgeAgeLatency(&b, reads, imgs, from, to)
+		s.judgeFetches(&b, "over the run", all, p20AsymFetchBound)
+		s.judgeRequests(&b, all)
+		bound := p20FastRTT + p19P90Slack
+		for i, rd := range reads {
+			if rd.name != viewLatest {
+				continue
+			}
+			var took []time.Duration
+			for _, im := range imgs[i] {
+				if s.h.pods[im.pod].old {
+					continue
+				}
+				im.mu.Lock()
+				took = append(took, im.took...)
+				im.mu.Unlock()
+			}
+			slices.Sort(took)
+			if p90 := pctl(took, 90); p90 > bound {
+				s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p90 %s, above vendor-a's round trip + P19's p90 slack, %s", rd.name, p90, bound)))
+			}
+		}
+		s.logf("%s", b.String())
+	}
+	return sp
+}
+
 // P20-flash: P20's layout, vendor-a serving each block p20Lead before
 // the others, the selection policy ranking vendor-b first, no cache. A
 // thin Head's reads go to vendor-a, the Leader, as no other vendor holds
@@ -986,6 +1032,32 @@ func p20Flash() spec {
 	}
 	sp := freshSpec("P20-flash", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail(liveFetchBound))
 	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-b")}
+	return sp
+}
+
+// P20-pair: P20-flash with vendor-a and vendor-b both serving each block
+// p20Lead before the others, so the block has two holders and no single
+// Leader, the selection policy ranking vendor-c first, and every vendor
+// serving only blocks its node has synced (blockAvailability upper
+// latestBlockMinus 0), as the shadow's monad-testnet vendors are. A
+// latest read's ordering and its availability gate read one head per
+// vendor, and a skip at or below the Head fetches nothing: as
+// P20-flash, at most 1.05 head fetches per new block.
+func p20Pair() spec {
+	var ups []freshUp
+	for _, u := range p19Ups {
+		u.slow, u.delay = p20RTT, p20Lead
+		if u.key == "http-a" || u.key == "http-b" {
+			u.delay = 0
+		}
+		ups = append(ups, u)
+	}
+	sp := freshSpec("P20-pair", 1, ups, chainsim.Config{BlockTime: liveBlockTime, FinalityStep: p17Step}, chainsim.Faults{FinalityDepth: p17Depth}, liveCompareTail(liveFetchBound))
+	bound := map[string]interface{}{"upper": map[string]interface{}{"latestBlockMinus": 0, "probe": "blockHeader"}}
+	for _, ev := range sp.upEvm {
+		ev["blockAvailability"] = bound
+	}
+	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-c")}
 	return sp
 }
 

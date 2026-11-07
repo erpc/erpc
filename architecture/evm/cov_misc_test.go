@@ -859,7 +859,6 @@ func TestCovMisc_StateSelectorAndPinParams(t *testing.T) {
 	}
 }
 
-
 func TestCovMisc_PinLatestTag(t *testing.T) {
 	ctx := context.Background()
 	pinUp := &queryTestConfigUpstream{cfg: &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{PinLatestTag: util.BoolPtr(true)}}}
