@@ -1400,16 +1400,20 @@ func (t *ChainTracker) prove(n uint64, by string) {
 
 // proveTarget plans the target's one probe once a proof shows it or a
 // block above it exists (Proven, Sighted), in place of the ladder's fires
-// (spec §6.8): to a voter whose turn the ladder planned, a rung's or a
-// laggard's vote, so the block's fetch is that turn and no turn votes
-// after it, sent once that voter likely holds the block, its longest hold
-// bound after the proof (holdAfter), now when it has none; the prover's
-// turn first. With no turn planned, to the prover now when it is a free
-// candidate, else to the fastest free voter. The other turns vote at the
-// target's sight. One proof probe per target: a later proof of it is
-// spent, and a probe that answers early leaves the block to the ladder's
-// tail. With a fetch of the target out it waits for that fetch, which
-// brings the block as soon; a proof below the target is spent.
+// (spec §6.8): to the prover when its turn is planned, a rung's or a
+// laggard's vote (an unmeasured voter is a laggard: the cache's own voter
+// lost its probe), at once; else to a rung's voter, so the block's fetch
+// is that turn and no turn votes after it, sent once that voter likely
+// holds the block, its longest hold bound after the proof (holdAfter),
+// now when it has none. A laggard other than the prover takes no probe:
+// laggards' probes at their hold bound came after the sight (P20-pair:
+// 1.222 head fetches per block against 1.021). With no turn planned, to
+// the prover now when it is a free candidate, else to the fastest free
+// voter. The other turns vote at the target's sight. One proof probe per
+// target: a later proof of it is spent, and a probe that answers early
+// leaves the block to the ladder's tail. With a fetch of the target out
+// it waits for that fetch, which brings the block as soon; a proof below
+// the target is spent.
 func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 	c := &t.clock
 	if c.proven < c.target || c.provedFor == c.target {
@@ -1422,18 +1426,20 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 	free := func(id string) bool {
 		return id != "" && !c.busy(id) && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id })
 	}
-	turns := slices.Clone(c.votes)
+	var rungTurns []string
 	for _, rr := range c.rungs {
 		if rr.turn {
-			turns = append(turns, rr.id)
+			rungTurns = append(rungTurns, rr.id)
 		}
 	}
 	r := clockRung{at: now, kind: "probe"}
 	if free(c.provenBy) {
 		r.id = c.provenBy
 	}
-	if !slices.Contains(turns, r.id) {
-		for _, id := range turns {
+	if r.id != "" && (slices.Contains(rungTurns, r.id) || slices.Contains(c.votes, r.id)) {
+		r.turn = true
+	} else {
+		for _, id := range rungTurns {
 			if !free(id) {
 				continue
 			}
@@ -1445,11 +1451,9 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 				r = clockRung{id: id, at: at, kind: "probe", turn: true}
 			}
 		}
-	} else {
-		r.turn = true
 	}
 	c.proven, c.provenBy, c.provedFor = 0, "", c.target
-	c.votes = slices.DeleteFunc(turns, func(id string) bool { return id == r.id })
+	c.votes = slices.DeleteFunc(append(c.votes, rungTurns...), func(id string) bool { return id == r.id })
 	c.rungs = []clockRung{r}
 }
 
