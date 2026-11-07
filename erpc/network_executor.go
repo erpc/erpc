@@ -598,9 +598,8 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 		}
 	}
 
-	// RetryPending directive on tx-lookup methods retries to fish a
-	// fresh upstream that has the tx confirmed (legacy heuristic:
-	// retry tx-lookup methods until MaxAttempts).
+	// RetryPending tries another upstream only while a transaction lookup
+	// has no inclusion block. A confirmed response must finish immediately.
 	if rds != nil && rds.RetryPending {
 		method, _ := req.Method()
 		switch method {
@@ -608,6 +607,11 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			"eth_getTransactionByHash",
 			"eth_getTransactionByBlockHashAndIndex",
 			"eth_getTransactionByBlockNumberAndIndex":
+			if jrr, err := resp.JsonRpcResponse(); err == nil && jrr != nil {
+				if number, err := jrr.PeekStringByPath(context.Background(), "blockNumber"); err == nil && number != "" {
+					return ""
+				}
+			}
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}

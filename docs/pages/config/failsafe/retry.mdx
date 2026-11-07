@@ -153,7 +153,7 @@ The two scopes compose multiplicatively: `network.maxAttempts: 3` × `upstream.m
 4. `ErrEndpointMissingData` + `RetryEmpty == false` directive — no retry; otherwise reason `"missing_data"` (unless cap reached).
 5. `IsRetryableTowardNetwork(err) == true` — reason `"retryable_error"`. A sweep whose every upstream answered "method unsupported" (`-32601`) or ignores the method is not retryable: neither a retry nor a hedge re-asks the upstreams, so an unknown method fails after one sweep.
 6. `resp.IsResultEmptyish()` + `RetryEmpty == true` directive + result not accepted by the empty-result policy — reason `"empty_result"` (unless cap reached).
-7. `RetryPending == true` + tx-lookup method — reason `"pending_tx"` (unless cap reached).
+7. `RetryPending == true` + tx-lookup method without a nonempty inclusion `blockNumber` — reason `"pending_tx"` (unless cap reached). A confirmed transaction or receipt, including block `0x0`, completes without this retry.
 
 Followed evidence belongs to one network instance and selector group. Networks with the same chain ID in different projects or instances do not share evidence.
 
@@ -216,7 +216,7 @@ Source: <SourceLink file="common/match.go" lines="18-78" />
 | Field | YAML path | Type | Default | Behavior |
 |---|---|---|---|---|
 | `retryEmpty` | `networks[].directiveDefaults.retryEmpty` | \*bool | `nil` (→ false) | Master gate. When false, neither scope retries empty/missing-data/block-unavailable. Overridable per-request via `X-ERPC-Retry-Empty: true` header or `?retry-empty=true`. |
-| `retryPending` | `networks[].directiveDefaults.retryPending` | \*bool | `nil` | Retries tx-lookup methods until `emptyResultMaxAttempts` reached. |
+| `retryPending` | `networks[].directiveDefaults.retryPending` | \*bool | `nil` | Retries pending tx lookups without an inclusion block, until `emptyResultMaxAttempts` is reached. Confirmed transactions and receipts return immediately. |
 | `blockUnavailableDelayMultiplier` | `networks[].evm.blockUnavailableDelayMultiplier` | \*float64 | `1.0` | Scales EMA block time: `dynamicDelay = blockTime × multiplier`. Source: <SourceLink file="common/defaults.go" lines="1978" /> |
 | `emptyResultConfidence` | `networks[].evm.emptyResultConfidence` | string | `"blockHead"` | Confidence guard: `blockHead` = trust empties at chain tip; `finalizedBlock` = stricter, retry empties for non-finalized blocks. Source: <SourceLink file="common/defaults.go" lines="2075-2079" /> |
 | `markEmptyAsErrorMethods` | `networks[].evm.markEmptyAsErrorMethods` | []string | `["eth_blockNumber","eth_getBlockByNumber","eth_getTransactionByHash","eth_getTransactionByBlockHashAndIndex","eth_getTransactionByBlockNumberAndIndex","eth_getUncleByBlockHashAndIndex","eth_getUncleByBlockNumberAndIndex","debug_traceTransaction","trace_transaction","trace_block","trace_get"]` | Methods whose `null` result is converted to `ErrEndpointMissingData`. Conversion only fires when `retryEmpty == true`. Source: <SourceLink file="common/defaults.go" lines="2044-2058" /> |
