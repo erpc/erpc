@@ -87,7 +87,8 @@ func (n *Network) SweepUpstreams(ctx context.Context, req *common.NormalizedRequ
 // intake, as the cache entry of eth_getBlockByNumber(N, false) where a
 // policy keeps it (spec §6): a "latest" read interpolated to N hits it
 // (cacheFinalities), so the first latest read of each block forwards
-// nothing.
+// nothing. The entry is a tracker request's: its finality reads the
+// tracker's own Head, never the cache anchor's (requestHead).
 func (n *Network) seedHeadBlock(u common.Upstream, sh evm.SourceHeader) {
 	if n.cacheDal == nil {
 		return
@@ -98,6 +99,7 @@ func (n *Network) seedHeadBlock(u common.Upstream, sh evm.SourceHeader) {
 	}
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, sh.Cursor().Number)))
 	req.SetNetwork(n)
+	req.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	resp.SetUpstream(u)
 	lg := n.logger.With().Str("method", "eth_getBlockByNumber").Logger()
