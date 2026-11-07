@@ -127,7 +127,10 @@ request, `store.onFailure` does.
 **Over-limit cache.** Once Redis reports a rule's key over its limit, each replica keeps
 that key in a 4 MiB in-process cache until the window ends, and denies it from there.
 Other rules in the same request still go to Redis; if every matching key is cached, no
-Redis call is made, so the denial holds while Redis is down. Source: <SourceLink file="upstream/ratelimiter_registry.go" />
+Redis call is made, so the denial holds while Redis is down. Cache keys omit the limit
+value (same as Redis), so `AdjustBudget` / auto-tuner **increases** clear the whole
+replica cache — otherwise a stale denial would outlive the new `maxCount`. Decreases
+leave cached denials in place. Source: <SourceLink file="upstream/ratelimiter_registry.go" />
 
 **Redis store failures.** Four conditions leave a request undecided by Redis:
 
