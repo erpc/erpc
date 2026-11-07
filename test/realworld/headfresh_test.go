@@ -90,14 +90,19 @@ func p16() spec {
 }
 
 // freshImage is one image's tally: every answer, when it arrived and how
-// long its request took.
+// long its request took; errs failed reads, the first freshErrSample of
+// them in failed.
 type freshImage struct {
 	pod     int
 	mu      sync.Mutex
 	answers []freshFirst
 	took    []time.Duration
 	errs    int
+	failed  []string
 }
+
+// freshErrSample is how many failed reads' errors an image keeps.
+const freshErrSample = 5
 
 // freshFirst is a value and a time: an answer, or a chain event.
 type freshFirst struct {
@@ -149,6 +154,9 @@ func (s *scenario) freshClient(ctx context.Context, im *freshImage, period time.
 			if err != nil {
 				im.mu.Lock()
 				im.errs++
+				if len(im.failed) < freshErrSample {
+					im.failed = append(im.failed, fmt.Sprintf("%s: %v", at.Format("15:04:05.000"), err))
+				}
 				im.mu.Unlock()
 				return
 			}

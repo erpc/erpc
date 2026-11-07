@@ -263,9 +263,10 @@ func (s *scenario) servedAges(ims []*freshImage, keep func(time.Time) bool) []ti
 func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs [][]*freshImage, from, to time.Time) {
 	for i, rd := range reads {
 		type cell struct {
-			ims  []*freshImage
-			took []time.Duration
-			errs int
+			ims    []*freshImage
+			took   []time.Duration
+			errs   int
+			failed []string
 		}
 		by := map[string]*cell{}
 		for _, im := range imgs[i] {
@@ -278,6 +279,7 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 			im.mu.Lock()
 			c.took = append(c.took, im.took...)
 			c.errs += im.errs
+			c.failed = append(c.failed, im.failed...)
 			im.mu.Unlock()
 		}
 		ages := map[string][]time.Duration{}
@@ -315,7 +317,7 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p99 %s, above the old image's %s + %s", rd.name, pctl(n.took, 99), pctl(o.took, 99), p19P90Slack)))
 		}
 		if rd.tail && n.errs > 0 {
-			s.violate(s.name, "new image %s: %d reads failed (old image %d)", rd.name, n.errs, o.errs)
+			s.violate(s.name, "new image %s: %d reads failed (old image %d): %s", rd.name, n.errs, o.errs, strings.Join(n.failed, "; "))
 		}
 	}
 }
