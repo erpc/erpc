@@ -1372,6 +1372,9 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	bds, bdsAddr := startCacheHeadBds(t, bdsChain, false)
 	bds.set(100, 0)
 	bdsHost := strings.TrimPrefix(bdsAddr, "grpc://")
+	// hq9's JSON-RPC calls go to the mocks: loopback hosts otherwise reach
+	// the network (util.ResetGock), here the BDS's gRPC listener.
+	gock.NetworkingFilter(func(r *http.Request) bool { return r.URL.Host != bdsHost })
 	headCfg := cacheHeadCache("bds-proof", bdsAddr, 2*time.Second, false)
 	headCfg.Connectors = append(headCfg.Connectors, cacheCfg.Connectors...)
 	headCfg.Policies = append(headCfg.Policies, cacheCfg.Policies...)
