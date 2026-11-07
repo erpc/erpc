@@ -89,10 +89,36 @@ func (d *AdaptiveDuration) Resolve(qt QuantileTracker) time.Duration {
 		return d.Base.Duration()
 	}
 
-	var adaptive time.Duration
+	var observed time.Duration
 	if qt != nil {
-		adaptive = qt.GetQuantile(d.Quantile)
+		observed = qt.GetQuantile(d.Quantile)
 	}
+	return d.clampAdaptive(observed)
+}
+
+// ResolveOrColdFallback is Resolve for callers that own the tracker: a
+// quantile spec whose tracker has no samples yet resolves to Base, then
+// Max (the same order NewTimeoutFunc uses) instead of Base+Min, since Min
+// is a floor for observed latency, not an estimate of it. Returns 0 when
+// nothing applies.
+func (d *AdaptiveDuration) ResolveOrColdFallback(qt QuantileTracker) time.Duration {
+	if d == nil || d.IsZero() {
+		return 0
+	}
+	if d.Quantile <= 0 {
+		return d.Base.Duration()
+	}
+	var observed time.Duration
+	if qt != nil {
+		observed = qt.GetQuantile(d.Quantile)
+	}
+	if observed <= 0 {
+		return d.coldFallback()
+	}
+	return d.clampAdaptive(observed)
+}
+
+func (d *AdaptiveDuration) clampAdaptive(adaptive time.Duration) time.Duration {
 	if adaptive <= 0 {
 		adaptive = d.Min.Duration()
 	}
@@ -106,6 +132,15 @@ func (d *AdaptiveDuration) Resolve(qt QuantileTracker) time.Duration {
 		v = max
 	}
 	return v
+}
+
+// coldFallback is the duration to use before any latency is observed:
+// Base, then Max; 0 when neither is set.
+func (d *AdaptiveDuration) coldFallback() time.Duration {
+	if b := d.Base.Duration(); b > 0 {
+		return b
+	}
+	return d.Max.Duration()
 }
 
 // Copy returns a deep copy. Safe to call on nil (returns nil).
