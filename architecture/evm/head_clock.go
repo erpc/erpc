@@ -71,10 +71,13 @@ type headClock struct {
 	// rung's sight; tails the tail rungs added, tailsSent those sent;
 	// delta the rungs' spacing; misses the fires past the tail of a lane
 	// the ladder does not run, which double the delay up to W; lastDone
-	// when the last fire answered or was hedged.
+	// when the last fire answered or was hedged. held are the due turns a
+	// cache-fed lane's sight holds until each voter likely holds the block
+	// (vote), by send time.
 	rungs     []clockRung
 	sent      []*clockFire
 	votes     []string
+	held      []clockRung
 	k, tails  int
 	tailsSent int
 	sk        time.Time
@@ -466,13 +469,17 @@ func (c *headClock) pushLate(bt time.Duration) time.Duration {
 }
 
 // due is when the tracker must look at the clock again: its next fire,
-// the deadline that hedges the fetch in flight, or the end of an answered
-// idle edge; zero while none is set.
+// its next held vote, the deadline that hedges the fetch in flight, or
+// the end of an answered idle edge; zero while none is set.
 func (c *headClock) due() time.Time {
-	if !c.edgeBy.IsZero() && (c.nextAt.IsZero() || c.edgeBy.Before(c.nextAt)) {
+	at := c.nextAt
+	if len(c.held) > 0 && (at.IsZero() || c.held[0].at.Before(at)) {
+		at = c.held[0].at
+	}
+	if !c.edgeBy.IsZero() && (at.IsZero() || c.edgeBy.Before(at)) {
 		return c.edgeBy
 	}
-	return c.nextAt
+	return at
 }
 
 // voter is v's record, made on first use.
@@ -723,7 +730,7 @@ func (t *ChainTracker) runClock() {
 	c.nextAt = time.Time{}
 	pace, demanded := t.clockDemand(now)
 	if !demanded && edge == nil {
-		c.scheduled, c.planned, c.ladder, c.rungs, c.votes = false, false, false, nil, nil
+		c.scheduled, c.planned, c.ladder, c.rungs, c.votes, c.held = false, false, false, nil, nil, nil
 		return
 	}
 	var cands []clockCandidate
@@ -732,6 +739,7 @@ func (t *ChainTracker) runClock() {
 		t.vote(cands, now, bt, pace)
 		c.target, c.planned = target, false
 	}
+	cands = t.sendHeld(cands, now)
 	if c.out != nil && !c.out.hedged {
 		if waiting && c.edge == nil {
 			c.edge = c.out
@@ -892,7 +900,12 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 // would else fetch. Each also moves its voter's counter to the block,
 // which routes reads of it to the nearest holder: with q−1 votes, P22's
 // latest reads went 10 ms further. On a push-fed lane each voter whose
-// turn is due votes at each first sight.
+// turn is due votes at each first sight; on a cache-fed lane (pushCached)
+// it is held until that voter likely holds the block (held vote): the
+// cache's poll sights a block before the vendors hold it, and a vote
+// then answers the block before, so the quorum's head trails the view by
+// a block (P21-avax: eth_call(latest) 2.46 s old against 1.34 s). A held
+// vote the next sight came before votes at that sight, as before.
 func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, bt, pace time.Duration) {
 	c := &t.clock
 	ids := c.votes
@@ -901,18 +914,64 @@ func (t *ChainTracker) vote(cands []clockCandidate, now time.Time, bt, pace time
 			ids = append(ids, r.id)
 		}
 	}
-	if pace == 0 && c.pushFed() {
-		due, _ := c.dueTurns(cands, now, bt)
-		for _, cand := range due {
-			ids = append(ids, cand.id)
-		}
+	for _, r := range c.held {
+		ids = append(ids, r.id)
 	}
-	c.rungs, c.votes = nil, nil
+	var due []clockCandidate
+	if pace == 0 && c.pushFed() {
+		due, _ = c.dueTurns(cands, now, bt)
+	}
+	c.rungs, c.votes, c.held = nil, nil, nil
 	for _, cand := range cands {
 		if slices.Contains(ids, cand.id) && !c.busy(cand.id) {
 			t.fire(cand.id, now, "vote")
 		}
 	}
+	for _, cand := range due {
+		if slices.Contains(ids, cand.id) || c.busy(cand.id) {
+			continue
+		}
+		if at, ok := c.heldVote(cand.id, now, bt); ok {
+			c.held = append(c.held, clockRung{id: cand.id, at: at, kind: "vote", turn: true})
+			cand.poller.ClockTurn(at)
+			continue
+		}
+		t.fire(cand.id, now, "vote")
+	}
+	slices.SortStableFunc(c.held, func(a, b clockRung) int { return a.at.Compare(b.at) })
+}
+
+// heldVote is when a cache-fed lane's vote of voter id on the top sight
+// goes: that sight's evidence plus id's held wait (clockVoter.heldWait),
+// at most a block; ok false when that is not after now: it goes now.
+func (c *headClock) heldVote(id string, now time.Time, bt time.Duration) (time.Time, bool) {
+	v, n := c.ups[id], len(c.sights)
+	if !c.pushCached || v == nil || n == 0 {
+		return time.Time{}, false
+	}
+	at := c.sights[n-1].from.Add(min(v.heldWait(), bt))
+	return at, at.After(now)
+}
+
+// sendHeld sends the held votes whose time came (vote), each to a voter
+// still a candidate with no clock fetch in flight: that fetch is its
+// turn. It returns cands, read when a vote went and cands was nil.
+func (t *ChainTracker) sendHeld(cands []clockCandidate, now time.Time) []clockCandidate {
+	c := &t.clock
+	if len(c.held) == 0 || c.held[0].at.After(now) {
+		return cands
+	}
+	if cands == nil {
+		cands = t.clockCandidates()
+	}
+	for len(c.held) > 0 && !c.held[0].at.After(now) {
+		id := c.held[0].id
+		c.held = c.held[1:]
+		if !c.busy(id) && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id }) {
+			t.fire(id, now, "vote")
+		}
+	}
+	return cands
 }
 
 // climb sends the target's fires whose time came and hedges the late
@@ -1441,19 +1500,41 @@ func (t *ChainTracker) publishCredit() {
 // when n is not among the recent sights, or id has no hold bounds.
 func (t *ChainTracker) HoldsLikely(id string, n uint64, now time.Time) bool {
 	p := t.credit.Load()
-	if p == nil {
-		return false
-	}
-	after, ok := p.after[id]
-	if !ok {
-		return false
-	}
-	for _, s := range p.sights {
+	for _, s := range p.sightsOf() {
 		if s.number == n {
-			return now.Sub(s.from) >= after
+			return p.holdsLikely(id, s, now)
 		}
 	}
 	return false
+}
+
+// LikelyHeld is the highest recent sight voter id most likely holds at now
+// (HoldsLikely), for a method-only lane's Latest (spec §6.5 state lane);
+// 0 with none.
+func (t *ChainTracker) LikelyHeld(id string, now time.Time) uint64 {
+	p := t.credit.Load()
+	sights := p.sightsOf()
+	for i := len(sights) - 1; i >= 0; i-- {
+		if p.holdsLikely(id, sights[i], now) {
+			return sights[i].number
+		}
+	}
+	return 0
+}
+
+// sightsOf is p's sights, none before the first publish.
+func (p *holdCredit) sightsOf() []clockSight {
+	if p == nil {
+		return nil
+	}
+	return p.sights
+}
+
+// holdsLikely reports whether s's first sight was taken at least id's
+// hold wait before now; false while id has no hold bounds.
+func (p *holdCredit) holdsLikely(id string, s clockSight, now time.Time) bool {
+	after, ok := p.after[id]
+	return ok && now.Sub(s.from) >= after
 }
 
 // HeldAt is when voter id most likely holds block n, for a Held request's

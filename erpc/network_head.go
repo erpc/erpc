@@ -178,7 +178,8 @@ func (n *Network) requestScope(ctx context.Context, req *common.NormalizedReques
 // facts and its tracker's view (spec §6.4, §6.5). A selector that forms
 // no lane, or a method only some of its upstreams serve, takes the
 // stateless pick of the facts and the selector lane's view, its Head
-// capped at the block q of the scope's upstreams hold.
+// capped at the block q of the scope's upstreams likely hold
+// (likelyHolders); Firm stays the view's, by proof.
 func (n *Network) headFor(s tipScope) *common.EvmHead {
 	var h common.EvmHead
 	var limit int64
@@ -186,7 +187,7 @@ func (n *Network) headFor(s tipScope) *common.EvmHead {
 		h = *l.published()
 	} else {
 		h = n.computeHead(nil, s)
-		limit, _ = n.laneHolders(s)
+		limit = n.likelyHolders(s)
 	}
 	if t := n.laneTracker(s.sel); t != nil {
 		viewHead(&h, t.View(), limit)
@@ -603,24 +604,53 @@ func (n *Network) laneFinalized(l *servedTipLane, s tipScope, latest int64) int6
 // subsets and, on a scope whose voters are all static caps, the highest
 // cap (no voter serves a block above it, rule 4).
 func (n *Network) laneHolders(s tipScope) (holders, guarantee int64) {
-	var q common.ServedTipQuorum
-	if n.cfg != nil {
-		q = n.cfg.Evm.ServedTipQuorum()
-	}
 	var buf [16]int64
-	heads := buf[:0]
-	vs := n.voters(s, voterQuery{kind: numberVote})
-	vs.each(func(u common.Upstream, head int64) bool {
-		heads = append(heads, max(head, n.heldAtLeast(u.Id())))
-		return true
-	})
+	holders, heads, live := n.pickHolders(s, nil, buf[:0])
 	guarantee, _ = n.guaranteedFloor(s.sel, false)
-	if len(heads) > 0 && !vs.live() {
+	if len(heads) > 0 && !live {
 		if c := slices.Max(heads); guarantee == 0 || c < guarantee {
 			guarantee = c
 		}
 	}
-	return common.PickServedTip(heads, q).Tip, guarantee
+	return holders, guarantee
+}
+
+// likelyHolders is the Latest a method-only scope s may serve (spec §6.5
+// state lane): the q-th highest block its number voters hold by proof
+// (laneHolders) or most likely hold by their measured lack
+// (ChainTracker.LikelyHeld). Only state reads pin to it: a voter that
+// still lacks the block answers missing, never wrong, and the refusal
+// rule's retry takes a holder. Firm and every proof consumer read
+// laneHolders.
+func (n *Network) likelyHolders(s tipScope) int64 {
+	var likely func(string) int64
+	if t := n.laneTracker(s.sel); t != nil {
+		now := time.Now()
+		likely = func(id string) int64 { return int64(t.LikelyHeld(id, now)) }
+	}
+	var buf [16]int64
+	tip, _, _ := n.pickHolders(s, likely, buf[:0])
+	return tip
+}
+
+// pickHolders is the q-th highest of heads, per number voter of scope s
+// the highest block it holds by proof, or by likely when set, appended to
+// heads; and whether any voter is live.
+func (n *Network) pickHolders(s tipScope, likely func(id string) int64, heads []int64) (tip int64, _ []int64, live bool) {
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	vs := n.voters(s, voterQuery{kind: numberVote})
+	vs.each(func(u common.Upstream, head int64) bool {
+		head = max(head, n.heldAtLeast(u.Id()))
+		if likely != nil {
+			head = max(head, likely(u.Id()))
+		}
+		heads = append(heads, head)
+		return true
+	})
+	return common.PickServedTip(heads, q).Tip, heads, vs.live()
 }
 
 // guaranteeLaggers are the lane's number voters in a guarantee subset
