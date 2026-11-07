@@ -150,6 +150,7 @@ func catalogue() []phaseSpec {
 		{"p20-flash", 14751, []spec{p20Flash()}},
 		{"p20-pair", 14801, []spec{p20Pair()}},
 		{"p21", 14001, []spec{p21()}},
+		{"p21-avax", 14901, []spec{p21Avax()}},
 		{"p22-blip", 14051, []spec{p22(false)}},
 		{"p22-stall", 14101, []spec{p22(true)}},
 		{"c19", 14151, []spec{c19()}},

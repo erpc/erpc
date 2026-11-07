@@ -110,6 +110,7 @@ type Chain struct {
 	// closed and replaced at each. tickAt holds when Start and each tick
 	// ran, guarded by tickMu.
 	ticks  atomic.Uint64
+	missed atomic.Uint64
 	tickMu sync.Mutex
 	tickCh chan struct{}
 	tickAt []time.Time
@@ -189,9 +190,13 @@ func (c *Chain) Start() {
 	}()
 }
 
-// Ticks is how many block times passed since Start, halted ones included:
-// a block time the host was too slow to tick is not one.
+// Ticks is how many block times passed since Start, halted ones and
+// missed slots included: a block time the host was too slow to tick is
+// not one.
 func (c *Chain) Ticks() uint64 { return c.ticks.Load() }
+
+// Missed is how many of the ticks were missed slots, which minted none.
+func (c *Chain) Missed() uint64 { return c.missed.Load() }
 
 // Stall is a span in which the chain made no tick.
 type Stall struct{ From, To time.Time }
@@ -363,6 +368,18 @@ func (c *Chain) Block(h Hash) *Block {
 	return c.byHash[h]
 }
 
+// Tx is the canonical block holding transaction h and its index there;
+// nil if no canonical block holds it.
+func (c *Chain) Tx(h Hash) (*Block, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tx, ok := c.byTx[h]
+	if !ok || c.canonAtLocked(tx.b.Number) != tx.b {
+		return nil, 0
+	}
+	return tx.b, tx.i
+}
+
 // CanonicalLogs are the logs f matches in canonical blocks from..to.
 func (c *Chain) CanonicalLogs(f Filter, from, to uint64) map[LogKey]Log {
 	c.mu.Lock()
@@ -460,6 +477,9 @@ func (c *Chain) tick(missed bool) {
 	c.refresh()
 	for d := range delays {
 		time.AfterFunc(d, c.refresh)
+	}
+	if missed {
+		c.missed.Add(1)
 	}
 	c.ticks.Add(1)
 	c.tickMu.Lock()

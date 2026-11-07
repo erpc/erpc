@@ -994,6 +994,9 @@ type netSpec struct {
 	// cache: the network's answers are cached, finalized ones in
 	// cacheFinal (no expiry), unfinalized ones in cacheRecent.
 	cache bool
+	// prism is the address of the network's Prism (spec.prism), "" none:
+	// its upstream's and its cache connector's server.
+	prism string
 	ups   []upSpec
 	// integrityOff are pods whose config leaves integrity off (K5);
 	// checks are integrity checks enabled beyond the level's.
@@ -1074,6 +1077,21 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 				m{"network": network, "method": "*", "finality": "finalized", "connector": cacheFinal},
 				m{"network": network, "method": "*", "finality": "unfinalized", "connector": cacheRecent, "ttl": "1m"},
 				m{"network": network, "method": "eth_call", "finality": "realtime", "connector": cacheRecent, "ttl": "1m"})
+			if n.prism != "" {
+				// Prism's policies on avalanche: read-only, its realtime age
+				// guard 2 s; eth_blockNumber stays off it.
+				base := m{"network": network, "method": "eth_getBlockByNumber|eth_getBlockByHash|eth_getTransactionReceipt", "connector": prismConnector(n), "appliesTo": "get"}
+				for _, f := range []string{"unfinalized", "unknown", "finalized", "realtime"} {
+					pol := m{"finality": f}
+					for k, v := range base {
+						pol[k] = v
+					}
+					if f == "realtime" {
+						pol["ttl"] = "2s"
+					}
+					policies = append(policies, pol)
+				}
+			}
 		}
 		for _, u := range n.ups {
 			up := m{"id": u.id, "endpoint": u.endpoint}
@@ -1090,6 +1108,9 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 			}
 			for k, v := range u.extra {
 				up[k] = v
+			}
+			if strings.HasPrefix(u.endpoint, "grpc://") {
+				up["grpc"] = m{"headers": m{prismPodHeader: strconv.Itoa(p.idx)}}
 			}
 			if u.budget > 0 {
 				up["rateLimitBudget"] = u.id
@@ -1134,13 +1155,19 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 	}
 	if len(policies) > 0 {
 		mem := m{"maxItems": 100000, "maxTotalSize": "256MB"}
-		db["evmJsonRpcCache"] = m{
-			"connectors": []m{
-				{"id": cacheFinal, "driver": "memory", "memory": mem},
-				{"id": cacheRecent, "driver": "memory", "memory": mem},
-			},
-			"policies": policies,
+		connectors := []m{
+			{"id": cacheFinal, "driver": "memory", "memory": mem},
+			{"id": cacheRecent, "driver": "memory", "memory": mem},
 		}
+		for _, n := range nets {
+			if n.prism != "" {
+				connectors = append(connectors, m{"id": prismConnector(n), "driver": "grpc", "grpc": m{
+					"servers": []string{"grpc://" + n.prism},
+					"headers": m{prismPodHeader: strconv.Itoa(p.idx), prismCacheHeader: "1"},
+				}})
+			}
+		}
+		db["evmJsonRpcCache"] = m{"connectors": connectors, "policies": policies}
 	}
 	if len(db) > 0 {
 		cfg["database"] = db

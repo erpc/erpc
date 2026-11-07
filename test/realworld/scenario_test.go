@@ -86,6 +86,10 @@ type spec struct {
 	evm     map[string]interface{}
 	network map[string]interface{}
 	cache   bool
+	// prism gives the network a Prism (prism): an upstream keyed
+	// prismKeyName, a voter, and a cache connector at its one address that
+	// serves blocks and receipts, as Prism serves avalanche.
+	prism bool
 	// vars shorten eRPC duration variables, by name
 	// (testdata/realworld_vars.go), on every pod of the scenario's phase.
 	vars map[string]time.Duration
@@ -127,6 +131,8 @@ type scenario struct {
 	// rpcs are HTTP clients per pod, by use-upstream selector ("" none).
 	rpcs map[string][]*rpc.Client
 	tr   *transcript
+	// prism is the scenario's Prism (spec.prism), nil without.
+	prism *prism
 	// graceServed counts reads the minority grace allowed (U18).
 	graceServed atomic.Int64
 
@@ -273,6 +279,15 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 		s.net.ups = append(s.net.ups, upSpec{id: id, endpoint: px.URL(), vendor: vs.name, tags: sp.tags[vs.key], evm: sp.upEvm[vs.key],
 			extra: sp.up[vs.key], budget: sp.budgets[vs.key]})
 	}
+	if sp.prism {
+		pr, err := startPrism(s.chain, prismFinalityDepth(sp))
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		s.prism, s.net.prism = pr, pr.addr()
+		s.net.ups = append(s.net.ups, upSpec{id: slug + "-" + prismKeyName, endpoint: "grpc://" + pr.addr(), vendor: "prism",
+			evm: sp.upEvm[prismKeyName], extra: sp.up[prismKeyName]})
+	}
 	s.chain.Start()
 	for _, key := range sp.late {
 		s.vendors[key].Update(func(f *chainsim.Faults) { f.ChainIDHeld = true })
@@ -376,6 +391,9 @@ func (s *scenario) execute(t *testing.T) {
 	s.t = t
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	defer s.chain.Close()
+	if s.prism != nil {
+		defer s.prism.close()
+	}
 	defer s.cancel()
 	for _, p := range s.h.pods {
 		if p.running() {

@@ -60,9 +60,10 @@ const (
 // tag, and eth_blockNumber.
 var headFetchKinds = []string{"latest", blockNumberRead}
 
-// fetchMark is, at one instant, the chain's ticks, each pod's head
-// fetches and requests through every vendor proxy of the scenario, and
-// each new-image pod's head fetches by cause (clockMix).
+// fetchMark is, at one instant, the chain's new blocks (ticks less missed
+// slots), each pod's head fetches and requests through every vendor proxy
+// and the scenario's Prism, and each new-image pod's head fetches by cause
+// (clockMix).
 type fetchMark struct {
 	at       time.Time
 	ticks    uint64
@@ -72,7 +73,7 @@ type fetchMark struct {
 }
 
 func (s *scenario) fetchMark() fetchMark {
-	m := fetchMark{at: time.Now(), ticks: s.chain.Ticks(), mix: s.clockMix()}
+	m := fetchMark{at: time.Now(), ticks: s.chain.Ticks() - s.chain.Missed(), mix: s.clockMix()}
 	for _, p := range s.h.pods {
 		var f, r float64
 		for _, px := range s.proxies {
@@ -80,6 +81,10 @@ func (s *scenario) fetchMark() fetchMark {
 				f += float64(px.reads(p, k))
 			}
 			r += float64(px.reads(p, anyRead))
+		}
+		if s.prism != nil {
+			f += float64(s.prism.reads(p.idx, false, "latest"))
+			r += float64(s.prism.reads(p.idx, false, anyRead))
 		}
 		m.fetches = append(m.fetches, f)
 		m.requests = append(m.requests, r)
@@ -1083,6 +1088,96 @@ func p21() spec {
 		})
 	sp.pods, sp.oldPods, sp.memory, sp.splitState, sp.cache = 4, []int{0, 1}, false, true, true
 	return sp
+}
+
+const (
+	// p21AvaxBlockTime: avalanche's blocks; each slot's block is minted up
+	// to p21AvaxSlotDelay into it, p21AvaxMissed of the slots none.
+	p21AvaxBlockTime = time.Second
+	p21AvaxSlotDelay = 600 * time.Millisecond
+	p21AvaxMissed    = 0.03
+	// p21AvaxHeadJitter: each vendor serves each block up to this after
+	// its own delay.
+	p21AvaxHeadJitter = 100 * time.Millisecond
+)
+
+// p21AvaxUps are avalanche's vendors as the shadow saw them, polled every
+// 5 s or 10 s, Σ min(1, bt/I) 0.9 with Prism's: each serves a block 150-500
+// ms after Prism learns it at mint, and vendor-e, the nearest, last.
+var p21AvaxUps = []freshUp{
+	{"http-a", "vendor-a", 30 * time.Millisecond, 5 * time.Second, 0, 150 * time.Millisecond},
+	{"http-b", "vendor-b", 60 * time.Millisecond, 5 * time.Second, 0, 250 * time.Millisecond},
+	{"http-c", "vendor-c", 80 * time.Millisecond, 10 * time.Second, 0, 300 * time.Millisecond},
+	{"http-d", "vendor-d", 110 * time.Millisecond, 10 * time.Second, 0, 400 * time.Millisecond},
+	{"http-e", "vendor-e", 20 * time.Millisecond, 10 * time.Second, 0, 500 * time.Millisecond},
+}
+
+// P21-avax: P21's pods on avalanche's shape: 1 s slots whose blocks come
+// up to 0.6 s late or not at all, p21AvaxUps, and Prism, a voter polled
+// every 5 s and the network's cache, which learns each block at its mint
+// and serves its receipts. Reads as P21's plus the receipt of the newest
+// block (tipReceipt), which Prism serves before any vendor holds it. As
+// P21: served age and latency within P19's slacks of the old image's
+// (the receipt's latency excepted: it waits for the view, rule 5), at
+// most 1.05 head fetches per new block, at most 5% of block-clock
+// fetches early.
+func p21Avax() spec {
+	slot := func() (time.Duration, bool) {
+		if rand.Float64() < p21AvaxMissed {
+			return 0, true
+		}
+		return rand.N(p21AvaxSlotDelay), false
+	}
+	sp := freshSpec("P21-avax", 1, p21AvaxUps, chainsim.Config{BlockTime: p21AvaxBlockTime, Slot: slot, FinalityStep: p17Step},
+		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p21AvaxHeadJitter}, func(s *scenario) {
+			s.blocks(10)
+			reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
+			receipt := liveRead{"eth_getTransactionReceipt(tip)", freshLoad{reads[0].load.period, "latest", tipReceipt}, [2]time.Duration{}, false, false}
+			cacheCalls := func(pod int) (all, latest int64) {
+				return s.prism.reads(pod, true, anyRead), s.prism.reads(pod, true, "latest")
+			}
+			before := make([][2]int64, len(s.h.pods))
+			for i := range s.h.pods {
+				before[i][0], before[i][1] = cacheCalls(i)
+			}
+			imgs, all, _, from, to := s.liveRun(liveRun, append(reads, receipt), nil)
+			var b strings.Builder
+			s.judgeAgeLatency(&b, reads, imgs[:len(reads)], from, to)
+			s.logReadLatency(&b, receipt.name, imgs[len(reads)])
+			s.judgeFetches(&b, "over the run", all, liveFetchBound)
+			s.judgeRequests(&b, all)
+			for _, p := range s.h.pods {
+				n, latest := cacheCalls(p.idx)
+				fmt.Fprintf(&b, "pod-%d (%s image): %.2f Prism cache calls/s, %.2f of them latest heads\n", p.idx+1, s.image(p.idx),
+					float64(n-before[p.idx][0])/all.dur.Seconds(), float64(latest-before[p.idx][1])/all.dur.Seconds())
+			}
+			s.logf("%s", b.String())
+			s.judgeClockEarly()
+		})
+	sp.upEvm[prismKeyName] = map[string]interface{}{"statePollerInterval": (5 * time.Second).String()}
+	sp.pods, sp.oldPods, sp.memory, sp.splitState, sp.cache, sp.prism = 4, []int{0, 1}, false, true, true, true
+	return sp
+}
+
+// logReadLatency logs, per image, the answers, errors and latency of
+// name's reads ims, pooled over its pods, judging none.
+func (s *scenario) logReadLatency(b *strings.Builder, name string, ims []*freshImage) {
+	for _, img := range []string{"old", "new"} {
+		var took []time.Duration
+		errs := 0
+		for _, im := range ims {
+			if s.image(im.pod) != img {
+				continue
+			}
+			im.mu.Lock()
+			took = append(took, im.took...)
+			errs += im.errs
+			im.mu.Unlock()
+		}
+		slices.Sort(took)
+		fmt.Fprintf(b, "%s image %s: %d answers, %d errors, latency p50 %s p90 %s p99 %s max %s\n",
+			img, name, len(took), errs, pctl(took, 50), pctl(took, 90), pctl(took, 99), pctl(took, 100))
+	}
 }
 
 // judgeClockEarly flags a new-image pod whose block clock's probes and

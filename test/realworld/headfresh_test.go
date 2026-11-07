@@ -511,7 +511,7 @@ const (
 // the blocks proposed 3-6 s into their slot, p16TailsMissed of the slots
 // missed. As P16-spread: the new image's served latest age and latency
 // within P16's slacks of the old image's, at most turnBound head fetches
-// per slot.
+// per new block, a missed slot minting none.
 func p16Tails() spec {
 	ups := p16SpreadUps()
 	slot := func() (time.Duration, bool) {
