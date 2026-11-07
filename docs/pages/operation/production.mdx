@@ -124,7 +124,7 @@ points the agent at this page's machine-readable reference so it can do the work
 
 **Error details in responses.** `server.includeErrorDetails` defaults to `true`. Upstream error messages frequently contain endpoint URLs with embedded API keys. Set to `false` before exposing eRPC to external callers. Errors are still logged internally at full verbosity regardless of this setting.
 
-**Prometheus metrics and alerting.** The metrics server starts on port `4001` (all interfaces). `metrics.errorLabelMode: compact` (the default) produces short stable error codes — `verbose` mode embeds full messages including block numbers or IP addresses, creating unbounded Prometheus cardinality. Six alert rules ship in `monitoring/prometheus/alert.rules`; two reference stale metric names (`erpc_upstream_request_self_rate_limited_total`, `erpc_network_request_self_rate_limited_total`) — use `erpc_rate_limits_total` instead. The monitoring container (Prometheus + Grafana combined) runs both processes under `tail -f /dev/null`; not suitable for production — run them as separate services.
+**Prometheus metrics and alerting.** The metrics server starts on port `4001`, bound to `metrics.hostV4` (default `0.0.0.0`; set `127.0.0.1` to keep it off the network). `metrics.errorLabelMode: compact` (the default) produces short stable error codes — `verbose` mode embeds full messages including block numbers or IP addresses, creating unbounded Prometheus cardinality. Six alert rules ship in `monitoring/prometheus/alert.rules`; two reference stale metric names (`erpc_upstream_request_self_rate_limited_total`, `erpc_network_request_self_rate_limited_total`) — use `erpc_rate_limits_total` instead. The monitoring container (Prometheus + Grafana combined) runs both processes under `tail -f /dev/null`; not suitable for production — run them as separate services.
 
 **Chain ID explicit configuration.** Without explicit `evm.chainId` in network and upstream config, eRPC calls `eth_chainId` on every upstream at startup. With many replicas and upstreams this produces a startup request burst. Set `evm.chainId` explicitly to eliminate it.
 
@@ -151,7 +151,7 @@ Fields relevant to production hardening. All under `server.` or `metrics.` unles
 | `server.responseHeaders` | `map[string]string` | `nil` | Static headers on every response. Values are `os.ExpandEnv`-expanded once at startup. Headers with empty-after-expansion values are **silently dropped** — no warning. |
 | `server.executionHeaders` | `*ExecutionHeadersMode` | `"all"` — <SourceLink file="common/defaults.go" lines="720-723" /> | `"all"` = full `X-ERPC-*` diagnostic headers; `"summary"` = counters + metadata only; `"off"` = no diagnostic headers. |
 | `metrics.enabled` | `*bool` | `true` (production); `nil` under `go test` — <SourceLink file="common/defaults.go" lines="909-911" /> | Whether the `/metrics` HTTP server starts. |
-| `metrics.port` | `*int` | `4001` — <SourceLink file="common/defaults.go" lines="918-920" /> | Metrics server port. Always binds `0.0.0.0:<port>` regardless of `metrics.hostV4`. |
+| `metrics.port` | `*int` | `4001` — <SourceLink file="common/defaults.go" lines="918-920" /> | Metrics server port. Binds `metrics.hostV4:<port>` (and `hostV6` when `listenV6` is true). |
 | `metrics.errorLabelMode` | `string` | `"compact"` — <SourceLink file="common/defaults.go" lines="921-923" /> | `"compact"` = short stable error codes (bounded cardinality). `"verbose"` = full messages including block numbers / IPs (unbounded cardinality risk). |
 | `metrics.customizations` | `[]object` | `nil` | Shapes `/metrics`: `{subject, action?, labels?, buckets?}` entries dropping whole families, projecting label sets, or overriding histogram buckets. Resolved before the first registration — startup-only. Supersedes `histogramDropLabels`/`histogramLabelOverrides`/`counterDropLabels`/`counterLabelOverrides`, which are deprecated but still honored. |
 | `GOMEMLIMIT` (env) | string | not set in any manifest — <SourceLink file="kube/erpc.yml" lines="33-36" /> | Set to ~90% of container memory limit. Without it, Go GC may allow heap to approach the hard limit before triggering, causing OOM kill. |
@@ -163,7 +163,7 @@ Fields relevant to production hardening. All under `server.` or `metrics.` unles
 - `MaxHeaderBytes` = 1 MiB — <SourceLink file="erpc/http_server.go" lines="186" />
 - Graceful shutdown budget = 30 s — <SourceLink file="erpc/http_server.go" lines="1642" />
 - Metrics shutdown budget = 5 s — <SourceLink file="erpc/init.go" lines="207" />
-- Metrics server binds `0.0.0.0:<port>` — `hostV4`/`hostV6` config fields are defined but unused — <SourceLink file="erpc/init.go" lines="189" />
+- Metrics server binds `metrics.hostV4:<port>` (IPv6 only with `listenV6: true`), the same way the main server honours `server.httpHostV4` — <SourceLink file="erpc/init.go" lines="195-232" />
 
 ### Worked examples
 
@@ -390,7 +390,7 @@ metrics: {
 - `waitBeforeShutdown` elapses before `http.Server.Shutdown` starts; `waitAfterShutdown` elapses after `appCtx` is done, before `os.Exit`. [<SourceLink file="erpc/http_server.go" lines="209-221" />, <SourceLink file="erpc/init.go" lines="223-225" />]
 - A `maxTimeout` hit returns JSON-RPC `-32603` `"http request handling timeout"` with HTTP 200 for POST, 504 for non-POST — not a Go deadline cancellation. [<SourceLink file="erpc/http_timeout.go" lines="107-122" />]
 - `server.responseHeaders` env expansion runs once at `NewHttpServer` construction time, not per-request. Empty-after-expansion values are silently dropped. [<SourceLink file="erpc/http_server.go" lines="135-148" />]
-- The metrics server binds `0.0.0.0:<port>` — `metrics.hostV4` / `hostV6` are defined but unused. Restrict scrape access via firewall or network policy. [<SourceLink file="erpc/init.go" lines="189" />]
+- The metrics server binds `metrics.hostV4:<port>`; IPv6 is opt-in via `listenV6`. Set `hostV4: 127.0.0.1` to keep `/metrics` on loopback. [<SourceLink file="erpc/init.go" lines="195-232" />]
 - `metrics.errorLabelMode: compact` is applied at `erpc.Init`; any series created before `Init` carry `verbose` labels until they expire. [<SourceLink file="erpc/init.go" lines="178-180" />]
 - Idle-series sweep evicts stale `upstream_request_duration_seconds` and `rate_limits_total` Prometheus series every ~5 minutes with a 30-minute idle window. [<SourceLink file="health/tracker.go" lines="557-563" />, <SourceLink file="health/tracker.go" lines="598-631" />]
 
@@ -409,7 +409,7 @@ metrics: {
 1. **`maxTimeout: 0` (or bare `0`) fails validation** — `"server.maxTimeout is required"`. Integer YAML values are milliseconds: `maxTimeout: 150` = 150 ms. Always use string form `"150s"`. Source: <SourceLink file="common/validation.go" lines="90-92" />, <SourceLink file="common/duration.go" lines="8-32" />
 2. **`GOMEMLIMIT` is absent from all bundled manifests.** With a 3 Gi kube limit and default GC, heap can approach the limit before GC fires. Set `GOMEMLIMIT=2700MiB` as a container env var. Source: <SourceLink file="kube/erpc.yml" lines="33-36" />
 3. **`terminationGracePeriodSeconds` must exceed `waitBeforeShutdown + waitAfterShutdown + drain time`.** With both set to 30 s, use `terminationGracePeriodSeconds: 90` minimum. Kubernetes SIGKILL fires when this expires, cutting in-flight requests.
-4. **`metrics.hostV4: 127.0.0.1` does not restrict the metrics port.** The bind address is always `0.0.0.0:<port>`. Restrict via firewall, network policy, or run the metrics server inside a VPC. Source: <SourceLink file="erpc/init.go" lines="189" />
+4. **`metrics.hostV4: 127.0.0.1` binds loopback only.** Releases through 0.4.0 ignored the field and bound `0.0.0.0:<port>`; on those versions restrict via firewall or network policy. Source: <SourceLink file="erpc/init.go" lines="195-232" />
 5. **`server.responseHeaders` with an env var that is unset at startup silently omits the header.** No warning is emitted. If `X-ERPC-Region: ${REGION}` is configured and that env var is absent in a new region, the header disappears with no observable error. Source: <SourceLink file="erpc/http_server.go" lines="135-148" />
 6. **`metrics.errorLabelMode: verbose` can create unbounded Prometheus cardinality.** Full error messages include block numbers and IP addresses. Existing `compact` series and new `verbose` series co-exist until the verbose ones expire. Source: <SourceLink file="common/errors.go" lines="17-66" />
 7. **The monitoring container (Prometheus + Grafana combined) is not production-suitable.** It runs both processes under `tail -f /dev/null`; if either crashes neither restarts. Use separate Prometheus and Grafana deployments in production. Source: `monitoring/Dockerfile`

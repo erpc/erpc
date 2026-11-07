@@ -166,10 +166,10 @@ All fields under `metrics.` in the YAML root config. Struct: <SourceLink file="c
 |---|---|---|---|
 | `metrics.enabled` | `*bool` | `true` in production; `nil` (disabled) under `go test` | Whether to start the `/metrics` HTTP server. When false or nil, no server starts; metrics still accumulate in-process. Source: <SourceLink file="common/defaults.go" lines="909-911" /> |
 | `metrics.port` | `*int` | `4001` | TCP port for the metrics HTTP server. Required when `enabled=true`; `erpc.Init` aborts if nil. Default `4001` = main HTTP port (4000) + 1. Source: <SourceLink file="common/defaults.go" lines="918-920" /> |
-| `metrics.hostV4` | `*string` | `"0.0.0.0"` | **Defined but not used.** The server always binds `":<port>"` (all interfaces) regardless of this value. Use a firewall or network policy to restrict scrape access. Source: <SourceLink file="erpc/init.go" lines="189" /> |
-| `metrics.listenV4` | `*bool` | `nil` | **Dead field.** Defined in struct but never read in production code. |
-| `metrics.hostV6` | `*string` | `"[::]"` | **Defined but not used.** Same caveat as `hostV4`. Source: <SourceLink file="common/defaults.go" lines="915-917" /> |
-| `metrics.listenV6` | `*bool` | `nil` | **Dead field.** Defined in struct but never read in production code. |
+| `metrics.hostV4` | `*string` | `"0.0.0.0"` | IPv4 bind host for the metrics server, honoured the same way `server.httpHostV4` is. Set `127.0.0.1` to keep `/metrics` on loopback. Source: <SourceLink file="erpc/init.go" lines="195-232" /> |
+| `metrics.listenV4` | `*bool` | `true` | Enables the IPv4 metrics listener. Validation requires `hostV4` when true. |
+| `metrics.hostV6` | `*string` | `"[::]"` | IPv6 bind host; brackets are optional (`"::1"` and `"[::1]"` are the same). Source: <SourceLink file="common/defaults.go" lines="942-954" /> |
+| `metrics.listenV6` | `*bool` | `nil` (OFF) | IPv6 must be opted in, as with `server.listenV6`. Validation requires `hostV6` when true; `Init` fails if neither listener is enabled. |
 | `metrics.errorLabelMode` | `string` | `"compact"` | Controls the `error` label via `common.ErrorSummary`. `"compact"` → short stable codes (bounded cardinality, recommended). `"verbose"` → full human-readable messages including block numbers / IPs (unbounded cardinality risk). Applied at `erpc.Init`. Note: the in-code default before `Init` runs is `verbose` — a mix of both modes appears until verbose series expire. Source: <SourceLink file="common/defaults.go" lines="921-923" /> |
 | `metrics.histogramBuckets` | `string` | `""` → `[0.05, 0.5, 5, 30]` | Comma-separated float64 bucket boundaries for every histogram that does not declare its own buckets: `upstream_request_duration_seconds`, `network_request_duration_seconds`, `consensus_duration_seconds`, `cache_set_success/error_duration_seconds`, `cache_get_success_hit/miss/error_duration_seconds`. Invalid float → warning + fallback to defaults. Source: <SourceLink file="telemetry/metrics.go" lines="943-948" /> |
 | `metrics.customizations` | `[]object` | `nil` | The single knob for shaping `/metrics`. Each entry is `{subject, action?, labels?, buckets?}`. Startup-only — everything is resolved before the first registration, so a change needs a restart. Overlapping entries resolve by specificity (exact name > longer prefix > shorter prefix > `*`), not by list order. Source: <SourceLink file="telemetry/policy.go" /> |
@@ -478,7 +478,7 @@ Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it i
 
 ### Edge cases & gotchas
 
-1. **`hostV4`/`hostV6` are unused.** The server always binds all interfaces (`":<port>"`). Setting `metrics.hostV4: 127.0.0.1` does NOT restrict scrape access to loopback. Use a firewall or network policy instead. (<SourceLink file="erpc/init.go" lines="189" />)
+1. **`hostV4`/`hostV6` used to be ignored** (through 0.4.0 the metrics server bound all interfaces, `":<port>"`). They are honoured now: `metrics.hostV4: 127.0.0.1` with `listenV6` unset binds loopback only. (<SourceLink file="erpc/init.go" lines="195-232" />)
 
 2. **`metrics.enabled` defaults to `nil` (disabled) under `go test`.** Integration tests that start a full `erpc.Init` will NOT spin up a metrics server unless they set `Enabled: true` explicitly. (<SourceLink file="common/defaults.go" lines="909-911" />)
 

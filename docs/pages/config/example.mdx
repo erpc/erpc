@@ -869,8 +869,10 @@ pipeline, env-var semantics, validate/dump tooling — applies to whichever form
 | YAML path | Type | Default | Behavior |
 |---|---|---|---|
 | `metrics.enabled` | bool | `true` (non-test); unset in test builds | If false/nil, metrics server is not started. |
-| `metrics.hostV4` | string | `"0.0.0.0"` | Prometheus scrape endpoint IPv4 bind host. |
+| `metrics.hostV4` | string | `"0.0.0.0"` | Prometheus scrape endpoint IPv4 bind host (honoured like `server.httpHostV4`). |
+| `metrics.listenV4` | bool | `true` | Enables the IPv4 metrics listener; requires `hostV4`. |
 | `metrics.hostV6` | string | `"[::]"` | IPv6 bind host. |
+| `metrics.listenV6` | bool | unset (off) | Opt-in IPv6 metrics listener; requires `hostV6`. |
 | `metrics.port` | int | `4001` | Prometheus scrape port. |
 | `metrics.errorLabelMode` | string | `"compact"` | Controls the `error` label on error-count metrics. `"compact"` condenses error codes; `"verbose"` emits full class names. |
 | `metrics.histogramBuckets` | string | `""` (built-in defaults) | Comma-separated float64 bucket boundaries for request-duration histograms. Validation rejects non-float values. |
