@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +53,7 @@ func (z *zerologAdapter) Printf(ctx context.Context, format string, v ...interfa
 type RedisConnector struct {
 	id            string
 	logger        *zerolog.Logger
-	client        *redis.Client
+	client        redis.UniversalClient
 	initializer   *util.Initializer
 	cfg           *common.RedisConnectorConfig
 	redsync       *redsync.Redsync
@@ -239,12 +238,26 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		return err
 	}
 
+	// A cluster-mode server answers MOVED for keys outside the node behind
+	// the address, so switch to a slot-aware client when the server says so.
+	var conn redis.UniversalClient = client
+	if redisClusterEnabled(ctx, client) {
+		_ = client.Close()
+		cluster := redis.NewClusterClient(redisClusterOptions(options))
+		if err := cluster.Ping(ctx).Err(); err != nil {
+			_ = cluster.Close()
+			return fmt.Errorf("failed to ping Redis cluster: %w", err)
+		}
+		conn = cluster
+		r.logger.Info().Str("addr", options.Addr).Msg("Redis cluster mode detected, using cluster client")
+	}
+
 	if r.client != nil {
 		_ = r.client.Close()
 	}
-	r.client = client
+	r.client = conn
 
-	pool := goredis.NewPool(client)
+	pool := goredis.NewPool(conn)
 	r.redsync = redsync.New(pool)
 
 	// Handle pubsub manager - create once and let it handle reconnections
@@ -731,23 +744,23 @@ func (r *RedisConnector) List(ctx context.Context, index string, limit int, pagi
 	ctx, cancel := context.WithTimeout(ctx, r.getTimeout)
 	defer cancel()
 
-	// Use SCAN for efficient pagination
-	cursor := uint64(0)
-	if paginationToken != "" {
-		var err error
-		cursor, err = strconv.ParseUint(paginationToken, 10, 64)
-		if err != nil {
-			return nil, "", fmt.Errorf("invalid pagination token: %w", err)
-		}
-	}
-
 	// Determine the pattern to scan for
 	pattern := "*"
 	if index == ConnectorReverseIndex {
 		pattern = redisReverseIndexPrefix + "#*"
 	}
 
-	keys, nextCursor, err := r.client.Scan(ctx, cursor, pattern, int64(limit)).Result()
+	var keys []string
+	var nextToken string
+	var err error
+	if cluster, ok := r.client.(*redis.ClusterClient); ok {
+		keys, nextToken, err = scanRedisCluster(ctx, cluster, paginationToken, pattern, int64(limit))
+	} else {
+		keys, nextToken, err = scanRedis(ctx, r.client, paginationToken, pattern, int64(limit))
+	}
+	if errors.Is(err, errInvalidPaginationToken) {
+		return nil, "", err
+	}
 	if err != nil {
 		r.logger.Warn().Err(err).Msg("failed to SCAN in Redis")
 		r.markConnectionAsLostIfNecessary(err)
@@ -807,11 +820,6 @@ func (r *RedisConnector) List(ctx context.Context, index string, limit int, pagi
 				Value:        value,
 			})
 		}
-	}
-
-	nextToken := ""
-	if nextCursor != 0 {
-		nextToken = strconv.FormatUint(nextCursor, 10)
 	}
 
 	return results, nextToken, nil
