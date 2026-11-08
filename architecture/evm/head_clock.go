@@ -3,6 +3,7 @@ package evm
 import (
 	"cmp"
 	"context"
+	"errors"
 	"math"
 	"slices"
 	"time"
@@ -126,9 +127,11 @@ type headClock struct {
 	// ahead is the highest block a read waits for above the top sight
 	// (ReadAhead); aheadFor the last target its shared early fetch went
 	// for (aheadProbe): one per target; aheadAt when a read first waited
-	// for target aheadOn.
+	// for target aheadOn; aheadNull that fetch while its null answer
+	// leaves it one more, the target's next tail rung (addTail).
 	ahead, aheadFor, aheadOn uint64
 	aheadAt                  time.Time
+	aheadNull                *clockFire
 	// seq names the clock's generation: a reset moves it on, so an answer
 	// from before the reset is dropped.
 	seq uint64
@@ -175,8 +178,8 @@ type clockFire struct {
 	// guarantee, holder, edge (the idle edge's), cold (before any sight),
 	// held (a by-hash proof's block fetched by hash from the voter that
 	// answered it, proveTarget), ahead (the shared early fetch of a block
-	// reads wait for, aheadProbe). Only a rung's, probe's or retry's
-	// answer is the ladder's.
+	// reads wait for: the target by number, aheadProbe). Only a rung's,
+	// probe's or retry's answer is the ladder's.
 	kind string
 }
 
@@ -933,7 +936,7 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 		c.off, c.offSet = 0.1, true
 	}
 	c.planned, c.ladder, c.kEarly, c.early, c.scheduled = true, false, false, false, true
-	c.rungs, c.sent, c.votes = nil, nil, nil
+	c.rungs, c.sent, c.votes, c.aheadNull = nil, nil, nil, nil
 	c.k, c.tails, c.tailsSent, c.misses, c.lastDone = 1, 0, 0, 0, time.Time{}
 	p := c.predict(c.target, bt)
 	sk := p.Add(time.Duration(c.off * float64(bt)))
@@ -1171,20 +1174,35 @@ func (t *ChainTracker) climb(cands []clockCandidate, now time.Time, bt time.Dura
 // 53 fetches in a 2 s wait of a 0.1 s chain. Else, after k of them, one to the
 // fastest voter at the last fire plus bt doubled per miss, at most W; on
 // a lane the cache's poll feeds, that one from the first tail: the block
-// comes by that poll. A hedge's goes now.
+// comes by that poll. A hedge's goes now. After a null answer to the
+// shared early fetch the next fire is that fetch once more (aheadNull),
+// to the same voter by number, at its gap and no sooner than its held
+// wait after that fetch: a tail rung asks the tag, which a vendor's head
+// readers answer below the block while its block readers serve it (§19
+// P23-slow).
 func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Duration, hedge bool) {
 	c := &t.clock
+	if f := c.aheadNull; f != nil {
+		c.aheadNull = nil
+		if i := slices.IndexFunc(cands, func(cand clockCandidate) bool { return cand.id == f.id }); i >= 0 {
+			r := clockRung{id: f.id, at: now, kind: "ahead", again: true}
+			if !hedge {
+				r.at = c.lastDone.Add(c.tailGap(cands, cands[i], bt))
+				if held := f.sent.Add(c.voter(f.id).heldWait()); held.After(r.at) {
+					r.at = held
+				}
+			}
+			c.rungs = append(c.rungs, r)
+			return
+		}
+	}
 	r := clockRung{kind: "retry", at: now}
 	if order := c.byScore(cands); !(c.pushFed() && c.pushCached) && (c.ladder || c.tails < c.k) && len(order) > 0 {
 		cand := order[c.tails%len(order)]
 		c.tails++
 		r.id = cand.id
-		gap := cand.debounce
-		if gap <= 0 {
-			gap = max(2*c.bestRTT(cands), min(c.delta, bt/10))
-		}
 		if !hedge {
-			r.at = c.lastDone.Add(gap)
+			r.at = c.lastDone.Add(c.tailGap(cands, cand, bt))
 			if c.ladder && c.tails > 1 {
 				per := time.Duration(float64(bt) / max(1, turnsPerBlock(cands, bt)))
 				if paid := c.sk.Add(time.Duration(c.tails-1) * per); paid.After(r.at) {
@@ -1205,6 +1223,15 @@ func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Du
 	c.rungs = append(c.rungs, r)
 }
 
+// tailGap is how long after the last answer a tail fire to cand goes:
+// its explicit statePollerDebounce (#790), else max(2 RTT, min(Δ, bt/10)).
+func (c *headClock) tailGap(cands []clockCandidate, cand clockCandidate, bt time.Duration) time.Duration {
+	if cand.debounce > 0 {
+		return cand.debounce
+	}
+	return max(2*c.bestRTT(cands), min(c.delta, bt/10))
+}
+
 // fireRung sends r. A turn whose voter left the candidates or has a
 // clock fetch in flight is skipped: that fetch is its turn. Any other
 // fire goes to the fastest free voter instead.
@@ -1222,7 +1249,12 @@ func (t *ChainTracker) fireRung(cands []clockCandidate, r clockRung, now time.Ti
 		}
 		id = cand.id
 	}
-	f := t.fire(id, now, r.kind)
+	var f *clockFire
+	if r.kind == "ahead" {
+		f = t.fireAhead(id, now)
+	} else {
+		f = t.fire(id, now, r.kind)
+	}
 	if f == nil {
 		c.lastDone = now
 		return
@@ -1421,10 +1453,10 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	}
 	edge := f == c.edge
 	now := time.Now()
-	// A held fetch is no head fetch: its round trip is a by-hash read's,
-	// its block says nothing of what the voter lacked, and the voter's
-	// next head fetch owes it nothing.
-	held := f.kind == "held"
+	// A block fetch (held, ahead) is no head fetch: its round trip is a
+	// block read's, its block says nothing of what the voter lacked, and
+	// the voter's next head fetch owes it nothing.
+	held := f.kind == "held" || f.kind == "ahead"
 	if !a.At.IsZero() && !held {
 		if a.At.After(c.taken[f.id]) {
 			c.taken[f.id] = a.At
@@ -1449,6 +1481,13 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	current := f.top == c.top()
 	outcome := "failed"
 	switch {
+	case f.kind == "ahead" && errors.Is(a.Err, errHeldNotFound):
+		// The voter lacks the target yet: the target's next tail rung is
+		// this fetch once more (addTail), once.
+		outcome = "early"
+		if current && !f.again {
+			c.aheadNull = f
+		}
 	case a.Err != nil || !ok || sh.h == nil:
 	case sh.h.number > f.top:
 		outcome = "new"
@@ -1624,7 +1663,7 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 	// head probe below: else the block waited for the tail, an explicit
 	// debounce's hour away.
 	if c.provenHash != "" && candidate(c.provenBy) && c.heldFor != c.target {
-		if f := t.fireHeld(c.provenBy, c.provenHash, now); f != nil {
+		if f := t.fireBlock(c.provenBy, "held", c.provenHash, 0, now); f != nil {
 			var turns []string
 			for _, rr := range c.rungs {
 				if rr.turn && rr.id != c.provenBy {
@@ -1683,15 +1722,29 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 	c.rungs = []clockRung{r}
 }
 
-// fireHeld sends the clock's held fetch to voter id: block hash by hash,
-// whose answer is id's vote (HeaderHeld); nil when the network has none.
-// It is no head fetch: the voter's turns and head fetches stand.
-func (t *ChainTracker) fireHeld(id, hash string, now time.Time) *clockFire {
+// fireBlock sends the clock's block fetch of kind to voter id: block hash
+// by hash, else number by number, whose answer is id's held header
+// (HeaderHeld); nil when the network has none. It is no head fetch: it
+// reads no tag, and the voter's turns and head fetches stand.
+func (t *ChainTracker) fireBlock(id, kind, hash string, number uint64, now time.Time) *clockFire {
 	c := &t.clock
-	f := &clockFire{id: id, sent: now, top: c.top(), kind: "held"}
+	f := &clockFire{id: id, sent: now, top: c.top(), kind: kind}
 	seq := c.seq
-	if !t.fetchHeld(id, hash, func(a common.HeadAnswer) { t.clockAnswered(seq, f, a) }) {
+	if !t.fetchHeld(id, hash, number, func(a common.HeadAnswer) { t.clockAnswered(seq, f, a) }) {
 		return nil
+	}
+	return f
+}
+
+// fireAhead sends the target's shared early fetch to voter id: the
+// target by number (fireBlock). It is the voter's fetch in flight and the
+// clock's last fire, which paces the tail.
+func (t *ChainTracker) fireAhead(id string, now time.Time) *clockFire {
+	c := &t.clock
+	f := t.fireBlock(id, "ahead", "", c.target, now)
+	if f != nil {
+		c.lastFire = now
+		c.voter(id).out = f
 	}
 	return f
 }
@@ -1700,17 +1753,23 @@ func (t *ChainTracker) fireHeld(id, hash string, now time.Time) *clockFire {
 // waits for the target or a block above it (ReadAhead), the lane is no
 // push's, no fetch is out, the target's predicted sight passed, or a
 // block time since a read first waited for it, and no rung goes within
-// bt/4: one head fetch now, to the free voter likeliest to hold the target
-// first (score: round trip plus held wait), in place of the target's
-// rungs, whose turns vote at its sight, and of S_k, which the tail then
-// counts from; once per target. Before that, the ladder's own fire is the
-// fetch the reads wait on; an answer below the target leaves it to the
-// ladder's tail. Each waiting read Asking every voter below its block
-// every bt cost a 0.1 s chain with 6 voters 5.0 head fetches per block
-// (§19 P23). The block time bounds a fit that predicts late: a burst of
-// sights at one instant (a boot, a catch-up) put the target's sight
-// blocks ahead, and a read 2 blocks ahead waited W with no fetch sent; a
-// read-ahead client asks for a block once another source showed it.
+// bt/4: one fetch of the target by number now (fireAhead), to the free
+// voter likeliest to hold it first (score: round trip plus held wait), in
+// place of the target's rungs, whose turns vote at its sight, and of S_k,
+// which the tail then counts from; once per target. Its header is that
+// voter's held header, through intake's checks as any header, and raises
+// its report to the target. A fetch of the tag answered below the target
+// wherever a vendor's head readers trail its block readers, and the
+// tail's fetches of the tag after it too, so reads waited for the tag to
+// catch up (§19 P23-slow). A null answer leaves the target to the
+// ladder's tail, whose next fire is this fetch once more (addTail).
+// Before that, the ladder's own fire is the fetch the reads wait on. Each
+// waiting read Asking every voter below its block every bt cost a 0.1 s
+// chain with 6 voters 5.0 head fetches per block (§19 P23). The block
+// time bounds a fit that predicts late: a burst of sights at one instant
+// (a boot, a catch-up) put the target's sight blocks ahead, and a read 2
+// blocks ahead waited W with no fetch sent; a read-ahead client asks for
+// a block once another source showed it.
 // wake: when a waiting target's fetch is due, zero with none.
 func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time.Duration) (wake time.Time) {
 	c := &t.clock
@@ -1743,7 +1802,7 @@ func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time
 	if id == "" {
 		return time.Time{}
 	}
-	f := t.fire(id, now, "ahead")
+	f := t.fireAhead(id, now)
 	if f == nil {
 		return time.Time{}
 	}

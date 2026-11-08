@@ -778,31 +778,40 @@ func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool
 	}
 }
 
-// errHeldNotFound: a held fetch's node answered no block for the hash.
-var errHeldNotFound = errors.New("node answered no block for the hash")
+// errHeldNotFound: a held fetch's node answered no block for the hash or
+// number.
+var errHeldNotFound = errors.New("node answered no block")
 
-// FetchHeld fetches the block hash names from the upstream for a by-hash
-// wait (spec §6.4): its header, with an intake bound, goes to it as this
-// upstream's hash vote (HeaderHeld), sent at the answer's At; the answer
-// carries it once it passed intake's checks. It is no head fetch: the
-// head schedule's single flight and backoff stay the polls' (§6.8).
-func (e *EvmStatePoller) FetchHeld(ctx context.Context, hash string) common.HeadAnswer {
+// FetchHeld fetches one block from the upstream for the block clock: by
+// hash for a by-hash wait (spec §6.4), else block number, the shared early
+// fetch of a block reads wait for (§6.8). Its header, with an intake
+// bound, goes to it as this upstream's held header (HeaderHeld), sent at
+// the answer's At; the answer carries it once it passed intake's checks.
+// It is no head fetch: the head schedule's single flight and backoff stay
+// the polls' (§6.8).
+func (e *EvmStatePoller) FetchHeld(ctx context.Context, hash string, number uint64) common.HeadAnswer {
 	bound := e.pollSrc.Load()
 	if e.IsObjectNull() || !e.askable() || bound == nil {
 		return common.HeadAnswer{Outcome: common.AskBackoff}
 	}
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
+	method, ref := "eth_getBlockByHash", hash
+	if hash == "" {
+		method, ref = "eth_getBlockByNumber", "0x"+strconv.FormatUint(number, 16)
+	}
 	sent := time.Now()
 	a := common.HeadAnswer{Outcome: common.AskFetched, At: sent}
-	b, err := e.fetchBlock(ctx, "eth_getBlockByHash", hash, common.UpstreamPoliciesHeadAsk)
+	b, err := e.fetchBlock(ctx, method, ref, common.UpstreamPoliciesHeadAsk)
 	switch {
 	case err != nil:
 		a.Err = err
 	case b.number == 0:
 		a.Err = errHeldNotFound
-	case b.malformed == nil && !strings.EqualFold(b.header.h.hashHex, hash):
+	case hash != "" && b.malformed == nil && !strings.EqualFold(b.header.h.hashHex, hash):
 		a.Err = fmt.Errorf("node answered block %s for hash %s", b.header.h.hashHex, hash)
+	case hash == "" && uint64(b.number) != number:
+		a.Err = fmt.Errorf("node answered block %d for number %d", b.number, number)
 	case bound.intake.Polled(e.upstream.Id(), b.header, b.malformed, HeaderHeld, sent):
 		a.Header = b.header
 	}
@@ -1329,10 +1338,11 @@ const (
 	// its header lacks the block's transaction hashes, so it seeds no
 	// cache entry of the block (§6.8 seed).
 	HeaderReadFull
-	// HeaderHeld: a block fetched by hash for a by-hash wait (FetchHeld,
-	// spec §6.4): it votes as a poll does, the node holds the block; it
-	// says nothing of the node's head above it, so it bounds no hold of a
-	// later block (§6.8 hold bounds).
+	// HeaderHeld: a block the block clock fetched by hash for a by-hash
+	// wait, or by number as a read ahead's shared early fetch (FetchHeld,
+	// spec §6.4, §6.8): it votes as a poll does, the node holds the block;
+	// it says nothing of the node's head above it, so it bounds no hold of
+	// a later block (§6.8 hold bounds).
 	HeaderHeld
 )
 

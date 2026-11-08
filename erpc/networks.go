@@ -1364,17 +1364,18 @@ func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common
 	return common.HeadAnswer{Outcome: common.AskBackoff}
 }
 
-// EvmFetchHeld fetches block hash from upstreamId for a chain tracker's
-// by-hash wait (spec §6.4, evm.EvmStatePoller.FetchHeld); AskBackoff when
-// the network has no such upstream with a poller.
-func (n *Network) EvmFetchHeld(ctx context.Context, upstreamId, hash string) common.HeadAnswer {
+// EvmFetchHeld fetches block hash, else number, from upstreamId for a
+// chain tracker's block clock (spec §6.4 by-hash wait, §6.8 shared early
+// fetch, evm.EvmStatePoller.FetchHeld); AskBackoff when the network has
+// no such upstream with a poller.
+func (n *Network) EvmFetchHeld(ctx context.Context, upstreamId, hash string, number uint64) common.HeadAnswer {
 	if n.upstreamsRegistry != nil {
 		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 			if u.Id() != upstreamId {
 				continue
 			}
 			if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
-				return p.FetchHeld(ctx, hash)
+				return p.FetchHeld(ctx, hash, number)
 			}
 			break
 		}

@@ -91,8 +91,8 @@ func (s *scenario) fetchMark() fetchMark {
 		}
 		// A client read of latest the new image sent as the tag is
 		// client demand, as the old image's, not a head fetch; a block
-		// the clock fetched by hash for a by-hash wait is one.
-		m.fetches = append(m.fetches, f-clientTagReads(m.mix[p.idx])+heldFetches(m.mix[p.idx]))
+		// the clock fetched by hash or number is one.
+		m.fetches = append(m.fetches, f-clientTagReads(m.mix[p.idx])+blockFetches(m.mix[p.idx]))
 		m.requests = append(m.requests, r)
 		m.numbered = append(m.numbered, num)
 	}

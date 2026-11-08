@@ -648,12 +648,12 @@ func clientTagReads(mix map[string]float64) (n float64) {
 	return n
 }
 
-// heldFetches is how many of mix's block-clock fetches were blocks
-// fetched by hash for a by-hash wait (kind held), which reach a vendor
-// as no latest read.
-func heldFetches(mix map[string]float64) (n float64) {
+// blockFetches is how many of mix's block-clock fetches were one block
+// by hash or number (kinds held and ahead), which reach a vendor as no
+// latest read.
+func blockFetches(mix map[string]float64) (n float64) {
 	for k, v := range mix {
-		if strings.HasPrefix(k, "clock held ") && k != "clock held joined" {
+		if (strings.HasPrefix(k, "clock held ") || strings.HasPrefix(k, "clock ahead ")) && !strings.HasSuffix(k, " joined") {
 			n += v
 		}
 	}
