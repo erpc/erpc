@@ -18747,7 +18747,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "description": "Upstreams on each lane's latest ballot per rank, and the effective quorum.",
+          "description": "Clock fetches per minute by kind and outcome, and headers held per minute by header-format proof.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -18835,10 +18835,10 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "sum(erpc_served_tip_voters{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\"}) by (project, network, lane, rank)",
+              "expr": "sum(increase(erpc_head_clock_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\"}[1m])) by (project, network, kind, outcome)",
               "format": "time_series",
               "interval": "1m",
-              "legendFormat": "voters {{project}}, {{network}}, {{lane}}, {{rank}}",
+              "legendFormat": "clock {{project}}, {{network}}, {{kind}}, {{outcome}}",
               "range": true,
               "refId": "A"
             },
@@ -18848,15 +18848,15 @@
                 "uid": "${datasource}"
               },
               "editorMode": "code",
-              "expr": "max(erpc_served_tip_quorum{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\"}) by (project, network, lane)",
+              "expr": "sum(increase(erpc_chain_tracker_header_proof_total{cluster=~\"${cluster:regex}\", namespace=~\"${namespace:regex}\", region=~\"${region:regex}\", project=~\"${project:regex}\", network=~\"${network:regex}\", network!~\"${ignore_network:regex}\"}[1m])) by (project, network, proof, reason)",
               "format": "time_series",
               "interval": "1m",
-              "legendFormat": "quorum {{project}}, {{network}}, {{lane}}",
+              "legendFormat": "proof {{project}}, {{network}}, {{proof}}, {{reason}}",
               "range": true,
               "refId": "B"
             }
           ],
-          "title": "Served-Tip Voters and Quorum",
+          "title": "Clock Fetches and Header Proof",
           "type": "timeseries"
         },
         {
