@@ -194,7 +194,7 @@ All fields under `networks[*].evm.*`. Populated by `EvmNetworkConfig.SetDefaults
 |---|---|---|---|
 | `evm.chainId` | int64 | required | EVM chain ID; used for `eth_chainId` responses and network ID (`evm:<chainId>`). |
 | `evm.fallbackFinalityDepth` | int64 | `1024` | Depth used when finality cannot be determined dynamically. Block considered finalized if `latestBlock - blockNumber >= fallbackFinalityDepth`. |
-| `evm.fallbackStatePollerDebounce` | Duration | `5s` | Fallback poll interval when dynamic block time is not yet known. |
+| `evm.fallbackStatePollerDebounce` | Duration | unset | Poll interval while the block time is not yet known; unset, 0.7s (the 1s cold block time × 0.7). |
 | `evm.integrity` | object | see below | **Deprecated** wrapper for directive-defaults; use `directiveDefaults` instead. |
 | `evm.integrity.enforceHighestBlock` | \*bool | `true` | Deprecated — migrates to `directiveDefaults.enforceHighestBlock`. |
 | `evm.integrity.enforceGetLogsBlockRange` | \*bool | `true` | Deprecated — migrates to `directiveDefaults.enforceGetLogsBlockRange`. |

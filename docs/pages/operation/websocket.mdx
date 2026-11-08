@@ -137,17 +137,20 @@ ws.send(JSON.stringify({
 
 ### Subscription features
 
-- **Resilient delivery** — `newHeads` is subscribed on every connected WebSocket upstream of the network, and each block is delivered from whichever upstream announces it first. With [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, heads from upstreams tagged `tier:fallback` are delivered only while no other upstream that the selection policy routes to has a live `newHeads` subscription, so clients are not told of a block only a fallback has while the primaries are up. A held-back head still updates that fallback's tip tracker. How quickly fallback heads take over when the primaries fail follows the selection policy's `evalInterval`. `logs` and `newPendingTransactions` are subscribed on every WebSocket upstream; with [`failover.onDefaultsExhausted`](/config/projects/networks#failover) enabled, on every one outside `tier:fallback` that the selection policy routes to, and on the `tier:fallback` upstreams only while none of those has the subscription live. This is rechecked on every head, so the fallbacks take over when the primaries drop a subscription (or the policy excludes them) and hand it back once a primary has it live again; a subscribe that fails is retried in the background.
-- **No surprise disconnects** — upstream reconnects, scoring changes and brief outages never close your connection; eRPC re-subscribes upstream behind the scenes. eRPC closes a connection only on shutdown (`1001`), when the client stops answering pings, or when a `logs` subscription overflows its buffer (see below).
-- **Deduplication** — even though multiple upstreams are subscribed in parallel, you only receive each block, log or pending tx once. Logs are identified by `blockHash`, `transactionHash` and `logIndex`; a log missing any of them is passed through without deduplication.
-- **Shared subscriptions** — clients subscribing to the same event on the same network share one upstream subscription per upstream. Each client gets its own subscription ID and receives every notification independently.
-- **Slow-client safety** — every subscription has its own buffer of `server.webSocket.subscriptionBufferSize` notifications, so a slow reader never blocks other clients or upstream delivery. When it overflows, `newHeads` and `newPendingTransactions` drop the oldest queued notification; a `logs` subscription closes the connection with `1013` instead, so the client knows it missed data and can re-subscribe and backfill with `eth_getLogs`. Drops are counted in `erpc_websocket_subscription_notifications_dropped_total`.
+- **One chain for every client** — all subscriptions of a network read one chain feed, kept by the network's chain tracker (see [How heads reach subscribers](#how-heads-reach-subscribers)). A client gets a block only once enough upstreams confirm it, and never a block above the network's `eth_blockNumber`.
+- **Pending transactions from push sources** — `newPendingTransactions` is subscribed on every admitted WebSocket upstream while a client wants it. With [`failover.onDefaultsExhausted`](/config/projects/networks#failover) on, `tier:fallback` upstreams feed it only while no primary source has streamed heads for 60s. A topic silent for 60s while blocks carry transactions is subscribed again, backing off up to 30 min.
+- **No surprise disconnects** — upstream reconnects, scoring changes and brief outages never close your connection; eRPC re-subscribes upstream behind the scenes. eRPC closes a connection only on shutdown (`1001`), when the client stops answering pings, or with `1013` when a `logs` subscription cannot continue (see below).
+- **Deduplication** — each block, log and pending transaction reaches a subscription once, however many upstreams report it.
+- **Shared work** — every subscription reads the same feed: one receipts fetch, parse and encoding per block, shared by every client.
+- **Slow-client safety** — a slow reader never blocks other clients or the chain tracker. A `logs` subscription whose next block has waited more than `chainTracker.reorgWindow` × the block time closes the connection with `1013`, so the client knows it may have missed logs and can re-subscribe and backfill with `eth_getLogs`; a `newHeads` subscription restarts after the confirmed head, which the client sees as a jump in numbers.
 - **Connection-scoped IDs** — eRPC issues its own subscription IDs, so they stay the same across upstream reconnects and upstream switches. They belong to the connection that created them: `eth_unsubscribe` only works on that connection, and subscriptions end when it closes.
 - **Rate limiting** — subscribe/unsubscribe calls count against the same project and network rate limits as regular RPC.
 
-### Reorg handling for `logs` subscriptions
+### `logs` subscriptions
 
-When a block containing one of your matched logs is reorged out, the upstream node re-sends that log with `"removed": true` on the same subscription. eRPC passes these notifications through unchanged, so you get the same semantics as a direct WebSocket connection to a node. If a log is removed and later re-added (the chain switches back), each transition is delivered once, even when several upstreams report it.
+eRPC builds `logs` notifications from each block's `eth_getBlockReceipts`, fetched once per block when the block's `logsBloom` may match a subscribed filter; no upstream `logs` subscription is made. The filter takes `address` and `topics` as geth does; `fromBlock` and `toBlock` are ignored. A filter that does not parse fails with `-32602`.
+
+When a reorg drops a block with matched logs, eRPC sends those logs again with `"removed": true`, newest first, then the logs of the new branch. A reorg that reverts more than `chainTracker.reorgWindow` of the blocks a subscription was sent, or a block whose receipts no upstream serves for 60s, closes the connections of its `logs` subscriptions with `1013`, spread over 60s.
 
 ```javascript
 ws.onmessage = (event) => {
@@ -163,13 +166,87 @@ ws.onmessage = (event) => {
 
 `eth_subscribe` returns a JSON-RPC error when:
 
-- the network has no WebSocket upstream, or none of the selected upstreams is connected and accepts the subscription;
-- the subscription type is not supported (`-32602`);
+- the network has no subscription source for the type; for `logs`, no upstream serves `eth_getBlockReceipts` (or `eth_getLogs` with integrity off), or every such fetch has failed for 60s;
+- the subscription type is not supported, or a `logs` filter does not parse (`-32602`);
 - the connection already has `server.webSocket.maxSubscriptionsPerConnection` active subscriptions (`-32005`);
 - the instance already has `server.webSocket.maxSubscriptions` active subscriptions (`-32005`);
 - the request is rate limited.
 
 A failed `eth_subscribe` leaves your WebSocket connection open. You can retry on the same connection.
+
+## How heads reach subscribers
+
+```
+wss newHeads / http poll → intake → chain tracker → confirmed head → taps → ws / gRPC
+```
+
+**Sources.** An upstream with `evm.subscriptionSource` on (the default for `ws://` / `wss://` endpoints) subscribes `newHeads` from network init, whether or not a WebSocket or gRPC server runs. Other upstreams feed heads by polling `eth_getBlockByNumber("latest")` on the state poller's cadence, while a client subscribes or the [integrity follow tap](/config/failsafe/integrity) runs. A source that refuses `newHeads` as unsupported is polled instead and asked again on each reconnect and every 10 min.
+
+**Voters.** An upstream votes while the selection policy routes to it, it is not syncing and its head is not benched. Each header passes intake first: parsing, header integrity when integrity is on, and the chain-identity check. A header that fails is dropped and counted in `erpc_chain_tracker_source_heads_total`.
+
+**Confirmed head.** The tracker holds headers by hash and follows the branch most voters are on. It links every header to its parent, fetching missing blocks by number and by hash. The confirmed head is the highest block that `servedTip.quorum` of the current hash voters have reached, at or below the network's `eth_blockNumber`. Every transport delivers only up to it. With one push source and one polled upstream a head waits one poll round trip; with two push sources, none.
+
+**Reorgs.** When the voters move to another branch, every subscription replays it:
+
+| Transport | On a reorg |
+|---|---|
+| ws `newHeads` | each head of the new branch, oldest first |
+| ws `logs` | the sent logs of the dropped blocks with `"removed": true`, newest first; then the logs of the new branch |
+| gRPC `StreamBlocks` | resends from the fork point + 1: a number at or below the last one replaces it and every number above |
+
+**Logs from receipts.** `logs` notifications come from each block's `eth_getBlockReceipts`, fetched once when the block is pinned and its `logsBloom` may match a subscribed filter. Receipts that fail on every upstream for 5s fall back to `eth_getLogs` by `blockHash`. Logs reach clients one receipts round trip after the confirmed head.
+
+**The window.** The tracker holds headers within `chainTracker.maxBackfill` of chain time below the head, and at least `chainTracker.reorgWindow` blocks; receipts for the last `reorgWindow` blocks. A reorg deeper than `reorgWindow` re-anchors the tracker on the majority's branch.
+
+**Wait bounds and signals per transport.**
+
+| Transport | Slow or stalled | Out of range |
+|---|---|---|
+| ws `newHeads` | next block waited more than `reorgWindow` × block time: restart after the confirmed head | restart after the confirmed head |
+| ws `logs` | next block waited more than `reorgWindow` × block time, a reorg that reverts more than `reorgWindow` sent blocks, or 60s on one block's receipts: close `1013` | close `1013`; closes from one event spread over 60s |
+| ws `newPendingTransactions` | skips to the newest | — |
+| gRPC `StreamBlocks` | 60s of stalled read, or one `Send` over 10s: `UNAVAILABLE` | `OUT_OF_RANGE` |
+
+Every out-of-range or lagging end counts in `erpc_tap_end_total{reason,detail}`.
+
+**Failure model.**
+
+| Failure | Recovery | Bound |
+|---|---|---|
+| wss socket drops | reconnect with jittered 1–30s backoff; other voters carry; the tracker links the missed blocks | 30s |
+| wss socket alive, `newHeads` silent | its vote ages out; the socket reconnects | 30s past the last push |
+| upstream lags | benched after `max(30s, 3 × cadence)` | 90s |
+| one upstream ahead, peers stalled | subscribers wait until the peers are benched, then get the held blocks in batches | 90s |
+| upstream on a minority fork | loses its vote, goes last in routing | about 60s |
+| voters disagree | the branch with the most votes; a tie asks non-voting upstreams to settle | 1 settle |
+| one block's receipts not served | other upstreams, then `eth_getLogs`; then `logs` connections close `1013` | 60s |
+| chain makes no blocks | nothing reconnects or resubscribes | — |
+
+## gRPC StreamBlocks
+
+With [`server.grpcEnabled`](/config/server), the `StreamService.StreamBlocks` RPC ([`evm/stream.proto`](https://github.com/blockchain-data-standards/manifesto)) streams block headers from the same chain feed as ws `newHeads`. Auth runs once when the stream opens, as for `eth_getBlockByNumber`; rate limits count once at open, as for a ws subscription.
+
+**Resume.** `StreamBlocksRequest` takes `fromBlock` and `fromHash`: the number and hash of the last header the client applied.
+
+| Request | Stream starts |
+|---|---|
+| neither set | after the confirmed head |
+| both set, cursor on the canonical chain | at `fromBlock + 1`, replaying every block up to the confirmed head |
+| both set, cursor on a dropped branch | at the fork point + 1 |
+| both set, cursor older than `chainTracker.maxBackfill` or a hash no upstream serves | ends with `OUT_OF_RANGE` |
+| only one set | `INVALID_ARGUMENT` |
+
+**Reorgs.** Headers are ascending; after a reorg the stream resends from the fork point + 1. A header whose number is at or below the last one received replaces that number and every number above it. Each header carries `hash` and `parentHash`, so a client can check the linkage itself.
+
+**End codes.**
+
+| Code | Cause | Client action |
+|---|---|---|
+| `UNAVAILABLE` | 60s with no block while the confirmed head stands above the cursor, or one `Send` blocked for 10s | reconnect with the last applied cursor |
+| `OUT_OF_RANGE` | the cursor left the window, or no upstream serves it | backfill with unary calls, then reopen |
+| `INVALID_ARGUMENT` | only one of `fromBlock`, `fromHash`, or a `fromHash` not 32 bytes | fix the request |
+
+A stream at the head of a chain that makes no blocks waits without end.
 
 ## WebSocket upstreams
 
@@ -242,9 +319,10 @@ The WebSocket upstream client features:
 - **Ping/pong keepalive** (30s interval) to detect dead connections
 - **Lazy connection** — if the upstream is unavailable at startup, eRPC retries in the background without blocking
 - **Fail-fast while reconnecting** — requests sent while the connection is down fail immediately with a retryable error so they fail over to other upstreams
-- **Heads subscribed at startup** — while the WebSocket server is enabled, eRPC subscribes to `newHeads` on every WebSocket upstream as soon as its network initializes, so state pollers use pushed heads instead of polling even before any client subscribes
-- **Silent subscription recovery** — if a `newHeads` subscription stops delivering while the same upstream's polled head keeps advancing, eRPC reconnects to that upstream
-- **Unsupported `newHeads` is not retried** — if an upstream rejects `eth_subscribe newHeads` as unsupported, eRPC stops asking until the next reconnect or resubscribe; its state poller keeps tracking the head
+- **Half-open detection on timeout** — when a request times out, eRPC pings the connection; with no answer within 5s of that first timeout it reconnects, however many more requests time out meanwhile, and the other requests waiting on it fail over at once instead of waiting out the keepalive window
+- **Heads subscribed at network init** — every subscription source subscribes `newHeads` as soon as its network initializes, so the head is tracked from pushed headers before any client subscribes
+- **Silent subscription recovery** — if a `newHeads` subscription pushes nothing for 15s while the same upstream's head counter stood above its last push, eRPC reconnects to that upstream
+- **Unsupported `newHeads` is polled** — if an upstream rejects `eth_subscribe newHeads` as unsupported, eRPC polls it for heads and asks again on each reconnect and every 10 min
 
 `eth_subscribe` and `eth_unsubscribe` are only sent to upstreams by eRPC's own subscription handling. Over HTTP both are rejected with `-32601` without reaching any upstream, since a subscription needs a client WebSocket connection to deliver to.
 
@@ -271,8 +349,6 @@ server:
     maxSubscriptionsPerConnection: 100
     # Maximum requests a connection runs at once (default: 250)
     maxConcurrentRequestsPerConnection: 250
-    # Notifications queued per subscription for a slow reader (default: 256)
-    subscriptionBufferSize: 256
     # Instance-wide caps; 0 (the default) means unlimited
     maxConnections: 0
     maxConnectionsPerIP: 0
@@ -312,55 +388,7 @@ X-Erpc-Network-Id: evm:1\r\n
 
 Header names are case-insensitive, as in HTTP. Cost frames are not valid JSON-RPC: only send the header from a proxy that strips the block before the client sees the message.
 
-## Indexer configuration
-
-`eth_subscribe` fan-out and deduplication are handled by an internal event indexer. Most deployments can leave this unset:
-
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
-  <Tabs.Tab>
-```yaml filename="erpc.yaml"
-indexer:
-  # Per-filter seen-set used to drop duplicate log / pending-tx
-  # notifications delivered by sibling upstreams. 0 = default (8192).
-  dedupWindowSize: 8192
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  indexer: {
-    dedupWindowSize: 8192,
-  },
-});
-```
-  </Tabs.Tab>
-</Tabs>
-
-<Callout type="info">
-  `indexer.canonicalChainDepth` is deprecated and ignored: reorged-out logs now come from the upstream's own `removed: true` notifications.
-</Callout>
-
 ## Subscription compatibility knobs
-
-### Stripping `fromBlock: "0x0"` from `eth_subscribe` logs filters
-
-Some JSON-RPC clients include `fromBlock: "0x0"` in the `eth_subscribe("logs", {…})` filter as a "from genesis" marker. `eth_subscribe` is a live-stream RPC — `fromBlock` has no standardised meaning there — and on backends that prune historical data the subscribe call fails outright. eRPC can strip the field per-network so the live stream succeeds; historical logs stay retrievable via `eth_getLogs` in the normal way.
-
-```yaml filename="erpc.yaml"
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-          # Drops fromBlock: "0x0" / "0" from eth_subscribe logs filters
-          # before forwarding to upstream. Non-zero fromBlocks pass through.
-          stripSubscribeFromBlockZero: true
-```
-
-Only a string `fromBlock` that parses to zero (`"0x0"`, `"0"`, `"0x00"`, …) is stripped — any other value passes through unchanged. Leave unset for chains where upstreams handle the field correctly. The field can also be set once under `networkDefaults.evm`.
 
 ### HTTP / WebSocket tip-sync considerations for strict consumers
 
@@ -369,8 +397,8 @@ Some RPC consumers compare the block number returned by HTTP `eth_getBlockByNumb
 eRPC minimises the gap in three ways:
 
 - **Per-block cache keying for moving tags.** The realtime cache entry for a `latest` / `finalized` request is keyed by the block number the tag currently resolves to, so each tip advance is a distinct key rather than pinning every call within the TTL to the same cached payload.
-- **`enforceHighestBlock` response rewrite.** When the upstream returns a block number below the network's tracked tip, eRPC's [integrity check](/config/failsafe/integrity) fetches the specific higher block from another upstream and returns that instead (falling back to the highest valid block it has if none can serve it).
-- **Delivered-head floor.** When an upstream WebSocket delivers a `newHeads` notification, eRPC updates that upstream's tip tracker before fanning the head out to clients, and records it as a floor for the network's `latest`. A head reaches subscribers, and feeds the floor, only once the delivering upstream's tip tracker has accepted it; a head far ahead of the tracker is verified first and is not delivered, so subscribers resume with the next head. Held-back fallback heads are not delivered either. With shared state configured the floor is also propagated to other instances in the background, so they converge within the propagation delay rather than instantly. How the floor bounds and orders against the served tip: [Block tracking](/reference/evm/block-tracking#websocket-delivered-head-floor).
+- **One number for `latest`.** A `latest` or `finalized` tag is interpolated to the request's Head before forwarding, so an HTTP `eth_getBlockByNumber("latest")` names the block `eth_blockNumber` reports, whichever upstream answers.
+- **No head above `latest`.** A head reaches subscribers only at the confirmed head: `servedTip.quorum` hash voters have it and its number is at most the network's `latest`, so a `newHeads` client never sees a block `eth_blockNumber` does not; one upstream alone moves neither. Details: [Block tracking](/reference/evm/block-tracking).
 
 Even so, a transient single-block lag can reach a client when the chain produces a block faster than an in-flight HTTP round-trip completes. If your consumer treats single-block HTTP-vs-WS lag as a hard failure, widen its tolerance to match the chain's block time rather than expect eRPC (or any proxy) to eliminate it.
 
@@ -383,4 +411,4 @@ Even so, a transient single-block lag can reach a client when the chain produces
 const ws = new WebSocket("ws://localhost:4000/main/evm/1?useUpstream=my-preferred-upstream");
 ```
 
-Subscriptions (`eth_subscribe`) ignore the `useUpstream` directive — they're delivered by the network's WebSocket upstreams as described above, so notifications keep flowing if any upstream slows down.
+Subscriptions (`eth_subscribe`) read the network-wide chain feed whatever `useUpstream` says. On a connection with `useUpstream`, a subscription delivers a block only once that upstream group's `latest` reaches it.

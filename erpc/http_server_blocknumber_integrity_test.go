@@ -65,16 +65,17 @@ const (
 // every upstream (chainId / syncing / latest / finalized), giving rpc1 a
 // lagging head and rpc2/rpc3 a healthy head. The state pollers fetch heads via
 // eth_getBlockByNumber, so these never collide with user eth_blockNumber
-// traffic.
+// traffic. A latest header carries hash and parentHash: the served head is a
+// hash-proven pin, and intake drops a header without them (spec §5.3 check 0).
 func setupBniPollerMocks() {
 	for _, h := range []struct {
 		host      string
-		latest    string
+		latest    int64
 		finalized string
 	}{
-		{"http://rpc1.localhost", "0x800", "0x700"},
-		{"http://rpc2.localhost", "0x1000", "0x900"},
-		{"http://rpc3.localhost", "0x1000", "0x900"},
+		{"http://rpc1.localhost", bniLaggingHead, "0x700"},
+		{"http://rpc2.localhost", bniHealthyHead, "0x900"},
+		{"http://rpc3.localhost", bniHealthyHead, "0x900"},
 	} {
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
@@ -94,7 +95,7 @@ func setupBniPollerMocks() {
 				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, h.latest)))
+			JSON([]byte(fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, h.latest, h.latest, h.latest-1)))
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
 				b := util.SafeReadBody(r)
@@ -226,7 +227,7 @@ func bniBoot(t *testing.T, cfg *common.Config) (
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return ntw.EvmHighestLatestBlockNumber(context.Background()) == bniHealthyHead
+		return servedHead(ntw, context.Background()).Latest == bniHealthyHead
 	}, 5*time.Second, 50*time.Millisecond,
 		"pollers must learn the healthy head (tip=0x1000) before the scenario starts")
 
@@ -313,7 +314,7 @@ func bniSeedCache(t *testing.T, ntw *Network, hexValue string) {
 
 func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	integrityOn := func() *common.EvmIntegrityConfig {
 		return &common.EvmIntegrityConfig{EnforceHighestBlock: util.BoolPtr(true)}
@@ -326,7 +327,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_FreshStaleResponseIsCorrectedForClient", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -340,7 +341,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_EnforcementExplicitlyDisabledServesRawValue", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -356,7 +357,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_CacheHitMustNotServeBlockBelowAlreadyServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -389,7 +390,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_StaleUpstreamValueMustNotPoisonCache", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -419,7 +420,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_StaleCacheEntryMustBeEnforcedOnRead", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -443,7 +444,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_UseUpstreamPinnedRequestMustUseSelectorScopedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -465,7 +466,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_EnforcementEnabledByDefaultOnModernConfig", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -484,7 +485,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_PerRequestDirectiveOverrideMustBeHonored", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 

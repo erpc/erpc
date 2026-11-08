@@ -190,6 +190,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if r.StatusCode == 429 ||
+			// -32005 is the vendors' "limit exceeded" code, sent with any
+			// HTTP status; range and billing refusals that share it matched above.
+			code == common.JsonRpcErrorCapacityExceeded ||
+			strings.Contains(msg, "compute units") ||
 			strings.Contains(msg, "requests limited to") ||
 			strings.Contains(msg, "has exceeded") ||
 			strings.Contains(msg, "Exceeded the quota") ||

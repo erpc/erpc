@@ -151,7 +151,6 @@ func TestCovDefaults_ServerConfig_OmittedFieldsAndExplicitWins(t *testing.T) {
 	assert.Equal(t, covDefaultsDur(30*time.Second), *ws.PingInterval)
 	assert.Equal(t, 100, ws.MaxSubscriptionsPerConnection)
 	assert.Equal(t, 250, ws.MaxConcurrentRequestsPerConnection)
-	assert.Equal(t, 256, ws.SubscriptionBufferSize)
 
 	t.Setenv("FORCE_TEST_LISTEN_V4", "true")
 	forced := &ServerConfig{

@@ -50,24 +50,12 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 
 	resp.RUnlock()
 
-	// The height the primary evaluated a "latest" selector at, read once at
-	// mirror entry for the PinBlockTag rewrite below: the answer's own number;
-	// else the network head, which an evm.pinLatestTag primary is sent in place
-	// of the tag; else the serving upstream's polled head, the closest
-	// observable proxy. Never the network head for a primary that evaluated
-	// the tag itself: whenever another vendor leads it, that names a height
-	// the primary never evaluated. 0 means unknown: no pin (fail-open).
-	pinHeight, _ := resp.EvmBlockNumber().(int64)
-	if primary := resp.Upstream(); pinHeight <= 0 && primary != nil {
-		pinHeight = 0
-		reqCtx := context.WithValue(ctx, common.RequestContextKey, origReq)
-		if _, height, pinned := evm.PinLatestTag(reqCtx, network, primary, origReq); pinned {
-			pinHeight = height
-		} else if evmUps, ok := primary.(common.EvmUpstream); ok {
-			if sp := evmUps.EvmStatePoller(); sp != nil {
-				pinHeight = sp.LatestBlock()
-			}
-		}
+	// The block the primary was sent, read once at mirror entry, for the
+	// PinBlockTag rewrite below: the answer's own number, else the number
+	// its "latest" was sent as (spec §7).
+	pinHeight, ok := resp.EvmBlockNumber().(int64)
+	if !ok || pinHeight <= 0 {
+		pinHeight = evm.LatestSentAs(ctx, origReq, resp.Upstream())
 	}
 
 	// Fire shadow requests concurrently
@@ -149,9 +137,7 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 			// so any read of volatile state diverges by construction and
 			// reports a mismatch that says nothing about correctness.
 			if shadowCfg := ups.Config().Shadow; shadowCfg != nil && shadowCfg.PinBlockTag && pinHeight > 0 {
-				if idx, ok := evm.LatestTagParamIndex(mirrored.Method); ok {
-					mirrored.Params, _ = evm.PinLatestParams(mirrored.Params, idx, pinHeight)
-				}
+				mirrored.Params, _ = evm.PinLatestParams(mirrored.Method, mirrored.Params, pinHeight)
 			}
 
 			shadowReq := common.NewNormalizedRequestFromJsonRpcRequest(mirrored)

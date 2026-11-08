@@ -2,17 +2,19 @@ package evm
 
 import (
 	"context"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
 
-// queryTestNetwork is a minimal common.Network for hook tests: fixed heads
-// and a pluggable Forward.
+// queryTestNetwork is a minimal common.Network for hook tests: fixed heads,
+// a ceiling seen now, and a pluggable Forward.
 type queryTestNetwork struct {
 	cfg       *common.NetworkConfig
 	latest    int64
 	finalized int64
+	ceiling   int64
 	forwardFn func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
@@ -32,12 +34,12 @@ func (n *queryTestNetwork) Forward(ctx context.Context, req *common.NormalizedRe
 func (n *queryTestNetwork) GetFinality(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) common.DataFinalityState {
 	return common.DataFinalityStateFinalized
 }
-func (n *queryTestNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 { return n.latest }
-func (n *queryTestNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	return n.finalized
+func (n *queryTestNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: n.latest, Finalized: n.finalized, Ceiling: n.ceiling, OldestReportAt: time.Now()}
 }
-func (n *queryTestNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream { return nil }
-func (n *queryTestNetwork) EvmRefreshLatestBlock(ctx context.Context)             {}
+func (n *queryTestNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return n.EvmHead(context.Background(), nil)
+}
 
 // queryTestConfigUpstream is a minimal common.Upstream with a given config.
 type queryTestConfigUpstream struct {

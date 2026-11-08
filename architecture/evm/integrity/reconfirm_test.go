@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,12 +45,16 @@ func (h *reconfirmingHistory) ReconfirmPin(ctx context.Context, n int64) (string
 // at every finality — the exact policy that made a stale pin self-blocking.
 var rejectAll = ReorgPolicy{Finalized: BehaviorError, Unfinalized: BehaviorError}
 
+// testLogger is the logger tests hand Validate on paths that log.
+var testLogger = zerolog.Nop()
+
 func validateBlockPolicy(t *testing.T, result []byte, cs CheckSet, hist History, policy ReorgPolicy) Result {
 	t.Helper()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
 	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	return Validate(context.Background(), Input{
+		Logger:   &testLogger,
 		Method:   "eth_getBlockByNumber",
 		Upstream: common.NewFakeUpstream("u"),
 		Response: rs,

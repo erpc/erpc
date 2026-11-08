@@ -16,12 +16,13 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProject_Forward(t *testing.T) {
 	t.Run("ForwardCorrectlyRateLimitedOnProjectLevel", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -132,7 +133,7 @@ func TestProject_Forward(t *testing.T) {
 func TestProject_TimeoutScenarios(t *testing.T) {
 	t.Run("UpstreamTimeout", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -245,7 +246,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 
 	t.Run("NetworkTimeout", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -359,7 +360,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 	t.Run("LazyLoadEvmNetwork_WithDefaultConfigs", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Begin mocking an upstream response for a brand new chain "evm:9999"
 		// that isn't explicitly defined in prjConfig.Networks:
@@ -406,6 +407,9 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 					},
 				}},
 			},
+			// Project-wide integrity: the lazy network inherits it, and its
+			// trackers read the network's integrity block on every message.
+			Integrity: &common.IntegrityConfig{IntegritySettings: common.IntegritySettings{Level: "intrinsic"}},
 			Upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "mock_upstream",
@@ -466,6 +470,23 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			t.Fatalf("Expected a valid response, got error: %v", resp)
 		}
 
+		// Fail the network's bootstrap once it built and serves the network,
+		// as a reaped attempt does: the retry runs on that same network while
+		// its trackers read its config, so it must not write the config.
+		const task = "network/evm:9999"
+		prj.networksRegistry.initializer.MarkTaskAsFailed(task, errors.New("forced bootstrap failure"))
+		require.Eventually(t, func() bool {
+			succeeded := false
+			prj.networksRegistry.initializer.RangeTaskStates(func(name string, state util.TaskState) bool {
+				if name == task {
+					succeeded = state == util.TaskSucceeded
+					return false
+				}
+				return true
+			})
+			return succeeded
+		}, 10*time.Second, 50*time.Millisecond, "the network bootstrap must be retried after the forced failure")
+
 		// Assert that the new network was added and default was applied
 		found := false
 		for _, nw := range prj.Config.Networks {
@@ -485,6 +506,9 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 				if len(nw.Failsafe) == 0 || nw.Failsafe[0].Hedge != nil {
 					t.Errorf("expected lazy loaded network to have Failsafe[0].Hedge = nil, got %+v", nw.Failsafe)
 				}
+				if nw.Integrity == nil || nw.Integrity.Level != "intrinsic" {
+					t.Errorf("expected lazy loaded network to inherit the project integrity level, got %+v", nw.Integrity)
+				}
 				break
 			}
 		}
@@ -498,7 +522,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 func TestProject_NetworkAlias(t *testing.T) {
 	t.Run("NetworkAliasResolution", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 

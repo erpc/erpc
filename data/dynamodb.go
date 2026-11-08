@@ -355,7 +355,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey stri
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Set")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
@@ -414,7 +414,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Get")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("index", index),
 			attribute.String("partition_key", partitionKey),
@@ -566,7 +566,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		}
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.Int("value_size", len(value)),
 		)
@@ -725,7 +725,10 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 
 	go func() {
 		defer ticker.Stop()
-		var lastUpdatedAt int64
+		// last is the newest state delivered: every change of it goes out,
+		// older timestamps too, and the counter decides (spec §14). A state
+		// not delivered (full buffer) goes out on the next poll.
+		var last CounterInt64State
 		for {
 			select {
 			case <-ctx.Done():
@@ -738,10 +741,10 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 					d.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
 					continue
 				}
-				if ok && st.UpdatedAt > lastUpdatedAt {
-					lastUpdatedAt = st.UpdatedAt
+				if ok && st != last {
 					select {
 					case updates <- st:
+						last = st
 					default:
 					}
 				}
@@ -813,9 +816,8 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (Cou
 		return CounterInt64State{}, false, nil
 	}
 
-	var st CounterInt64State
-	if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
-		// No backward compatibility: treat parse errors as missing
+	st, ok := parseCounterState(key, raw)
+	if !ok {
 		return CounterInt64State{}, false, nil
 	}
 
@@ -833,7 +835,7 @@ func (d *DynamoDBConnector) Delete(ctx context.Context, partitionKey, rangeKey s
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Delete")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
@@ -874,7 +876,7 @@ func (d *DynamoDBConnector) List(ctx context.Context, index string, limit int, p
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.List")
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("index", index),
 			attribute.Int("limit", limit),

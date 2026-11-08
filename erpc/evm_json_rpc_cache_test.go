@@ -123,8 +123,8 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 
 		poller := mockUpstream.EvmStatePoller()
 		time.Sleep(20 * time.Millisecond)
-		poller.SuggestFinalizedBlock(cfg.finBn)
-		poller.SuggestLatestBlock(cfg.lstBn)
+		poller.SuggestFinalizedBlock(cfg.finBn, time.Now())
+		poller.SuggestLatestBlock(cfg.lstBn, time.Now())
 		// Wait until async suggestions are applied to counters to avoid races with test assertions
 		waitUntilAtLeastNoT(func() int64 { return poller.FinalizedBlock() }, cfg.finBn, 200*time.Millisecond)
 		waitUntilAtLeastNoT(func() int64 { return poller.LatestBlock() }, cfg.lstBn, 200*time.Millisecond)
@@ -132,6 +132,8 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 
 		upstreams = append(upstreams, mockUpstream)
 	}
+
+	publishVotersHead(mockNetwork, upstreams...)
 
 	cacheCfg := &common.CacheConfig{}
 	cacheCfg.SetDefaults()
@@ -141,6 +143,22 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 	}
 
 	return []*data.MockConnector{mockConnector1, mockConnector2}, mockNetwork, upstreams, cache
+}
+
+// publishVotersHead publishes n's network-wide Head as its voters give it
+// (spec §6.4): the ballot over ups's latest and finalized blocks. A
+// hand-built network has no registry for the head loop to read.
+func publishVotersHead(n *Network, ups ...*upstream.Upstream) {
+	latests, finals := make([]int64, 0, len(ups)), make([]int64, 0, len(ups))
+	for _, u := range ups {
+		latests = append(latests, u.EvmStatePoller().LatestBlock())
+		finals = append(finals, u.EvmStatePoller().FinalizedBlock())
+	}
+	q := n.cfg.Evm.ServedTipQuorum()
+	n.servedTipAll.head.Store(&common.EvmHead{
+		Latest:    common.PickServedTip(latests, q).Tip,
+		Finalized: common.PickServedTip(finals, q).Tip,
+	})
 }
 
 func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
@@ -169,6 +187,9 @@ func TestEvmJsonRpcCache_Set_UseUpstreamGating(t *testing.T) {
 	req.SetCacheDal(cache)
 	// Caller pinned away from systx sources, so the systx-tagged cache must be skipped.
 	req.SetDirectives(&common.RequestDirectives{UseUpstream: "!systx*"})
+	// "!systx*" matches every fixture upstream, so its Head is the
+	// network-wide one; the registry-less fixture network cannot pick it.
+	req.TakeEvmHead(mockNetwork.servedTipAll.published())
 	resp := common.NewNormalizedResponse().WithRequest(req).WithBody(stringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
 	resp.SetUpstream(mockUpstreams[0])
 	req.SetLastValidResponse(ctx, resp)
@@ -506,7 +527,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		defer util.AssertNoPendingMocks(t, 0)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -671,11 +692,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			expectedPolicy *data.CachePolicy
 		}{
 			{
-				name:          "LatestTag_NoCache",
-				method:        "eth_getBlockByNumber",
-				params:        `["latest",false]`,
-				result:        `"result":{"number":"0xf","hash":"0xabc"}`,
-				expectedCache: false, // Realtime tag → no default rule caches it
+				name:           "LatestTag_CacheAtItsNumber",
+				method:         "eth_getBlockByNumber",
+				params:         `["latest",false]`,
+				result:         `"result":{"number":"0xf","hash":"0xabc"}`,
+				expectedCache:  true, // Interpolated to Head.Latest above Finalized: unfinalized at its number (spec §6.8 seed)
+				expectedPolicy: unfinalizedPolicy,
 			},
 			{
 				name:           "FinalizedBlock_Cache",
@@ -686,11 +708,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedPolicy: finalizedPolicy,
 			},
 			{
-				name:          "FinalizedTag_NoCache",
-				method:        "eth_getBlockByNumber",
-				params:        `["finalized",false]`,
-				result:        `"result":{"number":"0xa","hash":"0xaaa"}`,
-				expectedCache: false, // Realtime tag → not cached
+				name:           "FinalizedTag_CacheAtItsNumber",
+				method:         "eth_getBlockByNumber",
+				params:         `["finalized",false]`,
+				result:         `"result":{"number":"0xa","hash":"0xaaa"}`,
+				expectedCache:  true, // Interpolated to Head.Finalized: final as that number is
+				expectedPolicy: finalizedPolicy,
 			},
 			{
 				name:   "UnfinalizedBlock_Cache",
@@ -875,7 +898,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
 
-	t.Run("CustomPolicyForFinalizedTag", func(t *testing.T) {
+	t.Run("CustomRealtimePolicyForFinalizedTag_NotUsedOnceInterpolated", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
@@ -902,13 +925,14 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(ctx, resp)
 
-		ttl := time.Duration(5 * time.Second)
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		err = cache.Set(context.Background(), req, resp)
 
+		// The tag runs at Head.Finalized, so the request has that block's
+		// finality, not a tag's realtime: a realtime policy never stores it.
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
+		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("ServeFinalizedBlock_WhenRequestedByFinalizedBlockNumber", func(t *testing.T) {
@@ -948,7 +972,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL())
 	})
 
-	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
+	t.Run("CacheFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
 		// The upstream just marked block 0x14 (20 dec) as finalized
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -977,21 +1001,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		respLatest.SetUpstream(mockUpstreams[0])
 		reqLatest.SetLastValidResponse(ctx, respLatest)
 
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, finalizedDefault.GetTTL()).Return(nil)
 		err = cache.Set(context.Background(), reqLatest, respLatest)
 		require.NoError(t, err)
-		// The 'finalized' tag is classified as Realtime and should NOT match the
-		// default-finalized policy, therefore nothing is written to cache.
-		mockConnectors[0].AssertNumberOfCalls(t, "Set", 0)
-
-		// 2/ client asks for block (0xf == 15) explicitly
-		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
-		reqExact.SetNetwork(mockNetwork)
-		reqExact.SetCacheDal(cache)
-
-		// Expect a lookup on the finalized-policy key that returns "record not found".
-		mockConnectors[0].
-			On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
-			Return("", common.NewErrRecordNotFound("evm:123:15", "some-key", "mock1")).Once()
+		// The interpolated tag runs at Head.Finalized (20), final on the
+		// serving upstream too (#90): the default-finalized policy stores it.
+		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
 	})
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithRealtimePolicy", func(t *testing.T) {
@@ -1050,7 +1065,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Return("", common.NewErrRecordNotFound("evm:123:15", "cache-key", "mock1")).Once()
 	})
 
-	t.Run("SkipCache_WhenFinalizedTagAfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
+	t.Run("FinalizedTagReadsHeadFinalized_AfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
 		// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1084,17 +1099,20 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		require.NoError(t, err)
 		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
 
-		// 2) "finalized" tag request must MISS the cache.
+		// 2) a "finalized" tag request looks up the number its Head's
+		// Finalized holds, not the tag.
 		reqTag := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":2}`))
 		reqTag.SetNetwork(mockNetwork)
 		reqTag.SetCacheDal(cache)
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Return(nil, common.NewErrRecordNotFound("evm:123:fin", "some-key", "mock1"))
 
 		resp, err := cache.Get(context.Background(), reqTag)
 		assert.NoError(t, err)
 		assert.Nil(t, resp)
-
-		// Verify the connector was **not** touched.
-		mockConnectors[0].AssertNumberOfCalls(t, "Get", 0)
+		fin := reqTag.EvmHead().Finalized
+		require.Positive(t, fin)
+		mockConnectors[0].AssertCalled(t, "Get", mock.Anything, mock.Anything, fmt.Sprintf("evm:123:%d", fin), mock.Anything, mock.Anything)
 	})
 
 	t.Run("EthGetLogs_SameBlockRange_Finalized", func(t *testing.T) {
@@ -2019,7 +2037,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 	// so this test is self-contained instead of freeloading on persist mocks
 	// leaked by whichever test happens to run before it in the same process.
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2132,6 +2150,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 
 	// Create test upstreams with different finalized blocks
 	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
+	publishVotersHead(mockNetwork, mockUpstream)
 
 	t.Run("BasicSetGet_WithMainIndex", func(t *testing.T) {
 		// Create a request for a finalized block
@@ -2407,7 +2426,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 	// bootstraps against rpc1.localhost, so this test must register its own
 	// poller mocks rather than depend on leftovers from earlier tests.
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2502,6 +2521,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 
 	// Create test upstream with finalized blocks
 	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
+	publishVotersHead(mockNetwork, mockUpstream)
 
 	// Run test scenarios
 	t.Run("RequestHasBlockNumber_ResponseHasBoth", func(t *testing.T) {
@@ -2748,8 +2768,8 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 
 	poller := mockUpstream.EvmStatePoller()
 	time.Sleep(20 * time.Millisecond)
-	poller.SuggestFinalizedBlock(finalizedBlock)
-	poller.SuggestLatestBlock(latestBlock)
+	poller.SuggestFinalizedBlock(finalizedBlock, time.Now())
+	poller.SuggestLatestBlock(latestBlock, time.Now())
 	// Wait until async suggestions are applied to counters
 	waitUntilAtLeastNoT(func() int64 { return poller.FinalizedBlock() }, finalizedBlock, 200*time.Millisecond)
 	waitUntilAtLeastNoT(func() int64 { return poller.LatestBlock() }, latestBlock, 200*time.Millisecond)
@@ -3376,13 +3396,14 @@ func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs
 
 		poller := mockUpstream.EvmStatePoller()
 		time.Sleep(50 * time.Millisecond)
-		poller.SuggestFinalizedBlock(cfg.finBn)
-		poller.SuggestLatestBlock(cfg.lstBn)
+		poller.SuggestFinalizedBlock(cfg.finBn, time.Now())
+		poller.SuggestLatestBlock(cfg.lstBn, time.Now())
 		time.Sleep(50 * time.Millisecond)
 		poller.SetSyncingState(cfg.syncing)
 
 		upstreams = append(upstreams, mockUpstream)
 	}
+	publishVotersHead(mockNetwork, upstreams...)
 
 	cacheCfg := &common.CacheConfig{
 		Compression: compressionCfg,

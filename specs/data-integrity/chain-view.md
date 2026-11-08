@@ -1,5 +1,7 @@
 # ChainView — central state for the data-integrity module
 
+Window, follower and fork choice: superseded by [chain-tracker/feature.md](../chain-tracker/feature.md).
+
 ## Problem
 
 The integrity state today is fragmented and not reorg-aware:

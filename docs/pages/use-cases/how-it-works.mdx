@@ -228,7 +228,7 @@ primary control surface.
 |---|---|---|---|
 | `evm.chainId` | int64 | required (0 = unset) | Used for `eth_chainId` responses and network ID formation (`evm:<chainId>`). |
 | `evm.fallbackFinalityDepth` | int64 | `1024` | Depth used when the network cannot determine finality dynamically. A block is considered finalized if `latestBlock - blockNumber >= fallbackFinalityDepth`. |
-| `evm.fallbackStatePollerDebounce` | Duration | `5s` | Fallback poll interval for state poller when dynamic block time is unknown. |
+| `evm.fallbackStatePollerDebounce` | Duration | unset | Poll interval for the state poller while the block time is unknown; unset, 0.7s (the 1s cold block time × 0.7). |
 | `evm.getLogsMaxAllowedRange` | int64 | `30_000` | Max block range for `eth_getLogs` before forced splitting. <SourceLink file="common/defaults.go" lines="2092-2094" /> |
 | `evm.getLogsMaxAllowedAddresses` | int64 | `0` (unlimited) | Max address count in `eth_getLogs` filter. |
 | `evm.getLogsMaxAllowedTopics` | int64 | `0` (unlimited) | Max topic count in `eth_getLogs` filter. |
@@ -242,7 +242,7 @@ primary control surface.
 | `evm.blockUnavailableDelayMultiplier` | `*float64` | `1.0` | Multiplies EMA-estimated block time to derive the dynamic retry delay for `ErrUpstreamBlockUnavailable`/`ErrEndpointMissingData`. Returns `0` before EMA warms up — falls back to `failsafe[*].retry.emptyResultDelay`. |
 | `evm.idempotentTransactionBroadcast` | `*bool` | nil (enabled) | When enabled, `eth_sendRawTransaction` converts "already known" to success and verifies "nonce too low" via `eth_getTransactionByHash`. Set to `false` to return raw upstream errors. |
 | `evm.emptyResultConfidence` | `AvailbilityConfidence` | `blockHead` | Confidence level for empty-result retries: `blockHead` = retry empties for blocks ≤ latest head; `finalizedBlock` = stricter, only retry for blocks ≤ finalized head. <SourceLink file="common/defaults.go" lines="2075-2079" /> |
-| `evm.servedTip` | object | `nil` (quorum 2) | Tunes how `latest`/`finalized` is chosen: `quorum`, `maxRegressionBlocks`, `guaranteedMethods`, `guaranteedFor`. Keys: [Networks config](/config/projects/networks#config-schema); rule: [Block tracking](/reference/evm/block-tracking#served-tip). |
+| `evm.servedTip` | object | `nil` (quorum 2) | Tunes how `latest`/`finalized` is chosen: `quorum`, `maxRegressionBlocks`, `guaranteedMethods`, `guaranteedFor`, `followCacheHead`. Keys: [Networks config](/config/projects/networks#config-schema); rule: [Block tracking](/reference/evm/block-tracking#served-tip). |
 | `evm.integrity.enforceHighestBlock` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceHighestBlock`. |
 | `evm.integrity.enforceGetLogsBlockRange` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceGetLogsBlockRange`. |
 | `evm.integrity.enforceNonNullTaggedBlocks` | `*bool` | `true` | **Deprecated** — migrate to `directiveDefaults.enforceNonNullTaggedBlocks`. |
@@ -402,7 +402,7 @@ all waiting followers with a response ID patch per follower:
 - **Prefer `staticResponses`** for methods your upstreams do not support and will never support
   (e.g. a custom method returning a fixed value); this avoids wasting upstream budget on
   guaranteed errors.
-- **Internal requests** (state pollers, chainId probes) set `IsInternal=true`, bypassing retry,
+- **eRPC's own requests** (state pollers, chainId probes) set `UpstreamPolicies: TimeoutOnly`, bypassing retry,
   hedge, and circuit breaker — only per-attempt timeout applies. Never forward internal requests
   to a public consumer-facing failsafe path.
 

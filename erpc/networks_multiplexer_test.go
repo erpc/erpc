@@ -34,7 +34,7 @@ func init() {
 func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 	t.Run("ConcurrentFollowers_AllReceiveLeaderResponse", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// Don't use AssertNoPendingMocks because with race condition,
 		// followers might make their own requests
@@ -131,7 +131,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		// This test creates a large "herd" of concurrent requests to stress-test
 		// the multiplexer synchronization
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -199,7 +199,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 		// Test multiple waves of multiplexed requests to ensure cleanup doesn't
 		// affect subsequent multiplexing
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -277,7 +277,7 @@ func TestNetwork_Multiplexer_FollowersReceiveResponse(t *testing.T) {
 	t.Run("SlowUpstream_FollowersWaitAndReceive", func(t *testing.T) {
 		// Test with a slower upstream to ensure followers wait properly
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -431,6 +431,7 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 		metricsTracker,
 		nil,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -448,8 +449,8 @@ func setupTestNetworkForMultiplexer(t *testing.T, ctx context.Context) *Network 
 	for _, ups := range upsList {
 		err = ups.Bootstrap(ctx)
 		require.NoError(t, err)
-		ups.EvmStatePoller().SuggestLatestBlock(1000)
-		ups.EvmStatePoller().SuggestFinalizedBlock(900)
+		ups.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
+		ups.EvmStatePoller().SuggestFinalizedBlock(900, time.Now())
 	}
 	time.Sleep(50 * time.Millisecond)
 

@@ -211,13 +211,29 @@ func (f *FailsafeConnector) Id() string {
 	return f.wrapped.Id()
 }
 
-// CacheLatestBlockTimestamp forwards to the wrapped connector when it is head-aware, so the realtime
-// cache age guard keeps working through the failsafe wrapper. Returns (0, false) otherwise.
-func (f *FailsafeConnector) CacheLatestBlockTimestamp(networkId string) (int64, bool) {
+// CacheLatestBlock forwards to the wrapped connector when it is head-aware, so the realtime cache
+// age guard and the network's cache head keep working through the failsafe wrapper.
+func (f *FailsafeConnector) CacheLatestBlock(networkId string) (int64, int64, bool) {
 	if r, ok := f.wrapped.(CacheHeadReporter); ok {
-		return r.CacheLatestBlockTimestamp(networkId)
+		return r.CacheLatestBlock(networkId)
 	}
-	return 0, false
+	return 0, 0, false
+}
+
+// RefreshLatestBlock forwards to the wrapped connector when it is head-aware.
+func (f *FailsafeConnector) RefreshLatestBlock(ctx context.Context, networkId string) ([]byte, time.Time) {
+	if r, ok := f.wrapped.(CacheHeadReporter); ok {
+		return r.RefreshLatestBlock(ctx, networkId)
+	}
+	return nil, time.Time{}
+}
+
+// CacheServer forwards to the wrapped connector when it is head-aware.
+func (f *FailsafeConnector) CacheServer(networkId string) string {
+	if r, ok := f.wrapped.(CacheHeadReporter); ok {
+		return r.CacheServer(networkId)
+	}
+	return ""
 }
 
 // ReadOnly forwards to the wrapped connector so cache policies skip writes to a read-only connector

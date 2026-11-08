@@ -46,7 +46,6 @@ type ChainProfile struct {
 	Disable      []string
 	Fee          *EIP1559Model
 	Header       *HeaderInvariants
-	StateContext *StateContextProbe
 }
 
 // ProfileFor resolves a chain's profile. An unknown chain gets an empty profile
@@ -61,7 +60,6 @@ func ProfileFor(chainId int64) ChainProfile {
 		p.Disable = append(p.Disable, arch.Disable...)
 		p.Fee = arch.Fee
 		p.Header = arch.Header
-		p.StateContext = arch.StateContext
 	}
 	// Chain-specific additions win over the family's.
 	p.Disable = append(p.Disable, spec.Disable...)
@@ -149,15 +147,6 @@ func applyFeeParams(cs CheckSet, m *EIP1559Model) {
 // introspection/docs/tests). nil for chains without a profile.
 func ChainProfileDisables(chainId int64) []string {
 	return ProfileFor(chainId).Disable
-}
-
-// ChainStateContextProbe returns the execution-context probe for a chain: the
-// family's override where one exists, the standard Multicall3 probe otherwise.
-func ChainStateContextProbe(chainId int64) *StateContextProbe {
-	if p := ProfileFor(chainId).StateContext; p != nil {
-		return p
-	}
-	return multicall3Context
 }
 
 // ChainFeeModel returns a chain's characterised fee model, or nil when neither

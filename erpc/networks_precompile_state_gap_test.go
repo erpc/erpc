@@ -56,7 +56,7 @@ func TestNetworkForward_PrecompileStateGap_FailsOverToUpstreamWithState(t *testi
 	for _, tc := range cases {
 		t.Run(tc.method, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 			defer util.AssertNoPendingMocks(t, 0)
 
@@ -105,7 +105,7 @@ func TestNetworkForward_PrecompileStateGap_FailsOverToUpstreamWithState(t *testi
 
 func TestHttpServer_PrecompileStateGap_AllUpstreamsLackStateSurfacesNodeMessage(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {

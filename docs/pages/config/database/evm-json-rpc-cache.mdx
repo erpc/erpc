@@ -746,7 +746,7 @@ in `erpc_cache_set_success_total`:
 
 5. **The realtime age gate checks block timestamp, not cache-entry age.** A response cached 5 minutes ago is accepted if its block was produced 3 seconds ago. A response cached 30 seconds ago is rejected if its block is 2 minutes old and TTL is 60 s. Source: [`architecture/evm/json_rpc_cache.go:L841-L920`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L841-L920).
 
-6. **`eth_blockNumber`, `eth_gasPrice`, and `eth_getLogs` carry no block timestamp** in their response. The realtime age gate falls back to the connector's `CacheLatestBlockTimestamp`, which is only implemented by `GrpcConnector` (polls every 60 seconds). For all other connectors the gate fails open (accepts the cached result). Source: [`architecture/evm/json_rpc_cache.go:L879-L889`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L879-L889).
+6. **`eth_blockNumber`, `eth_gasPrice`, and `eth_getLogs` carry no block timestamp** in their response. The realtime age gate falls back to the connector's `CacheLatestBlock`, which is only implemented by `GrpcConnector` (polls every 60 seconds). For all other connectors the gate fails open (accepts the cached result). Source: [`architecture/evm/json_rpc_cache.go:L879-L889`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L879-L889).
 
 7. **Compression threshold has two definitions.** The inline code default in `NewEvmJsonRpcCache` is 512 bytes, but `SetDefaults` sets it to 1024 bytes. `SetDefaults` always runs at startup, so the effective default is 1024. The 512 value is only reachable when the cache object is constructed directly without `SetDefaults` (i.e., in unit tests). Source: [`common/defaults.go:L597-L599`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L597-L599).
 
@@ -776,7 +776,7 @@ in `erpc_cache_set_success_total`:
 
 20. **Empty results for future (not-yet-produced) blocks are never cached, regardless of `empty` policy setting.** `emptyResultBeyondConfidence` compares the requested block number against the network's latest (or finalized) head. If the block hasn't been produced yet, the empty result is silently discarded — preventing the cache from poisoning responses for blocks that simply don't exist yet. Source: [`architecture/evm/json_rpc_cache.go:L1079-L1082`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc_cache.go#L1079-L1082), [`architecture/evm/common.go:L55-L89`](https://github.com/erpc/erpc/blob/main/architecture/evm/common.go#L55-L89).
 
-21. **gRPC connector's block-head timestamp is set to zero when timestamp parse fails.** This is intentional: storing a stale timestamp from a previous poll would make `CacheLatestBlockTimestamp` report a dangerously stale age. Storing 0 makes the realtime guard fail-open (accept the cached result) rather than reject based on wrong age data. Source: [`data/grpc.go:L350-L356`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L350-L356).
+21. **gRPC connector's block-head timestamp is set to zero when timestamp parse fails.** This is intentional: storing a stale timestamp from a previous poll would make `CacheLatestBlock` report a dangerously stale age. Storing 0 makes the realtime guard fail-open (accept the cached result) rather than reject based on wrong age data. Source: [`data/grpc.go:L350-L356`](https://github.com/erpc/erpc/blob/main/data/grpc.go#L350-L356).
 
 22. **`appliesTo: "get"` enables independent write/read policies with different TTLs or finality.** Setting `appliesTo: "get"` on a policy means it will never be written to — a separate write-only policy (possibly with a different finality bucket or size limit) can populate the connector while the read-only policy controls what is served. The default `"both"` means the same policy governs both directions.
 
@@ -826,7 +826,7 @@ in `erpc_cache_set_success_total`:
 
 Span attributes on `Cache.Get`: `network.id`, `request.method`, `request.finality`, `cache.policies_matched`, `cache.hit` (bool), `cache.miss_reason`, `cache.miss_connector_id`, `cache.miss_policy`.
 
-Span attributes on `Cache.GetForPolicy`: `cache.policy_summary`, `cache.connector_id`, `cache.method`, `cache.get_outcome` (`found`/`miss`/`ttl_rejected`/`empty_ignored`/`error`/`cancelled`), `cache.block_ref`, `cache.group_key`, `cache.request_key`.
+Span attributes on `Cache.GetForPolicy`: `cache.policy_summary`, `cache.connector_id`, `cache.method`, `cache.get_outcome` (`found`/`miss`/`ttl_rejected`/`orphaned`/`empty_ignored`/`error`/`cancelled`), `cache.block_ref`, `cache.group_key`, `cache.request_key`. `orphaned`: an unfinalized entry names a block the chain tracker no longer pins at its number (a reorg replaced it); the read goes to an upstream and its answer replaces the entry.
 
 ### Debug log messages
 

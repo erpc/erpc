@@ -1330,24 +1330,24 @@ func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis
 }
 
 // chainHead returns the observed EVM "latest" block for the round, or 0 when
-// unknown. The network served tip is used only when servedTip.quorum is
-// "majority" — that value is majority-corroborated across eligible upstreams,
-// including ones that did not participate in this round. Default quorum (2)
-// can still be a plain MAX of self-reported poller latests on small pools, so
-// a single inflator can raise it; trusting that for this proof would reopen
-// the fabrication hole the poller fallback closes. When majority quorum is
-// off, or the majority tip is still 0, fall back to the MIN poller latest
-// among this round's own EVM participants (at least two distinct upstreams
-// with a positive latest). A zero head from both sources means the
+// unknown. The request's Head.Latest is used only when servedTip.quorum is
+// "majority" — that value is majority-corroborated across the request's
+// voters, including ones that did not participate in this round. Default
+// quorum (2) can still be a single voter's report on small pools, so one
+// inflator can raise it; trusting that for this proof would reopen the
+// fabrication hole the poller fallback closes. When majority quorum is off,
+// or the Head is still unknown, fall back to the MIN poller latest among
+// this round's own EVM participants (at least two distinct upstreams with a
+// positive latest). A zero head from both sources means the
 // empty-outside-retention waiver cannot prove a block is outside range, so
 // it holds the quota — fail closed.
 func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis) int64 {
 	if analysis == nil {
 		return 0
 	}
-	if analysis.originalRequest != nil {
-		if net := analysis.originalRequest.Network(); net != nil && majorityServedLatestEnabled(net) {
-			if head := common.EvmHighestLatestBlockNumber(net, ctx); head > 0 {
+	if req := analysis.originalRequest; req != nil {
+		if net := req.Network(); net != nil && majorityServedLatestEnabled(net) {
+			if head := common.EvmHeadOf(net, ctx, req).Latest; head > 0 {
 				return head
 			}
 		}

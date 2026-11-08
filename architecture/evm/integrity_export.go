@@ -8,7 +8,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
-	"github.com/rs/zerolog/log"
 )
 
 // Integrity catches (rejects, record-only flags, fallback serves) are rare and each one is
@@ -34,7 +33,7 @@ func networkIntegrityExporter(n common.Network) consensus.MisbehaviorExporter {
 	}
 	slot := &integrityExporterSlot{}
 	if ic := n.Config().Integrity; ic != nil && ic.MisbehaviorsDestination != nil {
-		l := log.With().Str("component", "integrityExport").Str("network", n.Id()).Logger()
+		l := n.Logger().With().Str("component", "integrityExport").Str("network", n.Id()).Logger()
 		slot.exp = consensus.NewMisbehaviorExporter(ic.MisbehaviorsDestination, &l)
 	}
 	actual, _ := integrityExporters.LoadOrStore(key, slot)
@@ -92,7 +91,7 @@ func exportIntegrityCatch(ctx context.Context, n common.Network, u common.Upstre
 		return
 	}
 	if err := exp.AppendWithMetadata(line, method, n.Id()); err != nil {
-		log.Warn().Err(err).Str("network", n.Id()).Str("check", check).
+		n.Logger().Warn().Err(err).Str("network", n.Id()).Str("check", check).
 			Msg("integrity: failed to archive catch to misbehaviorsDestination")
 	}
 }
