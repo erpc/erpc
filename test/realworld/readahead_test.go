@@ -112,9 +112,12 @@ func (r *p23Reads) fail(kind, format string, args ...interface{}) {
 }
 
 func p23Body(s *scenario) {
-	s.blocks(20)
+	// Whole-second timestamps sample a 0.1 s chain's block time once a
+	// second: the bar waits until its estimate settled.
+	s.blocks(300)
 	vl := &viewLog{}
-	heads := []liveRead{{viewHead, freshLoad{time.Duration(float64(time.Second) / p23HeadRate), "latest", vl.reader(viewHead)}, [2]time.Duration{}, false, false}}
+	// Both latest reads: eth_blockNumber alone is no clock demand.
+	heads := liveReads(p23HeadRate, s.chain.BlockTime(), vl)
 	taps := make([]*viewTap, len(s.h.pods))
 	for _, p := range s.h.pods {
 		taps[p.idx] = s.startViewTap(p.idx)

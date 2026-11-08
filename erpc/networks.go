@@ -3005,10 +3005,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					switch refusal.Miss(leg) {
 					case common.MissRetry:
 						if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
-							// The retry waits for the Ask of the voters
-							// that lack the block until it answers, at most
-							// W, and orders on the heads it brings.
-							n.awaitBandAsk(loopCtx, selectorOf(effectiveReq), refusal.Block)
+							// The retry waits for a routed upstream that
+							// may hold the block, at most W: the lane's read
+							// ahead brings its holders.
+							n.awaitBandHolder(loopCtx, effectiveReq, attempted, refusal.Block)
 						}
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
 						// One more pick for the retry, a slot's included.
@@ -3702,25 +3702,19 @@ func (n *Network) handleBlockSkip(
 	}
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
 
-	// When the block is slightly ahead (retryable), Ask the upstream with a
-	// number need in the background (spec §6.4, §6.8), as main polled it:
-	// the request never waits on it, and the retry after
-	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
-	// A block at or below the request Head's Latest, or one the view pins
-	// (Held), Asks nothing: the clock already fetched it for the network,
-	// and an Ask per skipped upstream cost a block up to one fetch per
-	// voter.
+	// When the block is slightly ahead (retryable), the skip is the lane's
+	// read ahead of it (spec §6.4, §6.8): the clock's shared early fetch
+	// brings its holders, the request never waits on it, and the retry
+	// after blockUnavailableDelay sees their heads. A block at or below the
+	// request Head's Latest, or one the view pins (Held), asks nothing more:
+	// the clock already fetched it for the network. An Ask per skipped
+	// upstream cost a block up to one fetch per voter.
 	if isRetryable {
 		if r := req.HeadRefusal(); r != nil && r.Held {
 			return
 		}
-		if bn := requestBlockNumber(ctx, req); bn > 0 && bn <= n.requestHead(ctx, req).Latest {
-			return
-		}
-		if eu, ok := u.(common.EvmUpstream); ok {
-			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefusal)
-			}
+		if bn := requestBlockNumber(ctx, req); bn > n.requestHead(ctx, req).Latest {
+			n.readAhead(selectorOf(req), bn)
 		}
 	}
 }

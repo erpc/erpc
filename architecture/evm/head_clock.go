@@ -121,6 +121,10 @@ type headClock struct {
 	provenHash string
 	provenAt   time.Time
 	provedFor  uint64
+	// ahead is the highest block a read waits for above the top sight
+	// (ReadAhead); aheadFor the last target its shared early fetch went
+	// for (aheadProbe): one per target.
+	ahead, aheadFor uint64
 	// seq names the clock's generation: a reset moves it on, so an answer
 	// from before the reset is dropped.
 	seq uint64
@@ -166,8 +170,9 @@ type clockFire struct {
 	// delay doubles), vote (a turn sent at the target's sight), catch_up,
 	// guarantee, holder, edge (the idle edge's), cold (before any sight),
 	// held (a by-hash proof's block fetched by hash from the voter that
-	// answered it, proveTarget). Only a rung's, probe's or retry's answer
-	// is the ladder's.
+	// answered it, proveTarget), ahead (the shared early fetch of a block
+	// reads wait for, aheadProbe). Only a rung's, probe's or retry's
+	// answer is the ladder's.
 	kind string
 }
 
@@ -297,7 +302,8 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 		if c.scheduled {
 			c.skips++
 		}
-		if c.ladder && c.provedFor != c.target {
+		// A shared early fetch sent before S_k answered leaves S_k unrun.
+		if c.ladder && c.provedFor != c.target && (c.aheadFor != c.target || c.kEarly) {
 			switch {
 			case !c.kEarly:
 				c.off = max(c.off-1.0/400, -0.5)
@@ -895,7 +901,11 @@ func (t *ChainTracker) runClock() {
 		t.plan(cands, bt, pace)
 	}
 	t.proveTarget(cands, now, bt)
+	wake := t.aheadProbe(cands, now, bt)
 	t.climb(cands, now, bt)
+	if !wake.IsZero() && (c.nextAt.IsZero() || wake.Before(c.nextAt)) {
+		c.nextAt = wake
+	}
 }
 
 // plan lays the target's fires (spec §6.8) and tells each voter's full
@@ -1402,13 +1412,14 @@ func (t *ChainTracker) clockAnswered(seq uint64, f *clockFire, a common.HeadAnsw
 	edge := f == c.edge
 	now := time.Now()
 	// A held fetch is no head fetch: its round trip is a by-hash read's,
-	// and its block says nothing of what the voter lacked.
+	// its block says nothing of what the voter lacked, and the voter's
+	// next head fetch owes it nothing.
 	held := f.kind == "held"
-	if !a.At.IsZero() {
+	if !a.At.IsZero() && !held {
 		if a.At.After(c.taken[f.id]) {
 			c.taken[f.id] = a.At
 		}
-		if a.Outcome == common.AskFetched && a.Err == nil && !held {
+		if a.Outcome == common.AskFetched && a.Err == nil {
 			c.sampleRTT(f.id, now.Sub(a.At))
 		}
 	}
@@ -1504,14 +1515,38 @@ func (t *ChainTracker) MarkRead() {
 	}
 }
 
+// ReadAhead takes a read that waits for block n above the view (spec
+// §6.4 near future, band, gate skip): it is the lane's demand, and the
+// clock's target sends its shared early fetch once a read waits for it or
+// a block above it (aheadProbe). Every read of n waits on that fetch and
+// the clock's after it: no read fetches a head of its own.
+func (t *ChainTracker) ReadAhead(n uint64) {
+	t.MarkRead()
+	for {
+		prev := t.readAhead.Load()
+		if n <= prev {
+			return
+		}
+		if t.readAhead.CompareAndSwap(prev, n) {
+			break
+		}
+	}
+	t.mb.put(trackerMsg{kind: msgCall, fn: func() {
+		if c := &t.clock; n > c.top() && n > c.ahead {
+			c.ahead = n
+		}
+	}})
+}
+
 // Proven takes a by-hash answer that showed block n to exist above the
-// view (spec §6.4 by-hash wait): it is the lane's demand from now on, and
-// the clock's proof of n (prove): voter by is the upstream that answered,
-// with hash the block's hash, or for a cache answer (hash "") the cache's
-// own voter or a voter whose counter holds n.
-func (t *ChainTracker) Proven(n uint64, hash, by string) {
+// view (spec §6.4 by-hash wait), its request sent at at (zero: now): it is
+// the lane's demand from now on, and the clock's proof of n (prove): voter
+// by is the upstream that answered, with hash the block's hash, or for a
+// cache answer (hash "") the cache's own voter or a voter whose counter
+// holds n.
+func (t *ChainTracker) Proven(n uint64, hash, by string, at time.Time) {
 	t.latestReadAt.Store(time.Now().UnixNano())
-	t.prove(n, hash, by)
+	t.prove(n, hash, by, at)
 }
 
 // Sighted takes the cache's head reaching block n where no lane voter is
@@ -1519,13 +1554,16 @@ func (t *ChainTracker) Proven(n uint64, hash, by string) {
 // of n (prove). It adds no demand: a lane nobody reads fetches nothing
 // for it. Where one is, its head is that voter's poll instead (CacheHead).
 func (t *ChainTracker) Sighted(n uint64) {
-	t.prove(n, "", "")
+	t.prove(n, "", "", time.Time{})
 }
 
-// prove records that block n, hash when by answered it by hash, exists,
-// so the target's probe goes once n reaches it (proveTarget).
-func (t *ChainTracker) prove(n uint64, hash, by string) {
-	at := time.Now()
+// prove records that block n, hash when by answered it by hash, existed
+// by at (zero: now), so the target's probe goes once n reaches it
+// (proveTarget).
+func (t *ChainTracker) prove(n uint64, hash, by string, at time.Time) {
+	if at.IsZero() {
+		at = time.Now()
+	}
 	t.mb.put(trackerMsg{kind: msgCall, fn: func() {
 		if c := &t.clock; n > c.top() && n > c.proven {
 			c.proven, c.provenBy, c.provenHash, c.provenAt = n, by, hash, at
@@ -1551,21 +1589,27 @@ func (t *ChainTracker) prove(n uint64, hash, by string) {
 // proof probe per target: a later proof of it is spent, and a probe that
 // answers early leaves the block to the ladder's tail. With a fetch of
 // the target out it waits for that fetch, which brings the block as soon;
-// a proof below the target is spent. A proof a free voter's by-hash
-// answer gave is the target's probe at once: that voter's fetch of the
-// block by hash (held), whatever fetch is out to another voter, whose
-// answer may lack the block: waiting for it held the by-hash read for a
-// rung's early answer and then the tail (§19 P23).
+// a proof below the target is spent. A proof a voter's by-hash answer
+// gave is the target's probe at once: that voter's fetch of the block by
+// hash (held), no head fetch, so a head fetch of that voter out delays it
+// not; but a ladder fetch sent after the answer's request found the block
+// brings it as soon, and the reads wait on it instead, while one sent
+// before may lack it: waiting for that held the by-hash read for a rung's
+// early answer and then the tail (§19 P23).
 func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt time.Duration) {
 	c := &t.clock
 	if c.proven < c.target || c.provedFor == c.target {
 		c.proven, c.provenBy, c.provenHash = 0, "", ""
 		return
 	}
-	free := func(id string) bool {
-		return id != "" && !c.busy(id) && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id })
+	candidate := func(id string) bool {
+		return id != "" && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id })
 	}
-	if c.provenHash != "" && free(c.provenBy) {
+	free := func(id string) bool { return candidate(id) && !c.busy(id) }
+	if c.provenHash != "" && candidate(c.provenBy) {
+		if slices.ContainsFunc(c.sent, func(f *clockFire) bool { return !f.done && !f.hedged && !f.sent.Before(c.provenAt) }) {
+			return
+		}
 		if f := t.fireHeld(c.provenBy, c.provenHash, now); f != nil {
 			var turns []string
 			for _, rr := range c.rungs {
@@ -1631,6 +1675,7 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 
 // fireHeld sends the clock's held fetch to voter id: block hash by hash,
 // whose answer is id's vote (HeaderHeld); nil when the network has none.
+// It is no head fetch: the voter's turns and head fetches stand.
 func (t *ChainTracker) fireHeld(id, hash string, now time.Time) *clockFire {
 	c := &t.clock
 	f := &clockFire{id: id, sent: now, top: c.top(), kind: "held"}
@@ -1638,10 +1683,58 @@ func (t *ChainTracker) fireHeld(id, hash string, now time.Time) *clockFire {
 	if !t.fetchHeld(id, hash, func(a common.HeadAnswer) { t.clockAnswered(seq, f, a) }) {
 		return nil
 	}
-	c.lastFire = now
-	v := c.voter(id)
-	v.firedAt, v.out = now, f
 	return f
+}
+
+// aheadProbe sends the target's shared early fetch (spec §6.8): a read
+// waits for the target or a block above it (ReadAhead), the lane is no
+// push's, no fetch of the target is out, the target's predicted sight
+// passed and no rung goes within bt/4: one head fetch now, to the free
+// voter likeliest to hold the target first (score: round trip plus held
+// wait), in place of the target's rungs, whose turns vote at its sight;
+// once per target. Before that, the ladder's own fire is the fetch the
+// reads wait on; an answer below the target leaves it to the ladder's
+// tail. Each waiting read Asking every voter below its block every bt
+// cost a 0.1 s chain with 6 voters 5.0 head fetches per block (§19 P23).
+// wake: the predicted sight a waiting target's fetch waits for, zero with
+// none.
+func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time.Duration) (wake time.Time) {
+	c := &t.clock
+	if c.ahead < c.target || c.aheadFor == c.target || c.pushFed() || bt <= 0 || len(c.fit) == 0 {
+		return time.Time{}
+	}
+	if p := c.predict(c.target, bt); now.Before(p) {
+		return p
+	}
+	if slices.ContainsFunc(c.sent, func(f *clockFire) bool { return !f.done && !f.hedged }) {
+		return time.Time{}
+	}
+	if len(c.rungs) > 0 && !c.rungs[0].at.After(now.Add(bt/4)) {
+		return time.Time{}
+	}
+	var id string
+	for _, cand := range c.byScore(cands) {
+		if !c.busy(cand.id) {
+			id = cand.id
+			break
+		}
+	}
+	if id == "" {
+		return time.Time{}
+	}
+	f := t.fire(id, now, "ahead")
+	if f == nil {
+		return time.Time{}
+	}
+	var turns []string
+	for _, rr := range c.rungs {
+		if rr.turn && rr.id != id {
+			turns = append(turns, rr.id)
+		}
+	}
+	c.votes = slices.DeleteFunc(append(c.votes, turns...), func(v string) bool { return v == id })
+	c.rungs, c.sent, c.aheadFor = nil, append(c.sent, f), c.target
+	return time.Time{}
 }
 
 // holdCredit is what the clock published for readers on other goroutines:

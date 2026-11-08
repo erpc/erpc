@@ -786,8 +786,11 @@ func (n *Network) walkCounted(sel string, yield func(*upstream.Upstream) bool) {
 // selector's counted upstreams whose report is 1 bt old or older, every
 // one before the first block time sample, waits for their answers, at most
 // 1 bt or until ctx ends, and returns the lane's ceiling and oldest report
-// after them (spec §6.4: no future on a stale report). The age filter
-// saves the request path an Ask per fresh upstream; the Ask paces fetches.
+// after them (spec §6.4: no future on a stale report). Only a block beyond
+// the near future Asks (DecideHeadRefusal): refusing it needs every report
+// fresh, while a near-future block waits for the lane's read ahead. The
+// age filter saves the request path an Ask per fresh upstream; the Ask
+// paces fetches.
 func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time) {
 	bt, cold := n.blockTimeOrCold(), n.EvmBlockTime() <= 0
 	now := time.Now()
@@ -895,32 +898,14 @@ func selectorOf(req *common.NormalizedRequest) string {
 }
 
 // EvmAwaitCeiling waits for selector sel's lane ceiling to reach block, at
-// most W or until ctx ends, Asking the lane's number voters below block
-// at once and every bt after (spec §6.4 near future), each after the
-// answer it last took from that voter: a tick never takes the fetch the
-// one before took, so it sees each new head within a bt. The Ask is
-// single-flight at pace bt, so many waiting requests fetch each voter
-// about once per bt. It returns the ceiling and oldest report it last saw.
+// most W or until ctx ends (spec §6.4 near future). The wait is the lane's
+// read ahead of block (readAhead): the block clock's shared early fetch
+// and its ladder move the ceiling, and the wait fetches nothing of its
+// own. It returns the ceiling and oldest report it last saw.
 func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) (ceiling int64, oldestReportAt time.Time) {
-	bt := n.blockTimeOrCold()
+	n.readAhead(sel, block)
 	wait, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
-	taken := map[string]time.Time{}
-	ask := func() {
-		n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
-			if head < block {
-				if sp := u.(common.EvmUpstream).EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-					if at := sp.AskBackground(common.HeadNeedNumber, bt, taken[u.Id()], common.AskRefusal).At; !at.IsZero() {
-						taken[u.Id()] = at
-					}
-				}
-			}
-			return true
-		})
-	}
-	ask()
-	tick := time.NewTicker(bt)
-	defer tick.Stop()
 	for {
 		computed := n.headsComputed()
 		h := n.headFor(tipScope{sel: sel})
@@ -929,8 +914,6 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 		}
 		select {
 		case <-computed:
-		case <-tick.C:
-			ask()
 		case <-wait.Done():
 			h = n.headFor(tipScope{sel: sel})
 			return h.Ceiling, h.OldestReportAt
@@ -938,37 +921,54 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 	}
 }
 
-// EvmAskBand Asks, in the background, with a number need at 1 bt, each
-// upstream selector's lane ceiling counts whose head is below block,
-// voters first (spec §6.4 band): a syncing upstream votes for no Latest
-// yet may hold the block, and the band's retry orders upstreams by these
-// heads.
+// EvmAskBand takes a band block of selector's lane (spec §6.4 band): the
+// lane's read ahead of it (readAhead), so the band's retry finds the
+// block's holders by the clock's fetches, with no Ask per upstream below
+// it.
 func (n *Network) EvmAskBand(selector string, block int64) {
-	bt := n.blockTimeOrCold()
-	for _, sp := range n.bandPollers(selector, block) {
-		sp.AskBackground(common.HeadNeedNumber, bt, time.Time{}, common.AskRefusal)
+	n.readAhead(selector, block)
+}
+
+// readAhead is a read of selector's lane waiting for block above its view
+// (evm.ChainTracker.ReadAhead): the lane's demand, and the one head fetch
+// every such read of block shares.
+func (n *Network) readAhead(selector string, block int64) {
+	if t := n.laneTracker(selector); t != nil && block > 0 {
+		t.ReadAhead(uint64(block))
 	}
 }
 
-// awaitBandAsk joins the band's Ask of selector sel's lane for block
-// (EvmAskBand, AskReaching) and waits for its answers, at most W (spec
-// §6.4): a poll over a slow link takes longer than 1 bt, and the band's
-// retry orders upstreams on the heads it brings. The first answer that
-// reaches block ends the wait: the retry has a holder, and one slow
-// upstream never holds it back (rule 2). The other fetches run on.
-func (n *Network) awaitBandAsk(ctx context.Context, sel string, block int64) {
+// awaitBandHolder waits, for the band's or the thin region's retry of
+// req's block (spec §6.4), until one of req's routed upstreams not yet
+// attempted may hold it (mayHold), at most W or until ctx ends. The wait
+// is the lane's read ahead of block (readAhead): the clock's fetches bring
+// its holders, and the first ends the wait, so one slow upstream never
+// holds the retry back (rule 2). It fetches nothing of its own.
+func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, block int64) {
+	sel := selectorOf(req)
+	n.readAhead(sel, block)
+	credit := creditCap(n.requestHead(ctx, req))
 	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
-	bt := n.blockTimeOrCold()
-	var wg sync.WaitGroup
-	for _, sp := range n.bandPollers(sel, block) {
-		wg.Go(func() {
-			if a := sp.AskReaching(ctx, block, bt, common.AskRefusal); a.Err == nil && a.Block >= block {
-				cancel()
+	t := n.laneTracker(sel)
+	for {
+		computed := n.headsComputed()
+		var moved <-chan struct{}
+		if t != nil {
+			moved = t.Changed()
+		}
+		for _, u := range req.Upstreams() {
+			if _, seen := attempted[u.Id()]; !seen && n.mayHold(u, block, credit, nil) {
+				return
 			}
-		})
+		}
+		select {
+		case <-computed:
+		case <-moved:
+		case <-ctx.Done():
+			return
+		}
 	}
-	wg.Wait()
 }
 
 // awaitViewOnto reports whether c, an upstream's block at req's Head
@@ -1001,29 +1001,6 @@ func (n *Network) awaitViewOnto(ctx context.Context, req *common.NormalizedReque
 			return false
 		}
 	}
-}
-
-// bandPollers are the pollers of the upstreams sel's lane ceiling counts
-// whose head is below block, number voters (voterSet) first.
-func (n *Network) bandPollers(sel string, block int64) []common.EvmStatePoller {
-	ups := slices.Collect(n.countedUpstreams(sel))
-	s := n.voters(tipScope{sel: sel}, voterQuery{kind: numberVote})
-	voters := s.list()
-	out := make([]common.EvmStatePoller, 0, len(ups))
-	for _, first := range [2]bool{true, false} {
-		for _, u := range ups {
-			if slices.ContainsFunc(voters, func(v common.Upstream) bool { return v.Id() == u.Id() }) != first {
-				continue
-			}
-			if head, _ := evmTipObservation(u, false); head >= block {
-				continue
-			}
-			if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				out = append(out, sp)
-			}
-		}
-	}
-	return out
 }
 
 // askAll Asks each of pollers with a number need at pace for reason, at
@@ -1124,7 +1101,7 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	} else if by = n.cacheVoter(sel); by == "" {
 		by = n.firstHolder(sel, bn)
 	}
-	t.Proven(uint64(bn), probe, by)
+	t.Proven(uint64(bn), probe, by, resp.SentAt())
 	asks, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
 	for {

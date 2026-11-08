@@ -13,7 +13,7 @@ import (
 // headRefuser is the network's side of the refusal rule (spec §6.4, §6.8):
 // its block time, whether its lane's view pins a block, the Ask of the
 // reports older than 1 bt, the near-future wait for the ceiling, and the
-// band's Ask of the upstreams below a block.
+// band block's read ahead (ChainTracker.ReadAhead).
 type headRefuser interface {
 	EvmBlockTime() time.Duration
 	EvmPinned(selector string, block int64) bool
@@ -87,17 +87,19 @@ func RefusalMiss(method string, result []byte) bool {
 // selector sel's lane. A block above Firm that the lane's view pins exists:
 // it is thin and Held, and nothing Asks an upstream for it, whatever h's
 // Latest and ceiling, which a method only some upstreams serve keeps below
-// it (spec §6.4 held). Else above the ceiling with a report 1 bt old or
-// older, those reports are Asked first and n decided again, each report's
-// age taken at the Ask's start: a report fresh then was not Asked, and must
-// not turn stale by the Ask's own duration. Still stale after the Ask, n
-// is in the band, the cheaper way to be wrong. Until the first block time
-// sample, every report counts as older than 1 bt (spec §6.4).
+// it (spec §6.4 held). Else a block beyond the near future above the
+// ceiling with a report 1 bt old or older has those reports Asked first
+// and is decided again, each report's age taken at the Ask's start: a
+// report fresh then was not Asked, and must not turn stale by the Ask's
+// own duration. Still stale after the Ask, n is in the band, the cheaper
+// way to be wrong. Until the first block time sample, every report counts
+// as older than 1 bt (spec §6.4).
 // With wait, an n at most nearFutureBlocks above the ceiling, future or
-// kept in the band by a stale report, waits for the ceiling to reach it,
-// at most W, and is decided again on the ceiling the wait saw; Latest
-// stays the request's own (spec §7). A band block Asks the upstreams
-// below it, in the background.
+// kept in the band by a stale report, Asks nothing: it waits for the
+// ceiling to reach it, at most W, as the lane's read ahead, whose one head
+// fetch every such read shares, and is decided again on the ceiling the
+// wait saw; Latest stays the request's own (spec §7). A band block is the
+// lane's read ahead too, in the background.
 func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64, wait bool) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt, cold := health.ColdBlockTime, true
@@ -115,7 +117,11 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		v.Rule, v.Held, v.Ceiling = common.HeadThin, true, h.Ceiling
 		return v
 	}
-	if v.Rule == common.HeadStale && net != nil {
+	// A near-future block waits for the lane's read ahead below, which
+	// fetches its head once for every read of it; only refusing a block
+	// beyond needs every stale report Asked.
+	near := wait && n-h.Ceiling <= nearFutureBlocks(bt, h.OldestReportAt, time.Now())
+	if v.Rule == common.HeadStale && net != nil && !near {
 		h.Ceiling, h.OldestReportAt = net.EvmAskStale(ctx, sel)
 		if cold {
 			h.OldestReportAt = time.Time{}
