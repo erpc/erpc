@@ -1023,6 +1023,91 @@ func p20AsymSlow() spec {
 	return sp
 }
 
+const (
+	// p20ZoraRate: P20-zora's reads a second per pod, half of them
+	// eth_getBlockByNumber(latest), as zora's clients read about 2 a second.
+	p20ZoraRate = 4.0
+	// p20ZoraDelay, p20ZoraJitter: each vendor serves each block
+	// 50-150 ms after its mint.
+	p20ZoraDelay  = 50 * time.Millisecond
+	p20ZoraJitter = 100 * time.Millisecond
+)
+
+// p20ZoraUps are zora's four vendors, polled every 10 s, the nearest at
+// p20FastRTT and the others at P20-asym's round trips.
+var p20ZoraUps = []freshUp{
+	{"http-a", "vendor-a", p20FastRTT, 10 * time.Second, 0, p20ZoraDelay},
+	{"http-b", "vendor-b", 80 * time.Millisecond, 10 * time.Second, 0, p20ZoraDelay},
+	{"http-c", "vendor-c", 95 * time.Millisecond, 10 * time.Second, 0, p20ZoraDelay},
+	{"http-d", "vendor-d", 110 * time.Millisecond, 10 * time.Second, 0, p20ZoraDelay},
+}
+
+// P20-zora: zora-mainnet's shape: 2 s blocks, p20ZoraUps, no cache, so
+// every latest read reaches a vendor, the selection policy ranking
+// vendor-a first; clients read eth_getBlockByNumber(latest) and
+// eth_blockNumber each p20ZoraRate/2 a second at random phases. Served
+// age and latency within P19's slacks of the old image's, which sends
+// each latest read to vendor-a as the tag; head fetches per new block
+// within turnBound (client reads sent as the tag are client demand, not
+// head fetches); no more upstream requests. It logs per image the share
+// of latest reads a block behind (the next block was minted
+// p20ZoraDelay+p20ZoraJitter before the read was sent, so every vendor
+// served it), upstream requests per client read and by-number block
+// reads per latest read.
+func p20Zora() spec {
+	sp := freshSpec("P20-zora", 1, p20ZoraUps, chainsim.Config{BlockTime: p20AsymBlockTime, FinalityStep: p17Step},
+		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p20ZoraJitter}, p20ZoraBody)
+	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
+	return sp
+}
+
+func p20ZoraBody(s *scenario) {
+	s.blocks(10)
+	bt := s.chain.BlockTime()
+	reads := liveReads(p20ZoraRate, bt, &viewLog{})
+	var loads []freshLoad
+	for _, r := range reads {
+		loads = append(loads, r.load)
+	}
+	from, a := time.Now(), s.fetchMark()
+	imgs, counts := s.freshRun(liveRun, loads...)
+	var all fetchSpan
+	all.add(a, s.fetchMark())
+	to := time.Now()
+	var b strings.Builder
+	s.judgeAgeLatency(&b, reads, imgs, from, to)
+	s.judgeFetches(&b, "over the run", all, turnBound(p20ZoraUps, 1, bt))
+	s.judgeRequests(&b, all)
+	latest := slices.IndexFunc(reads, func(r liveRead) bool { return r.name == viewLatest })
+	for j, p := range s.h.pods {
+		var clientReads int
+		for i := range reads {
+			imgs[i][j].mu.Lock()
+			clientReads += len(imgs[i][j].answers) + imgs[i][j].errs
+			imgs[i][j].mu.Unlock()
+		}
+		im := imgs[latest][j]
+		im.mu.Lock()
+		answers, took := slices.Clone(im.answers), slices.Clone(im.took)
+		im.mu.Unlock()
+		behind := 0
+		for k, ans := range answers {
+			if next := s.chain.CanonAt(ans.n + 1); next != nil && !next.MintedAt.Add(p20ZoraDelay+p20ZoraJitter).After(ans.at.Add(-took[k])) {
+				behind++
+			}
+		}
+		var requests, numbered float64
+		for _, u := range s.spec.vendors {
+			requests += counts[latest][j].requests[u.key]
+			numbered += counts[latest][j].numbered[u.key]
+		}
+		fmt.Fprintf(&b, "pod-%d (%s image): %d of %d latest reads a block behind (%.1f%%); %.3f upstream requests per client read (%d reads); %.3f by-number block reads per latest read\n",
+			p.idx+1, s.image(p.idx), behind, len(answers), 100*float64(behind)/float64(max(1, len(answers))),
+			requests/float64(max(1, clientReads)), clientReads, numbered/float64(max(1, len(answers))))
+	}
+	s.logf("%s", b.String())
+}
+
 // P20-flash: P20's layout, vendor-a serving each block p20Lead before
 // the others, the selection policy ranking vendor-b first, no cache. A
 // thin Head's reads go to vendor-a, the Leader, as no other vendor holds

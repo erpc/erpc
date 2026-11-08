@@ -147,6 +147,7 @@ func catalogue() []phaseSpec {
 		{"p20-behind", 13951, []spec{p20(false)}},
 		{"p20-asym", 14701, []spec{p20Asym()}},
 		{"p20-asym-slow", 14851, []spec{p20AsymSlow()}},
+		{"p20-zora", 14951, []spec{p20Zora()}},
 		{"p20-flash", 14751, []spec{p20Flash()}},
 		{"p20-pair", 14801, []spec{p20Pair()}},
 		{"p21", 14001, []spec{p21()}},
