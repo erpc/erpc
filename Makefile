@@ -96,7 +96,9 @@ test-fast:
 	@# headroom it can't take anyone else down.
 	@# SHARD_CHAOS isolates the chain feed chaos test: 11 seeds of a live
 	@# 200 ms chain, ~3.5 min by design (up to 150 block times a seed), a third
-	@# of the catch-all's 10m budget on its own.
+	@# of the catch-all's 10m budget on its own. SHARD_CHAIN_TRACKER holds the
+	@# chain tracker's network-level groups (~4 min together): the catch-all
+	@# then runs ~6.5 min, inside its budget with a loaded runner's headroom.
 	@bash -c '\
 	  SHARD_CONSENSUS="^(TestConsensusPolicy$$|TestConsensusGoroutine|TestConsensusSelectsLargest|TestInterpolation_)"; \
 	  SHARD_NETWORK="^(TestNetwork_Forward$$|TestNetwork_(SelectionScenarios|InFlightRequests|SkippingUpstreams|EvmGetLogs|ThunderingHerd|HighestFinalizedBlockNumber|HighestLatestBlockNumber|CacheEmptyBehavior|BatchRequests|SingleRequestErrors|CapacityExceededErrors|TraceExecutionTimeout|Multiplexer|SendRawTransaction))"; \
@@ -104,7 +106,8 @@ test-fast:
 	  SHARD_INTEGRITY="^(TestNetworkRetry_|TestNetworkForward_|TestNetworkIntegrity_|TestHedgeConsensus_|TestEmptyResultAcceptShortCircuit$$|TestNetworkFailsafe_|TestNetworksBootstrap_|TestNetworkAvailability_|TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping$$|TestNetwork_HedgePolicy)"; \
 	  SHARD_CONTAINER_CACHE="^TestEvmJsonRpcCache_(DynamoDB|Redis)$$"; \
 	  SHARD_CHAOS="^TestChainFeed_ConvergesUnderFaults$$"; \
-	  SKIP_ALL="$$SHARD_CONSENSUS|$$SHARD_NETWORK|$$SHARD_HTTPSERVER|$$SHARD_INTEGRITY|$$SHARD_CONTAINER_CACHE|$$SHARD_CHAOS|^TestConsensusPolicy_DSL|^TestHttp_"; \
+	  SHARD_CHAIN_TRACKER="^(TestServedTip|TestNetworkIntake_|TestNetworkCacheHead_|TestForward_|TestWebSocket_)"; \
+	  SKIP_ALL="$$SHARD_CONSENSUS|$$SHARD_NETWORK|$$SHARD_HTTPSERVER|$$SHARD_INTEGRITY|$$SHARD_CONTAINER_CACHE|$$SHARD_CHAOS|$$SHARD_CHAIN_TRACKER|^TestConsensusPolicy_DSL|^TestHttp_"; \
 	  pids=(); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CONSENSUS" -test.parallel 4 $(call cover_bin,erpc-consensus) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_NETWORK" $(call cover_bin,erpc-network) & pids+=($$!); \
@@ -112,6 +115,7 @@ test-fast:
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_INTEGRITY" $(call cover_bin,erpc-integrity) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 15m -test.run "$$SHARD_CONTAINER_CACHE" $(call cover_bin,erpc-container-cache) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CHAOS" $(call cover_bin,erpc-chaos) & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CHAIN_TRACKER" $(call cover_bin,erpc-chain-tracker) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.skip "$$SKIP_ALL" $(call cover_bin,erpc-rest) & pids+=($$!); \
 	  fail=0; for pid in "$${pids[@]}"; do wait "$$pid" || fail=1; done; \
 	  exit $$fail'
