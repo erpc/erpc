@@ -62,13 +62,14 @@ var headFetchKinds = []string{"latest", blockNumberRead}
 
 // fetchMark is, at one instant, the chain's new blocks (ticks less missed
 // slots), each pod's head fetches and requests through every vendor proxy
-// and the scenario's Prism, and each new-image pod's head fetches by cause
-// (clockMix).
+// and the scenario's Prism, its numbered block reads per vendor, and each
+// new-image pod's head fetches by cause (clockMix).
 type fetchMark struct {
 	at       time.Time
 	ticks    uint64
 	fetches  []float64
 	requests []float64
+	numbered []map[string]float64
 	mix      []map[string]float64
 }
 
@@ -76,11 +77,13 @@ func (s *scenario) fetchMark() fetchMark {
 	m := fetchMark{at: time.Now(), ticks: s.chain.Ticks() - s.chain.Missed(), mix: s.clockMix()}
 	for _, p := range s.h.pods {
 		var f, r float64
+		num := make(map[string]float64, len(s.proxies))
 		for _, px := range s.proxies {
 			for _, k := range headFetchKinds {
 				f += float64(px.reads(p, k))
 			}
 			r += float64(px.reads(p, anyRead))
+			num[px.name] = float64(px.reads(p, "number"))
 		}
 		if s.prism != nil {
 			f += float64(s.prism.reads(p.idx, false, "latest"))
@@ -88,61 +91,64 @@ func (s *scenario) fetchMark() fetchMark {
 		}
 		m.fetches = append(m.fetches, f)
 		m.requests = append(m.requests, r)
+		m.numbered = append(m.numbered, num)
 	}
 	return m
 }
 
-// fetchSpan sums new blocks, head fetches, requests and head fetches by
-// cause per pod over one or more windows.
+// fetchSpan sums new blocks, head fetches, requests, numbered block reads
+// per vendor and head fetches by cause per pod over one or more windows.
 type fetchSpan struct {
 	blocks            uint64
 	dur               time.Duration
 	fetches, requests []float64
-	mix               []map[string]float64
+	numbered, mix     []map[string]float64
 }
 
 func (fs *fetchSpan) add(a, b fetchMark) {
 	if fs.fetches == nil {
 		fs.fetches, fs.requests = make([]float64, len(a.fetches)), make([]float64, len(a.fetches))
-		fs.mix = make([]map[string]float64, len(a.fetches))
+		fs.numbered, fs.mix = make([]map[string]float64, len(a.fetches)), make([]map[string]float64, len(a.fetches))
 	}
 	fs.blocks += b.ticks - a.ticks
 	fs.dur += b.at.Sub(a.at)
 	for i := range a.fetches {
 		fs.fetches[i] += b.fetches[i] - a.fetches[i]
 		fs.requests[i] += b.requests[i] - a.requests[i]
-		if b.mix[i] == nil {
-			continue
-		}
-		if fs.mix[i] == nil {
-			fs.mix[i] = map[string]float64{}
-		}
-		for k, v := range b.mix[i] {
-			fs.mix[i][k] += v - a.mix[i][k]
-		}
+		fs.numbered[i] = addDiff(fs.numbered[i], b.numbered[i], a.numbered[i])
+		fs.mix[i] = addDiff(fs.mix[i], b.mix[i], a.mix[i])
 	}
+}
+
+// addDiff adds to.k - from.k to dst.k for each key of to, and returns dst,
+// made on first use; nil while to is.
+func addDiff(dst, to, from map[string]float64) map[string]float64 {
+	if to == nil {
+		return dst
+	}
+	if dst == nil {
+		dst = map[string]float64{}
+	}
+	for k, v := range to {
+		dst[k] += v - from[k]
+	}
+	return dst
 }
 
 // minus is fs without the windows of o, which lie inside it.
 func (fs fetchSpan) minus(o fetchSpan) fetchSpan {
-	out := fetchSpan{blocks: fs.blocks - o.blocks, dur: fs.dur - o.dur, mix: make([]map[string]float64, len(fs.fetches))}
+	out := fetchSpan{blocks: fs.blocks - o.blocks, dur: fs.dur - o.dur,
+		numbered: make([]map[string]float64, len(fs.fetches)), mix: make([]map[string]float64, len(fs.fetches))}
 	for i := range fs.fetches {
 		var of, or float64
+		var on, om map[string]float64
 		if o.fetches != nil {
-			of, or = o.fetches[i], o.requests[i]
+			of, or, on, om = o.fetches[i], o.requests[i], o.numbered[i], o.mix[i]
 		}
 		out.fetches = append(out.fetches, fs.fetches[i]-of)
 		out.requests = append(out.requests, fs.requests[i]-or)
-		if fs.mix[i] == nil {
-			continue
-		}
-		out.mix[i] = map[string]float64{}
-		for k, v := range fs.mix[i] {
-			if o.mix != nil {
-				v -= o.mix[i][k]
-			}
-			out.mix[i][k] = v
-		}
+		out.numbered[i] = addDiff(nil, fs.numbered[i], on)
+		out.mix[i] = addDiff(nil, fs.mix[i], om)
 	}
 	return out
 }
@@ -155,8 +161,8 @@ func (fs fetchSpan) perBlock(pod int) float64 {
 }
 
 // judgeFetches logs each pod's head fetches per new block over fs, a
-// new-image pod's also by cause, and flags a new-image pod above limit (0
-// reports only).
+// new-image pod's also by cause, each pod's numbered block reads per
+// vendor, and flags a new-image pod above limit (0 reports only).
 func (s *scenario) judgeFetches(b *strings.Builder, what string, fs fetchSpan, limit float64) {
 	for _, p := range s.h.pods {
 		r := fs.perBlock(p.idx)
@@ -168,6 +174,13 @@ func (s *scenario) judgeFetches(b *strings.Builder, what string, fs fetchSpan, l
 				if m[k] > 0 {
 					fmt.Fprintf(b, " %s %.3f;", k, m[k]/float64(fs.blocks))
 				}
+			}
+			b.WriteString("\n")
+		}
+		if m := fs.numbered[p.idx]; m != nil {
+			fmt.Fprintf(b, "pod-%d numbered block reads by vendor %s:", p.idx+1, what)
+			for _, k := range slices.Sorted(maps.Keys(m)) {
+				fmt.Fprintf(b, " %s %.0f;", k, m[k])
 			}
 			b.WriteString("\n")
 		}
