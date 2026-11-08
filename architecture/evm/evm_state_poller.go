@@ -588,7 +588,8 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 // one fetch of latest in flight, and one backoff.
 type headAsk struct {
 	mu sync.Mutex
-	// last is the newest fetch, in flight or answered.
+	// last is the newest fetch, in flight or answered, a client read's
+	// included (ReadLatest).
 	last *headFetch
 	// lastFork is the newest fork fetch, started: a fork need with a pace
 	// is met only by it, since a plain poll's header does not move a vote
