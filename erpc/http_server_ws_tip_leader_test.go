@@ -112,7 +112,7 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	mockHashedLatest("rpc2", `{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`)
-	defer util.AssertNoPendingMocks(t, 0)
+	defer util.AssertNoPendingMocks(t, 1) // the by-number mock persists: the tag read may serve without it
 
 	const tip = int64(0x22228889)
 	tipHex := "0x22228889"
