@@ -23,8 +23,9 @@ func init() {
 }
 
 // setupTipLeaderServer starts a server with two upstreams, rpc1 ordered ahead
-// of rpc2, and returns the network and rpc2.
-func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAttempts int) (
+// of rpc2, each first given to with when set, and returns the network and
+// rpc2.
+func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAttempts int, with func(*common.UpstreamConfig)) (
 	sendRequest func(body string, headers map[string]string, queryParams map[string]string) (int, map[string]string, string),
 	shutdown func(),
 	nw *Network,
@@ -33,7 +34,7 @@ func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAtte
 	t.Helper()
 	upstreams := make([]*common.UpstreamConfig, 0, 2)
 	for _, id := range []string{"rpc1", "rpc2"} {
-		upstreams = append(upstreams, &common.UpstreamConfig{
+		u := &common.UpstreamConfig{
 			Id:       id,
 			Endpoint: "http://" + id + ".localhost",
 			Type:     common.UpstreamTypeEvm,
@@ -41,7 +42,11 @@ func setupTipLeaderServer(t *testing.T, evmCfg *common.EvmNetworkConfig, maxAtte
 				ChainId:             123,
 				StatePollerInterval: common.Duration(10 * time.Second),
 			},
-		})
+		}
+		if with != nil {
+			with(u)
+		}
+		upstreams = append(upstreams, u)
 	}
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
@@ -138,7 +143,7 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 			EnforceHighestBlock: util.BoolPtr(true),
 		},
 		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
-	}, 3)
+	}, 3, nil)
 	defer shutdown()
 
 	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == tip }, 5*time.Second, 50*time.Millisecond)
@@ -163,6 +168,71 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	assert.Equal(t, tipHex, result["number"])
 	assert.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result["hash"])
 	assert.LessOrEqual(t, leaderHits.Load(), int64(1), "at most the one by-number read of the Head's block")
+}
+
+// celo's shape (shadow trace f32c77ce, a read of the Head block): rpc2 is
+// a legacy upstream whose counter holds the tip but whose configured
+// exactBlock upper bound makes the gate skip it; rpc1, the voter that
+// made the tip the Head, answers the tag with the tip's parent, which
+// the view does not take, yet holds the tip by number. The leg reads the
+// Head's block by number from rpc1 itself, its last holder left, and the
+// client gets it: the tag answer is no result, so it neither consumes
+// rpc1 for the leg nor for the network's retry.
+func TestHttpServer_GetBlockByNumberLatest_TagMissReadsItsUpstreamByNumber(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+	const tip = int64(0x22228889)
+	tipHex := "0x22228889"
+	tipBody := `{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`
+	mockHashedLatest("rpc1", tipBody)
+	mockHashedLatest("rpc2", tipBody)
+	var byNumber atomic.Int64
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, tipHex) {
+				return false
+			}
+			byNumber.Add(1)
+			return true
+		}).
+		Reply(200).
+		JSON([]byte(tipBody))
+	exact := int64(0x100)
+	sendRequest, shutdown, nw, gated := setupTipLeaderServer(t, &common.EvmNetworkConfig{
+		ChainId:   123,
+		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
+	}, 2, func(u *common.UpstreamConfig) {
+		if u.Id == "rpc2" {
+			u.Evm.BlockAvailability = &common.EvmBlockAvailabilityConfig{Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: &exact}}
+		}
+	})
+	defer shutdown()
+
+	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == tip }, 5*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return gated.EvmStatePoller().LatestBlock() == tip }, 5*time.Second, 50*time.Millisecond)
+	// rpc1's node now answers latest with the tip's parent.
+	mockHashedLatest("rpc1", `{"result":{"number":"0x22228888","hash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","parentHash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","timestamp":"0x6702a8f0"}}`)
+	before := byNumber.Load()
+
+	statusCode, _, body := sendRequest(`{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "eth_getBlockByNumber",
+		"params": ["latest", false]
+	}`, nil, nil)
+
+	require.Equal(t, http.StatusOK, statusCode, "body=%s", body)
+	var respObject map[string]interface{}
+	require.NoError(t, sonic.UnmarshalString(body, &respObject))
+	result, ok := respObject["result"].(map[string]interface{})
+	require.True(t, ok, "response should have a result object, got: %s", body)
+	assert.Equal(t, tipHex, result["number"])
+	assert.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result["hash"])
+	assert.GreaterOrEqual(t, byNumber.Load()-before, int64(1), "the Head's block read by number from rpc1")
 }
 
 // Direct eth_getBlockByNumber(tip) goes first to the upstream that has the
@@ -219,7 +289,7 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
 		ChainId:   123,
 		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
-	}, 2)
+	}, 2, nil)
 	defer shutdown()
 	require.Eventually(t, func() bool { return servedHead(nw, context.Background()).Latest == tip }, 5*time.Second, 50*time.Millisecond)
 	require.Equal(t, tip, leader.EvmStatePoller().LatestBlock())

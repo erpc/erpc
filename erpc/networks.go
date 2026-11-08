@@ -2903,7 +2903,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// A read of latest whose answer the view did not take
 				// serves the Head's block: the cache's seed of it, else a
 				// read by number of a holder (spec §6.4 client read). The
-				// answer is never served nor kept as a fallback answer.
+				// answer is never served nor kept as a fallback answer. It
+				// is no result either: u stays selectable, a holder by its
+				// evidence like any other for the read by number, and for
+				// the network's retry (celo: its one holder stayed consumed
+				// and the read failed, shadow trace f32c77ce).
 				if readMissed {
 					if r != nil {
 						effectiveReq.ClearLastValidResponseIf(r)
@@ -2914,8 +2918,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					tag = false
 					lastErr = common.NewErrEndpointMissingData(fmt.Errorf("upstream's latest block is not in the view"), u)
+					effectiveReq.MarkUpstreamCompleted(loopCtx, u, nil, lastErr)
+					delete(attempted, u.Id())
 					nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, effectiveReq.EvmHead().Latest)
-					maxLoopIterations = max(maxLoopIterations, loopIteration+2)
+					maxLoopIterations = max(maxLoopIterations, loopIteration+1+effectiveReq.UpstreamsCount())
 					loopSpan.End()
 					continue
 				}
