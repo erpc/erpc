@@ -25,6 +25,7 @@ type Faults struct {
 	Lag             uint64        // serves the canonical block this far below the head
 	HeadDelay       time.Duration // serves a canonical block only this long after it was minted
 	HeadJitter      time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
+	TagDelay        time.Duration // eth_blockNumber and the latest tag name its newest block served at least this long, as a load balancer whose head readers trail its block readers; newHeads pushes do not wait
 	PushDelay       time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
 	Frozen          bool          // head stops moving; still answers what it holds
 	WrongChainID    bool          // eth_chainId answers another chain
@@ -401,6 +402,19 @@ func (v *Vendor) serveDelayLocked(b *Block) time.Duration {
 		d += time.Duration(h.Sum64() % uint64(j+1))
 	}
 	return d
+}
+
+// tagTipLocked is the block the latest tag names: the tip, or with
+// TagDelay its newest ancestor served at least that long ago.
+func (v *Vendor) tagTipLocked() *Block {
+	b := v.tip
+	if d := v.faults.TagDelay; d > 0 {
+		now := time.Now()
+		for b.Parent != nil && now.Before(b.MintedAt.Add(v.serveDelayLocked(b)+d)) {
+			b = b.Parent
+		}
+	}
+	return b
 }
 
 func (v *Vendor) setTipLocked(b *Block) {
@@ -831,7 +845,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		}
 		return false, nil
 	case "eth_blockNumber":
-		return hexU(v.tip.Number + f.Ahead), nil
+		return hexU(v.tagTipLocked().Number + f.Ahead), nil
 	case "eth_call":
 		return v.callLocked(params)
 	case "eth_getBalance":
@@ -861,10 +875,11 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			if f.RefuseLatest {
 				return nil, &rpcError{-32000, "latest block tag not supported"}
 			}
+			tip := v.tagTipLocked()
 			if f.Ahead > 0 {
-				return WithNumber(v.blockJSON(v.tip), v.tip.Number+f.Ahead), nil
+				return WithNumber(v.blockJSON(tip), tip.Number+f.Ahead), nil
 			}
-			b = v.tip
+			b = tip
 		case "finalized", "safe":
 			if c.cfg.NoFinalized || f.NoFinalized {
 				return nil, &rpcError{-32602, "invalid block number tag " + tag}

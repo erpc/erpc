@@ -40,12 +40,14 @@ const (
 
 // p23Shape is one chain P23 runs on: its vendors, block time and mint
 // jitter (blocks come bt ± jitter apart, so the block clock's predicted
-// sight misses some and its tail finds them), the blocks before the bar
-// (warm), and the clock-only, by-hash and read-ahead runs' lengths.
+// sight misses some and its tail finds them), the faults every vendor
+// has, the blocks before the bar (warm), and the clock-only, by-hash and
+// read-ahead runs' lengths.
 type p23Shape struct {
 	name              string
 	ups               []freshUp
 	bt, jitter        time.Duration
+	faults            chainsim.Faults
 	warm              int
 	base, hash, ahead time.Duration
 }
@@ -67,13 +69,16 @@ var p23Fast = p23Shape{name: "P23", bt: 100 * time.Millisecond, jitter: 20 * tim
 	}}
 
 // p23Slow: four https vendors 20-35 ms away, polled every 10 s, on a 2 s
-// chain, W 6 s, that serve each block 0-0.75 s after it is minted: the
-// by-hash readers, fed by a source as fast as the first vendor, ask for
-// a block the other vendors and the view lack yet. On such chains main's
-// by-hash reads held toward W: p99 2.6 s against an upstream p99 of
-// 0.25-0.6 s.
+// chain, W 6 s, that serve each block 0-0.75 s after it is minted, and
+// whose latest tag names a block only 3 s after they serve it, as load
+// balancers whose head readers trail their block readers: the by-hash
+// readers, fed by a source as fast as the first vendor, ask for a block
+// the view lacks while every vendor's head is below it. On such chains
+// main's by-hash reads held toward W: p99 2.6 s against an upstream p99
+// of 0.25-0.6 s.
 var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	base: 2 * time.Minute, hash: 4 * time.Minute, ahead: 3 * time.Minute,
+	faults: chainsim.Faults{TagDelay: 3 * time.Second},
 	ups: []freshUp{
 		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 250 * time.Millisecond},
@@ -96,7 +101,7 @@ var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time
 // every read answers the chain's block, none null; no by-hash answer
 // ahead of the pod's newHeads stream (liveViewBound).
 func p23(sh p23Shape) spec {
-	sp := freshSpec(sh.name, 1, sh.ups, chainsim.Config{BlockTime: sh.bt, MintJitter: sh.jitter}, chainsim.Faults{}, func(s *scenario) { p23Body(s, sh) })
+	sp := freshSpec(sh.name, 1, sh.ups, chainsim.Config{BlockTime: sh.bt, MintJitter: sh.jitter}, sh.faults, func(s *scenario) { p23Body(s, sh) })
 	sp.pods, sp.oldPods = 1, nil
 	return sp
 }
