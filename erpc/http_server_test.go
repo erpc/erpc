@@ -5969,37 +5969,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x775"}}`))
 
-		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
-		// for the method "eth_getBlockByNumber('latest')".
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				// The user call only: a background latest or finalized poll racing it must not consume this one-shot mock.
-				return strings.Contains(body, "eth_getBlockByNumber") && !strings.Contains(body, `"latest"`) && !strings.Contains(body, `"finalized"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result": map[string]interface{}{
-					"number": "0x123", // Lower than highest latest block (0x777)
-					"hash":   "0x6a251dd26d1f5b4c84bb434fea376a91c8d37c11dc8b496ca1e79a9101906df7",
-				},
-			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x777"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result":  nil,
-			})
-
 		// Spin up the test server, make the request, and check final result.
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -6019,7 +5988,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
-		assert.Contains(t, body, "0x123")
+		// The user's read of latest reaches its upstream as the tag (spec
+		// §6.4 client read): the latest mock answers it, the view's Head.
+		assert.Contains(t, body, "0x777")
 
 	})
 
@@ -6165,37 +6136,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x775"}}`))
 
-		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
-		// for the method "eth_getBlockByNumber('latest')".
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				// The user call only: a background latest or finalized poll racing it must not consume this one-shot mock.
-				return strings.Contains(body, "eth_getBlockByNumber") && !strings.Contains(body, `"latest"`) && !strings.Contains(body, `"finalized"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result": map[string]interface{}{
-					"number": "0x123", // Lower than highest latest block (0x777)
-					"hash":   "0x6a251dd26d1f5b4c84bb434fea376a91c8d37c11dc8b496ca1e79a9101906df7",
-				},
-			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x777"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result":  nil,
-			})
-
 		// Spin up the test server, make the request, and check final result.
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -6215,7 +6155,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
-		assert.Contains(t, body, "0x123")
+		// The user's read of latest reaches its upstream as the tag (spec
+		// §6.4 client read): the latest mock answers it, the view's Head.
+		assert.Contains(t, body, "0x777")
 
 	})
 
