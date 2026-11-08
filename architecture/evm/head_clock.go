@@ -867,7 +867,7 @@ func (t *ChainTracker) runClock() {
 	if !c.planned {
 		t.plan(cands, bt, pace)
 	}
-	t.proveTarget(cands, now)
+	t.proveTarget(cands, now, bt)
 	t.climb(cands, now, bt)
 }
 
@@ -899,7 +899,8 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	_, phase := c.phase(bt)
 	c.delta = max(sk.Sub(p.Add(phase[0]-phase[len(phase)/2])), 0)
 	at := sk.Add(-c.bestRTT(cands))
-	if c.pushFed() {
+	cached := c.pushFed() && c.pushCached
+	if c.pushFed() && !cached {
 		at = p.Add(c.pushLate(bt))
 	}
 	if pace > 0 {
@@ -910,6 +911,16 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 		return
 	}
 	if c.pushFed() {
+		// A cache-fed lane's one probe sights the block at S_k, as a
+		// ladder's last rung, and moves the offset: where the cache's poll
+		// sights first it is skipped, and the offset walks it down to
+		// where 3% of the blocks' probes answer early; where the vendors
+		// hold the block first it brings it. Held a block after the cache's
+		// predicted sight, it never fired before the cache's head on
+		// optimism, whose votes answered 0.2-0.8 s after the slot against
+		// 0.2-0.4 s, and 76% of reads in a slot's first quarter got the
+		// block before (48% on main).
+		c.ladder, c.predicted = cached, p
 		c.rungs = []clockRung{{at: at, kind: "probe"}}
 		return
 	}
@@ -1463,19 +1474,22 @@ func (t *ChainTracker) prove(n uint64, by string) {
 // block above it exists (Proven, Sighted), in place of the ladder's fires
 // (spec §6.8): to the prover when its turn is planned, a rung's or a
 // laggard's vote (an unmeasured voter is a laggard: the cache's own voter
-// lost its probe), at once; else to a rung's voter, so the block's fetch
-// is that turn and no turn votes after it, sent once that voter likely
-// holds the block, its longest hold bound after the proof (holdAfter),
-// now when it has none. A laggard other than the prover takes no probe:
-// laggards' probes at their hold bound came after the sight (P20-pair:
-// 1.222 head fetches per block against 1.021). With no turn planned, to
-// the prover now when it is a free candidate, else to the fastest free
-// voter. The other turns vote at the target's sight. One proof probe per
-// target: a later proof of it is spent, and a probe that answers early
-// leaves the block to the ladder's tail. With a fetch of the target out
-// it waits for that fetch, which brings the block as soon; a proof below
-// the target is spent.
-func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
+// lost its probe), at once; else to the rung's voter that most likely
+// holds the block soonest, its held wait after the proof (heldWait), so
+// the block's fetch is that turn and no turn votes after it, unless that
+// is more than bt/4 away and the prover is free: then to the prover now.
+// The longest hold bound (holdAfter) held the probe a bound a fetch took a
+// block later, and the block's receipts waited for it (P20-pair: tip
+// receipt age p90 413-424 ms against 309 ms). A laggard other than the
+// prover takes no probe: laggards' probes at their hold bound came after
+// the sight (P20-pair: 1.222 head fetches per block against 1.021). With
+// no turn planned, to the prover now when it is a free candidate, else to
+// the fastest free voter. The other turns vote at the target's sight. One
+// proof probe per target: a later proof of it is spent, and a probe that
+// answers early leaves the block to the ladder's tail. With a fetch of
+// the target out it waits for that fetch, which brings the block as soon;
+// a proof below the target is spent.
+func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt time.Duration) {
 	c := &t.clock
 	if c.proven < c.target || c.provedFor == c.target {
 		c.proven, c.provenBy = 0, ""
@@ -1494,8 +1508,10 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 		}
 	}
 	r := clockRung{at: now, kind: "probe"}
-	if free(c.provenBy) {
+	prover := free(c.provenBy)
+	if prover {
 		r.id = c.provenBy
+		r.turn = slices.Contains(rungTurns, r.id) || slices.Contains(c.votes, r.id)
 	}
 	if !r.turn {
 		var best clockRung
