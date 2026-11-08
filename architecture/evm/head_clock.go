@@ -204,11 +204,15 @@ type holdBound struct {
 }
 
 // current is v's hold bounds since its lag last fell by half or more:
-// from its newest held bound under half a lack before it, which ends that
-// lack. A lack that spiked once (a node blocks behind for a while) else
-// stood in every wait for the window's 8 bounds, 80 s for a voter fetched
-// every 10 s: celo's held `eth_call`s waited W. Held bounds just under an
-// older lack are the lag's usual spread, which the window keeps.
+// from its newest held bound above 0 and under half a lack before it,
+// which ends that lack. A lack that spiked once (a node blocks behind for
+// a while) else stood in every wait for the window's 8 bounds, 80 s for a
+// voter fetched every 10 s: celo's held `eth_call`s waited W. A hold at 0
+// is the voter's own first sight, which says nothing of its lag behind
+// the others: as a reset it made vendors trailing by 200 ms look fastest
+// (P20-flash: 59% of probes early, 1.70 head fetches per block). Held
+// bounds just under an older lack are the lag's usual spread, which the
+// window keeps.
 func (v *clockVoter) current() []holdBound {
 	start := 0
 	var lack time.Duration
@@ -216,7 +220,7 @@ func (v *clockVoter) current() []holdBound {
 		switch {
 		case !b.held:
 			lack = max(lack, b.d)
-		case 2*b.d < lack:
+		case b.d > 0 && 2*b.d < lack:
 			start, lack = i, 0
 		}
 	}
