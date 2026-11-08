@@ -2457,6 +2457,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
+	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
+	if failsafeExecutor == nil {
+		return nil, errors.New("no failsafe executor found for this request")
+	}
+	// A client read of latest goes upstream as the tag, each attempt its
+	// upstream's poll of latest (spec §6.4 client read).
+	tagReads := n.cfg.Architecture == common.ArchitectureEvm && n.tagsLatestRead(ctx, req, failsafeExecutor.HasConsensus())
+
 	upsList := n.selectionOrder(ctx, req, method)
 
 	if len(upsList) == 0 {
@@ -2468,6 +2476,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
+	// A read of latest sent as the tag names no block an upstream must
+	// hold: any answers its own head, so it goes by round trip alone
+	// (spec §6.4 client read).
+	if tagReads {
+		namedBlock = 0
+	}
 	upsList = n.preferUpstreams(ctx, req, method, upsList, namedBlock)
 
 	// SVM history reads go deepest known floor first within each tier, so the
@@ -2572,8 +2586,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// ends as any request whose context ends.
 	if n.cfg.Architecture == common.ArchitectureEvm {
 		// A block the view pins waits for its likeliest holder instead
-		// (spec §6.4 held): its first attempt goes there.
-		if v := evm.HeadRefusalOf(ctx, req); v != nil && v.Held {
+		// (spec §6.4 held): its first attempt goes there. A read of
+		// latest sent as the tag waits for none: any upstream answers its
+		// own head, the fastest first (spec §6.4 client read).
+		if v := evm.HeadRefusalOf(ctx, req); v != nil && v.Held && !tagReads {
 			req.SetUpstreams(n.awaitHolder(ctx, req, req.Upstreams(), v.Block, false))
 		}
 		if err := ctx.Err(); err != nil {
@@ -2705,11 +2721,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// This is the only way to pass additional values to failsafe policy executors context
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	failsafeExecutor := n.getFailsafeExecutor(ctx, req)
-	if failsafeExecutor == nil {
-		return nil, errors.New("no failsafe executor found for this request")
-	}
-
 	// Add tracing for which failsafe policy was selected
 	forwardSpan.SetAttributes(
 		attribute.String("failsafe.matched_method", failsafeExecutor.MatchMethod()),
@@ -2762,6 +2773,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// retryable miss, whatever its sibling slots and hedges got (spec
 		// §6.4).
 		leg := &common.RefusalLeg{}
+		// tag: this leg's attempts send the "latest" tag, until one
+		// answer the view did not take; then they read the Head's block
+		// by number (spec §6.4 client read).
+		tag := tagReads
 		// The fallback escape below swaps in its own picker, leaving the
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
@@ -2854,12 +2869,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				sent := time.Now()
-				r, err := tryForward(u, effectiveReq, loopCtx, &ulg, hedges, attempts, snap.Retries)
+				var read *latestRead
+				fwdCtx := loopCtx
+				if tag {
+					fwdCtx, read = n.startLatestRead(loopCtx, effectiveReq, u, sent)
+				}
+				r, err := tryForward(u, effectiveReq, fwdCtx, &ulg, hedges, attempts, snap.Retries)
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
 				}
 				effectiveReq.MarkUpstreamCompleted(loopCtx, u, r, err)
+				readServed := false
+				readMissed := false
+				if read != nil {
+					readServed = n.finishLatestRead(loopCtx, effectiveReq, read, r, err)
+					readMissed = err == nil && !readServed
+				}
 
 				// Hedge cancelled → this execution lost the race, bail out
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
@@ -2874,11 +2900,32 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					r.WithRequest(effectiveReq)
 				}
 
+				// A read of latest whose answer the view did not take
+				// serves the Head's block: the cache's seed of it, else a
+				// read by number of a holder (spec §6.4 client read). The
+				// answer is never served nor kept as a fallback answer.
+				if readMissed {
+					if r != nil {
+						effectiveReq.ClearLastValidResponseIf(r)
+					}
+					if cr := n.cachedHeadBlock(loopCtx, effectiveReq); cr != nil {
+						loopSpan.End()
+						return cr, nil
+					}
+					tag = false
+					lastErr = common.NewErrEndpointMissingData(fmt.Errorf("upstream's latest block is not in the view"), u)
+					nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, effectiveReq.EvmHead().Latest)
+					maxLoopIterations = max(maxLoopIterations, loopIteration+2)
+					loopSpan.End()
+					continue
+				}
+
 				// One view (spec §6.5, §7 family 2): a block at the
 				// request's Head on another branch than the Head's hash is
 				// never served under the Head's number; it is a miss, unless
-				// the view moves onto it.
-				if err == nil {
+				// the view moves onto it. A read of latest the view took is
+				// on the view already.
+				if err == nil && !readServed {
 					if c, off := evm.OffViewBlock(loopCtx, effectiveReq, r, effectiveReq.EvmHead()); off && !n.awaitViewOnto(loopCtx, effectiveReq, c) {
 						r, err = nil, common.NewErrEndpointMissingData(fmt.Errorf("upstream answered another branch's block at the head"), u)
 					}
@@ -3205,7 +3252,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// Skip Set so defaultAllow cannot admit those into the selector-shared
 		// store. Cache.Set still applies strategy × mark for stamped responses.
 		skipUnmarkedSelectorSet := selectorOn && resp.Cacheable() == nil
-		if n.cacheDal != nil && !held && !skipUnmarkedSelectorSet {
+		if n.cacheDal != nil && !held && !skipUnmarkedSelectorSet && !(tagReads && servesAnotherBlock(ctx, req, resp)) {
 			n.storeInCache(ctx, forwardSpan.SpanContext(), &lg, method, req, resp)
 		} else if skipUnmarkedSelectorSet {
 			lg.Debug().Msg("skipping cache write: unmarked response on selector-enabled network")
@@ -3930,6 +3977,12 @@ func (n *Network) multiplexKey(ctx context.Context, req *common.NormalizedReques
 	}
 	if d := req.Directives(); d != nil && d.UseUpstream != "" {
 		key += "|use-upstream:" + d.UseUpstream
+	}
+	// A client read of latest may serve a block above its Head's (spec
+	// §6.4 client read): it shares only with reads of latest, never with
+	// a read of its Head's number.
+	if read, _ := evm.LatestBlockRead(ctx, req); read {
+		key += "|latest"
 	}
 	return key, nil
 }

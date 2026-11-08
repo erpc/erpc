@@ -253,6 +253,12 @@ var (
 		Help:      "Times a chain tracker reset to empty after 3 panics in a row.",
 	}, []string{"project", "network"})
 
+	MetricChainTrackerLatestReadTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "chain_tracker_latest_read_total",
+		Help:      "Client eth_getBlockByNumber(latest) attempts sent upstream as the tag, each that upstream's poll of latest, by outcome: served (the view included the answer), head (the view's Head block served instead), failed (no answer).",
+	}, []string{"project", "network", "outcome"})
+
 	MetricChainTrackerSettleTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_settle_total",

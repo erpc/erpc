@@ -313,8 +313,11 @@ func (m *mockEvmStatePoller) FinalizedReportAt() time.Time                      
 func (m *mockEvmStatePoller) LatestReportAt() time.Time                            { return time.Time{} }
 func (m *mockEvmStatePoller) LatestAskAt() time.Time                               { return time.Time{} }
 func (m *mockEvmStatePoller) ClockTurn(time.Time)                                  {}
-func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig)           {}
-func (m *mockEvmStatePoller) IsObjectNull() bool                                   { return m.isNull }
+func (m *mockEvmStatePoller) ReadLatest(time.Time) func([]byte, bool) common.EvmHeader {
+	return func([]byte, bool) common.EvmHeader { return nil }
+}
+func (m *mockEvmStatePoller) SetNetworkConfig(cfg *common.NetworkConfig) {}
+func (m *mockEvmStatePoller) IsObjectNull() bool                         { return m.isNull }
 
 func (m *mockEvmStatePoller) EarliestBlock(probe common.EvmAvailabilityProbeType) int64 {
 	return 0
@@ -647,10 +650,13 @@ func (m *mockEvmStatePollerWithUpdate) AskReaching(context.Context, int64, time.
 func (m *mockEvmStatePollerWithUpdate) RefreshFinalized(context.Context, time.Duration) bool {
 	return true
 }
-func (m *mockEvmStatePollerWithUpdate) FinalizedReportAt() time.Time               { return time.Time{} }
-func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time                  { return time.Time{} }
-func (m *mockEvmStatePollerWithUpdate) LatestAskAt() time.Time                     { return time.Time{} }
-func (m *mockEvmStatePollerWithUpdate) ClockTurn(time.Time)                        {}
+func (m *mockEvmStatePollerWithUpdate) FinalizedReportAt() time.Time { return time.Time{} }
+func (m *mockEvmStatePollerWithUpdate) LatestReportAt() time.Time    { return time.Time{} }
+func (m *mockEvmStatePollerWithUpdate) LatestAskAt() time.Time       { return time.Time{} }
+func (m *mockEvmStatePollerWithUpdate) ClockTurn(time.Time)          {}
+func (m *mockEvmStatePollerWithUpdate) ReadLatest(time.Time) func([]byte, bool) common.EvmHeader {
+	return func([]byte, bool) common.EvmHeader { return nil }
+}
 func (m *mockEvmStatePollerWithUpdate) SetNetworkConfig(cfg *common.NetworkConfig) {}
 func (m *mockEvmStatePollerWithUpdate) IsObjectNull() bool                         { return false }
 

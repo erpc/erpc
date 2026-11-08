@@ -295,6 +295,14 @@ type EvmStatePoller interface {
 	// AskBackground is Ask without waiting for the answer: the answer's
 	// Outcome, Block, Next and At, no header.
 	AskBackground(need HeadNeed, pace time.Duration, after time.Time, reason AskReason) HeadAnswer
+	// ReadLatest takes a client's read of latest sent to the upstream as
+	// the tag at sent (spec §6.4 client read): while it is out it is the
+	// upstream's head fetch, which an Ask joins, unless another fetch was
+	// out first. end takes its answer, the block (full: with its
+	// transactions), or nil when it brought none, to intake as the
+	// upstream's poll of latest, and returns the header when it passed
+	// intake's checks, else nil.
+	ReadLatest(sent time.Time) (end func(block []byte, full bool) EvmHeader)
 	// RefreshFinalized polls the finalized block when the stored one was
 	// reported more than maxAge ago (0: the poll cadence), or joins the
 	// poll in flight, and waits for it until ctx ends. fetched is false

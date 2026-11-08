@@ -600,8 +600,11 @@ func turnBound(ups []freshUp, scale int, bt time.Duration) float64 {
 
 // clockMix is, per pod, where a new-image pod's head fetches went: its
 // block clock's Asks by kind and outcome (erpc_head_clock_total) and its
-// head Asks that fetched, by reason (erpc_head_ask_total); nil for an
-// old-image pod or a failed scrape.
+// head Asks that fetched, by reason (erpc_head_ask_total); and its client
+// reads of latest sent as the tag, by outcome
+// (erpc_chain_tracker_latest_read_total), client demand the old image
+// sends too, not head fetches (clientTagReads); nil for an old-image pod
+// or a failed scrape.
 func (s *scenario) clockMix() []map[string]float64 {
 	out := make([]map[string]float64, len(s.h.pods))
 	for _, p := range s.h.pods {
@@ -622,11 +625,27 @@ func (s *scenario) clockMix() []map[string]float64 {
 				m["clock "+x.labels["kind"]+" "+x.labels["outcome"]] += x.value
 			case x.name == "erpc_head_ask_total" && x.labels["outcome"] == "fetched":
 				m["ask "+x.labels["reason"]+" fetched"] += x.value
+			case x.name == "erpc_chain_tracker_latest_read_total":
+				m[clientTagRead+x.labels["outcome"]] += x.value
 			}
 		}
 		out[p.idx] = m
 	}
 	return out
+}
+
+// clientTagRead prefixes clockMix's client reads of latest sent as the tag.
+const clientTagRead = "client read as tag "
+
+// clientTagReads is how many of mix's head-fetch-shaped requests were
+// client reads of latest sent as the tag.
+func clientTagReads(mix map[string]float64) (n float64) {
+	for k, v := range mix {
+		if strings.HasPrefix(k, clientTagRead) {
+			n += v
+		}
+	}
+	return n
 }
 
 // freshJudge flags a new image later than the old one past the slacks, or
