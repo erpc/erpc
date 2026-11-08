@@ -1316,10 +1316,9 @@ func p21Avax(late bool) spec {
 	return sp
 }
 
-// p21CeloUps is celo's one vendor serving eth_call as the shadow saw it:
-// quicknode-celo, about 105 ms away, polled every 10 s (Prism and the
-// legacy upstream serve no eth_call), serving each block 150-250 ms after
-// Prism learns it at mint.
+// p21CeloUps is a celo-shaped network's one vendor serving eth_call: about
+// 105 ms away, polled every 10 s (Prism and the legacy upstream serve no
+// eth_call), serving each block 150-250 ms after Prism learns it at mint.
 var p21CeloUps = []freshUp{
 	{"http-a", "vendor-a", 105 * time.Millisecond, 10 * time.Second, 0, 150 * time.Millisecond},
 }
