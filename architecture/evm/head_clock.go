@@ -273,13 +273,17 @@ func (c *headClock) reset() {
 // saw records the first local sight of number at at, its evidence taken
 // at from and come via. The target's sight moves the offset once (spec
 // §6.8): down a step when the ladder's last rung did not answer below it,
-// up 32 when it did and at most one tail rung was sent, and not at all
-// when the sight came later, or half a block or more after its predicted
-// sight: a late proposal, a missed slot or a halt says nothing of the
-// arrival spread; nor when a proof's probe took the ladder's place
-// (proveTarget), which fired off its rungs. A sight a block or more after
-// its predicted sight comes that many slots later: the slots between were
-// missed. Each open fetch answer below number is decided (answered).
+// up 32 when it did and the block's evidence was taken by the first tail
+// rung's send (byFirstTail), and not at all when a later fetch, poll or
+// push brought it: a late proposal, a missed slot or a halt says nothing
+// of the arrival spread; nor when a proof's probe took the ladder's place
+// (proveTarget), which fired off its rungs. A time bound of half a block
+// after the predicted sight left out most early last rungs on a 0.25 s
+// chain, whose first tail answers a gap and a round trip after S_k:
+// P20-flash, 8.5% of the blocks' probes early, 1.053 head fetches per
+// block. A sight a block or more after its predicted sight comes that
+// many slots later: the slots between were missed. Each open fetch answer
+// below number is decided (answered).
 func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		return
@@ -292,7 +296,7 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 			switch {
 			case !c.kEarly:
 				c.off = max(c.off-1.0/400, -0.5)
-			case at.Before(c.predicted.Add(bt/2)) && c.tailsSent <= 1:
+			case c.byFirstTail(from):
 				c.off = min(c.off+32.0/400, 1)
 			}
 		}
@@ -338,6 +342,25 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 			}
 		}
 	}
+}
+
+// byFirstTail reports whether evidence taken at from came no later than
+// the send of the target's first tail rung, or before any was sent: the
+// block was out by then.
+func (c *headClock) byFirstTail(from time.Time) bool {
+	// The first tail's own answer counts: its fetch is sent a few µs after
+	// the fire's time, so the bound is the next tail's send.
+	first := true
+	for _, f := range c.sent {
+		if f.kind != "retry" {
+			continue
+		}
+		if !first {
+			return from.Before(f.sent)
+		}
+		first = false
+	}
+	return true
 }
 
 // answered takes voter id's fetch sent at sent that answered number: a
