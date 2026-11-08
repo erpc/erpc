@@ -822,38 +822,68 @@ func (n *Network) EvmPinned(selector string, block int64) bool {
 }
 
 // awaitHolder orders ups for block bn, which req's lane view pins
-// (HeadRefusal.Held), by when each most likely holds it: those whose
-// evidence shows bn now first, then by bn's first sight plus each one's
-// measured lack (ChainTracker.HeldAt), an unmeasured one at the first
-// sight, so its answer measures it; and waits for the first, at most W or
-// until ctx ends (spec §6.4 held). The request itself is the probe: no
-// head fetch is sent for it.
-func (n *Network) awaitHolder(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream, bn int64) []common.Upstream {
+// (HeadRefusal.Held), by when each holds it, and waits for the first
+// (spec §6.4 held): those whose evidence shows bn now first (mayHold),
+// then by bn's first sight plus each one's held wait (ChainTracker.
+// HeldAt), when it most likely holds it, one with no held bound at once,
+// so its answer measures it. The order is read again at each head pass
+// and each publish of hold evidence: a holder's counter or a by-number
+// answer reaching bn ends the wait (mayHold), as q of them reach the
+// lane's Firm: celo's held `eth_call`s slept a lack spike's estimate to W
+// while a vendor held the block. A first attempt waits at most a block
+// time, which a holder's usual lag is within; a miss's retry, the
+// request's last, at most W, reading each one's longest hold bound from a
+// full window instead, and waiting for evidence of one without: a retry
+// at once, or at the next one's held wait, missed too (P21-avax: 4-9
+// follow-ups failed per run, most in a pod's first 10 s). It ends with
+// ctx. The request itself is the probe: no head fetch is sent for it.
+func (n *Network) awaitHolder(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream, bn int64, retry bool) []common.Upstream {
 	t := n.laneTracker(selectorOf(req))
 	if t == nil || len(ups) == 0 {
 		return ups
 	}
 	credit := creditCap(n.requestHead(ctx, req))
+	bt := n.EvmBlockTime()
+	most := health.FreshnessWindow(bt)
+	if !retry && bt > 0 {
+		most = min(most, bt)
+	}
+	limit := time.Now().Add(most)
 	at := make(map[string]time.Time, len(ups))
-	for _, u := range ups {
-		if n.mayHold(u, bn, credit, nil) {
-			continue
-		}
-		if a, ok := t.HeldAt(u.Id(), uint64(bn)); ok {
+	out := slices.Clone(ups)
+	for {
+		computed, moved := n.headsComputed(), t.CreditMoved()
+		for _, u := range out {
+			var a time.Time
+			switch held, ok := t.HeldAt(u.Id(), uint64(bn), retry); {
+			case n.mayHold(u, bn, credit, nil):
+			case ok:
+				a = held
+			case retry:
+				a = limit
+			}
 			at[u.Id()] = a
 		}
-	}
-	out := slices.Clone(ups)
-	slices.SortStableFunc(out, func(a, b common.Upstream) int { return at[a.Id()].Compare(at[b.Id()]) })
-	if wait := min(time.Until(at[out[0].Id()]), health.FreshnessWindow(n.EvmBlockTime())); wait > 0 {
+		slices.SortStableFunc(out, func(a, b common.Upstream) int { return at[a.Id()].Compare(at[b.Id()]) })
+		due := at[out[0].Id()]
+		if due.After(limit) {
+			due = limit
+		}
+		wait := time.Until(due)
+		if wait <= 0 {
+			return out
+		}
 		timer := time.NewTimer(wait)
-		defer timer.Stop()
 		select {
 		case <-timer.C:
+		case <-computed:
+		case <-moved:
 		case <-ctx.Done():
+			timer.Stop()
+			return out
 		}
+		timer.Stop()
 	}
-	return out
 }
 
 // selectorOf is req's use-upstream selector, "" for the network-wide lane.

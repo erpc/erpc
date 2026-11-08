@@ -43,9 +43,11 @@ type headClock struct {
 	// on-time pushes and fetch answers before the predicted sight move the
 	// phase. missed counts the first sights in a row no on-time push
 	// brought (pushFed). pushCached: the last push was the cache's poll
-	// of its own voter (cacheFed).
+	// of its own voter. cacheFed: such a poll brought a first sight since
+	// the reset; the hold bounds taken before it were cleared then.
 	pushLane   bool
 	pushCached bool
+	cacheFed   bool
 	missed     int
 	// off is where the ladder's last rung sights the next block relative
 	// to its predicted sight, in block times, so it holds while the block
@@ -201,14 +203,35 @@ type holdBound struct {
 	held bool
 }
 
-// holdAfter is the longest of v's hold bounds: false while none of them
-// saw it hold a block, and the voter is no likely holder. Lower bounds
-// alone say only that it lacked blocks µs after their sights: a node
-// stuck at 90 counted a likely holder of the view's 99 on one 142 µs lack.
+// current is v's hold bounds since its lag last fell by half or more:
+// from its newest held bound under half a lack before it, which ends that
+// lack. A lack that spiked once (a node blocks behind for a while) else
+// stood in every wait for the window's 8 bounds, 80 s for a voter fetched
+// every 10 s: celo's held `eth_call`s waited W. Held bounds just under an
+// older lack are the lag's usual spread, which the window keeps.
+func (v *clockVoter) current() []holdBound {
+	start := 0
+	var lack time.Duration
+	for i, b := range v.bounds {
+		switch {
+		case !b.held:
+			lack = max(lack, b.d)
+		case 2*b.d < lack:
+			start, lack = i, 0
+		}
+	}
+	return v.bounds[start:]
+}
+
+// holdAfter is the longest of v's current hold bounds: false while none
+// of them saw it hold a block, and the voter is no likely holder. Lower
+// bounds alone say only that it lacked blocks µs after their sights: a
+// node stuck at 90 counted a likely holder of the view's 99 on one 142 µs
+// lack.
 func (v *clockVoter) holdAfter() (time.Duration, bool) {
 	var d time.Duration
 	held := false
-	for _, b := range v.bounds {
+	for _, b := range v.current() {
 		d = max(d, b.d)
 		held = held || b.held
 	}
@@ -216,20 +239,21 @@ func (v *clockVoter) holdAfter() (time.Duration, bool) {
 }
 
 // heldWait is how long after a block's first sight v most likely holds it,
-// for a held block's attempts (spec §6.4 held): the shortest held bound at
-// or past its longest lack, else that lack, 0 with neither. The longest
-// bound (holdAfter) waits on a held bound a fetch took a block later, the
-// vote at the next block's sight; an attempt that waits so long serves a
-// block's follow-up a block late.
+// for a held block's attempts (spec §6.4 held): of its current bounds, the
+// shortest held bound at or past its longest lack, else that lack, 0 with
+// neither. The longest bound (holdAfter) waits on a held bound a fetch
+// took a block later, the vote at the next block's sight; an attempt that
+// waits so long serves a block's follow-up a block late.
 func (v *clockVoter) heldWait() time.Duration {
+	bounds := v.current()
 	var lack time.Duration
-	for _, b := range v.bounds {
+	for _, b := range bounds {
 		if !b.held {
 			lack = max(lack, b.d)
 		}
 	}
 	wait, found := lack, false
-	for _, b := range v.bounds {
+	for _, b := range bounds {
 		if b.held && b.d >= lack && (!found || b.d < wait) {
 			wait, found = b.d, true
 		}
@@ -285,6 +309,16 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 	c.pushLane = c.pushLane || pushed
 	if pushed {
 		c.pushCached = via == HeaderCached
+	}
+	if via == HeaderCached && !c.cacheFed {
+		// The cache sights blocks before any vendor holds them: a bound
+		// taken against a vendor's own first sight reads its lag as 0, and
+		// a pod's first follow-ups went at once to a vendor that lacked
+		// the block (P21-avax).
+		c.cacheFed = true
+		for _, v := range c.ups {
+			v.bounds = nil
+		}
 	}
 	if s.onTime {
 		c.missed = 0
@@ -1462,8 +1496,9 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 // first sight each voter with hold bounds holds the block (holdAfter), and
 // how long a held block's attempt waits for each (heldWait).
 type holdCredit struct {
-	sights           []clockSight
-	after, rtt, wait map[string]time.Duration
+	sights                 []clockSight
+	after, rtt, wait, sure map[string]time.Duration
+	moved                  chan struct{}
 }
 
 // publishCredit publishes the clock's sights and its voters' round trips
@@ -1471,30 +1506,50 @@ type holdCredit struct {
 func (t *ChainTracker) publishCredit() {
 	c := &t.clock
 	if p := t.credit.Load(); p != nil && slices.Equal(p.sights, c.sights) && len(p.rtt) == len(c.ups) {
-		same, known := true, 0
+		same, known, full := true, 0, 0
 		for id, v := range c.ups {
 			d, ok := v.holdAfter()
 			if ok {
 				known++
 			}
-			if was, had := p.after[id]; had != ok || ok && was != d || p.rtt[id] != v.rtt || p.wait[id] != v.heldWait() {
+			sure, isSure := p.sure[id]
+			if isSure {
+				full++
+			}
+			if was, had := p.after[id]; had != ok || ok && was != d || p.rtt[id] != v.rtt || p.wait[id] != v.heldWait() ||
+				isSure != (ok && len(v.bounds) == clockFit) || isSure && sure != d {
 				same = false
 				break
 			}
 		}
-		if same && known == len(p.after) {
+		if same && known == len(p.after) && full == len(p.sure) {
 			return
 		}
 	}
 	p := &holdCredit{sights: slices.Clone(c.sights), after: make(map[string]time.Duration, len(c.ups)),
-		rtt: make(map[string]time.Duration, len(c.ups)), wait: make(map[string]time.Duration, len(c.ups))}
+		rtt: make(map[string]time.Duration, len(c.ups)), wait: make(map[string]time.Duration, len(c.ups)),
+		sure: make(map[string]time.Duration, len(c.ups)), moved: make(chan struct{})}
 	for id, v := range c.ups {
 		p.rtt[id], p.wait[id] = v.rtt, v.heldWait()
 		if d, ok := v.holdAfter(); ok {
 			p.after[id] = d
+			if len(v.bounds) == clockFit {
+				p.sure[id] = d
+			}
 		}
 	}
-	t.credit.Store(p)
+	if old := t.credit.Swap(p); old != nil {
+		close(old.moved)
+	}
+}
+
+// CreditMoved is closed at the next publish of hold evidence (holdCredit),
+// nil before the first.
+func (t *ChainTracker) CreditMoved() <-chan struct{} {
+	if p := t.credit.Load(); p != nil {
+		return p.moved
+	}
+	return nil
 }
 
 // HoldsLikely reports whether voter id most likely holds block n at now,
@@ -1540,19 +1595,30 @@ func (p *holdCredit) holdsLikely(id string, s clockSight, now time.Time) bool {
 	return ok && now.Sub(s.from) >= after
 }
 
-// HeldAt is when voter id most likely holds block n, for a Held request's
-// attempts (spec §6.4 held): n's first sight plus id's held wait
-// (clockVoter.heldWait), the first sight itself while id has no hold
-// bounds, so its answer measures it. False when n is not among the recent
-// sights.
-func (t *ChainTracker) HeldAt(id string, n uint64) (time.Time, bool) {
+// HeldAt is when voter id holds block n, for a Held request's attempts
+// (spec §6.4 held): n's first sight plus id's held wait (clockVoter.
+// heldWait), when it most likely holds it; with surely, plus its longest
+// hold bound (holdAfter), past which no bound saw it lack a block, read
+// only once its bounds fill the window (holdCredit.sure). False when n is
+// not among the recent sights, or id has no such bound: no evidence says
+// when it holds a block.
+func (t *ChainTracker) HeldAt(id string, n uint64, surely bool) (time.Time, bool) {
 	p := t.credit.Load()
 	if p == nil {
 		return time.Time{}, false
 	}
+	after, held := p.after[id]
+	if surely {
+		after, held = p.sure[id]
+	} else {
+		after = p.wait[id]
+	}
+	if !held {
+		return time.Time{}, false
+	}
 	for _, s := range p.sights {
 		if s.number == n {
-			return s.from.Add(p.wait[id]), true
+			return s.from.Add(after), true
 		}
 	}
 	return time.Time{}, false

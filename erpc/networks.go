@@ -2552,7 +2552,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// A block the view pins waits for its likeliest holder instead
 		// (spec §6.4 held): its first attempt goes there.
 		if v := evm.HeadRefusalOf(ctx, req); v != nil && v.Held {
-			req.SetUpstreams(n.awaitHolder(ctx, req, req.Upstreams(), v.Block))
+			req.SetUpstreams(n.awaitHolder(ctx, req, req.Upstreams(), v.Block, false))
 		}
 		if err := ctx.Err(); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -4364,7 +4364,7 @@ func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, 
 		}
 	}
 	if r := req.HeadRefusal(); r != nil && r.Held {
-		rest = n.awaitHolder(ctx, req, rest, bn)
+		rest = n.awaitHolder(ctx, req, rest, bn, true)
 	} else {
 		rest = n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil)
 	}
