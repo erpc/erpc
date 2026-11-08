@@ -1068,6 +1068,13 @@ const (
 	// 50-150 ms after its mint.
 	p20ZoraDelay  = 50 * time.Millisecond
 	p20ZoraJitter = 100 * time.Millisecond
+	// p20ZoraHeadShare: at most this share of a new-image pod's latest
+	// reads sent as the tag may serve the Head's block instead (outcome
+	// head), each a second upstream call the old image never makes.
+	p20ZoraHeadShare = 0.05
+	// p20ZoraLagBlocks: P20-zora-lag's vendor-e serves each block this
+	// many blocks late, as unichain-testnet's flashblocks vendor did.
+	p20ZoraLagBlocks = 5
 )
 
 // p20ZoraUps are zora's four vendors, polled every 10 s, the nearest at
@@ -1086,19 +1093,44 @@ var p20ZoraUps = []freshUp{
 // age and latency within P19's slacks of the old image's, which sends
 // each latest read to vendor-a as the tag; head fetches per new block
 // within turnBound (client reads sent as the tag are client demand, not
-// head fetches); no more upstream requests. It logs per image the share
+// head fetches); no more upstream requests; on a new-image pod at most
+// p20ZoraHeadShare of the latest reads sent as the tag serve the Head's
+// block instead, a second upstream call. It logs per image the share
 // of latest reads a block behind (the next block was minted
 // p20ZoraDelay+p20ZoraJitter before the read was sent, so every vendor
 // served it), upstream requests per client read and by-number block
 // reads per latest read.
 func p20Zora() spec {
 	sp := freshSpec("P20-zora", 1, p20ZoraUps, chainsim.Config{BlockTime: p20AsymBlockTime, FinalityStep: p17Step},
-		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p20ZoraJitter}, p20ZoraBody)
+		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p20ZoraJitter}, p20ZoraBody(p20ZoraUps))
 	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
 	return sp
 }
 
-func p20ZoraBody(s *scenario) {
+// P20-zora-lag: P20-zora plus vendor-e, the nearest (2 ms), serving each
+// block p20ZoraLagBlocks blocks late, as unichain-testnet's flashblocks
+// vendor (61 ms, the fastest) stood 5 blocks behind the Head. Its fresh
+// reports show it behind, so latest reads go to the vendors holding the
+// Head, fastest first; read first, its answer below the Head made each
+// read a second call by number. Same bounds as P20-zora.
+func p20ZoraLag() spec {
+	ups := append(slices.Clone(p20ZoraUps), freshUp{"http-e", "vendor-e", 2 * time.Millisecond, 10 * time.Second, 0, p20ZoraLagBlocks * p20AsymBlockTime})
+	sp := freshSpec("P20-zora-lag", 1, ups, chainsim.Config{BlockTime: p20AsymBlockTime, FinalityStep: p17Step},
+		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p20ZoraJitter}, p20ZoraBody(ups))
+	sp.network = map[string]interface{}{"selectionPolicy": rankFirst("http-a")}
+	return sp
+}
+
+func p20ZoraBody(ups []freshUp) func(*scenario) {
+	return func(s *scenario) { p20ZoraRun(s, ups) }
+}
+
+func p20ZoraRun(s *scenario, ups []freshUp) {
+	headReads := func(pod int) (served, head float64) {
+		served, _ = s.metric(pod, "erpc_chain_tracker_latest_read_total", map[string]string{"outcome": "served"})
+		head, _ = s.metric(pod, "erpc_chain_tracker_latest_read_total", map[string]string{"outcome": "head"})
+		return served, head
+	}
 	s.blocks(10)
 	bt := s.chain.BlockTime()
 	reads := liveReads(p20ZoraRate, bt, &viewLog{})
@@ -1107,13 +1139,17 @@ func p20ZoraBody(s *scenario) {
 		loads = append(loads, r.load)
 	}
 	from, a := time.Now(), s.fetchMark()
+	tagBefore := make([][2]float64, len(s.h.pods))
+	for _, p := range s.h.pods {
+		tagBefore[p.idx][0], tagBefore[p.idx][1] = headReads(p.idx)
+	}
 	imgs, counts := s.freshRun(liveRun, loads...)
 	var all fetchSpan
 	all.add(a, s.fetchMark())
 	to := time.Now()
 	var b strings.Builder
 	s.judgeAgeLatency(&b, reads, imgs, from, to)
-	s.judgeFetches(&b, "over the run", all, turnBound(p20ZoraUps, 1, bt))
+	s.judgeFetches(&b, "over the run", all, turnBound(ups, 1, bt))
 	s.judgeRequests(&b, all)
 	latest := slices.IndexFunc(reads, func(r liveRead) bool { return r.name == viewLatest })
 	for j, p := range s.h.pods {
@@ -1138,9 +1174,15 @@ func p20ZoraBody(s *scenario) {
 			requests += counts[latest][j].requests[u.key]
 			numbered += counts[latest][j].numbered[u.key]
 		}
-		fmt.Fprintf(&b, "pod-%d (%s image): %d of %d latest reads a block behind (%.1f%%); %.3f upstream requests per client read (%d reads); %.3f by-number block reads per latest read\n",
+		served, head := headReads(p.idx)
+		served, head = served-tagBefore[p.idx][0], head-tagBefore[p.idx][1]
+		fmt.Fprintf(&b, "pod-%d (%s image): %d of %d latest reads a block behind (%.1f%%); %.3f upstream requests per client read (%d reads); %.3f by-number block reads per latest read; tag reads %.0f served, %.0f the Head's block instead\n",
 			p.idx+1, s.image(p.idx), behind, len(answers), 100*float64(behind)/float64(max(1, len(answers))),
-			requests/float64(max(1, clientReads)), clientReads, numbered/float64(max(1, len(answers))))
+			requests/float64(max(1, clientReads)), clientReads, numbered/float64(max(1, len(answers))), served, head)
+		if !p.old && head > p20ZoraHeadShare*max(served+head, 1) {
+			s.violate(s.name, "pod-%d: %.0f of %.0f latest reads sent as the tag served the Head's block instead, a second upstream call (%.1f%%), bound %.0f%%",
+				p.idx+1, head, served+head, 100*head/max(served+head, 1), 100*p20ZoraHeadShare)
+		}
 	}
 	s.logf("%s", b.String())
 }
@@ -1266,42 +1308,67 @@ func p21Avax(late bool) spec {
 	if late {
 		name = "P21-avax-late"
 	}
-	sp := freshSpec(name, 1, p21AvaxUps, chainsim.Config{BlockTime: p21AvaxBlockTime, Slot: slot, FinalityStep: p17Step},
-		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p21AvaxHeadJitter}, func(s *scenario) {
-			s.blocks(10)
-			reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
-			r := reads[0]
-			reads = append(reads,
-				liveRead{"eth_call(latest)", freshLoad{r.load.period, "latest", callLatest}, r.slack, true, true},
-				liveRead{"eth_getBlockByNumber(latest) then eth_call at it", freshLoad{r.load.period, "latest", callAfterRead}, r.slack, true, true})
-			receipt := liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, [2]time.Duration{}, false, false}
-			cacheCalls := func(pod int) (all, latest int64) {
-				return s.prism.reads(pod, true, anyRead), s.prism.reads(pod, true, "latest")
-			}
-			before := make([][2]int64, len(s.h.pods))
-			for i := range s.h.pods {
-				before[i][0], before[i][1] = cacheCalls(i)
-			}
-			imgs, all, _, from, to := s.liveRun(liveRun, append(reads, receipt), nil)
-			var b strings.Builder
-			s.judgeAgeLatency(&b, reads, imgs[:len(reads)], from, to)
-			s.logReadLatency(&b, receipt.name, imgs[len(reads)])
-			s.judgeFetches(&b, "over the run", all, liveFetchBound)
-			s.judgeRequests(&b, all)
-			for _, p := range s.h.pods {
-				n, latest := cacheCalls(p.idx)
-				latest -= before[p.idx][1]
-				fmt.Fprintf(&b, "pod-%d (%s image): %.2f Prism cache calls/s; Prism head polls %.2f/s, %.2f per new block\n", p.idx+1, s.image(p.idx),
-					float64(n-before[p.idx][0])/all.dur.Seconds(), float64(latest)/all.dur.Seconds(), float64(latest)/float64(max(all.blocks, 1)))
-			}
-			s.logf("%s", b.String())
-			s.judgeClockEarly()
-		})
-	sp.upEvm[prismKeyName] = map[string]interface{}{"statePollerInterval": (5 * time.Second).String()}
-	sp.pods, sp.oldPods, sp.memory, sp.splitState, sp.cache, sp.prism = 4, []int{0, 1}, false, true, true, true
+	sp := p21Calls(name, p21AvaxUps, chainsim.Config{BlockTime: p21AvaxBlockTime, Slot: slot, FinalityStep: p17Step},
+		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p21AvaxHeadJitter})
 	if late {
 		sp.prismLag = p21AvaxLatePrism
 	}
+	return sp
+}
+
+// p21CeloUps is celo's one vendor serving eth_call as the shadow saw it:
+// quicknode-celo, about 105 ms away, polled every 10 s (Prism and the
+// legacy upstream serve no eth_call), serving each block 150-250 ms after
+// Prism learns it at mint.
+var p21CeloUps = []freshUp{
+	{"http-a", "vendor-a", 105 * time.Millisecond, 10 * time.Second, 0, 150 * time.Millisecond},
+}
+
+// P21-celo: P21-avax's reads and bounds on celo's shape: 1 s blocks,
+// p21CeloUps, and Prism, a voter polled every 5 s and the network's
+// cache. The state lane's Head for eth_call has the one vendor, whose
+// counter is up to 10 blocks stale: an eth_call(latest) at a fresh Head
+// goes at once, at the newest block it is proven or likely to hold.
+func p21Celo() spec {
+	return p21Calls("P21-celo", p21CeloUps, chainsim.Config{BlockTime: time.Second, FinalityStep: p17Step},
+		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p21AvaxHeadJitter})
+}
+
+// p21Calls is P21-avax's layout and body on ups, sim and faults: 2
+// old-image and 2 new-image pods, Prism polled every 5 s and the cache.
+func p21Calls(name string, ups []freshUp, sim chainsim.Config, faults chainsim.Faults) spec {
+	sp := freshSpec(name, 1, ups, sim, faults, func(s *scenario) {
+		s.blocks(10)
+		reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
+		r := reads[0]
+		reads = append(reads,
+			liveRead{"eth_call(latest)", freshLoad{r.load.period, "latest", callLatest}, r.slack, true, true},
+			liveRead{"eth_getBlockByNumber(latest) then eth_call at it", freshLoad{r.load.period, "latest", callAfterRead}, r.slack, true, true})
+		receipt := liveRead{"eth_getTransactionReceipt(tip)", freshLoad{r.load.period, "latest", tipReceipt}, [2]time.Duration{}, false, false}
+		cacheCalls := func(pod int) (all, latest int64) {
+			return s.prism.reads(pod, true, anyRead), s.prism.reads(pod, true, "latest")
+		}
+		before := make([][2]int64, len(s.h.pods))
+		for i := range s.h.pods {
+			before[i][0], before[i][1] = cacheCalls(i)
+		}
+		imgs, all, _, from, to := s.liveRun(liveRun, append(reads, receipt), nil)
+		var b strings.Builder
+		s.judgeAgeLatency(&b, reads, imgs[:len(reads)], from, to)
+		s.logReadLatency(&b, receipt.name, imgs[len(reads)])
+		s.judgeFetches(&b, "over the run", all, liveFetchBound)
+		s.judgeRequests(&b, all)
+		for _, p := range s.h.pods {
+			n, latest := cacheCalls(p.idx)
+			latest -= before[p.idx][1]
+			fmt.Fprintf(&b, "pod-%d (%s image): %.2f Prism cache calls/s; Prism head polls %.2f/s, %.2f per new block\n", p.idx+1, s.image(p.idx),
+				float64(n-before[p.idx][0])/all.dur.Seconds(), float64(latest)/all.dur.Seconds(), float64(latest)/float64(max(all.blocks, 1)))
+		}
+		s.logf("%s", b.String())
+		s.judgeClockEarly()
+	})
+	sp.upEvm[prismKeyName] = map[string]interface{}{"statePollerInterval": (5 * time.Second).String()}
+	sp.pods, sp.oldPods, sp.memory, sp.splitState, sp.cache, sp.prism = 4, []int{0, 1}, false, true, true, true
 	return sp
 }
 

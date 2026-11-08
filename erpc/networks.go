@@ -2186,16 +2186,23 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 // region most likely to, thinHolds) first. A read of the Head's own block,
 // numbered or by tag (a miss of the cache seed at a fresh Head), takes
 // those by their measured round trip (byRoundTrip): any holder serves it,
-// so the fastest serves it soonest. Then failover tiers, then voters with
-// a stale hash vote, and voters on a minority fork last.
-func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64) []common.Upstream {
+// so the fastest serves it soonest. With tag, a client read of latest sent
+// as the tag (bn its Head's Latest), only an upstream whose evidence shows
+// it behind bn goes last (tagHolds): its answer is its own head, served
+// once the view takes it. Then failover tiers, then voters with a stale
+// hash vote, and voters on a minority fork last.
+func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64, tag bool) []common.Upstream {
 	if n.Architecture() == common.ArchitectureEvm && len(upsList) > 1 && (bn > 0 || evm.ReadsBlock(method)) {
 		head := n.requestHead(ctx, req)
 		headBlock := head.Latest > 0 && (bn == head.Latest || bn == 0 && evm.ReadsBlock(method) && evm.TagBlockNumber(ctx, req, "latest") == head.Latest)
 		var holds func(common.Upstream) bool
 		front, back := upsList, []common.Upstream(nil)
 		if bn > 0 {
-			holds = n.thinHolds(req, head, bn)
+			if tag {
+				holds = n.tagHolds(req, bn)
+			} else {
+				holds = n.thinHolds(req, head, bn)
+			}
 			front, back = n.splitHolders(upsList, bn, creditCap(head), holds)
 		}
 		if headBlock {
@@ -2252,24 +2259,47 @@ func (n *Network) byRoundTrip(ups []common.Upstream) {
 
 // thinHolds is, for bn in head's thin region (Firm < bn ≤ Latest), which
 // upstreams most likely hold bn although none of their evidence shows it
-// yet: those whose thin hold wait passed since bn's first sight
-// (ChainTracker.HoldsLikely). It orders a request's first attempt only:
-// Firm, and the refusal rule's retry (headFirst), keep to evidence, so a
-// rare miss is that retry's. nil outside the thin region.
+// yet (likelyHolds). It orders a request's first attempt only: Firm, and
+// the refusal rule's retry (headFirst), keep to evidence, so a rare miss
+// is that retry's. nil outside the thin region.
 func (n *Network) thinHolds(req *common.NormalizedRequest, head *common.EvmHead, bn int64) func(common.Upstream) bool {
 	if head.Firm <= 0 || bn <= head.Firm || bn > head.Latest {
 		return nil
 	}
-	sel := ""
-	if d := req.Directives(); d != nil {
-		sel = d.UseUpstream
-	}
-	t := n.laneTracker(sel)
+	return n.likelyHolds(req, bn)
+}
+
+// likelyHolds is which upstreams most likely hold bn: those whose thin hold
+// wait passed since bn's first sight (ChainTracker.HoldsLikely), measured
+// on every answer of theirs, client reads sent as the tag included; nil
+// without a lane tracker.
+func (n *Network) likelyHolds(req *common.NormalizedRequest, bn int64) func(common.Upstream) bool {
+	t := n.laneTracker(selectorOf(req))
 	if t == nil {
 		return nil
 	}
 	now := time.Now()
 	return func(u common.Upstream) bool { return t.HoldsLikely(u.Id(), uint64(bn), now) }
+}
+
+// tagHolds is, for a client read of latest sent as the tag at bn, its
+// Head's Latest, which upstreams count as reaching bn beyond their
+// credited head: those most likely holding it (likelyHolds), and those
+// whose newest report found them at the network head (Tracker.HeadLag 0),
+// whose counter is only stale: a credit's time bound left a vendor read
+// moments ago a block short, and its 80-110 ms peers took at least 10% of
+// reads (P20-zora-lag, p90 99 ms against 7 ms). A report that found it behind
+// (unichain-testnet's fastest vendor, 5 blocks) keeps it last.
+func (n *Network) tagHolds(req *common.NormalizedRequest, bn int64) func(common.Upstream) bool {
+	likely := n.likelyHolds(req, bn)
+	return func(u common.Upstream) bool {
+		if n.metricsTracker != nil {
+			if lag, ok := n.metricsTracker.HeadLag(u); ok && lag == 0 {
+				return true
+			}
+		}
+		return likely != nil && likely(u)
+	}
 }
 
 // lateLast moves sources with a stale hash vote (spec §6.1), then voters on
@@ -2476,13 +2506,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return nil, err
 	}
 
-	// A read of latest sent as the tag names no block an upstream must
-	// hold: any answers its own head, so it goes by round trip alone
-	// (spec §6.4 client read).
+	// A read of latest sent as the tag reaches the Head's block when its
+	// upstream's head does: upstreams whose evidence shows them behind go
+	// last, the rest by round trip (spec §6.4 client read).
 	if tagReads {
-		namedBlock = 0
+		namedBlock = n.requestHead(ctx, req).Latest
 	}
-	upsList = n.preferUpstreams(ctx, req, method, upsList, namedBlock)
+	upsList = n.preferUpstreams(ctx, req, method, upsList, namedBlock, tagReads)
 
 	// SVM history reads go deepest known floor first within each tier, so the
 	// first answer is the most complete one the pool holds.

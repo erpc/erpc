@@ -222,7 +222,7 @@ func (n *Network) trackerUpstreams(ctx context.Context, req *common.NormalizedRe
 			}
 		}
 	} else {
-		ups = n.preferUpstreams(ctx, req, method, n.selectionOrder(ctx, req, method), n.routingBlockNumber(ctx, req))
+		ups = n.preferUpstreams(ctx, req, method, n.selectionOrder(ctx, req, method), n.routingBlockNumber(ctx, req), false)
 	}
 	sel := ""
 	if d := req.Directives(); d != nil && upstreamId == "" {

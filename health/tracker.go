@@ -2298,6 +2298,23 @@ func (t *Tracker) HeadCredit(ups common.Upstream, head int64, at time.Time, late
 	return max(0, min(byLag, byTime))
 }
 
+// HeadLag is how many blocks ups trailed the network head at its newest
+// report, kept for one poll period after it (headReport), then growing
+// with what the network made since: 0 when that report found it at the
+// head, so only fresh evidence shows it behind. false for an upstream with
+// no report or a benched one.
+func (t *Tracker) HeadLag(ups common.Upstream) (int64, bool) {
+	um, ok := t.metadata.Load(metadataKey{ups, ups.NetworkId()})
+	if !ok || um.(*NetworkMetadata).headBenched.Load() || um.(*NetworkMetadata).evmLatestBlockNumber.Load() <= 0 {
+		return 0, false
+	}
+	m, ok := t.upsMetrics.Load(upstreamKey{ups, "*", common.DataFinalityStateAll})
+	if !ok {
+		return 0, false
+	}
+	return m.(*TrackedMetrics).BlockHeadLag.Load(), true
+}
+
 // ageHashVote starts the hash age when the lag reference ref stands above
 // the hash vote, and ends it once the vote reaches ref. The age counts from
 // the first hash vote above it that reached this instance (fv) at or below
