@@ -2185,9 +2185,9 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 // region), upstreams that may hold it (mayHold: known to, or in the thin
 // region most likely to, thinHolds) first. A read of the Head's own block,
 // numbered or by tag (a miss of the cache seed at a fresh Head), takes
-// those by the lane clock's measured round trip (byClockRTT): any holder
-// serves it, so the fastest serves it soonest. Then failover tiers, then
-// voters with a stale hash vote, and voters on a minority fork last.
+// those by their measured round trip (byRoundTrip): any holder serves it,
+// so the fastest serves it soonest. Then failover tiers, then voters with
+// a stale hash vote, and voters on a minority fork last.
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64) []common.Upstream {
 	if n.Architecture() == common.ArchitectureEvm && len(upsList) > 1 && (bn > 0 || evm.ReadsBlock(method)) {
 		head := n.requestHead(ctx, req)
@@ -2200,7 +2200,7 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 		}
 		if headBlock {
 			front = slices.Clone(front)
-			n.byClockRTT(req, front)
+			n.byRoundTrip(front)
 		}
 		upsList = append(front, back...)
 		if bn > 0 {
@@ -2216,27 +2216,38 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	return n.lateLast(upsList)
 }
 
-// byClockRTT sorts ups in place by the round trip req's lane clock
-// measured to each (ChainTracker.RoundTrip), fastest first; upstreams it
-// never measured go after the measured, and equals keep their order.
-func (n *Network) byClockRTT(req *common.NormalizedRequest, ups []common.Upstream) {
-	sel := ""
-	if d := req.Directives(); d != nil {
-		sel = d.UseUpstream
-	}
-	t := n.laneTracker(sel)
-	if t == nil {
+// headFamilyMethod is the method whose answers time an upstream's round
+// trip for byRoundTrip: the clock's fetches and the client reads of a
+// block at or near the head both send it, so every upstream that serves
+// either has a sample, and its small fixed answer times the link, not
+// the work.
+const headFamilyMethod = "eth_getBlockByNumber"
+
+// byRoundTrip sorts ups in place by the median latency of their
+// headFamilyMethod answers the metrics tracker keeps, fastest first;
+// upstreams with no sample go after the others, and equals keep their
+// order. Only answers with a block count (the tracker leaves out errors
+// and empty answers), so a fast refusal never makes an upstream fastest.
+func (n *Network) byRoundTrip(ups []common.Upstream) {
+	if n.metricsTracker == nil {
 		return
 	}
-	rtt := make(map[string]time.Duration, len(ups))
-	for _, u := range ups {
-		if d, ok := t.RoundTrip(u.Id()); ok {
-			rtt[u.Id()] = d
-		} else {
-			rtt[u.Id()] = time.Duration(math.MaxInt64)
-		}
+	type timed struct {
+		u common.Upstream
+		d time.Duration
 	}
-	slices.SortStableFunc(ups, func(a, b common.Upstream) int { return cmp.Compare(rtt[a.Id()], rtt[b.Id()]) })
+	by := make([]timed, len(ups))
+	for i, u := range ups {
+		d := n.metricsTracker.GetUpstreamMethodMetrics(u, headFamilyMethod, common.DataFinalityStateAll).ResponseQuantiles.GetQuantile(0.5)
+		if d <= 0 {
+			d = time.Duration(math.MaxInt64)
+		}
+		by[i] = timed{u, d}
+	}
+	slices.SortStableFunc(by, func(a, b timed) int { return cmp.Compare(a.d, b.d) })
+	for i, t := range by {
+		ups[i] = t.u
+	}
 }
 
 // thinHolds is, for bn in head's thin region (Firm < bn ≤ Latest), which

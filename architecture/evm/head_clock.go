@@ -1536,24 +1536,24 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 }
 
 // holdCredit is what the clock published for readers on other goroutines:
-// its recent first sights, each voter's round trip, how long after a
-// first sight each voter with hold bounds holds the block (holdAfter), and
-// how long a held block's attempt waits for each (heldWait); sure, the
-// holdAfter of each voter whose bounds fill the window (clockFit), which
-// a miss's retry reads: 1-7 bounds undercut a vendor's lag in a pod's
-// first seconds (P21-avax). moved is closed when the next publish
-// replaces it, so a held block's wait wakes on new hold evidence.
+// its recent first sights, how long after a first sight each voter with
+// hold bounds holds the block (holdAfter), and how long a held block's
+// attempt waits for each (heldWait); sure, the holdAfter of each voter
+// whose bounds fill the window (clockFit), which a miss's retry reads:
+// 1-7 bounds undercut a vendor's lag in a pod's first seconds
+// (P21-avax). moved is closed when the next publish replaces it, so a
+// held block's wait wakes on new hold evidence.
 type holdCredit struct {
-	sights                 []clockSight
-	after, rtt, wait, sure map[string]time.Duration
-	moved                  chan struct{}
+	sights            []clockSight
+	after, wait, sure map[string]time.Duration
+	moved             chan struct{}
 }
 
-// publishCredit publishes the clock's sights and its voters' round trips
-// and hold waits when any moved since the last publish.
+// publishCredit publishes the clock's sights and its voters' hold waits
+// when any moved since the last publish.
 func (t *ChainTracker) publishCredit() {
 	c := &t.clock
-	if p := t.credit.Load(); p != nil && slices.Equal(p.sights, c.sights) && len(p.rtt) == len(c.ups) {
+	if p := t.credit.Load(); p != nil && slices.Equal(p.sights, c.sights) && len(p.wait) == len(c.ups) {
 		same, known, full := true, 0, 0
 		for id, v := range c.ups {
 			d, ok := v.holdAfter()
@@ -1564,7 +1564,7 @@ func (t *ChainTracker) publishCredit() {
 			if isSure {
 				full++
 			}
-			if was, had := p.after[id]; had != ok || ok && was != d || p.rtt[id] != v.rtt || p.wait[id] != v.heldWait() ||
+			if was, had := p.after[id]; had != ok || ok && was != d || p.wait[id] != v.heldWait() ||
 				isSure != (ok && len(v.bounds) == clockFit) || isSure && sure != d {
 				same = false
 				break
@@ -1575,10 +1575,9 @@ func (t *ChainTracker) publishCredit() {
 		}
 	}
 	p := &holdCredit{sights: slices.Clone(c.sights), after: make(map[string]time.Duration, len(c.ups)),
-		rtt: make(map[string]time.Duration, len(c.ups)), wait: make(map[string]time.Duration, len(c.ups)),
-		sure: make(map[string]time.Duration, len(c.ups)), moved: make(chan struct{})}
+		wait: make(map[string]time.Duration, len(c.ups)), sure: make(map[string]time.Duration, len(c.ups)), moved: make(chan struct{})}
 	for id, v := range c.ups {
-		p.rtt[id], p.wait[id] = v.rtt, v.heldWait()
+		p.wait[id] = v.heldWait()
 		if d, ok := v.holdAfter(); ok {
 			p.after[id] = d
 			if len(v.bounds) == clockFit {
@@ -1689,16 +1688,4 @@ func (t *ChainTracker) ObserveHold(id string, n uint64, sent time.Time, held boo
 			}
 		}
 	}})
-}
-
-// RoundTrip is the round trip the clock measured to voter id (its EMA,
-// clockVoter.rtt), for ordering a Head block's holders; false while it
-// measured none.
-func (t *ChainTracker) RoundTrip(id string) (time.Duration, bool) {
-	p := t.credit.Load()
-	if p == nil {
-		return 0, false
-	}
-	rtt, ok := p.rtt[id]
-	return rtt, ok && rtt > 0
 }
