@@ -254,8 +254,9 @@ func (e *Engine) sweepIdleSticky() {
 // are created lazily when GetOrdered is called with a specific method.
 //
 // The `upstreamsFn` callback is invoked at every tick so newly-bootstrapped
-// upstreams become visible to the engine without a re-register. For static
-// configurations a closure returning a frozen slice is fine.
+// upstreams become visible to the engine without a re-register;
+// `UpstreamsChanged` runs that tick at once. For static configurations a
+// closure returning a frozen slice is fine.
 //
 // If `cfg.EvalFunc` is the placeholder identity policy
 // (`common.DefaultSelectionPolicySource`), this method upgrades it to
@@ -332,6 +333,37 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 		}
 	}
 	delete(e.networks, networkID)
+}
+
+// UpstreamsChanged re-runs every slot of the network now, so routing and
+// head voting see an upstream that joined or left without waiting for
+// EvalInterval. It returns once those evals have run; a burst of calls
+// shares one eval per slot. Frozen slots are left to manual ticks.
+func (e *Engine) UpstreamsChanged(networkID string) {
+	type pending struct {
+		slot *Slot
+		done <-chan struct{}
+	}
+	var waits []pending
+	// Kicked under the lock so a concurrent RegisterNetwork either runs
+	// first (its synchronous tick already sees the upstream) or after.
+	e.mu.RLock()
+	for k, s := range e.slots {
+		if k.network != networkID {
+			continue
+		}
+		if done := s.refresh(); done != nil {
+			waits = append(waits, pending{s, done})
+		}
+	}
+	e.mu.RUnlock()
+	for _, w := range waits {
+		select {
+		case <-w.done:
+		case <-w.slot.stopCh:
+		case <-e.appCtx.Done():
+		}
+	}
 }
 
 // GetOrdered returns the cached eligible upstreams for

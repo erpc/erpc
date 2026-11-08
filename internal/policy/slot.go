@@ -98,6 +98,14 @@ type Slot struct {
 	testFinality  string
 	testNowOffset int64 // added to ctx.Now (milliseconds)
 
+	// kick asks the ticker goroutine for an eval now; kickDone, set while a
+	// kick waits, closes once the eval answering it has run. A kick holds
+	// the 1-slot buffer only while kickDone is set, so a send never blocks.
+	kick     chan struct{}
+	kickMu   sync.Mutex
+	kickDone chan struct{}
+	ticking  atomic.Bool
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -118,6 +126,7 @@ func newSlot(e *Engine, networkID, networkLabel, method, finality, boundary stri
 		cfg:           cfg,
 		excludedSince: make(map[string]int64),
 		stopCh:        make(chan struct{}),
+		kick:          make(chan struct{}, 1),
 	}
 	// Seed lastAccessedAtMs to "now" so a freshly-created slot doesn't
 	// look idle to the very next sweep tick.
@@ -136,6 +145,7 @@ func (s *Slot) start(ctx context.Context) {
 	if interval <= 0 {
 		return
 	}
+	s.ticking.Store(true)
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -148,18 +158,41 @@ func (s *Slot) start(ctx context.Context) {
 			case <-s.stopCh:
 				return
 			case <-ticker.C:
-				// Engine-level pause gate: simulator's pause button (and
-				// any future "freeze the policy verdict" caller) flips
-				// this so the cache stays at the last verdict for the
-				// duration of the pause. Skipping the call is enough —
-				// nothing else in the slot's tick path runs.
-				if s.engine.paused.Load() {
-					continue
-				}
-				s.tickOnce()
+				s.tickUnlessPaused()
+			case <-s.kick:
+				s.kickMu.Lock()
+				done := s.kickDone
+				s.kickDone = nil
+				s.kickMu.Unlock()
+				s.tickUnlessPaused()
+				close(done)
 			}
 		}
 	}()
+}
+
+// tickUnlessPaused honours the engine's pause gate (the simulator's pause
+// button): the cache stays at the last verdict while paused.
+func (s *Slot) tickUnlessPaused() {
+	if !s.engine.paused.Load() {
+		s.tickOnce()
+	}
+}
+
+// refresh asks the ticker goroutine for an eval now. The channel closes
+// once an eval that started after the call has run; callers before that
+// eval starts share it. nil for a frozen slot, which only manual ticks move.
+func (s *Slot) refresh() <-chan struct{} {
+	if !s.ticking.Load() {
+		return nil
+	}
+	s.kickMu.Lock()
+	defer s.kickMu.Unlock()
+	if s.kickDone == nil {
+		s.kickDone = make(chan struct{})
+		s.kick <- struct{}{}
+	}
+	return s.kickDone
 }
 
 func (s *Slot) stop() {
