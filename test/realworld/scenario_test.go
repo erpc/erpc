@@ -88,8 +88,10 @@ type spec struct {
 	cache   bool
 	// prism gives the network a Prism (prism): an upstream keyed
 	// prismKeyName, a voter, and a cache connector at its one address that
-	// serves blocks and receipts, as Prism serves avalanche.
-	prism bool
+	// serves blocks and receipts, as Prism serves avalanche; it learns
+	// each block prismLag after its mint.
+	prism    bool
+	prismLag time.Duration
 	// vars shorten eRPC duration variables, by name
 	// (testdata/realworld_vars.go), on every pod of the scenario's phase.
 	vars map[string]time.Duration
@@ -280,7 +282,7 @@ func newScenario(h *harness, sp spec, chainID int64) *scenario {
 			extra: sp.up[vs.key], budget: sp.budgets[vs.key]})
 	}
 	if sp.prism {
-		pr, err := startPrism(s.chain, prismFinalityDepth(sp))
+		pr, err := startPrism(s.chain, prismFinalityDepth(sp), sp.prismLag)
 		if err != nil {
 			h.t.Fatal(err)
 		}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	gethcommon "github.com/ethereum/go-ethereum/common"
@@ -47,12 +48,13 @@ func prismConnector(n *netSpec) string { return fmt.Sprintf("prism-%d", n.chainI
 
 // prism is a BDS reader of a scenario's chain at one address, as Prism is
 // to a network: every pod's cache connector and its prism upstream dial
-// it. It learns each canonical block at its mint and serves it by number,
-// hash and transaction. It counts each pod's calls by role and kind:
-// anyRead, and "latest" for a latest block by tag.
+// it. It learns each canonical block lag after its mint and serves it by
+// number, hash and transaction. It counts each pod's calls by role and
+// kind: anyRead, and "latest" for a latest block by tag.
 type prism struct {
 	chain *chainsim.Chain
 	depth uint64
+	lag   time.Duration
 	ln    net.Listener
 	srv   *grpc.Server
 
@@ -67,17 +69,35 @@ type prismKey struct {
 }
 
 // startPrism serves chain until close, its finalized block depth below
-// the tip.
-func startPrism(chain *chainsim.Chain, depth uint64) (*prism, error) {
+// the tip, each block lag after its mint.
+func startPrism(chain *chainsim.Chain, depth uint64, lag time.Duration) (*prism, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
-	p := &prism{chain: chain, depth: depth, ln: ln, calls: map[prismKey]int64{}}
+	p := &prism{chain: chain, depth: depth, lag: lag, ln: ln, calls: map[prismKey]int64{}}
 	p.srv = grpc.NewServer(grpc.UnaryInterceptor(p.count))
 	bdsevm.RegisterRPCQueryServiceServer(p.srv, prismRPC{p: p})
 	go func() { _ = p.srv.Serve(ln) }()
 	return p, nil
+}
+
+// tip is the newest canonical block prism learned: minted lag ago or
+// earlier.
+func (p *prism) tip() *chainsim.Block {
+	b := p.chain.Tip()
+	for at := time.Now().Add(-p.lag); p.lag > 0 && b.Parent != nil && b.MintedAt.After(at); {
+		b = b.Parent
+	}
+	return b
+}
+
+// learned is b when prism has learned it, else nil.
+func (p *prism) learned(b *chainsim.Block) *chainsim.Block {
+	if b == nil || p.lag > 0 && b.Number > p.tip().Number {
+		return nil
+	}
+	return b
 }
 
 // addr is the host:port every pod's connector and upstream name.
@@ -119,7 +139,7 @@ func (r prismRPC) ChainId(context.Context, *bdsevm.ChainIdRequest) (*bdsevm.Chai
 }
 
 func (r prismRPC) GetBlockByNumber(_ context.Context, req *bdsevm.GetBlockByNumberRequest) (*bdsevm.GetBlockResponse, error) {
-	tip := r.p.chain.Tip()
+	tip := r.p.tip()
 	var b *chainsim.Block
 	switch tag := req.GetBlockNumber(); tag {
 	case "latest", "pending":
@@ -140,12 +160,12 @@ func (r prismRPC) GetBlockByHash(_ context.Context, req *bdsevm.GetBlockByHashRe
 	if b != nil && r.p.chain.CanonAt(b.Number) != b {
 		b = nil
 	}
-	return blockResponse(b)
+	return blockResponse(r.p.learned(b))
 }
 
 func (r prismRPC) GetTransactionReceipt(_ context.Context, req *bdsevm.GetTransactionReceiptRequest) (*bdsevm.GetTransactionReceiptResponse, error) {
 	b, i := r.p.chain.Tx(gethcommon.BytesToHash(req.GetTransactionHash()))
-	if b == nil {
+	if r.p.learned(b) == nil {
 		return &bdsevm.GetTransactionReceiptResponse{}, nil
 	}
 	raw, err := json.Marshal(b.Receipt(i))

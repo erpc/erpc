@@ -1114,6 +1114,10 @@ const (
 	// p21AvaxHeadJitter: each vendor serves each block up to this after
 	// its own delay.
 	p21AvaxHeadJitter = 100 * time.Millisecond
+	// p21AvaxLatePrism: P21-avax-late's Prism learns each block this long
+	// after its mint: 300 ms after the last vendor serves it (vendor-e's
+	// 500 ms plus the jitter), as optimism's Prism trails its vendors.
+	p21AvaxLatePrism = 500*time.Millisecond + p21AvaxHeadJitter + 300*time.Millisecond
 )
 
 // p21AvaxUps are avalanche's vendors as the shadow saw them, polled every
@@ -1139,15 +1143,21 @@ var p21AvaxUps = []freshUp{
 // also no slower at p50 and p90, within the slack at p99, and never
 // failing; at most 1.05 head fetches per new block, at most 5% of
 // block-clock fetches early. It logs each pod's Prism head polls per
-// second and per block.
-func p21Avax() spec {
+// second and per block. P21-avax-late (late): Prism and its cache learn
+// each block p21AvaxLatePrism after its mint, behind every vendor; the
+// same bounds.
+func p21Avax(late bool) spec {
 	slot := func() (time.Duration, bool) {
 		if rand.Float64() < p21AvaxMissed {
 			return 0, true
 		}
 		return rand.N(p21AvaxSlotDelay), false
 	}
-	sp := freshSpec("P21-avax", 1, p21AvaxUps, chainsim.Config{BlockTime: p21AvaxBlockTime, Slot: slot, FinalityStep: p17Step},
+	name := "P21-avax"
+	if late {
+		name = "P21-avax-late"
+	}
+	sp := freshSpec(name, 1, p21AvaxUps, chainsim.Config{BlockTime: p21AvaxBlockTime, Slot: slot, FinalityStep: p17Step},
 		chainsim.Faults{FinalityDepth: p17Depth, HeadJitter: p21AvaxHeadJitter}, func(s *scenario) {
 			s.blocks(10)
 			reads := liveReads(liveRate, s.chain.BlockTime(), &viewLog{})
@@ -1180,6 +1190,9 @@ func p21Avax() spec {
 		})
 	sp.upEvm[prismKeyName] = map[string]interface{}{"statePollerInterval": (5 * time.Second).String()}
 	sp.pods, sp.oldPods, sp.memory, sp.splitState, sp.cache, sp.prism = 4, []int{0, 1}, false, true, true, true
+	if late {
+		sp.prismLag = p21AvaxLatePrism
+	}
 	return sp
 }
 
