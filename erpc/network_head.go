@@ -9,7 +9,6 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -506,7 +505,7 @@ func (n *Network) computeHead(l *servedTipLane, s tipScope) common.EvmHead {
 	}
 	h := common.EvmHead{Finalized: n.laneFinalized(l, s, latest)}
 	h.Leader = n.laneLeader(s, latest)
-	h.Ceiling, h.OldestReportAt = n.laneCeiling(s.sel)
+	n.laneCeiling(s.sel, &h)
 	if l != nil && latest > 0 {
 		l.latest.observe(latest)
 	}
@@ -718,25 +717,32 @@ func (n *Network) laneLeader(s tipScope, latest int64) common.Upstream {
 	return leader
 }
 
-// laneCeiling is the highest effective latest head across the lane's
-// counted upstreams (countedUpstreams), regardless of selection policy,
-// tier or syncing state, since any of them can end up serving a request
-// (policy order, the fallback escape, syncing upstreams without
+// laneCeiling sets h's Ceiling, the highest effective latest head across
+// the lane's counted upstreams (countedUpstreams), regardless of selection
+// policy, tier or syncing state, since any of them can end up serving a
+// request (policy order, the fallback escape, syncing upstreams without
 // skipWhenSyncing). It uses latest heads whatever emptyResultConfidence
 // says: that setting decides how an empty answer is treated, not whether
 // an upstream can have the block. 0 (unknown) when the lane has no counted
-// upstream or any one's head is unknown. oldest is when the oldest counted
-// report's evidence was taken (LatestReportAt), zero when one has none.
-func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
-	first := true
+// upstream or any one's head is unknown. OldestReportAt is when the oldest
+// counted report's evidence was taken (LatestReportAt), zero when one has
+// none; Reach and ReachAt the report whose head plus the blocks made since
+// at the block time is highest, a stale report of a slower upstream
+// included, zero ReachAt when one has no time.
+func (n *Network) laneCeiling(sel string, h *common.EvmHead) {
+	now, bt := time.Now(), float64(n.blockTimeOrCold())
+	first, timed := true, true
+	var ceiling, reach int64
+	var oldest, reachAt time.Time
+	best := 0.0
 	for u := range n.countedUpstreams(sel) {
 		sp := u.EvmStatePoller()
 		if sp == nil {
-			return 0, time.Time{}
+			return
 		}
 		blk, _ := evmTipObservation(u, false)
 		if blk <= 0 {
-			return 0, time.Time{}
+			return
 		}
 		ceiling = max(ceiling, blk)
 		var at time.Time
@@ -744,10 +750,18 @@ func (n *Network) laneCeiling(sel string) (ceiling int64, oldest time.Time) {
 			at = sp.LatestReportAt()
 		}
 		if first || at.Before(oldest) {
-			oldest, first = at, false
+			oldest = at
 		}
+		timed = timed && !at.IsZero()
+		if far := float64(blk) + float64(now.Sub(at))/bt; timed && (first || far > best) {
+			best, reach, reachAt = far, blk, at
+		}
+		first = false
 	}
-	return ceiling, oldest
+	h.Ceiling, h.OldestReportAt = ceiling, oldest
+	if timed {
+		h.Reach, h.ReachAt = reach, reachAt
+	}
 }
 
 // countedUpstreams are the upstreams selector sel's lane ceiling counts:
@@ -780,32 +794,6 @@ func (n *Network) walkCounted(sel string, yield func(*upstream.Upstream) bool) {
 			return
 		}
 	}
-}
-
-// EvmAskStale Asks, with a number need at 1 bt (spec §6.8), each of
-// selector's counted upstreams whose report is 1 bt old or older, every
-// one before the first block time sample, waits for their answers, at most
-// 1 bt or until ctx ends, and returns the lane's ceiling and oldest report
-// after them (spec §6.4: no future on a stale report). Only a block beyond
-// the near future Asks (DecideHeadRefusal): refusing it needs every report
-// fresh, while a near-future block waits for the lane's read ahead. The
-// age filter saves the request path an Ask per fresh upstream; the Ask
-// paces fetches.
-func (n *Network) EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time) {
-	bt, cold := n.blockTimeOrCold(), n.EvmBlockTime() <= 0
-	now := time.Now()
-	var stale []common.EvmStatePoller
-	for u := range n.countedUpstreams(selector) {
-		if sp := u.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			if cold || now.Sub(sp.LatestReportAt()) >= bt {
-				stale = append(stale, sp)
-			}
-		}
-	}
-	ctx, cancel := context.WithTimeout(ctx, bt)
-	defer cancel()
-	askAll(ctx, stale, bt, common.AskRefusal)
-	return n.laneCeiling(selector)
 }
 
 // EvmPinned reports whether selector's lane view pins block, at or below
@@ -971,6 +959,77 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 	}
 }
 
+// EvmAwaitRangeHolder waits, for the range check of req's range ending at
+// toBlock (spec §6.4 range check), until u, whose counter is below
+// toBlock, holds it, at most W or until ctx ends, and reports whether it
+// does. A toBlock above req's Latest is the lane's read ahead
+// (readAhead): the clock's shared fetch brings it, and the wait fetches
+// nothing of its own; the request itself is the probe. u holds toBlock by
+// its evidence: its hash vote, counter or a by-number answer (reachedHead,
+// credited only for a likely hold). With likely, a one-block range, also
+// once its held wait since toBlock's first sight passed
+// (ChainTracker.HeldAt), the miss's retry reading its longest bound, as
+// a held block's attempts do (awaitHolder): a node lacking the block
+// answers the range empty, a miss the refusal rule retries, while one
+// lacking the top of a longer range answers the part it has. A first
+// attempt at or below Latest waits at most a block time. Skipping by the
+// counter alone failed a 0.3 s chain's one-block ranges above every
+// vendor's head (§19 P12).
+func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64, likely bool) bool {
+	sel := selectorOf(req)
+	head := n.requestHead(ctx, req)
+	if toBlock > head.Latest {
+		n.readAhead(sel, toBlock)
+	}
+	// An upstream with no head yet has nothing the lane's fetches would
+	// bring: its own head is the one fetch, single-flight at its cadence,
+	// once, not once a block.
+	if eu, ok := u.(common.EvmUpstream); ok && upstreamLatestBlock(u) <= 0 {
+		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefusal)
+		}
+	}
+	t := n.laneTracker(sel)
+	var credit int64
+	if likely {
+		credit = creditCap(head)
+	}
+	retry := req.HeadRefusal().Retried()
+	bt := n.EvmBlockTime()
+	most := health.FreshnessWindow(bt)
+	if !retry && bt > 0 && toBlock <= head.Latest {
+		most = min(most, bt)
+	}
+	ctx, cancel := context.WithTimeout(ctx, most)
+	defer cancel()
+	due := time.NewTimer(most)
+	defer due.Stop()
+	for {
+		computed := n.headsComputed()
+		if reached := n.reachedHead(u, credit); reached > 0 && common.EvmHeadReaches(u, reached, toBlock) {
+			return true
+		}
+		var moved <-chan struct{}
+		if t != nil {
+			moved = t.CreditMoved()
+			if at, ok := t.HeldAt(u.Id(), uint64(toBlock), retry); likely && ok {
+				wait := time.Until(at)
+				if wait <= 0 {
+					return true
+				}
+				due.Reset(wait)
+			}
+		}
+		select {
+		case <-computed:
+		case <-moved:
+		case <-due.C:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
 // awaitViewOnto reports whether c, an upstream's block at req's Head
 // number on another branch, is pinned at or below the Head of req's lane
 // view now or within one bt (spec §6.5, §7 family 2). An upstream may show
@@ -1001,16 +1060,6 @@ func (n *Network) awaitViewOnto(ctx context.Context, req *common.NormalizedReque
 			return false
 		}
 	}
-}
-
-// askAll Asks each of pollers with a number need at pace for reason, at
-// once, and waits for every answer or ctx's end.
-func askAll(ctx context.Context, pollers []common.EvmStatePoller, pace time.Duration, reason common.AskReason) {
-	var wg sync.WaitGroup
-	for _, sp := range pollers {
-		wg.Go(func() { sp.Ask(ctx, common.HeadNeedNumber, pace, time.Time{}, reason) })
-	}
-	wg.Wait()
 }
 
 // blockTimeOrCold is the network's block time, or the cold-start one

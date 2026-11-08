@@ -152,7 +152,7 @@ func (s *scenario) p12Probe(label string, stale bool, empty []float64) {
 
 	future := func(pod int) float64 {
 		total := 0.0
-		for _, rule := range []string{"future", "future_after_refresh"} {
+		for _, rule := range []string{"future"} {
 			v, _ := s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": rule})
 			total += v
 		}

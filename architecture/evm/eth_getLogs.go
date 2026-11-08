@@ -516,7 +516,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		)
 	}
 
-	if err := CheckBlockRangeAvailability(ctx, up, "eth_getLogs", fromBlock, toBlock); err != nil {
+	if err := CheckBlockRangeAvailability(ctx, n, nrq, up, "eth_getLogs", fromBlock, toBlock); err != nil {
 		return true, nil, err
 	}
 

@@ -7,21 +7,32 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+// rangeHolder is the network's side of the range check (spec §6.4): the
+// wait for an upstream to hold a range's toBlock, its counter below it.
+type rangeHolder interface {
+	EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64, likely bool) bool
+}
+
 // CheckBlockRangeAvailability verifies that both fromBlock and toBlock are available
 // on the given upstream. This is used for range-based methods like eth_getLogs,
 // trace_filter, and arbtrace_filter.
 //
 // It checks:
-//  1. toBlock (upper bound) by the one head predicate: an upstream below it
-//     is skipped, as not holding it yet, and asked nothing: the skip is the
-//     lane's read ahead of toBlock (spec §6.4), whose one head fetch brings
-//     its holders, which the retry takes. A toBlock the refusal rule calls
-//     future never gets here: the network refuses it before dispatch.
+//  1. toBlock (upper bound) by the one head predicate on the upstream's
+//     counter; below it, within its configured bounds, the network waits
+//     until the upstream holds toBlock, at most W (EvmAwaitRangeHolder,
+//     spec §6.4 range check): its evidence, or, for a one-block range,
+//     its held wait since toBlock's first sight. Only an upstream with no
+//     head yet is Asked, once: a toBlock above Latest is the lane's read
+//     ahead, whose one shared fetch brings it. A toBlock the refusal rule
+//     calls future never gets here: the network refuses it before dispatch.
 //  2. fromBlock (lower bound) against the configured window.
 //
 // Returns nil if both blocks are available, otherwise returns an appropriate error.
 func CheckBlockRangeAvailability(
 	ctx context.Context,
+	nw common.Network,
+	req *common.NormalizedRequest,
 	up common.EvmUpstream,
 	method string,
 	fromBlock, toBlock int64,
@@ -37,6 +48,17 @@ func CheckBlockRangeAvailability(
 	available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, toBlock)
 	if err != nil {
 		return err
+	}
+	if !available && !common.EvmHeadReaches(up, statePoller.LatestBlock(), toBlock) {
+		// Behind by its counter only, not by its configured bounds. A
+		// node lacking the top of a longer range answers the part it
+		// has, so only a one-block range, which it answers empty (a
+		// miss the refusal rule retries), goes on a likely hold.
+		if minBound, maxBound := up.EvmBlockAvailabilityBounds(); toBlock >= minBound && toBlock <= maxBound {
+			if h, ok := nw.(rangeHolder); ok {
+				available = h.EvmAwaitRangeHolder(ctx, req, up, toBlock, fromBlock == toBlock)
+			}
+		}
 	}
 	if !available {
 		latestBlock := statePoller.LatestBlock()

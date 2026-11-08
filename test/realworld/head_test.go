@@ -127,7 +127,7 @@ func x2() spec {
 				px.set(s.h.pods[1], linkFaults{Latency: x2Latency})
 			}
 			s.blocks(150)
-			for _, rule := range []string{"future", "future_after_refresh", "future_after_wait", "retried_missing"} {
+			for _, rule := range []string{"future", "future_after_wait", "retried_missing"} {
 				s.requireZeroIfExported(1, "erpc_head_refusal_total", map[string]string{"rule": rule})
 			}
 		}}
@@ -919,7 +919,7 @@ func oweBandProbes(s *scenario, nulls []float64) {
 			continue
 		}
 		future := 0.0
-		for _, rule := range []string{"future", "future_after_refresh", "future_after_wait"} {
+		for _, rule := range []string{"future", "future_after_wait"} {
 			v, _ := sumOf(ss, "erpc_head_refusal_total", map[string]string{"project": s.project, "network": s.network(), "rule": rule})
 			future += v
 		}

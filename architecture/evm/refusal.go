@@ -11,13 +11,12 @@ import (
 )
 
 // headRefuser is the network's side of the refusal rule (spec §6.4, §6.8):
-// its block time, whether its lane's view pins a block, the Ask of the
-// reports older than 1 bt, the near-future wait for the ceiling, and the
-// band block's read ahead (ChainTracker.ReadAhead).
+// its block time, whether its lane's view pins a block, the near-future
+// wait for the ceiling, and the band block's read ahead
+// (ChainTracker.ReadAhead). None of them Asks an upstream.
 type headRefuser interface {
 	EvmBlockTime() time.Duration
 	EvmPinned(selector string, block int64) bool
-	EvmAskStale(ctx context.Context, selector string) (ceiling int64, oldestReportAt time.Time)
 	EvmAwaitCeiling(ctx context.Context, selector string, block int64) (ceiling int64, oldestReportAt time.Time)
 	EvmAskBand(selector string, block int64)
 }
@@ -84,22 +83,21 @@ func RefusalMiss(method string, result []byte) bool {
 }
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of
-// selector sel's lane. A block above Firm that the lane's view pins exists:
-// it is thin and Held, and nothing Asks an upstream for it, whatever h's
-// Latest and ceiling, which a method only some upstreams serve keeps below
-// it (spec §6.4 held). Else a block beyond the near future above the
-// ceiling with a report 1 bt old or older has those reports Asked first
-// and is decided again, each report's age taken at the Ask's start: a
-// report fresh then was not Asked, and must not turn stale by the Ask's
-// own duration. Still stale after the Ask, n is in the band, the cheaper
-// way to be wrong. Until the first block time sample, every report counts
-// as older than 1 bt (spec §6.4).
-// With wait, an n at most nearFutureBlocks above the ceiling, future or
-// kept in the band by a stale report, Asks nothing: it waits for the
-// ceiling to reach it, at most W, as the lane's read ahead, whose one head
-// fetch every such read shares, and is decided again on the ceiling the
-// wait saw; Latest stays the request's own (spec §7). A band block is the
-// lane's read ahead too, in the background.
+// selector sel's lane; nothing on it Asks an upstream (spec §6.4). A block
+// above Firm that the lane's view pins exists: it is thin and Held,
+// whatever h's Latest and ceiling, which a method only some upstreams
+// serve keeps below it (spec §6.4 held). Above the ceiling, a block beyond
+// the near future (nearFuture), whose bound counts the blocks the chain
+// can have made since each counted report, is future at once: no counted
+// upstream can hold it yet, however stale its report, and none is Asked.
+// A report age that is unknown bounds nothing, and until the first block
+// time sample none is known (spec §6.4). With wait, an n in the near future
+// waits for the ceiling to reach it, at most W, as the lane's read ahead,
+// whose one head fetch every such read shares, and is decided again on
+// the ceiling the wait saw: still above it, n is future; Latest stays the
+// request's own (spec §7). Without wait, a near n above a report 1 bt old
+// or older is in the band, the cheaper way to be wrong. A band block is
+// the lane's read ahead too, in the background.
 func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64, wait bool) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt, cold := health.ColdBlockTime, true
@@ -109,37 +107,27 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		}
 	}
 	if cold {
-		h.OldestReportAt = time.Time{}
+		h.OldestReportAt, h.ReachAt = time.Time{}, time.Time{}
 	}
-	asked := time.Now()
-	v := &common.HeadRefusal{Block: n, Latest: h.Latest, Rule: h.Rule(n, bt, asked)}
+	now := time.Now()
+	v := &common.HeadRefusal{Block: n, Latest: h.Latest, Rule: h.Rule(n, bt, now)}
 	if v.Rule != common.HeadServe && net != nil && net.EvmPinned(sel, n) {
 		v.Rule, v.Held, v.Ceiling = common.HeadThin, true, h.Ceiling
 		return v
 	}
-	// A near-future block waits for the lane's read ahead below, which
-	// fetches its head once for every read of it; only refusing a block
-	// beyond needs every stale report Asked.
-	near := wait && n-h.Ceiling <= nearFutureBlocks(bt, h.OldestReportAt, time.Now())
-	if v.Rule == common.HeadStale && net != nil && !near {
-		h.Ceiling, h.OldestReportAt = net.EvmAskStale(ctx, sel)
-		if cold {
-			h.OldestReportAt = time.Time{}
-		}
-		v.Rule, v.Refreshed = h.Rule(n, bt, asked), true
-	}
-	if aboveCeiling := v.Rule == common.HeadFuture || v.Rule == common.HeadStale; aboveCeiling && wait && net != nil && n-h.Ceiling <= nearFutureBlocks(bt, h.OldestReportAt, time.Now()) {
-		kept := v.Rule == common.HeadStale
-		h.Ceiling, h.OldestReportAt = net.EvmAwaitCeiling(ctx, sel, n)
-		if cold {
-			h.OldestReportAt = time.Time{}
-		}
-		// Still above the ceiling after W: a band n takes the band's one
-		// retry; a future n whose reports aged during the wait (the wait
-		// Asked them every bt) stays future, never sends a range above
-		// every head.
-		if v.Rule, v.Waited = h.Rule(n, bt, time.Now()), true; v.Rule == common.HeadStale && !kept {
+	if v.Rule == common.HeadFuture || v.Rule == common.HeadStale {
+		switch {
+		case !nearFuture(h, bt, n, now):
 			v.Rule = common.HeadFuture
+		case wait && net != nil:
+			h.Ceiling, h.OldestReportAt = net.EvmAwaitCeiling(ctx, sel, n)
+			if cold {
+				h.OldestReportAt = time.Time{}
+			}
+			v.Rule, v.Waited = h.Rule(n, bt, time.Now()), true
+			if v.Rule == common.HeadStale {
+				v.Rule = common.HeadFuture
+			}
 		}
 	}
 	if v.Rule == common.HeadStale {
@@ -152,17 +140,18 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 	return v
 }
 
-// nearFutureBlocks is how far above the ceiling a block waits for it:
-// (W + A) / bt + 1 blocks, A the age of the ceiling's evidence, unknown (0)
-// while a report has none (spec §6.4 near future). The chain kept making
-// blocks since those reports were taken, and may have made one more right
-// after: a fresh report can trail the chain by a block.
-func nearFutureBlocks(bt time.Duration, oldestReportAt, now time.Time) int64 {
-	var age time.Duration
-	if !oldestReportAt.IsZero() {
-		age = max(0, now.Sub(oldestReportAt))
+// nearFuture reports whether n, above h's ceiling, waits for it (spec §6.4
+// near future): n is at most W of chain plus 2 blocks above where the
+// counted reports put the chain now, the report furthest along once the
+// blocks made since each are counted (Reach). The margin is the block the
+// chain may have made right after a report, and one for a reporter that
+// trailed it by a block. A report with no time bounds nothing.
+func nearFuture(h common.EvmHead, bt time.Duration, n int64, now time.Time) bool {
+	if h.ReachAt.IsZero() {
+		return true
 	}
-	return int64((health.FreshnessWindow(bt)+age)/bt) + 1
+	reach := h.Reach + int64(max(0, now.Sub(h.ReachAt))/bt)
+	return n-reach <= int64(health.FreshnessWindow(bt)/bt)+2
 }
 
 // EmptyResultBeyondConfidence reports whether an empty answer for rq is its answer rather
