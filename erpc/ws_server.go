@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -697,14 +698,15 @@ type wsNotifier struct {
 	sent, bytes *telemetry.BoundCounter
 }
 
-var wsNotificationSuffix = []byte("}}\n")
+var (
+	wsNotificationHead   = []byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":`)
+	wsNotificationResult = []byte(`,"result":`)
+	wsNotificationSuffix = []byte("}}\n")
+)
 
 func (wsc *WsConnection) notifier(sub wsclient.Subscription) *wsNotifier {
 	id, _ := json.Marshal(sub.ClientSubID)
-	prefix := make([]byte, 0, 96+len(id))
-	prefix = append(prefix, `{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":`...)
-	prefix = append(prefix, id...)
-	prefix = append(prefix, `,"result":`...)
+	prefix := slices.Concat(wsNotificationHead, id, wsNotificationResult)
 	labels := []string{wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String()}
 	return &wsNotifier{
 		wsc: wsc, sub: sub, prefix: prefix,
