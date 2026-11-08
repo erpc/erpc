@@ -90,7 +90,16 @@ func CheckBlockRangeAvailability(
 		}
 	}
 
-	// Check lower bound (fromBlock) - this is historical data.
+	// Check lower bound (fromBlock) - this is historical data. A fromBlock
+	// above the counter, its toBlock admitted above, is above any window
+	// the bounds keep: only a configured lower bound can refuse it, and
+	// read against the counter it refused a one-block range the wait had
+	// admitted.
+	if fromBlock > statePoller.LatestBlock() {
+		if minBound, _ := up.EvmBlockAvailabilityBounds(); fromBlock >= minBound {
+			return nil
+		}
+	}
 	available, err = up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, fromBlock)
 	if err != nil {
 		return err
