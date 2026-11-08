@@ -1674,6 +1674,24 @@ func (r *NormalizedRequest) ReserveUpstream(upstream Upstream) bool {
 	return r.reserveLocked(upstream)
 }
 
+// Untried reports whether NextUpstream may still select upstream for a
+// first answer: selectable, not consumed, and with no answer of it stored.
+func (r *NormalizedRequest) Untried(upstream Upstream) bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	if !r.matchesUseUpstreamLocked(upstream) {
+		return false
+	}
+	if _, tried := r.ErrorsByUpstream.Load(upstream); tried {
+		return false
+	}
+	_, consumed := r.ConsumedUpstreams.Load(upstream)
+	return !consumed
+}
+
 // reserveLocked reserves upstream when it is selectable and not consumed
 // (in flight, or completed this round).
 func (r *NormalizedRequest) reserveLocked(upstream Upstream) bool {

@@ -119,6 +119,11 @@ type Network struct {
 	// by-number client answers from it held (*atomic.Int64): holder
 	// evidence for Firm and routing only, never a head report (spec §6.5).
 	heldAt sync.Map
+	// rangeAsks is, per upstream id, its newest range-check Ask (spec
+	// §6.4 range check): every range check of that block or a lower one
+	// joins it.
+	rangeAskMu sync.Mutex
+	rangeAsks  map[string]*rangeAsk
 
 	// queryTraceSource remembers which trace method answered the eth_query*
 	// shim on this network (queryTraceSource* values), so a network whose

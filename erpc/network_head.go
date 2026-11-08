@@ -962,29 +962,38 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 // EvmAwaitRangeHolder waits, for the range check of req's range ending at
 // toBlock (spec §6.4 range check), until u, whose counter is below
 // toBlock, holds it, at most W or until ctx ends, and reports whether it
-// does. A toBlock above req's Latest is the lane's read ahead
-// (readAhead): the clock's shared fetch brings it, and the wait fetches
-// nothing of its own; the request itself is the probe. u holds toBlock by
-// its evidence: its hash vote, counter or a by-number answer (reachedHead,
-// credited only for a likely hold). With likely, a one-block range, also
-// once its held wait since toBlock's first sight passed
-// (ChainTracker.HeldAt), the miss's retry reading its longest bound, as
-// a held block's attempts do (awaitHolder): a node lacking the block
-// answers the range empty, a miss the refusal rule retries, while one
-// lacking the top of a longer range answers the part it has. A first
-// attempt at or below Latest waits at most a block time. Skipping by the
-// counter alone failed a 0.3 s chain's one-block ranges above every
-// vendor's head (§19 P12).
+// does. While toBlock is above the lane's Latest, the wait is the lane's
+// read ahead (readAhead): the clock's shared fetch brings it, and the wait
+// fetches nothing of its own. Once the block exists (the lane's Latest
+// reaches it), an untried upstream of u's tier whose evidence shows it
+// goes first: u is skipped with no fetch (holderAhead). With none, u is
+// Asked for toBlock once (askRange), one Ask per upstream and block that
+// every range check waiting on it shares, and the wait runs to its
+// answer. u holds toBlock by its evidence: its hash vote, counter or a
+// by-number answer (reachedHead, credited only for a likely hold). With
+// likely, a one-block range, also once its held wait since toBlock's
+// first sight passed (ChainTracker.HeldAt), the miss's retry reading its
+// longest bound, as a held block's attempts do (awaitHolder): a node
+// lacking the block answers the range empty, a miss the refusal rule
+// retries, while one lacking the top of a longer range answers the part
+// it has. An answer that leaves u below toBlock ends the wait, unless a
+// likely hold's held wait is still to come. A first attempt at or below
+// Latest with no Ask out waits at most a block time. A node one block
+// short of a block the lane holds is the usual case at a 0.3 s chain's
+// tip: with no Ask its counter waited for its next poll and the range
+// failed (§19 P12).
 func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64, likely bool) bool {
 	sel := selectorOf(req)
 	head := n.requestHead(ctx, req)
 	if toBlock > head.Latest {
 		n.readAhead(sel, toBlock)
 	}
+	eu, _ := u.(common.EvmUpstream)
 	// An upstream with no head yet has nothing the lane's fetches would
 	// bring: its own head is the one fetch, single-flight at its cadence,
 	// once, not once a block.
-	if eu, ok := u.(common.EvmUpstream); ok && upstreamLatestBlock(u) <= 0 {
+	known := upstreamLatestBlock(u) > 0
+	if eu != nil && !known {
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefusal)
 		}
@@ -996,20 +1005,31 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 	}
 	retry := req.HeadRefusal().Retried()
 	bt := n.EvmBlockTime()
-	most := health.FreshnessWindow(bt)
-	if !retry && bt > 0 && toBlock <= head.Latest {
-		most = min(most, bt)
-	}
-	ctx, cancel := context.WithTimeout(ctx, most)
+	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(bt))
 	defer cancel()
-	due := time.NewTimer(most)
+	var short <-chan time.Time
+	if !retry && bt > 0 && toBlock <= head.Latest {
+		st := time.NewTimer(bt)
+		defer st.Stop()
+		short = st.C
+	}
+	due := time.NewTimer(health.FreshnessWindow(bt))
 	defer due.Stop()
+	asked := !known || eu == nil
+	var answer <-chan struct{}
 	for {
 		computed := n.headsComputed()
 		if reached := n.reachedHead(u, credit); reached > 0 && common.EvmHeadReaches(u, reached, toBlock) {
 			return true
 		}
+		if !asked && n.headFor(tipScope{sel: sel}).Latest >= toBlock {
+			if n.holderAhead(req, u, toBlock) {
+				return false
+			}
+			answer, asked, short = n.askRange(eu, toBlock), true, nil
+		}
 		var moved <-chan struct{}
+		held := false
 		if t != nil {
 			moved = t.CreditMoved()
 			if at, ok := t.HeldAt(u.Id(), uint64(toBlock), retry); likely && ok {
@@ -1018,16 +1038,88 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 					return true
 				}
 				due.Reset(wait)
+				held = true
 			}
 		}
 		select {
 		case <-computed:
 		case <-moved:
+		case <-answer:
+			if !held && !common.EvmHeadReaches(u, n.reachedHead(u, credit), toBlock) {
+				return false
+			}
+			answer = nil
 		case <-due.C:
+		case <-short:
+			return false
 		case <-ctx.Done():
 			return false
 		}
 	}
+}
+
+// holderAhead reports whether req may still select, in u's failover
+// tier, another upstream whose evidence shows toBlock within its
+// configured bounds (reachedHead, uncredited): the request reaches that
+// holder before it Asks u (spec §6.4 range check).
+func (n *Network) holderAhead(req *common.NormalizedRequest, u common.Upstream, toBlock int64) bool {
+	tier := isFallbackTier(u)
+	for _, v := range req.Upstreams() {
+		if v == u || isFallbackTier(v) != tier {
+			continue
+		}
+		ev, ok := v.(common.EvmUpstream)
+		if !ok {
+			continue
+		}
+		if lo, hi := ev.EvmBlockAvailabilityBounds(); toBlock < lo || toBlock > hi {
+			continue
+		}
+		if h := n.reachedHead(v, 0); h > 0 && common.EvmHeadReaches(v, h, toBlock) && req.Untried(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// rangeAsk is one upstream's range-check Ask for block; done closes once
+// it answered.
+type rangeAsk struct {
+	block int64
+	done  chan struct{}
+}
+
+// askRange Asks u for block (AskReaching), once: a range check of block or
+// a lower one while u's Ask for it is out or answered joins that Ask. The
+// Ask is no request's own, so a request that ends never cuts it short; it
+// ends at most W after it starts.
+func (n *Network) askRange(u common.EvmUpstream, block int64) <-chan struct{} {
+	n.rangeAskMu.Lock()
+	defer n.rangeAskMu.Unlock()
+	if a := n.rangeAsks[u.Id()]; a != nil && a.block >= block {
+		return a.done
+	}
+	a := &rangeAsk{block: block, done: make(chan struct{})}
+	if n.rangeAsks == nil {
+		n.rangeAsks = make(map[string]*rangeAsk)
+	}
+	n.rangeAsks[u.Id()] = a
+	sp := u.EvmStatePoller()
+	if sp == nil || sp.IsObjectNull() {
+		close(a.done)
+		return a.done
+	}
+	ctx := n.appCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !n.bg.Go(func() {
+		defer close(a.done)
+		sp.AskReaching(ctx, block, 0, common.AskRefusal)
+	}) {
+		close(a.done)
+	}
+	return a.done
 }
 
 // awaitViewOnto reports whether c, an upstream's block at req's Head

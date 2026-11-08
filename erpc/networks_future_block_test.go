@@ -119,12 +119,11 @@ func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
 	assert.Zero(t, dispatched.Load(), "and never dispatched")
 }
 
-// On a halted chain every Ask answers the head each upstream already
-// voted for. That answer is still evidence taken at its send time (spec
-// §6.4 ceiling): after one Ask, a block far above the ceiling is future,
-// null with no dispatch, on every request, not kept in the band by a
-// report time only a new head would move.
-func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
+// On a halted chain every report ages. A block far above where the
+// reports put the chain now, the blocks made since each counted (spec
+// §6.4 near future), is future at once: null with no dispatch on every
+// request, and no stale upstream is Asked for it.
+func TestForward_FutureBlock_HaltedChainFarBlockAsksNothing(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
@@ -164,12 +163,11 @@ func TestForward_FutureBlock_HaltedChainAskDatesReport(t *testing.T) {
 	mockGetBlockByNumberAt("0x44d", futureBlockSentinel, &dispatched, ids...)
 
 	for round := 1; round <= 3; round++ {
-		// Every report is older than 1 bt and the last Ask's fetch is
-		// older than its pace: the request Asks each upstream once.
+		// Every report is older than 1 bt: the request still Asks none.
 		time.Sleep(bt + 200*time.Millisecond)
 		before := polls.Load()
 		resp := forwardGetBlockByNumber(t, ctx, network, "0x44d") // 1101
-		require.GreaterOrEqual(t, polls.Load()-before, int64(len(ids)), "round %d: the request Asks each stale upstream", round)
+		assert.Zero(t, polls.Load()-before, "round %d: the request Asks no stale upstream", round)
 		assert.True(t, resp.IsResultEmptyish(ctx), "round %d: a block 1001 above a halted chain is null", round)
 		assert.Zero(t, dispatched.Load(), "round %d: and never dispatched", round)
 	}

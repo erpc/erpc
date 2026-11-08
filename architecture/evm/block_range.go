@@ -22,10 +22,12 @@ type rangeHolder interface {
 //     counter; below it, within its configured bounds, the network waits
 //     until the upstream holds toBlock, at most W (EvmAwaitRangeHolder,
 //     spec §6.4 range check): its evidence, or, for a one-block range,
-//     its held wait since toBlock's first sight. Only an upstream with no
-//     head yet is Asked, once: a toBlock above Latest is the lane's read
-//     ahead, whose one shared fetch brings it. A toBlock the refusal rule
-//     calls future never gets here: the network refuses it before dispatch.
+//     its held wait since toBlock's first sight. A toBlock above the
+//     lane's Latest is the lane's read ahead, whose one shared fetch
+//     brings it; once the lane holds it, an untried holder goes first,
+//     else the upstream is Asked for it once, one Ask per upstream and
+//     block. A toBlock the refusal rule calls future never gets here:
+//     the network refuses it before dispatch.
 //  2. fromBlock (lower bound) against the configured window.
 //
 // Returns nil if both blocks are available, otherwise returns an appropriate error.
@@ -49,14 +51,21 @@ func CheckBlockRangeAvailability(
 	if err != nil {
 		return err
 	}
-	if !available && !common.EvmHeadReaches(up, statePoller.LatestBlock(), toBlock) {
-		// Behind by its counter only, not by its configured bounds. A
-		// node lacking the top of a longer range answers the part it
-		// has, so only a one-block range, which it answers empty (a
-		// miss the refusal rule retries), goes on a likely hold.
-		if minBound, maxBound := up.EvmBlockAvailabilityBounds(); toBlock >= minBound && toBlock <= maxBound {
+	if !available {
+		// Behind by its counter only, not by its configured bounds: a
+		// latestBlockMinus upper bound moves with the head, so the
+		// upstream holds toBlock once its head reaches toBlock plus that
+		// margin. A node lacking the top of a longer range answers the
+		// part it has, so only a one-block range, which it answers empty
+		// (a miss the refusal rule retries), goes on a likely hold.
+		need := toBlock
+		minBound, maxBound := up.EvmBlockAvailabilityBounds()
+		if m := upperLatestMinus(up); m != nil {
+			need, maxBound = toBlock+*m, toBlock
+		}
+		if toBlock >= minBound && toBlock <= maxBound && !common.EvmHeadReaches(up, statePoller.LatestBlock(), need) {
 			if h, ok := nw.(rangeHolder); ok {
-				available = h.EvmAwaitRangeHolder(ctx, req, up, toBlock, fromBlock == toBlock)
+				available = h.EvmAwaitRangeHolder(ctx, req, up, need, fromBlock == toBlock)
 			}
 		}
 	}
@@ -104,5 +113,18 @@ func CheckBlockRangeAvailability(
 		}
 	}
 
+	return nil
+}
+
+// upperLatestMinus is up's latestBlockMinus upper bound, nil when its
+// upper bound is none or of another kind.
+func upperLatestMinus(up common.Upstream) *int64 {
+	cfg := up.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil {
+		return nil
+	}
+	if b := cfg.Evm.BlockAvailability.Upper; b != nil && b.ExactBlock == nil && b.EarliestBlockPlus == nil {
+		return b.LatestBlockMinus
+	}
 	return nil
 }
