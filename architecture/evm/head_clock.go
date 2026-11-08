@@ -977,23 +977,26 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 
 // cachedProbe lays a cache-fed lane's fire for the target, predicted at
 // p: the cache's poll brings each block free, so the clock spends only a
-// turn its voters' intervals pay for. A due turn whose voter scores
-// within bt/4 of the fastest measured voter is the block's probe, sent to
-// sight it at S_k, sk, as a ladder's last rung; it moves the offset, so
-// it walks to where 3% of probes answer early, and the vendors' copy
-// comes first where the cache trails them (optimism: 76% of first-quarter
-// reads got the block before, main 48%, while the probe waited a block
-// past the cache's predicted sight). With no such turn, one fire a push
-// allowance after p, which the cache's poll makes needless unless it
-// stalls: a probe to the fastest voter beside the due turns' votes cost
-// 1.30-1.45 head fetches per block where Prism trailed the vendors by
-// 300 ms (§19 P21-avax-late). The due turns vote at the sight (vote).
+// turn its voters' intervals pay for. A voter whose turn is due, past the
+// per-block cap too, and who scores within bt/4 of the fastest measured
+// voter takes the block's probe, sent to sight it at S_k, sk, as a
+// ladder's last rung; it moves the offset, so it walks to where 3% of
+// probes answer early, and the vendors' copy comes first where the cache
+// trails them (optimism: 76% of first-quarter reads got the block before,
+// main 48%, while the probe waited a block past the cache's predicted
+// sight). With no such turn, one fire a push allowance after p, which the
+// cache's poll makes needless unless it stalls: a probe to the fastest
+// voter beside the due turns' votes cost 1.30-1.45 head fetches per block
+// where Prism trailed the vendors by 300 ms (§19 P21-avax-late); the
+// capped due turns alone left the probe 0.17 of the blocks there, served
+// latest 61 ms older than the old image's at p50. The due turns vote at
+// the sight (vote).
 func (t *ChainTracker) cachedProbe(cands []clockCandidate, p, sk time.Time, bt time.Duration) {
 	c := &t.clock
 	c.predicted = p
 	best := c.bestScore(cands)
-	due, _ := c.dueTurns(cands, sk, bt)
-	for _, cand := range c.byScore(due) {
+	due, wait := c.dueTurns(cands, sk, bt)
+	for _, cand := range c.byScore(append(due, wait...)) {
 		if v := c.ups[cand.id]; v != nil && len(v.bounds) > 0 && c.score(cand.id) <= best+bt/4 {
 			r := clockRung{id: cand.id, at: sk.Add(-c.rttOf(cand.id)), kind: "probe", turn: true}
 			c.ladder, c.rungs = true, []clockRung{r}
@@ -1555,6 +1558,19 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 	}
 	free := func(id string) bool {
 		return id != "" && !c.busy(id) && slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id })
+	}
+	if c.pushFed() && c.pushCached {
+		// The cache's poll brings the block; the planned turn's probe
+		// keeps the time its offset corrects, and goes now only when its
+		// voter proved the block, which it then holds. Sent at a turn's
+		// held wait after a vendor's receipt proved the block, 16-21% of
+		// probes answered early, and the offset, which a proof's probe
+		// leaves, never corrected them (P21-avax-late).
+		if len(c.rungs) == 1 && c.rungs[0].turn && c.rungs[0].id == c.provenBy && free(c.provenBy) {
+			c.rungs[0].at, c.provedFor = now, c.target
+		}
+		c.proven, c.provenBy = 0, ""
+		return
 	}
 	var rungTurns []string
 	for _, rr := range c.rungs {
