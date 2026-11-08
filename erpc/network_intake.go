@@ -128,10 +128,11 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 }
 
 // Polled takes the header a poll of upstreamId's latest, sent at sent,
-// fetched; malformed: it failed intake check 0. A success ends its failing
-// polls and renews the hash vote they expired (PollFailed). passed: the
-// header passed intake's checks (header). A header that passed seeds the
-// cache, unless it lacks the block's transaction hashes (HeaderReadFull).
+// fetched, or a held fetch of a block by hash (evm.HeaderHeld); malformed:
+// it failed intake check 0. A success ends its failing polls and renews
+// the hash vote they expired (PollFailed). passed: the header passed
+// intake's checks (header). A header that passed seeds the cache, unless
+// it lacks the block's transaction hashes (HeaderReadFull).
 func (in *networkIntake) Polled(upstreamId string, sh evm.SourceHeader, malformed error, kind evm.HeaderKind, sent time.Time) (passed bool) {
 	in.mu.Lock()
 	failing := in.polls[upstreamId].failing

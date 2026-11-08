@@ -857,18 +857,23 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	// The block clock's phase: the first local sight of each new number,
 	// on any channel. A pushing voter that reports often (within a block)
 	// and newly reaches a number another channel brought first lags by the
-	// gap; a fetch lags as headClock.answered says.
+	// gap; a fetch lags as headClock.answered says. A held block says only
+	// that its voter holds it, not that it lacked the next.
 	now := time.Now()
 	from := msg.at
 	if from.IsZero() {
 		from = now
 	}
 	if msg.vote == voteSource {
-		if !msg.via.pushed() {
+		switch {
+		case msg.via == HeaderHeld:
+		case !msg.via.pushed():
 			t.clock.answered(msg.upstream, h.number, msg.at)
-		} else if prev := t.votes[msg.upstream]; t.alive(prev) && prev.h.number < h.number && now.Sub(t.voteAt[msg.upstream]) <= t.BlockTime() {
-			if seen := t.clock.sightOf(h.number); h.number <= t.clock.top() && !seen.IsZero() {
-				t.clock.bound(msg.upstream, now.Sub(seen), true)
+		default:
+			if prev := t.votes[msg.upstream]; t.alive(prev) && prev.h.number < h.number && now.Sub(t.voteAt[msg.upstream]) <= t.BlockTime() {
+				if seen := t.clock.sightOf(h.number); h.number <= t.clock.top() && !seen.IsZero() {
+					t.clock.bound(msg.upstream, now.Sub(seen), true)
+				}
 			}
 		}
 		if h.number > t.clock.top() {

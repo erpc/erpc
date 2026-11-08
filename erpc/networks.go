@@ -1359,6 +1359,24 @@ func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common
 	return common.HeadAnswer{Outcome: common.AskBackoff}
 }
 
+// EvmFetchHeld fetches block hash from upstreamId for a chain tracker's
+// by-hash wait (spec §6.4, evm.EvmStatePoller.FetchHeld); AskBackoff when
+// the network has no such upstream with a poller.
+func (n *Network) EvmFetchHeld(ctx context.Context, upstreamId, hash string) common.HeadAnswer {
+	if n.upstreamsRegistry != nil {
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			if u.Id() != upstreamId {
+				continue
+			}
+			if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
+				return p.FetchHeld(ctx, hash)
+			}
+			break
+		}
+	}
+	return common.HeadAnswer{Outcome: common.AskBackoff}
+}
+
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) for
 // a numbered eth_getBlockByNumber the refusal rule calls future (spec §6.4,
 // #1238): above the ceiling plus its age in blocks, on a ceiling younger
