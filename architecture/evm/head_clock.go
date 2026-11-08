@@ -286,6 +286,7 @@ func (c *headClock) reset() {
 // below number is decided (answered).
 func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
+		c.confirmed(number, at, from, via, bt)
 		return
 	}
 	if number >= c.target {
@@ -341,6 +342,28 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 				c.bound(id, v.askedAt.Sub(from), false)
 			}
 		}
+	}
+}
+
+// confirmed takes the cache's poll bringing number, the top sight, which a
+// fetch sighted first: a cache that holds each block within its push
+// allowance (pushLate) still feeds the lane, so the fetch's first sight
+// counts as no miss, and the poll's time is a phase point, as its own
+// first sight would be. A cache trailing the vendors by 300 ms otherwise
+// lost the lane to the ladder after 4 such blocks and won it back at its
+// next first sight, so the lane flipped between both (P21-avax-late:
+// 1.30-1.45 head fetches per block, 7-18% of clock fetches early).
+func (c *headClock) confirmed(number uint64, at, from time.Time, via HeaderKind, bt time.Duration) {
+	n := len(c.sights)
+	top := &c.sights[n-1]
+	if via != HeaderCached || number != top.number || top.pushed || top.onTime || c.missed == 0 || bt <= 0 || len(c.fit) == 0 ||
+		at.After(c.predictSlot(top.slot, bt).Add(c.pushLate(bt))) {
+		return
+	}
+	top.onTime = true
+	c.missed--
+	if f := len(c.fit); c.fit[f-1].number < number {
+		c.fit = appendSight(c.fit, clockSight{number: number, slot: top.slot, at: at, from: from, pushed: true, onTime: true})
 	}
 }
 
@@ -874,8 +897,9 @@ func (t *ChainTracker) runClock() {
 // plan lays the target's fires (spec §6.8) and tells each voter's full
 // poll of the turn it planned for it (ClockTurn), so the poll leaves it
 // to the clock. A push-fed lane fires once, at the push allowance after
-// the predicted sight P; a lane whose demand sets a pace fires once,
-// no sooner than the pace after the last fire, and takes no turns.
+// the predicted sight P, a cache-fed one as cachedProbe says; a lane whose
+// demand sets a pace fires once, no sooner than the pace after the last
+// fire, and takes no turns.
 // Else the ladder: each voter whose turn is due by the last rung's sight
 // S_k = P + off·bt takes one turn, a rung when it has hold bounds and its
 // score is within bt/4 of the fastest such voter's, else a vote at the
@@ -910,28 +934,16 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 		c.rungs = []clockRung{{at: at, kind: "probe"}}
 		return
 	}
+	if cached {
+		t.cachedProbe(cands, p, sk, bt)
+		return
+	}
 	if c.pushFed() {
-		// A cache-fed lane's one probe sights the block at S_k, as a
-		// ladder's last rung, and moves the offset: where the cache's poll
-		// sights first it is skipped, and the offset walks it down to
-		// where 3% of the blocks' probes answer early; where the vendors
-		// hold the block first it brings it. Held a block after the cache's
-		// predicted sight, it never fired before the cache's head on
-		// optimism, whose votes answered 0.2-0.8 s after the slot against
-		// 0.2-0.4 s, and 76% of reads in a slot's first quarter got the
-		// block before (48% on main).
-		c.ladder, c.predicted = cached, p
+		c.predicted = p
 		c.rungs = []clockRung{{at: at, kind: "probe"}}
 		return
 	}
-	best := time.Duration(-1)
-	for _, cand := range cands {
-		if v := c.ups[cand.id]; v != nil && len(v.bounds) > 0 {
-			if s := c.score(cand.id); best < 0 || s < best {
-				best = s
-			}
-		}
-	}
+	best := c.bestScore(cands)
 	due, wait := c.dueTurns(cands, sk, bt)
 	for _, cand := range wait {
 		cand.poller.ClockTurn(sk.Add(bt))
@@ -961,6 +973,49 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 		cand.poller.ClockTurn(r.at)
 	}
 	slices.SortStableFunc(c.rungs, func(a, b clockRung) int { return a.at.Compare(b.at) })
+}
+
+// cachedProbe lays a cache-fed lane's fire for the target, predicted at
+// p: the cache's poll brings each block free, so the clock spends only a
+// turn its voters' intervals pay for. A due turn whose voter scores
+// within bt/4 of the fastest measured voter is the block's probe, sent to
+// sight it at S_k, sk, as a ladder's last rung; it moves the offset, so
+// it walks to where 3% of probes answer early, and the vendors' copy
+// comes first where the cache trails them (optimism: 76% of first-quarter
+// reads got the block before, main 48%, while the probe waited a block
+// past the cache's predicted sight). With no such turn, one fire a push
+// allowance after p, which the cache's poll makes needless unless it
+// stalls: a probe to the fastest voter beside the due turns' votes cost
+// 1.30-1.45 head fetches per block where Prism trailed the vendors by
+// 300 ms (§19 P21-avax-late). The due turns vote at the sight (vote).
+func (t *ChainTracker) cachedProbe(cands []clockCandidate, p, sk time.Time, bt time.Duration) {
+	c := &t.clock
+	c.predicted = p
+	best := c.bestScore(cands)
+	due, _ := c.dueTurns(cands, sk, bt)
+	for _, cand := range c.byScore(due) {
+		if v := c.ups[cand.id]; v != nil && len(v.bounds) > 0 && c.score(cand.id) <= best+bt/4 {
+			r := clockRung{id: cand.id, at: sk.Add(-c.rttOf(cand.id)), kind: "probe", turn: true}
+			c.ladder, c.rungs = true, []clockRung{r}
+			cand.poller.ClockTurn(r.at)
+			return
+		}
+	}
+	c.rungs = []clockRung{{at: p.Add(c.pushLate(bt)), kind: "probe"}}
+}
+
+// bestScore is the lowest score among cands with hold bounds, -1 with
+// none.
+func (c *headClock) bestScore(cands []clockCandidate) time.Duration {
+	best := time.Duration(-1)
+	for _, cand := range cands {
+		if v := c.ups[cand.id]; v != nil && len(v.bounds) > 0 {
+			if s := c.score(cand.id); best < 0 || s < best {
+				best = s
+			}
+		}
+	}
+	return best
 }
 
 // vote sends, at the target's first sight, the turns its ladder left
