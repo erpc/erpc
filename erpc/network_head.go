@@ -977,8 +977,9 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 // lacking the block answers the range empty, a miss the refusal rule
 // retries, while one lacking the top of a longer range answers the part
 // it has. An answer that leaves u below toBlock ends the wait, unless a
-// likely hold's held wait is still to come. A first attempt at or below
-// Latest with no Ask out waits at most a block time. A node one block
+// likely hold's held wait is still to come. A first attempt waits at most
+// a block time, from its start at or below Latest, else from its Ask; the
+// retry up to W. A node one block
 // short of a block the lane holds is the usual case at a 0.3 s chain's
 // tip: with no Ask its counter waited for its next poll and the range
 // failed (§19 P12).
@@ -1007,11 +1008,22 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 	bt := n.EvmBlockTime()
 	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(bt))
 	defer cancel()
+	// A first attempt waits at most a block time, from its start at or
+	// below Latest, else from its Ask: an upstream that never answers (a
+	// half-open socket) holds the read no longer (rule 2); the retry, the
+	// request's last attempt, waits up to W, joining the same Ask.
+	st := time.NewTimer(bt)
+	defer st.Stop()
+	limit := func() <-chan time.Time {
+		if retry || bt <= 0 {
+			return nil
+		}
+		st.Reset(bt)
+		return st.C
+	}
 	var short <-chan time.Time
-	if !retry && bt > 0 && toBlock <= head.Latest {
-		st := time.NewTimer(bt)
-		defer st.Stop()
-		short = st.C
+	if toBlock <= head.Latest {
+		short = limit()
 	}
 	due := time.NewTimer(health.FreshnessWindow(bt))
 	defer due.Stop()
@@ -1026,7 +1038,7 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 			if n.holderAhead(req, u, toBlock) {
 				return false
 			}
-			answer, asked, short = n.askRange(eu, toBlock), true, nil
+			answer, asked, short = n.askRange(eu, toBlock), true, limit()
 		}
 		var moved <-chan struct{}
 		held := false
