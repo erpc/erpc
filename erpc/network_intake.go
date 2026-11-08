@@ -755,20 +755,22 @@ func (s *voterSnapshot) of(policy []common.Upstream, all []*upstream.Upstream) b
 
 // isVoter reports whether upstreamId is a network-wide voter: in the set
 // last read, read again when the eligible set changed since, so a voter
-// that joined or left the policy's set counts at once.
+// that joined or left the policy's set counts at once, or when upstreamId
+// is not in it: an upstream of the policy's set votes from its first head,
+// which changes no eligible set (a late joiner's first push counted
+// gated_voter while its own first poll's head pass had not yet run).
 func (in *networkIntake) isVoter(upstreamId string) bool {
 	policy, all := in.nw.eligibleSet(context.Background())
-	s := in.voterIds.Load()
-	if s == nil || !s.of(policy, all) {
-		vs := in.nw.voters(tipScope{}, voterQuery{kind: hashVote}).list()
-		ids := make([]string, 0, len(vs))
-		for _, u := range vs {
-			ids = append(ids, u.Id())
-		}
-		s = &voterSnapshot{ids: ids, policy: policy, all: slices.Clone(all)}
-		in.voterIds.Store(s)
+	if s := in.voterIds.Load(); s != nil && s.of(policy, all) && slices.Contains(s.ids, upstreamId) {
+		return true
 	}
-	return slices.Contains(s.ids, upstreamId)
+	vs := in.nw.voters(tipScope{}, voterQuery{kind: hashVote}).list()
+	ids := make([]string, 0, len(vs))
+	for _, u := range vs {
+		ids = append(ids, u.Id())
+	}
+	in.voterIds.Store(&voterSnapshot{ids: ids, policy: policy, all: slices.Clone(all)})
+	return slices.Contains(ids, upstreamId)
 }
 
 // upstreamVendors is the vendor table of one upstream set (spec §6.10).
