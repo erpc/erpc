@@ -173,7 +173,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(rand.N(spread)):
+		case <-time.After(rand.N(spread)): // #nosec G404 -- reconnect-spread jitter, not security-sensitive
 		}
 	}
 	wsc.stop(websocket.CloseTryAgainLater, "logs subscription out of range", 0)
