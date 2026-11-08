@@ -77,9 +77,15 @@ func RefusalMiss(method string, result []byte) bool {
 	case len(r) == 0 || bytes.Equal(r, []byte("null")):
 		return true
 	case bytes.Equal(r, []byte("[]")):
-		return method == "eth_getLogs" || isTraceFilterMethod(method)
+		return IsRangeQuery(method)
 	}
 	return false
+}
+
+// IsRangeQuery reports whether method queries a block range (eth_getLogs,
+// trace_filter), whose upstreams the range check admits (spec §6.4 Sites).
+func IsRangeQuery(method string) bool {
+	return method == "eth_getLogs" || isTraceFilterMethod(method)
 }
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of

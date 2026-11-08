@@ -1503,6 +1503,19 @@ func refusalMiss(ctx context.Context, method string, resp *common.NormalizedResp
 	return err != nil || jrr == nil || evm.RefusalMiss(method, jrr.GetResultBytes())
 }
 
+// rangeHeld reports whether u holds the whole range of method, a range
+// query, by its evidence (reachedHead, uncredited) reaching toBlock, the
+// refusal verdict's block: its empty answer is then the range's answer,
+// no miss (spec §6.4). Retried as a miss, an empty block's logs waited W
+// for an untried holder (§19 P23: eth_getLogs p99 2.07 s).
+func (n *Network) rangeHeld(method string, u common.Upstream, refusal *common.HeadRefusal) bool {
+	if refusal == nil || refusal.Block <= 0 || !evm.IsRangeQuery(method) {
+		return false
+	}
+	head := n.reachedHead(u, 0)
+	return head > 0 && common.EvmHeadReaches(u, head, refusal.Block)
+}
+
 func (n *Network) countHeadRefusal(rule string) {
 	telemetry.CounterHandle(telemetry.MetricHeadRefusalTotal, n.projectId, n.Label(), rule).Inc()
 }
@@ -2995,8 +3008,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// consensus slot or a hedge pinned to one upstream too; the
 				// retry asks the upstreams whose head reaches the block first.
 				// The answer after it goes to the client as the upstream gave it.
+				// An empty range from an upstream whose evidence reaches its
+				// toBlock is the range's answer (rangeHeld).
 				refusal := effectiveReq.HeadRefusal()
-				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r)
+				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r) && !n.rangeHeld(method, u, refusal)
 				missing := emptyAnswer || missingDataErr(err)
 				// A held block's answers, served or missing, measure how
 				// long after its first sight u holds it (spec §6.4 held).
