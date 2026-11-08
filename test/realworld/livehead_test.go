@@ -90,8 +90,9 @@ func (s *scenario) fetchMark() fetchMark {
 			r += float64(s.prism.reads(p.idx, false, anyRead))
 		}
 		// A client read of latest the new image sent as the tag is
-		// client demand, as the old image's, not a head fetch.
-		m.fetches = append(m.fetches, f-clientTagReads(m.mix[p.idx]))
+		// client demand, as the old image's, not a head fetch; a block
+		// the clock fetched by hash for a by-hash wait is one.
+		m.fetches = append(m.fetches, f-clientTagReads(m.mix[p.idx])+heldFetches(m.mix[p.idx]))
 		m.requests = append(m.requests, r)
 		m.numbered = append(m.numbered, num)
 	}

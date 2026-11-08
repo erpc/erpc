@@ -33,11 +33,13 @@ const (
 	// the block this far below it, which the view holds: the answering
 	// vendor's round trip through the pod with no wait.
 	p23Back = 20
-	// p23Base, p23Run: the clock-only run, then the read-ahead run.
+	// p23Base, p23Hash, p23Run: the clock-only run, the by-hash run, then
+	// the read-ahead run.
 	p23Base = time.Minute
+	p23Hash = time.Minute
 	p23Run  = 2 * time.Minute
 	// p23CostSlack: the read-ahead run's head fetches per new block at
-	// most the old image's clock-only run times this.
+	// most the clock-only run's times this.
 	p23CostSlack = 1.05
 	// p23Noise is harness, not spec: the spread of a loopback round trip
 	// and a -race pod's scheduling between a p99 and a p50.
@@ -59,20 +61,23 @@ var p23Ups = []freshUp{
 }
 
 // P23: clients that read ahead of the Head, on a 0.1 s chain behind
-// p23Ups, no cache; one old-image and one new-image pod, own state each.
-// First p23Base with eth_blockNumber readers only: the old image's head
-// fetches per new block there are the bar. Then p23Run with, beside them,
-// per pod p23AheadRate by-number reads of the pod's eth_blockNumber + 1
-// (eth_getBlockByNumber and eth_getLogs of that block), and, as each block
-// is minted (every vendor serves it then, a fast source outside eRPC),
-// its eth_getBlockByHash and its first transaction's receipt. On the new
-// image: head fetches per new block at most p23CostSlack times the bar;
-// each by-hash read's latency above the pod's p50 for the same read of a
-// block p23Back below (the answering vendor's round trip) at most one such
-// round trip at p99; every read answers the chain's block, none null; no
-// by-hash answer ahead of the pod's newHeads stream (liveViewBound).
+// p23Ups, no cache, one pod. First p23Base with eth_blockNumber readers
+// only: its head fetches per new block are the bar. Then p23Hash with,
+// beside them, as each block is minted (every vendor serves it then, a
+// fast source outside eRPC), its eth_getBlockByHash and its first
+// transaction's receipt: the block clock alone moves the view. Then
+// p23Run with those and p23AheadRate by-number reads a second of the
+// pod's eth_blockNumber + 1 (eth_getBlockByNumber and eth_getLogs of that
+// block). Head fetches per new block of the read-ahead run at most
+// p23CostSlack times the bar; in both runs each by-hash read's latency
+// above the pod's p50 for the same read of a block p23Back below (the
+// answering vendor's round trip) at most one such round trip at p99;
+// every read answers the chain's block, none null; no by-hash answer
+// ahead of the pod's newHeads stream (liveViewBound).
 func p23() spec {
-	return freshSpec("P23", 1, p23Ups, chainsim.Config{BlockTime: p23BlockTime, MintJitter: p23MintJitter}, chainsim.Faults{}, p23Body)
+	sp := freshSpec("P23", 1, p23Ups, chainsim.Config{BlockTime: p23BlockTime, MintJitter: p23MintJitter}, chainsim.Faults{}, p23Body)
+	sp.pods, sp.oldPods = 1, nil
+	return sp
 }
 
 // p23Reads is one pod's read-ahead tally per kind: latencies, failures
@@ -110,11 +115,9 @@ func p23Body(s *scenario) {
 	s.blocks(20)
 	vl := &viewLog{}
 	heads := []liveRead{{viewHead, freshLoad{time.Duration(float64(time.Second) / p23HeadRate), "latest", vl.reader(viewHead)}, [2]time.Duration{}, false, false}}
-	var taps []*viewTap
+	taps := make([]*viewTap, len(s.h.pods))
 	for _, p := range s.h.pods {
-		if !p.old {
-			taps = append(taps, s.startViewTap(p.idx))
-		}
+		taps[p.idx] = s.startViewTap(p.idx)
 	}
 	s.blocks(10)
 
@@ -124,10 +127,24 @@ func p23Body(s *scenario) {
 	ask1 := s.p23Asks()
 	s.judgeFetches(&b, "clock only", base, 0)
 
-	reads := make([]*p23Reads, len(s.h.pods))
-	for i := range reads {
-		reads[i] = newP23Reads()
+	newReads := func() []*p23Reads {
+		out := make([]*p23Reads, len(s.h.pods))
+		for i := range out {
+			out[i] = newP23Reads()
+		}
+		return out
 	}
+	hashReads, reads := newReads(), newReads()
+	_, byHash, _, _, _ := s.liveRun(p23Hash, heads, func(ctx context.Context, _ *faultWindows) {
+		var wg sync.WaitGroup
+		for _, p := range s.h.pods {
+			wg.Go(func() { s.p23ByHash(ctx, p.idx, hashReads[p.idx], vl) })
+		}
+		wg.Wait()
+	})
+	ask2 := s.p23Asks()
+	s.judgeFetches(&b, "by-hash reads", byHash, 0)
+
 	missing0 := make([]float64, len(s.h.pods))
 	for pod := range s.h.pods {
 		missing0[pod], _ = s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "retried_missing"})
@@ -135,33 +152,25 @@ func p23Body(s *scenario) {
 	_, ahead, _, _, _ := s.liveRun(p23Run, heads, func(ctx context.Context, _ *faultWindows) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
-			wg.Add(2)
-			go func() { defer wg.Done(); s.p23ByNumber(ctx, p.idx, reads[p.idx]) }()
-			go func() { defer wg.Done(); s.p23ByHash(ctx, p.idx, reads[p.idx], vl) }()
+			wg.Go(func() { s.p23ByNumber(ctx, p.idx, reads[p.idx]) })
+			wg.Go(func() { s.p23ByHash(ctx, p.idx, reads[p.idx], vl) })
 		}
 		wg.Wait()
 	})
-	ask2 := s.p23Asks()
+	ask3 := s.p23Asks()
 	s.judgeFetches(&b, "read-ahead", ahead, 0)
 	s.blocks(10)
 
 	for _, p := range s.h.pods {
-		old := 0
-		for _, q := range s.h.pods {
-			if q.old {
-				old = q.idx
-			}
+		fmt.Fprintf(&b, "pod-%d refusal Asks clock only: %s; by-hash reads: %s; read-ahead: %s\n", p.idx+1,
+			p23AskLine(ask0[p.idx], ask1[p.idx], base.blocks), p23AskLine(ask1[p.idx], ask2[p.idx], byHash.blocks), p23AskLine(ask2[p.idx], ask3[p.idx], ahead.blocks))
+		if bar := base.perBlock(p.idx) * p23CostSlack; ahead.perBlock(p.idx) > bar {
+			s.violate(s.name, "pod-%d: %.3f head fetches per new block with read-ahead clients, above %.3f, %.2f times its %.3f with readers of latest only",
+				p.idx+1, ahead.perBlock(p.idx), bar, p23CostSlack, base.perBlock(p.idx))
 		}
-		bar := base.perBlock(old) * p23CostSlack
-		fmt.Fprintf(&b, "pod-%d (%s image) refusal Asks clock only: %s; read-ahead: %s\n", p.idx+1, s.image(p.idx), p23AskLine(ask0[p.idx], ask1[p.idx], base.blocks), p23AskLine(ask1[p.idx], ask2[p.idx], ahead.blocks))
-		if !p.old && ahead.perBlock(p.idx) > bar {
-			s.violate(s.name, "pod-%d: %.3f head fetches per new block with read-ahead clients, above %.3f, %.2f times the old image's %.3f with readers of latest only",
-				p.idx+1, ahead.perBlock(p.idx), bar, p23CostSlack, base.perBlock(old))
-		}
-		s.p23Judge(&b, p.idx, reads[p.idx])
-	}
-	for _, vt := range taps {
-		s.judgeView(&b, vt, vl, viewRules{bound: liveViewBound, numbers: true})
+		s.p23Judge(&b, p.idx, "by-hash reads", hashReads[p.idx])
+		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx])
+		s.judgeView(&b, taps[p.idx], vl, viewRules{bound: liveViewBound, numbers: true})
 	}
 	s.judgeErrors(vl)
 	for pod := range s.h.pods {
@@ -313,13 +322,12 @@ func (s *scenario) p23HashReads(pod int, r *p23Reads, vl *viewLog, b *chainsim.B
 	}
 }
 
-// p23Judge reports pod's reads and, on a new-image pod, flags failed reads
-// and by-hash reads whose added latency at p99, above the pod's p50 of the
-// same read of a held block, is more than that p50 plus p23Noise.
-func (s *scenario) p23Judge(b *strings.Builder, pod int, r *p23Reads) {
+// p23Judge reports pod's reads of phase and flags failed reads and by-hash
+// reads whose added latency at p99, above the pod's p50 of the same read
+// of a held block, is more than that p50 plus p23Noise.
+func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Reads) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	old := s.h.pods[pod].old
 	kinds := slices.Sorted(maps.Keys(r.took))
 	for k := range r.fails {
 		if !slices.Contains(kinds, k) {
@@ -329,10 +337,10 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, r *p23Reads) {
 	for _, k := range kinds {
 		ds := r.took[k]
 		slices.Sort(ds)
-		fmt.Fprintf(b, "pod-%d (%s image) %s: %d answered, %d failed; latency p50 %s p99 %s max %s\n",
-			pod+1, s.image(pod), k, len(ds), r.fails[k], pctl(ds, 50), pctl(ds, 99), pctl(ds, 100))
-		if r.fails[k] > 0 && !old {
-			s.violate(s.name, "pod-%d: %d %s reads failed: %s", pod+1, r.fails[k], k, strings.Join(r.ex[k], "; "))
+		fmt.Fprintf(b, "pod-%d %s, %s: %d answered, %d failed; latency p50 %s p99 %s max %s\n",
+			pod+1, phase, k, len(ds), r.fails[k], pctl(ds, 50), pctl(ds, 99), pctl(ds, 100))
+		if r.fails[k] > 0 {
+			s.violate(s.name, "pod-%d %s: %d %s reads failed: %s", pod+1, phase, r.fails[k], k, strings.Join(r.ex[k], "; "))
 		}
 	}
 	for _, m := range []string{"eth_getBlockByHash", "eth_getTransactionReceipt"} {
@@ -340,9 +348,7 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, r *p23Reads) {
 		slices.Sort(ctl)
 		rtt := pctl(ctl, 50)
 		if len(ds) == 0 || len(ctl) == 0 {
-			if !old {
-				s.violate(s.name, "pod-%d: no %s reads answered (%d) or no control (%d)", pod+1, m, len(ds), len(ctl))
-			}
+			s.violate(s.name, "pod-%d %s: no %s reads answered (%d) or no control (%d)", pod+1, phase, m, len(ds), len(ctl))
 			continue
 		}
 		added := make([]time.Duration, len(ds))
@@ -350,10 +356,10 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, r *p23Reads) {
 			added[i] = max(d-rtt, 0)
 		}
 		slices.Sort(added)
-		fmt.Fprintf(b, "pod-%d (%s image) %s of a new block: added latency over its round trip %s: p50 %s p99 %s max %s\n",
-			pod+1, s.image(pod), m, rtt, pctl(added, 50), pctl(added, 99), pctl(added, 100))
-		if !old && pctl(added, 99) > rtt+p23Noise {
-			s.violate(s.name, "pod-%d: %s of a new block added %s at p99 over its round trip %s, more than one round trip (+%s)", pod+1, m, pctl(added, 99), rtt, p23Noise)
+		fmt.Fprintf(b, "pod-%d %s, %s of a new block: added latency over its round trip %s: p50 %s p99 %s max %s\n",
+			pod+1, phase, m, rtt, pctl(added, 50), pctl(added, 99), pctl(added, 100))
+		if pctl(added, 99) > rtt+p23Noise {
+			s.violate(s.name, "pod-%d %s: %s of a new block added %s at p99 over its round trip %s, more than one round trip (+%s)", pod+1, phase, m, pctl(added, 99), rtt, p23Noise)
 		}
 	}
 }
