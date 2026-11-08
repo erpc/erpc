@@ -228,7 +228,6 @@ func covPollerUnsupportedErrors() map[string]error {
 		"EndpointUnsupported": common.NewErrEndpointUnsupported(cause),
 		"UpstreamSkipped":     common.NewErrUpstreamRequestSkipped(cause, "u"),
 		"MethodIgnored":       common.NewErrUpstreamMethodIgnored("eth_getBlockByNumber", "u"),
-		"EndpointMissingData": common.NewErrEndpointMissingData(cause, nil),
 		"ClientSideException": common.NewErrEndpointClientSideException(cause),
 		"EmptyResult(no err)": nil,
 	}
@@ -286,6 +285,32 @@ func TestCovPoller_PollLatest_GivesUpAfterTenUnsupportedAnswers(t *testing.T) {
 			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"))
 		})
 	}
+
+	// An upstream that starts without blocks answers missing data until it
+	// holds one: no refusal, so its head is used once it has one.
+	t.Run("EndpointMissingData", func(t *testing.T) {
+		noBlock := common.NewErrEndpointMissingData(errors.New("requested data is not available yet"), nil)
+		p, up, ctx := covPollerNew(t, "cov-latest-noblock", func(string, []interface{}) (*common.NormalizedResponse, error) {
+			return nil, noBlock
+		})
+		covPollerFastDebounce(p)
+
+		require.Eventually(t, func() bool {
+			_, _ = p.PollLatestBlockNumber(ctx)
+			return up.callCount("eth_getBlockByNumber") >= 2*giveUpRefusals
+		}, 5*time.Second, 2*time.Millisecond, "an upstream without blocks is polled past the give-up count")
+		d := p.GetDiagnostics()
+		assert.False(t, d.SkipLatestBlockCheck)
+		assert.Zero(t, d.LatestBlockFailureCount)
+		assert.False(t, p.LatestUnsupported())
+
+		up.setHandler(covPollerBlocks(100, 90))
+		require.Eventually(t, func() bool {
+			_, _ = p.PollLatestBlockNumber(ctx)
+			return p.LatestBlock() == 100
+		}, 5*time.Second, 2*time.Millisecond, "its head is used once it holds a block")
+		assert.True(t, p.GetDiagnostics().LatestBlockSuccessfulOnce)
+	})
 }
 
 func TestCovPoller_PollLatest_UnsupportedAfterSuccessNeverGivesUp(t *testing.T) {
@@ -519,8 +544,11 @@ func covPollerFetch(p *EvmStatePoller, ctx context.Context) (int64, error) {
 // ---------------------------------------------------------------------------
 
 func TestCovPoller_PollFinalized_GivesUpAfterTenUnsupportedAnswers(t *testing.T) {
-	for _, name := range []string{"EmptyResult(no err)", "ClientSideException", "EndpointUnsupported"} {
-		uerr := covPollerUnsupportedErrors()[name]
+	refusals := covPollerUnsupportedErrors()
+	// A node without the finalized tag can answer it as missing data.
+	refusals["EndpointMissingData"] = common.NewErrEndpointMissingData(errors.New("finalized block not found"), nil)
+	for _, name := range []string{"EmptyResult(no err)", "ClientSideException", "EndpointUnsupported", "EndpointMissingData"} {
+		uerr := refusals[name]
 		t.Run(name, func(t *testing.T) {
 			p, up, ctx := covPollerNew(t, "cov-fin-unsup", func(method string, params []interface{}) (*common.NormalizedResponse, error) {
 				if uerr == nil {
@@ -529,6 +557,8 @@ func TestCovPoller_PollFinalized_GivesUpAfterTenUnsupportedAnswers(t *testing.T)
 				return nil, uerr
 			})
 			covPollerFastDebounce(p)
+			// The upstream holds blocks: its finalized refusals count.
+			p.latestBlockShared.TryUpdate(ctx, 1000, time.Now())
 
 			v, err := p.PollFinalizedBlockNumber(ctx)
 			require.NoError(t, err)
@@ -565,6 +595,29 @@ func TestCovPoller_PollFinalized_GivesUpAfterTenUnsupportedAnswers(t *testing.T)
 			assert.Equal(t, calls+1, up.callCount("eth_getBlockByNumber"), "a refused retry gives up again")
 		})
 	}
+
+	// Before any block, missing data says nothing about the tag: no refusal.
+	t.Run("EndpointMissingData before any block", func(t *testing.T) {
+		noBlock := common.NewErrEndpointMissingData(errors.New("requested data is not available yet"), nil)
+		p, up, ctx := covPollerNew(t, "cov-fin-noblock", func(string, []interface{}) (*common.NormalizedResponse, error) {
+			return nil, noBlock
+		})
+		covPollerFastDebounce(p)
+
+		require.Eventually(t, func() bool {
+			_, _ = p.PollFinalizedBlockNumber(ctx)
+			return up.callCount("eth_getBlockByNumber") >= 2*giveUpRefusals
+		}, 5*time.Second, 2*time.Millisecond, "an upstream without blocks is polled past the give-up count")
+		assert.False(t, p.GetDiagnostics().SkipFinalizedCheck)
+		_, derived := p.DerivedFinalized()
+		assert.False(t, derived, "no finality is derived for an upstream without blocks")
+
+		up.setHandler(covPollerBlocks(100, 90))
+		require.Eventually(t, func() bool {
+			_, _ = p.PollFinalizedBlockNumber(ctx)
+			return p.FinalizedBlock() == 90
+		}, 5*time.Second, 2*time.Millisecond, "its finalized tag is used once it holds a block")
+	})
 }
 
 // covPollerExpireGiveUp backdates g's give-up by PollerGiveUpExpiry.
