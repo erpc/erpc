@@ -61,14 +61,17 @@ func (c *ethCallTags) get() []interface{} {
 }
 
 // TestNetwork_PinLatestTag walks a network over a pinned upstream
-// (evm.pinLatestTag, upper.latestBlockMinus: 0) tried first and a vendor
-// tried second. An interpolated eth_call carries the request's one number to
+// (evm.pinLatestTag, upper.latestBlockMinus: 0) tried first and a slower
+// vendor tried second: a read of the Head's block goes to its holders by
+// measured round trip (preferUpstreams), so the vendor's polls answer
+// vendorRTT late. An interpolated eth_call carries the request's one number to
 // both; a tag sent as is (translateLatestTag: false, skip-interpolation)
 // reaches the pinned upstream as the tag too: pinLatestTag never pins it
 // (spec §7).
 func TestNetwork_PinLatestTag(t *testing.T) {
 	const head = int64(0x2000)
 	headHex := fmt.Sprintf("0x%x", head)
+	const vendorRTT = 5 * time.Millisecond
 
 	type send int
 	const (
@@ -86,6 +89,19 @@ func TestNetwork_PinLatestTag(t *testing.T) {
 		pinned, vendor := &ethCallTags{host: "pinned.localhost"}, &ethCallTags{host: "vendor.localhost"}
 		heads := map[string]int64{"pinned": pinnedHead, "vendor": head}
 		for id, h := range heads {
+			if id == "vendor" {
+				// Matched before the poller mocks below, these time the
+				// vendor's head reads.
+				for _, tag := range []struct{ name, number string }{{"latest", fmt.Sprintf("0x%x", h)}, {"finalized", fmt.Sprintf("0x%x", h-16)}} {
+					gock.New("http://vendor.localhost").Post("").Persist().
+						Filter(func(r *http.Request) bool {
+							body := util.SafeReadBody(r)
+							return strings.Contains(body, "eth_getBlockByNumber") && (strings.Contains(body, `"`+tag.name+`"`) || strings.Contains(body, `"`+tag.number+`"`))
+						}).
+						Reply(200).Delay(vendorRTT).
+						JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s"}}`, tag.number)))
+				}
+			}
 			util.SetupMocksForUpstream("http://"+id+".localhost", map[string]interface{}{
 				"latestBlock":    fmt.Sprintf("0x%x", h),
 				"finalizedBlock": fmt.Sprintf("0x%x", h-16),
