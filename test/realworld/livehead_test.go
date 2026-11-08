@@ -326,13 +326,35 @@ func (s *scenario) judgeAgeLatency(b *strings.Builder, reads []liveRead, imgs []
 				}
 			}
 		}
-		if rd.tail && pctl(n.took, 99) > pctl(o.took, 99)+p19P90Slack {
-			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p99 %s, above the old image's %s + %s", rd.name, pctl(n.took, 99), pctl(o.took, 99), p19P90Slack)))
+		if bound := pctl(o.took, 99) + p19P90Slack; rd.tail && pctl(n.took, 99) > bound {
+			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s latency p99 %s, above the old image's %s + %s; slower than that by 30 s of the run: %s",
+				rd.name, pctl(n.took, 99), pctl(o.took, 99), p19P90Slack, slowByWindow(n.ims, bound, from))))
 		}
 		if rd.tail && n.errs > 0 {
 			s.violate(s.name, "new image %s: %d reads failed (old image %d): %s", rd.name, n.errs, o.errs, strings.Join(n.failed, "; "))
 		}
 	}
+}
+
+// slowByWindow counts ims' answers slower than bound by the 30 s window of
+// the run, from from, their request was sent in: "0-30s 4; 120-150s 1".
+func slowByWindow(ims []*freshImage, bound time.Duration, from time.Time) string {
+	const win = 30 * time.Second
+	counts := map[int]int{}
+	for _, im := range ims {
+		im.mu.Lock()
+		for i, a := range im.answers {
+			if im.took[i] > bound {
+				counts[int(a.at.Add(-im.took[i]).Sub(from)/win)]++
+			}
+		}
+		im.mu.Unlock()
+	}
+	var parts []string
+	for _, w := range slices.Sorted(maps.Keys(counts)) {
+		parts = append(parts, fmt.Sprintf("%d-%ds %d", w*30, w*30+30, counts[w]))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // faultWindows are the spans a scenario's fault ran, and the head fetches
