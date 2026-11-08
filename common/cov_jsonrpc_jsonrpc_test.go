@@ -45,6 +45,10 @@ func TestCovJsonrpc_NewFromBytes_IdForms(t *testing.T) {
 		errSub string
 	}{
 		{"number", `42`, int64(42), ""},
+		{"int above 2^53 exact", `9007199254740993`, int64(9007199254740993), ""},
+		{"exact float is int", `1e3`, int64(1000), ""},
+		{"fractional stays float", `1.5`, float64(1.5), ""},
+		{"beyond int64 stays float", `1e19`, float64(1e19), ""},
 		{"string", `"abc"`, "abc", ""},
 		{"null", `null`, nil, ""},
 		{"object", `{"x":1}`, nil, "unsupported ID type"},

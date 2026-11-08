@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -210,7 +211,27 @@ func (r *JsonRpcResponse) parseIDLocked() error {
 	}
 	switch v := rawID.(type) {
 	case float64:
-		r.id = int64(v)
+		// Sonic hands every JSON number back as float64, which cannot hold an
+		// integer above 2^53 exactly, and a plain int64(v) cast silently
+		// truncates fractions and clamps out-of-range values to MinInt64 or
+		// MaxInt64. Recover the exact integer from the verbatim bytes so a
+		// response id matches the int64 request id eRPC sent (batch matching
+		// keys on it); a float that round-trips to an int64 unchanged (1.0,
+		// 1e3) is that integer too. Anything else (1.5, 1e19) stays the
+		// float64 it decoded to: distinct ids stay distinct, and the wire
+		// output echoes idBytes rather than this typed view.
+		if id, err := strconv.ParseInt(util.B2Str(bytes.TrimSpace(r.idBytes)), 10, 64); err == nil {
+			r.id = id
+			return nil
+		}
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("id must be a finite number")
+		}
+		if id := int64(v); float64(id) == v && v >= math.MinInt64 && v < math.MaxInt64 {
+			r.id = id
+			return nil
+		}
+		r.id = v
 		return nil
 	case string:
 		r.id = v
@@ -1472,7 +1493,7 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			// request body and internal identity, so it must not be corrupted.
 			idInt, err := strconv.ParseInt(util.B2Str(bytes.TrimSpace(aux.ID)), 10, 64)
 			if err != nil {
-				return fmt.Errorf("json-rpc request id %s cannot be represented as a 64-bit integer", aux.ID)
+				return NewErrJsonRpcRequestInvalidId(aux.ID)
 			}
 			r.ID = idInt
 		case string:
@@ -1966,6 +1987,21 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorMissingData,
 			"block not available: "+reason,
+			err,
+			nil,
+		)
+	}
+	if HasErrorCode(err, ErrCodeJsonRpcRequestInvalidId) {
+		// The message names the offending id, so clients can see which member
+		// was rejected on a body that is otherwise well-formed.
+		msg := "invalid json-rpc request id"
+		if se, ok := err.(StandardError); ok {
+			msg = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorClientSideException,
+			msg,
 			err,
 			nil,
 		)

@@ -240,6 +240,30 @@ func TestHttpPaths_MainServerRouting(t *testing.T) {
 		assert.Contains(t, body, `"id":3`)
 	})
 
+	// A numeric id eRPC cannot hold exactly as int64 is an Invalid Request
+	// (-32600, HTTP 400), not a parse error: the body is well-formed JSON. On
+	// main these ids were silently cast (1.5 -> 1, 1e19 -> MinInt64) and the
+	// request forwarded under a different id (#869).
+	t.Run("UnrepresentableNumericIdIsInvalidRequest", func(t *testing.T) {
+		for _, id := range []string{"1.5", "1e19", "-9.3e18", "9223372036854775808"} {
+			body := `{"jsonrpc":"2.0","id":` + id + `,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`
+			status, _, resp := post("/test_project/evm/123", body, nil)
+			assert.Equal(t, http.StatusBadRequest, status, id)
+			code, msg := httpPathsErrCode(t, resp)
+			assert.Equal(t, int(common.JsonRpcErrorClientSideException), code, id)
+			assert.Contains(t, msg, "cannot be represented as a 64-bit integer", id)
+			assert.NotContains(t, resp, `"result"`, id)
+		}
+		// Exact int64 ids, including those above 2^53, still pass through.
+		for _, id := range []string{"9007199254740993", "9223372036854775807", "-9223372036854775808"} {
+			body := `{"jsonrpc":"2.0","id":` + id + `,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`
+			status, _, resp := post("/test_project/evm/123", body, nil)
+			assert.Equal(t, http.StatusOK, status, id)
+			assert.Contains(t, resp, `"id":`+id+`,`, id)
+			assert.Contains(t, resp, `"result":"0x2a"`, id)
+		}
+	})
+
 	t.Run("ForwardHeadersReachUpstream", func(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
