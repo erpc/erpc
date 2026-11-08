@@ -168,6 +168,21 @@ func TestRateLimiterRedis_OverLimitKeyDeniesWithoutRedis(t *testing.T) {
 	require.Equal(t, int64(0), admitted(t, budget, 5, false), "cached over-limit key denies without Redis")
 }
 
+// Mixed cached/uncached descriptors: exhaust the tight rule so its key is in
+// freecache, then kill Redis so the loose rule's lookup fails. The cached
+// OVER_LIMIT must still deny under default onFailure allow — envoy panics the
+// whole DoLimit when the uncached sibling hits a dead store.
+func TestRateLimiterRedis_CachedOverLimitSurvivesSiblingStoreFailure(t *testing.T) {
+	m := miniredis.RunT(t)
+	budget := newRedisBudget(t, m.Addr(), nil,
+		&common.RateLimitRuleConfig{Method: "*", MaxCount: 100, Period: common.RateLimitPeriodHour},
+		&common.RateLimitRuleConfig{Method: "eth_call", MaxCount: 2, Period: common.RateLimitPeriodHour},
+	)
+	require.Equal(t, int64(2), admitted(t, budget, 3, false), "exhaust 2/hour eth_call rule")
+	m.Close()
+	require.Equal(t, int64(0), admitted(t, budget, 5, false), "cached denial survives sibling store failure")
+}
+
 // onFailure: local never scales a credit rule below one call's cost: 600
 // credits × 0.1 is 60, under a 200-credit call, so the local limit is 200.
 func TestRateLimiterRedis_LocalCreditLimitFitsOneCall(t *testing.T) {
