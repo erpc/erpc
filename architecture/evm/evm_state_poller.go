@@ -975,10 +975,11 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 // to it, as a hash vote of this upstream (spec §6.3), and the counter
 // moves only there, after the header passed its checks. answered: the
 // node answered with a block; header: that block past intake check 0. No
-// header and no error: latest was refused as unsupported, or the answer
-// did not pass; after 10 refusals before any success the Ask gives up
-// for PollerGiveUpExpiry (latestGiveUp), and the reconciler polls other
-// sources (LatestUnsupported).
+// header and no error: latest was refused as unsupported, the node holds no
+// block yet (missing data, never counted: it is polled until it holds one),
+// or the answer did not pass; after 10 refusals before any success the Ask
+// gives up for PollerGiveUpExpiry (latestGiveUp), and the reconciler polls
+// other sources (LatestUnsupported).
 func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header common.EvmHeader, answered bool, err error) {
 	if e.logger.GetLevel() <= zerolog.TraceLevel {
 		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
@@ -990,6 +991,10 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 	bound := e.pollSrc.Load()
 	b, err := e.fetchBlock(ctx, "latest", common.UpstreamPoliciesHeadAsk)
 	if err != nil || b.number == 0 {
+		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			e.logger.Debug().Err(err).Msg("upstream holds no latest block yet in evm state poller")
+			return nil, false, nil
+		}
 		if refusedPoll(err) {
 			e.refused(&e.latestGiveUp, "latest", err)
 			return nil, false, nil
@@ -1748,7 +1753,14 @@ func (e *EvmStatePoller) fetchFinalized(ctx context.Context) (int64, error) {
 	// Actually fetch from upstream
 	b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
 	if err != nil || b.number == 0 {
-		if refusedPoll(err) {
+		// A node with no finalized tag can answer it as missing data, but
+		// so does a node that holds no block yet: only the first counts.
+		missing := common.HasErrorCode(err, common.ErrCodeEndpointMissingData)
+		if missing && e.latestBlockShared.GetValue() <= 0 {
+			e.logger.Debug().Err(err).Msg("upstream holds no finalized block yet in evm state poller")
+			return 0, nil
+		}
+		if missing || refusedPoll(err) {
 			e.refused(&e.finalizedGiveUp, "finalized", err)
 			return 0, nil
 		} else {
@@ -1886,15 +1898,15 @@ func (e *EvmStatePoller) FinalizedTagless() bool {
 }
 
 // refusedPoll reports whether a poll's outcome is the method refused, not
-// failed: an empty answer (no error), unsupported, skipped, ignored,
-// missing data or a client error. It counts towards the give-up.
+// failed: an empty answer (no error), unsupported, skipped, ignored or a
+// client error. It counts towards the give-up. Missing data is no refusal:
+// a node that starts with no block answers it until it holds one.
 func refusedPoll(err error) bool {
 	return err == nil ||
 		common.HasErrorCode(err,
 			common.ErrCodeUpstreamRequestSkipped,
 			common.ErrCodeUpstreamMethodIgnored,
 			common.ErrCodeEndpointUnsupported,
-			common.ErrCodeEndpointMissingData,
 		) ||
 		common.IsClientError(err)
 }
