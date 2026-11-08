@@ -506,6 +506,11 @@ func (n *Network) computeHead(l *servedTipLane, s tipScope) common.EvmHead {
 	h := common.EvmHead{Finalized: n.laneFinalized(l, s, latest)}
 	h.Leader = n.laneLeader(s, latest)
 	n.laneCeiling(s.sel, &h)
+	// The view's Head exists, whatever the counted reports say now: the
+	// ceiling is never below it.
+	if h.Ceiling > 0 && latest > h.Ceiling {
+		h.Ceiling = latest
+	}
 	if l != nil && latest > 0 {
 		l.latest.observe(latest)
 	}

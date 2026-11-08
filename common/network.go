@@ -59,8 +59,8 @@ type EvmHead struct {
 	Finalized int64
 	// Leader is the highest voter within Latest + maxRetryableBlockDistance.
 	Leader Upstream
-	// Ceiling is the raw max report of the lane's counted upstreams, 0
-	// while any of them has none.
+	// Ceiling is the raw max report of the lane's counted upstreams, at
+	// least Latest, which exists; 0 while any of them has none.
 	Ceiling int64
 	// OldestReportAt is when the oldest counted report's evidence was
 	// taken: a poll's send time, a push's receive time; zero while one has
