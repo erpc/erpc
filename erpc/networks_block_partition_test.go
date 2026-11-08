@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -178,7 +179,9 @@ func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *
 				res.ContentLength = -1
 				return res
 			})
-		// Answers eth_getBlockByNumber for any concrete block with that block.
+		// Answers eth_getBlockByNumber for any concrete block with that
+		// block of the chain report pins (polledHead): another branch's
+		// block at the Head is a miss that waits 1 bt for the view.
 		gock.New("http://" + host).
 			Post("").
 			Persist().
@@ -189,7 +192,11 @@ func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *
 			Reply(200).
 			Map(func(res *http.Response) *http.Response {
 				hex := pollAgeBlockParam.FindStringSubmatch(util.SafeReadBody(res.Request))[1]
-				res.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hex + `","hash":"0x` + strings.Repeat("a", 64) + `","parentHash":"0x` + strings.Repeat("b", 64) + `","timestamp":"0x6702a8f1"}}`))
+				n, err := strconv.ParseUint(hex[2:], 16, 64)
+				if err != nil {
+					panic(err)
+				}
+				res.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hex + `","hash":"` + tipHash("a", n) + `","parentHash":"` + tipHash("a", n-1) + `","timestamp":"0x6702a8f1"}}`))
 				res.ContentLength = -1
 				return res
 			})
@@ -327,10 +334,13 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 		}, "never", "slow", "reader")
 		e.step(3)
 		require.Zero(t, e.polled("never"))
-		before := e.first(e.head)
+		// The same block both times: its answer is holder evidence for
+		// that block (heldAtLeast), so only the credit could move it.
+		bn := e.head
+		before := e.first(bn)
 		e.step(1)
 		assert.Zero(t, e.headOf("never"), "served traffic, still no head: no credit")
-		assert.Equal(t, before, e.first(e.head), "order unchanged by the credit")
+		assert.Equal(t, before, e.first(bn), "order unchanged by the credit")
 	})
 
 	t.Run("slow-to-answer upstream with the fresher poll", func(t *testing.T) {
