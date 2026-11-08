@@ -28,6 +28,9 @@ const (
 	UpstreamOutcomeCancelled        UpstreamAttemptOutcome = "cancelled"
 	UpstreamOutcomeTimeout          UpstreamAttemptOutcome = "timeout"
 	UpstreamOutcomeSkipped          UpstreamAttemptOutcome = "skipped"
+	// The upstream answered that it does not serve this method or feature
+	// (ErrEndpointUnsupported). It is not a server fault: the breaker ignores it.
+	UpstreamOutcomeUnsupported UpstreamAttemptOutcome = "unsupported"
 )
 
 // UpstreamSelectionReason describes WHY a particular upstream was
