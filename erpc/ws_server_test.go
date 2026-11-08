@@ -2925,6 +2925,31 @@ type mockWsVendor struct {
 	pendingMu         sync.Mutex
 	pendingSubs       map[string]*websocket.Conn // live newPendingTransactions subscriptions
 	conns             map[*websocket.Conn]struct{}
+	// headsAsks are the newHeads subscribes, in arrival order.
+	headsAsks []mockHeadsAsk
+}
+
+// mockHeadsAsk is one newHeads subscribe a vendor received: its socket
+// and when.
+type mockHeadsAsk struct {
+	conn *websocket.Conn
+	at   time.Time
+}
+
+// headsAskGaps are the times between consecutive newHeads subscribes on
+// the same socket.
+func (v *mockWsVendor) headsAskGaps() []time.Duration {
+	v.pendingMu.Lock()
+	defer v.pendingMu.Unlock()
+	var gaps []time.Duration
+	last := map[*websocket.Conn]time.Time{}
+	for _, a := range v.headsAsks {
+		if prev, ok := last[a.conn]; ok {
+			gaps = append(gaps, a.at.Sub(prev))
+		}
+		last[a.conn] = a.at
+	}
+	return gaps
 }
 
 // dropConns closes every open socket of the vendor.
@@ -3040,6 +3065,9 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 					reply["result"] = "0xother"
 					break
 				}
+				v.pendingMu.Lock()
+				v.headsAsks = append(v.headsAsks, mockHeadsAsk{conn: conn, at: time.Now()})
+				v.pendingMu.Unlock()
 				v.subscribes.Add(1)
 				if v.refuseHeads {
 					delete(reply, "result")
@@ -3393,12 +3421,15 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 }
 
 // A wss upstream that refuses newHeads as unsupported feeds them by poll,
-// and is asked again once per re-ask interval.
+// and is asked again once per re-ask interval. The interval is twice the
+// adapter's first resubscribe backoff (1s), so a backoff retry of the
+// refusal comes sooner than any re-ask.
 func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	setupGock()
 	t.Cleanup(util.ResetGock)
+	const reask = 2 * time.Second
 	prevReask := wsupstream.HeadsReaskInterval.Load()
-	wsupstream.HeadsReaskInterval.Store(time.Second)
+	wsupstream.HeadsReaskInterval.Store(reask)
 	defer wsupstream.HeadsReaskInterval.Store(prevReask)
 
 	chain := newMockChain(0x100, true)
@@ -3414,11 +3445,16 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	subscribeNewHeads(t, conn)
 
 	requireContiguous(t, conn, 3, 0)
-	require.Eventually(t, func() bool { return vendor.subscribes.Load() >= 2 }, 5*time.Second, 10*time.Millisecond,
-		"newHeads is asked again after the re-ask interval")
-	// Just after a re-ask: over 2.5 intervals come exactly 2 more.
+	// The re-ask timer starts once the refusal is answered, so on one
+	// socket each ask comes at least an interval after the one before. A
+	// slow runner only lengthens the gaps, never shortens one.
 	asked := vendor.subscribes.Load()
-	time.Sleep(2500 * time.Millisecond)
-	assert.Equal(t, asked+2, vendor.subscribes.Load(), "asked once per interval, not retried with backoff")
+	require.Eventually(t, func() bool { return vendor.subscribes.Load() >= asked+2 }, 4*reask, 10*time.Millisecond,
+		"newHeads is asked again after each re-ask interval")
+	gaps := vendor.headsAskGaps()
+	require.NotEmpty(t, gaps)
+	for i, gap := range gaps {
+		assert.GreaterOrEqual(t, gap, reask, "ask %d came %s after the one before: asked once per interval, not retried with backoff", i+2, gap)
+	}
 	requireContiguous(t, conn, 2, 0)
 }
