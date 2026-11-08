@@ -393,6 +393,11 @@ func (p *FakeEvmStatePoller) AskBackground(HeadNeed, time.Duration, time.Time, A
 	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }
 
+// ReadLatest takes no answer: the fake has no intake.
+func (p *FakeEvmStatePoller) ReadLatest(time.Time) func([]byte, bool) EvmHeader {
+	return func([]byte, bool) EvmHeader { return nil }
+}
+
 func (p *FakeEvmStatePoller) AskReaching(context.Context, int64, time.Duration, AskReason) HeadAnswer {
 	return HeadAnswer{Outcome: AskSharedFresh, Block: p.latestBlockNumber}
 }

@@ -713,6 +713,70 @@ func (e *EvmStatePoller) AskBackground(need common.HeadNeed, pace time.Duration,
 	return a
 }
 
+// errReadNoBlock ends a client read's head fetch that brought no block:
+// its waiters take no header, and no node failure counts, since a
+// client's timeout or a hedge's cancel is no evidence its node failed a
+// poll (spec §6.1).
+var errReadNoBlock = errors.New("client read of latest brought no block")
+
+// ReadLatest is common.EvmStatePoller's: the read becomes the upstream's
+// head fetch when none is out (headAsk.meet then joins it), and its
+// answer goes to the bound intake as a poll does (fetchLatest), its
+// header without the block's body when full, as HeaderReadFull.
+func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool) common.EvmHeader {
+	if e.IsObjectNull() || !e.askable() {
+		return func([]byte, bool) common.EvmHeader { return nil }
+	}
+	a := &e.headAsk
+	var f *headFetch
+	a.mu.Lock()
+	if a.last == nil || a.last.answered {
+		f = &headFetch{sent: sent, done: make(chan struct{}), toIntake: true}
+		a.last = f
+	}
+	a.mu.Unlock()
+	return func(block []byte, full bool) (header common.EvmHeader) {
+		answered := len(block) > 0
+		if f != nil {
+			defer func() {
+				var err error
+				if !answered {
+					err = errReadNoBlock
+				}
+				e.endFetch(f, header, answered, err)
+			}()
+		}
+		bound := e.pollSrc.Load()
+		if !answered || bound == nil {
+			return nil
+		}
+		raw, kind := bytes.Clone(block), HeaderPolled
+		if full {
+			var err error
+			if raw, err = headerOf(block); err != nil {
+				return nil
+			}
+			kind = HeaderReadFull
+		}
+		h, ts, err := decodeChainHeader(raw)
+		if err != nil {
+			return nil
+		}
+		ch, err := checkChainHeader(raw, h, ts)
+		var sh SourceHeader
+		if err == nil {
+			sh = SourceHeader{ch}
+		}
+		if !bound.intake.Polled(e.upstream.Id(), sh, err, kind, sent) {
+			return nil
+		}
+		if e.tracker != nil && e.latestBlockShared.GetValue() >= int64(ch.number) {
+			e.tracker.SetLatestBlockNumber(e.upstream, int64(ch.number), int64(ts))
+		}
+		return sh
+	}
+}
+
 // askable: the poller has a latest counter to Ask for.
 func (e *EvmStatePoller) askable() bool {
 	return e.latestBlockShared != nil
@@ -1227,6 +1291,11 @@ const (
 	// (spec §6.8 cache head): it votes as a poll does, and reaches the
 	// block clock as a push does, since no fetch of the voter brought it.
 	HeaderCached
+	// HeaderReadFull: a client's read of latest with its transactions,
+	// sent as the tag (spec §6.4 client read): it votes as a poll does;
+	// its header lacks the block's transaction hashes, so it seeds no
+	// cache entry of the block (§6.8 seed).
+	HeaderReadFull
 )
 
 // pushed: no fetch of the voter brought the header, so to the block clock

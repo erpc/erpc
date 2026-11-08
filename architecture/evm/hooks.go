@@ -221,12 +221,14 @@ func validateIntegrity(ctx context.Context, n common.Network, u common.Upstream,
 		selector = dirs.UseUpstream
 	}
 	view := ChainTrackerOf(ctx, n, selector)
-	// Request-aware checks (eth_getLogs filter reproduction) need the
-	// original params; read-only access under the request's RLock.
+	// Request-aware checks (eth_getLogs filter reproduction, the
+	// block-by-number identity) need the params the upstream was sent: a
+	// client read of latest goes as the tag (spec §6.4 client read).
+	// Read-only access under the request's RLock.
 	var params []any
 	if jrq, jerr := rq.JsonRpcRequest(ctx); jerr == nil && jrq != nil {
 		jrq.RLockWithTrace(ctx)
-		params = jrq.Params
+		params = common.WireParams(ctx, rq, jrq.Params)
 		jrq.RUnlock()
 	}
 	res := runIntegrity(ctx, n, u, rq, rs, integrityRun{

@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,6 +70,55 @@ func OffViewBlock(ctx context.Context, req *common.NormalizedRequest, resp *comm
 	}
 	c := indexer.Cursor{Number: uint64(head.Latest)}
 	return c, decodeHex32(hh, &c.Hash) && c.Hash != head.LatestHash
+}
+
+// LatestBlockRead reports whether req is a client's eth_getBlockByNumber
+// whose "latest" tag was interpolated to its Head's number, a Head with a
+// hash (spec §6.4 client read): the read that may reach upstreams as the
+// tag. A request a use-upstream directive pins, or one eRPC sent itself,
+// is not; full: it asks for the block's transactions.
+func LatestBlockRead(ctx context.Context, req *common.NormalizedRequest) (read, full bool) {
+	if req.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
+		return false, false
+	}
+	if d := req.Directives(); d != nil && d.UseUpstream != "" {
+		return false, false
+	}
+	if method, _ := req.Method(); method != "eth_getBlockByNumber" {
+		return false, false
+	}
+	if ref, _ := req.EvmBlockRef().(string); ref != "latest" {
+		return false, false
+	}
+	head := req.EvmHead()
+	if head == nil || head.Latest <= 0 || head.LatestHash == ([32]byte{}) || TagBlockNumber(ctx, req, "latest") != head.Latest {
+		return false, false
+	}
+	jrq, err := req.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return false, false
+	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+	if len(jrq.Params) == 0 {
+		return false, false
+	}
+	hx, err := common.NormalizeHex(head.Latest)
+	if s, ok := jrq.Params[0].(string); err != nil || !ok || s != hx {
+		return false, false
+	}
+	if len(jrq.Params) > 1 {
+		full, _ = jrq.Params[1].(bool)
+	}
+	return true, full
+}
+
+// LatestTagParams is a copy of a LatestBlockRead's params with the block
+// as the "latest" tag: what its upstream is sent.
+func LatestTagParams(params []interface{}) []interface{} {
+	out := slices.Clone(params)
+	out[0] = "latest"
+	return out
 }
 
 func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
