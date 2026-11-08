@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1039,12 +1038,11 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.Less(t, time.Since(start), 3*time.Second, "within W")
 	assert.Equal(t, refused+1, afterWait(), "not refused")
 
-	// On a 100ms chain, W 2s, a block that never comes waits all of W
-	// while every tick Asks each voter below it with the tick's last
-	// answer from it as floor: a tick takes a fetch of its own, or one in
-	// flight, never evidence in hand from at or before its floor. A tick
-	// that took the previous tick's fetch, sent a few µs less than 1 bt
-	// before, would see a new head only every 2 bt.
+	// On a 100ms chain, W 2s, a block that never comes waits all of W as
+	// the lane's read ahead (spec §6.4 near future, §6.8 shared early
+	// fetch): no Ask of its own, and the clock fetches one voter at a
+	// time, about once a bt, each fetch new evidence; Asking each voter
+	// every bt cost 3 voters 3 fetches a bt.
 	now := time.Now().Unix()
 	for i := int64(0); i <= 1000; i++ {
 		network.metricsTracker.SampleConfirmedHeaderTime(network.networkId, network.Label(), 5000+i, now+1000+i/10)
@@ -1054,13 +1052,16 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	for _, u := range ups {
 		voter[u.EvmStatePoller().(*evm.EvmStatePoller)] = u.Id()
 	}
-	var mu sync.Mutex
-	asks := map[string][]evm.AskMet{}
+	var refusalAsks, clockFetches atomic.Int64
 	hook := func(e *evm.EvmStatePoller, m evm.AskMet) {
-		if id, ok := voter[e]; ok && m.Reason == common.AskRefusal {
-			mu.Lock()
-			asks[id] = append(asks[id], m)
-			mu.Unlock()
+		if _, ok := voter[e]; !ok {
+			return
+		}
+		switch {
+		case m.Reason == common.AskRefusal:
+			refusalAsks.Add(1)
+		case m.Reason == common.AskClock && m.Outcome == common.AskFetched:
+			clockFetches.Add(1)
 		}
 	}
 	evm.AskHook.Store(&hook)
@@ -1068,26 +1069,13 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	start = time.Now()
 	_, err = logs("0x70")
 	evm.AskHook.Store(nil)
+	waited := time.Since(start)
 	require.Error(t, err, "a range 5 above a ceiling that stays")
-	assert.GreaterOrEqual(t, time.Since(start), 1900*time.Millisecond, "refused once W ended")
+	assert.GreaterOrEqual(t, waited, 1900*time.Millisecond, "refused once W ended")
 	assert.Equal(t, refused+2, afterWait(), "counted future_after_wait")
-	mu.Lock()
-	defer mu.Unlock()
-	for _, id := range ids {
-		var last time.Time
-		ticks := 0
-		for _, m := range asks[id] {
-			if !m.After.IsZero() {
-				ticks++
-				assert.True(t, m.After.Equal(last), "%s: tick %d's floor %s is its last answer %s", id, ticks, m.After, last)
-				assert.False(t, m.InHand && !m.At.After(m.After), "%s: tick %d took %s evidence in hand from %s, at or before its floor %s", id, ticks, m.Outcome, m.At, m.After)
-			}
-			if !m.At.IsZero() {
-				last = m.At
-			}
-		}
-		assert.Positive(t, ticks, "%s: the wait's ticks Asked it after their last answer", id)
-	}
+	assert.Zero(t, refusalAsks.Load(), "the wait Asks no voter")
+	assert.Positive(t, clockFetches.Load(), "the read ahead fetched the head")
+	assert.LessOrEqual(t, clockFetches.Load(), int64(waited/(100*time.Millisecond))+2, "about one head fetch a bt, not one per voter")
 }
 
 // mockMethodAnswer makes every listed upstream answer method with result,
