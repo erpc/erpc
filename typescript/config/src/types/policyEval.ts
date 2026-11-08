@@ -45,6 +45,14 @@ export type PolicyEvalUpstreamMetrics = {
    */
   finalizationLagSeconds: number;
   /**
+   * `true` when the network has a block head but this upstream has never
+   * reported one (never answered a head poll, or answers block 0). Its
+   * `blockHeadLag` is then `0` by absence, not freshness; the
+   * `blockNumberLagAbove` / `blockSecondsLagAbove` / `removeByLag` /
+   * `keepHealthy` lag gates trip on it as unbounded lag.
+   */
+  blockHeadMissing: boolean;
+  /**
    * Reason an upstream is currently cordoned by external systems
    * (failsafe / circuit breaker). `null` when not cordoned. The eval
    * can choose to honor this via `.removeCordoned()`.

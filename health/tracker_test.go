@@ -506,6 +506,42 @@ func TestWildcardLagMirroredForPeerUpstreams(t *testing.T) {
 		"an unindexed reporter's lag must follow the network head after its poller stops")
 }
 
+// TestBlockHeadMissing_DistinguishesNeverReportedFromAtTip (erpc#1129): an
+// upstream that never reports a positive head is skipped by the lag rollup,
+// so its BlockHeadLag stays 0 — indistinguishable from "at the tip" by value.
+// BlockHeadMissing separates the two once the network has a head, and
+// clears as soon as the upstream reports one.
+func TestBlockHeadMissing_DistinguishesNeverReportedFromAtTip(t *testing.T) {
+	tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+	tracker.Bootstrap(context.Background())
+
+	tip := common.NewFakeUpstream("tip")
+	peer := common.NewFakeUpstream("peer")
+	genesis := common.NewFakeUpstream("genesis")
+	for _, u := range []common.Upstream{tip, peer, genesis} {
+		tracker.RecordUpstreamRequest(u, "eth_blockNumber", common.DataFinalityStateUnknown)
+	}
+
+	// No head anywhere yet: nothing is missing, there is nothing to lag behind.
+	require.False(t, tracker.BlockHeadMissing(genesis))
+
+	tracker.SetLatestBlockNumber(tip, 1000, 0)
+	tracker.SetLatestBlockNumber(peer, 1000, 0)
+	tracker.SetLatestBlockNumber(genesis, 0, 0) // discarded as non-positive
+
+	lagOf := func(u common.Upstream) int64 {
+		return tracker.GetUpstreamMethodMetrics(u, "*", common.DataFinalityStateAll).BlockHeadLag.Load()
+	}
+	require.EqualValues(t, 0, lagOf(tip))
+	require.EqualValues(t, 0, lagOf(genesis), "the skipped rollup leaves lag at 0, same as the tip")
+	require.False(t, tracker.BlockHeadMissing(tip))
+	require.True(t, tracker.BlockHeadMissing(genesis), "network has a head, this upstream never reported one")
+
+	tracker.SetLatestBlockNumber(genesis, 900, 0)
+	require.False(t, tracker.BlockHeadMissing(genesis))
+	require.EqualValues(t, 100, lagOf(genesis))
+}
+
 func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
 	t.Run("SetsTimestampAndRecordsDistance", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)

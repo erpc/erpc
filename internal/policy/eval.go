@@ -52,6 +52,10 @@ type healthTracker interface {
 	GetUpstreamMethodMetrics(up common.Upstream, method string, finality common.DataFinalityState) *health.TrackedMetrics
 	GetUpstreamMetrics(up common.Upstream) map[string]*health.TrackedMetrics
 	GetNetworkBlockTime(networkId string) time.Duration
+	// BlockHeadMissing: the network has a head and this upstream never
+	// reported one. Its BlockHeadLag reads 0 by absence; see
+	// health.Tracker.BlockHeadMissing.
+	BlockHeadMissing(up common.Upstream) bool
 	// CordonedReason is the effective cordon for (upstream, method) —
 	// operator or automatic, wildcard shadowing the method — independent
 	// of which metrics bucket the slot reads.
@@ -70,13 +74,14 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 		return UpstreamMetrics{}
 	}
 	out := UpstreamMetrics{
-		ErrorRate:       m.ErrorRate(),
-		ErrorsTotal:     m.ErrorsTotal.Load(),
-		RequestsTotal:   m.RequestsTotal.Load(),
-		ThrottledRate:   m.ThrottledRate(),
-		MisbehaviorRate: m.MisbehaviorRate(),
-		BlockHeadLag:    m.BlockHeadLag.Load(),
-		FinalizationLag: m.FinalizationLag.Load(),
+		ErrorRate:        m.ErrorRate(),
+		ErrorsTotal:      m.ErrorsTotal.Load(),
+		RequestsTotal:    m.RequestsTotal.Load(),
+		ThrottledRate:    m.ThrottledRate(),
+		MisbehaviorRate:  m.MisbehaviorRate(),
+		BlockHeadLag:     m.BlockHeadLag.Load(),
+		FinalizationLag:  m.FinalizationLag.Load(),
+		BlockHeadMissing: tr.BlockHeadMissing(u),
 	}
 	if m.ResponseQuantiles != nil {
 		// One merge → five reads. GetQuantile calls mergedSnapshot
@@ -230,13 +235,14 @@ func convertTrackedMetrics(tr healthTracker, u common.Upstream, method string, m
 		return UpstreamMetrics{}
 	}
 	out := UpstreamMetrics{
-		ErrorRate:       m.ErrorRate(),
-		ErrorsTotal:     m.ErrorsTotal.Load(),
-		RequestsTotal:   m.RequestsTotal.Load(),
-		ThrottledRate:   m.ThrottledRate(),
-		MisbehaviorRate: m.MisbehaviorRate(),
-		BlockHeadLag:    m.BlockHeadLag.Load(),
-		FinalizationLag: m.FinalizationLag.Load(),
+		ErrorRate:        m.ErrorRate(),
+		ErrorsTotal:      m.ErrorsTotal.Load(),
+		RequestsTotal:    m.RequestsTotal.Load(),
+		ThrottledRate:    m.ThrottledRate(),
+		MisbehaviorRate:  m.MisbehaviorRate(),
+		BlockHeadLag:     m.BlockHeadLag.Load(),
+		FinalizationLag:  m.FinalizationLag.Load(),
+		BlockHeadMissing: tr.BlockHeadMissing(u),
 	}
 	if m.ResponseQuantiles != nil {
 		// Single merge for all 5 quantiles — see comment in
@@ -292,6 +298,7 @@ func buildMetricsObject(vm *sobek.Runtime, m UpstreamMetrics, latencyPFn sobek.V
 	_ = mObj.Set("finalizationLag", m.FinalizationLag)
 	_ = mObj.Set("blockHeadLagSeconds", m.BlockHeadLagSeconds)
 	_ = mObj.Set("finalizationLagSeconds", m.FinalizationLagSeconds)
+	_ = mObj.Set("blockHeadMissing", m.BlockHeadMissing)
 	_ = mObj.Set("p50ResponseSeconds", m.P50ResponseSeconds)
 	_ = mObj.Set("p70ResponseSeconds", m.P70ResponseSeconds)
 	_ = mObj.Set("p90ResponseSeconds", m.P90ResponseSeconds)

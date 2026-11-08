@@ -2335,6 +2335,21 @@ func (t *Tracker) GetNetworkFinalizedBlock(networkId string) int64 {
 	return t.getMetadata(metadataKey{nil, networkId}).evmFinalizedBlockNumber.Load()
 }
 
+// BlockHeadMissing reports whether the network has a corroborated head while
+// this upstream has never reported a positive one. updateNetworkLagMetrics
+// skips a non-positive head, so such an upstream's BlockHeadLag is never
+// written and reads 0 — the same value as "at the tip". Selection lag gates
+// read this to treat the missing head as ineligible instead. Before any
+// upstream on the network has reported, nothing is missing: there is no head
+// to lag behind yet.
+func (t *Tracker) BlockHeadMissing(up common.Upstream) bool {
+	net := up.NetworkId()
+	if t.getMetadata(metadataKey{nil, net}).evmLatestBlockNumber.Load() <= 0 {
+		return false
+	}
+	return t.getMetadata(metadataKey{up, net}).evmLatestBlockNumber.Load() <= 0
+}
+
 func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
 	lg := upstream.Logger().With().Str("networkId", upstream.NetworkId()).Logger()
 
