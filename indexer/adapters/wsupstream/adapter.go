@@ -112,12 +112,24 @@ type upstreamSub struct {
 	// can't create duplicates.
 	mu sync.Mutex
 	// id and epoch identify the live upstream subscription (id "" when
-	// none), made at since; removed is set once it is dropped. Guarded by
-	// Adapter.subsMu.
+	// none), made at since; live is the upstream_subscriptions_active
+	// series it is counted in, so it leaves the series it entered. removed
+	// is set once it is dropped. Guarded by Adapter.subsMu.
 	id      string
 	epoch   uint64
 	since   time.Time
+	live    prometheus.Gauge
 	removed bool
+}
+
+// clearLocked forgets sub's live subscription and uncounts it; the caller
+// holds Adapter.subsMu.
+func (sub *upstreamSub) clearLocked() {
+	if sub.live != nil {
+		sub.live.Dec()
+		sub.live = nil
+	}
+	sub.id = ""
 }
 
 // Options are the network-level settings of an Adapter.
@@ -216,10 +228,10 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 		delete(a.topics, t)
 		// Marked here, so a subscribe in flight releases its result.
 		if sub.id != "" {
-			a.liveGauge(indexer.SubTypeNewPendingTransactions).Dec()
 			releases = append(releases, released{sub.id, sub.epoch})
 		}
-		sub.id, sub.removed = "", true
+		sub.clearLocked()
+		sub.removed = true
 	}
 	a.subsMu.Unlock()
 
@@ -274,10 +286,8 @@ func (a *Adapter) Resubscribe(t indexer.Topic) {
 		return
 	}
 	id, epoch := sub.id, sub.epoch
-	if id != "" {
-		a.liveGauge(indexer.SubTypeNewPendingTransactions).Dec()
-	}
-	sub.id, sub.resub = "", true
+	sub.clearLocked()
+	sub.resub = true
 	a.subsMu.Unlock()
 	if id != "" {
 		go a.release(context.Background(), id, epoch)
@@ -304,18 +314,12 @@ func (a *Adapter) attach() {
 				a.resubCancel()
 			}
 			a.resubDone = false
-			if a.heads.id != "" {
-				a.liveGauge(indexer.SubTypeNewHeads).Dec()
-			}
-			a.heads.id = ""
+			a.heads.clearLocked()
 			// The next connection asks again; headsRefused stays until
 			// it answers.
 			a.stopReaskLocked()
 			for _, sub := range a.topics {
-				if sub.id != "" {
-					a.liveGauge(indexer.SubTypeNewPendingTransactions).Dec()
-				}
-				sub.id = ""
+				sub.clearLocked()
 			}
 			a.subsMu.Unlock()
 			if a.disconnected != nil {
@@ -576,9 +580,9 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 	connUp := ws.Epoch == a.wsClient.Epoch()
 	commit := connUp && !sub.removed
 	if commit {
-		sub.id, sub.epoch, sub.since = ws.ID, ws.Epoch, time.Now()
 		// params[0] is the eth_subscribe subscription type.
-		a.liveGauge(params[0].(string)).Inc()
+		sub.id, sub.epoch, sub.since, sub.live = ws.ID, ws.Epoch, time.Now(), a.liveGauge(params[0].(string))
+		sub.live.Inc()
 	}
 	a.subsMu.Unlock()
 
@@ -598,10 +602,8 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 func (a *Adapter) drop(ctx context.Context, sub *upstreamSub, kind string) {
 	a.subsMu.Lock()
 	id, epoch := sub.id, sub.epoch
-	sub.id, sub.removed = "", true
-	if id != "" {
-		a.liveGauge(kind).Dec()
-	}
+	sub.clearLocked()
+	sub.removed = true
 	a.subsMu.Unlock()
 	if id != "" {
 		a.release(ctx, id, epoch)
@@ -654,7 +656,8 @@ type notificationParams struct {
 }
 
 // liveGauge is the upstream_subscriptions_active series of kind; changed
-// only under subsMu, wherever a subscription's id is set or cleared.
+// only under subsMu, where a subscription's id is set (commit) or cleared
+// (clearLocked).
 func (a *Adapter) liveGauge(kind string) prometheus.Gauge {
 	return telemetry.GaugeHandle(telemetry.MetricUpstreamSubscriptionsActive, a.projectID, a.networkLabel, a.upstreamID, kind)
 }

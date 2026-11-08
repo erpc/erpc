@@ -411,7 +411,7 @@ func (c *WsJsonRpcClient) UnregisterSubscriptionHandler(upstreamSubID string, ep
 }
 
 // SetOnDisconnect sets the callback under id that runs when the connection
-// drops.
+// drops, shutdown included.
 func (c *WsJsonRpcClient) SetOnDisconnect(id string, callback func()) {
 	c.onDisconnectMu.Lock()
 	c.onDisconnectCbs[id] = callback
@@ -813,4 +813,9 @@ func (c *WsJsonRpcClient) shutdown() {
 		)
 	}
 	c.teardownConn(conn, common.NewErrEndpointRequestCanceled(fmt.Errorf("websocket client shutting down")))
+	// readLoop fires no callbacks once the app context is done, so the
+	// connection shutdown drops is reported here: its subscriptions died too.
+	if conn != nil {
+		c.fireCallbacks(&c.onDisconnectMu, c.onDisconnectCbs)
+	}
 }
