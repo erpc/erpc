@@ -1087,7 +1087,7 @@ func (t *ChainTracker) climb(cands []clockCandidate, now time.Time, bt time.Dura
 func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Duration, hedge bool) {
 	c := &t.clock
 	r := clockRung{kind: "retry", at: now}
-	if order := c.byScore(cands); (c.ladder || c.tails < c.k && !(c.pushFed() && c.pushCached)) && len(order) > 0 {
+	if order := c.byScore(cands); !(c.pushFed() && c.pushCached) && (c.ladder || c.tails < c.k) && len(order) > 0 {
 		cand := order[c.tails%len(order)]
 		c.tails++
 		r.id = cand.id
@@ -1497,20 +1497,21 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 	if free(c.provenBy) {
 		r.id = c.provenBy
 	}
-	if r.id != "" && (slices.Contains(rungTurns, r.id) || slices.Contains(c.votes, r.id)) {
-		r.turn = true
-	} else {
+	if !r.turn {
+		var best clockRung
 		for _, id := range rungTurns {
 			if !free(id) {
 				continue
 			}
-			at := now
-			if after, ok := c.voter(id).holdAfter(); ok && c.provenAt.Add(after).After(now) {
-				at = c.provenAt.Add(after)
+			if at := c.provenAt.Add(c.voter(id).heldWait()); best.id == "" || at.Before(best.at) {
+				best = clockRung{id: id, at: at, kind: "probe", turn: true}
 			}
-			if !r.turn || at.Before(r.at) {
-				r = clockRung{id: id, at: at, kind: "probe", turn: true}
+		}
+		if best.id != "" && (!prover || !best.at.After(now.Add(bt/4))) {
+			if best.at.Before(now) {
+				best.at = now
 			}
+			r = best
 		}
 	}
 	c.proven, c.provenBy, c.provedFor = 0, "", c.target
@@ -1521,7 +1522,11 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time) {
 // holdCredit is what the clock published for readers on other goroutines:
 // its recent first sights, each voter's round trip, how long after a
 // first sight each voter with hold bounds holds the block (holdAfter), and
-// how long a held block's attempt waits for each (heldWait).
+// how long a held block's attempt waits for each (heldWait); sure, the
+// holdAfter of each voter whose bounds fill the window (clockFit), which
+// a miss's retry reads: 1-7 bounds undercut a vendor's lag in a pod's
+// first seconds (P21-avax). moved is closed when the next publish
+// replaces it, so a held block's wait wakes on new hold evidence.
 type holdCredit struct {
 	sights                 []clockSight
 	after, rtt, wait, sure map[string]time.Duration
