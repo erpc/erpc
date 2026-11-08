@@ -18,13 +18,8 @@ import (
 )
 
 const (
-	// p23BlockTime: a 0.1 s chain, so W is its 2 s floor.
-	p23BlockTime = 100 * time.Millisecond
-	// p23MintJitter: blocks come 0.1 s ± this apart, so the block clock's
-	// predicted sight misses some blocks and its tail finds them.
-	p23MintJitter = 20 * time.Millisecond
 	// p23HeadRate: eth_blockNumber reads a second per pod, the demand
-	// that runs the block clock in both runs.
+	// that runs the block clock in every run.
 	p23HeadRate = 10.0
 	// p23AheadRate: per pod, by-number reads a second one block above the
 	// pod's eth_blockNumber, half eth_getBlockByNumber, half eth_getLogs.
@@ -33,11 +28,6 @@ const (
 	// the block this far below it, which the view holds: the answering
 	// vendor's round trip through the pod with no wait.
 	p23Back = 20
-	// p23Base, p23Hash, p23Run: the clock-only run, the by-hash run, then
-	// the read-ahead run.
-	p23Base = time.Minute
-	p23Hash = time.Minute
-	p23Run  = 2 * time.Minute
 	// p23CostSlack: the read-ahead run's head fetches per new block at
 	// most the clock-only run's times this.
 	p23CostSlack = 1.05
@@ -48,34 +38,65 @@ const (
 	p23Examples = 5
 )
 
-// p23Ups: six https vendors, no push source, 20-45 ms away, each polled
-// every 10 s: their turns come 0.06 times a block, so the clock's budget
-// is one fetch a block (turnBound).
-var p23Ups = []freshUp{
-	{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
-	{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 0},
-	{"http-c", "vendor-c", 30 * time.Millisecond, 10 * time.Second, 0, 0},
-	{"http-d", "vendor-d", 35 * time.Millisecond, 10 * time.Second, 0, 0},
-	{"http-e", "vendor-e", 40 * time.Millisecond, 10 * time.Second, 0, 0},
-	{"http-f", "vendor-f", 45 * time.Millisecond, 10 * time.Second, 0, 0},
+// p23Shape is one chain P23 runs on: its vendors, block time and mint
+// jitter (blocks come bt ± jitter apart, so the block clock's predicted
+// sight misses some and its tail finds them), the blocks before the bar
+// (warm), and the clock-only, by-hash and read-ahead runs' lengths.
+type p23Shape struct {
+	name              string
+	ups               []freshUp
+	bt, jitter        time.Duration
+	warm              int
+	base, hash, ahead time.Duration
 }
 
-// P23: clients that read ahead of the Head, on a 0.1 s chain behind
-// p23Ups, no cache, one pod. First p23Base with eth_blockNumber readers
-// only: its head fetches per new block are the bar. Then p23Hash with,
-// beside them, as each block is minted (every vendor serves it then, a
-// fast source outside eRPC), its eth_getBlockByHash and its first
-// transaction's receipt: the block clock alone moves the view. Then
-// p23Run with those and p23AheadRate by-number reads a second of the
-// pod's eth_blockNumber + 1 (eth_getBlockByNumber and eth_getLogs of that
-// block). Head fetches per new block of the read-ahead run at most
-// p23CostSlack times the bar; in both runs each by-hash read's latency
-// above the pod's p50 for the same read of a block p23Back below (the
-// answering vendor's round trip) at most one such round trip at p99;
+// p23Fast: six https vendors, no push source, 20-45 ms away, each polled
+// every 10 s, on a 0.1 s chain, so W is its 2 s floor: their turns come
+// 0.06 times a block, so the clock's budget is one fetch a block
+// (turnBound). Whole-second timestamps sample a 0.1 s chain's block time
+// once a second: the bar waits 300 blocks for its estimate to settle.
+var p23Fast = p23Shape{name: "P23", bt: 100 * time.Millisecond, jitter: 20 * time.Millisecond, warm: 300,
+	base: time.Minute, hash: time.Minute, ahead: 2 * time.Minute,
+	ups: []freshUp{
+		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-c", "vendor-c", 30 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-d", "vendor-d", 35 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-e", "vendor-e", 40 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-f", "vendor-f", 45 * time.Millisecond, 10 * time.Second, 0, 0},
+	}}
+
+// p23Slow: four https vendors 20-35 ms away, polled every 10 s, on a 2 s
+// chain, W 6 s, that serve each block 0-0.75 s after it is minted: the
+// by-hash readers, fed by a source as fast as the first vendor, ask for
+// a block the other vendors and the view lack yet. On such chains main's
+// by-hash reads held toward W: p99 2.6 s against an upstream p99 of
+// 0.25-0.6 s.
+var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
+	base: 2 * time.Minute, hash: 4 * time.Minute, ahead: 3 * time.Minute,
+	ups: []freshUp{
+		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
+		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 250 * time.Millisecond},
+		{"http-c", "vendor-c", 30 * time.Millisecond, 10 * time.Second, 0, 500 * time.Millisecond},
+		{"http-d", "vendor-d", 35 * time.Millisecond, 10 * time.Second, 0, 750 * time.Millisecond},
+	}}
+
+// P23: clients that read ahead of the Head, on a shape's chain, no
+// cache, one pod. First the clock-only run with eth_blockNumber readers
+// only: its head fetches per new block are the bar. Then the by-hash run
+// with, beside them, as each block is minted (the first vendor serves it
+// then, a fast source outside eRPC), its eth_getBlockByHash and its
+// first transaction's receipt: the block clock alone moves the view. Then
+// the read-ahead run with those and p23AheadRate by-number reads a second
+// of the pod's eth_blockNumber + 1 (eth_getBlockByNumber and eth_getLogs
+// of that block). Head fetches per new block of the read-ahead run at
+// most p23CostSlack times the bar; in both runs each by-hash read's
+// latency above the pod's p50 for the same read of a block p23Back below
+// (the answering vendor's round trip) at most one such round trip at p99;
 // every read answers the chain's block, none null; no by-hash answer
 // ahead of the pod's newHeads stream (liveViewBound).
-func p23() spec {
-	sp := freshSpec("P23", 1, p23Ups, chainsim.Config{BlockTime: p23BlockTime, MintJitter: p23MintJitter}, chainsim.Faults{}, p23Body)
+func p23(sh p23Shape) spec {
+	sp := freshSpec(sh.name, 1, sh.ups, chainsim.Config{BlockTime: sh.bt, MintJitter: sh.jitter}, chainsim.Faults{}, func(s *scenario) { p23Body(s, sh) })
 	sp.pods, sp.oldPods = 1, nil
 	return sp
 }
@@ -111,10 +132,9 @@ func (r *p23Reads) fail(kind, format string, args ...interface{}) {
 	}
 }
 
-func p23Body(s *scenario) {
-	// Whole-second timestamps sample a 0.1 s chain's block time once a
-	// second: the bar waits until its estimate settled.
-	s.blocks(300)
+func p23Body(s *scenario, sh p23Shape) {
+	// The bar waits until the block time estimate settled (sh.warm).
+	s.blocks(sh.warm)
 	vl := &viewLog{}
 	// Both latest reads: eth_blockNumber alone is no clock demand.
 	heads := liveReads(p23HeadRate, s.chain.BlockTime(), vl)
@@ -126,7 +146,7 @@ func p23Body(s *scenario) {
 
 	var b strings.Builder
 	ask0 := s.p23Asks()
-	_, base, _, _, _ := s.liveRun(p23Base, heads, nil)
+	_, base, _, _, _ := s.liveRun(sh.base, heads, nil)
 	ask1 := s.p23Asks()
 	s.judgeFetches(&b, "clock only", base, 0)
 
@@ -138,7 +158,7 @@ func p23Body(s *scenario) {
 		return out
 	}
 	hashReads, reads := newReads(), newReads()
-	_, byHash, _, _, _ := s.liveRun(p23Hash, heads, func(ctx context.Context, _ *faultWindows) {
+	_, byHash, _, _, _ := s.liveRun(sh.hash, heads, func(ctx context.Context, _ *faultWindows) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
 			wg.Go(func() { s.p23ByHash(ctx, p.idx, hashReads[p.idx], vl) })
@@ -152,7 +172,7 @@ func p23Body(s *scenario) {
 	for pod := range s.h.pods {
 		missing0[pod], _ = s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "retried_missing"})
 	}
-	_, ahead, _, _, _ := s.liveRun(p23Run, heads, func(ctx context.Context, _ *faultWindows) {
+	_, ahead, _, _, _ := s.liveRun(sh.ahead, heads, func(ctx context.Context, _ *faultWindows) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
 			wg.Go(func() { s.p23ByNumber(ctx, p.idx, reads[p.idx]) })
