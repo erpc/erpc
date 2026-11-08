@@ -1454,6 +1454,12 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	oreq := common.NewNormalizedRequest([]byte(ownReq))
 	oreq.SetNetwork(own)
 	require.NoError(t, headCache.WithProjectId("test").Set(ctx, oreq, common.NewNormalizedResponse().WithRequest(oreq).WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(ownReceipt), nil))))
+	require.Eventually(t, func() bool {
+		probe := common.NewNormalizedRequest([]byte(ownReq))
+		probe.SetNetwork(own)
+		got, err := headCache.WithProjectId("test").Get(ctx, probe)
+		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
+	}, 2*time.Second, 20*time.Millisecond, "the cache holds the receipt")
 	var ownCalls atomic.Int64
 	mockMethodAnswer("eth_getTransactionReceipt", ownReceipt, &ownCalls, "hq2")
 	ownHead.Store(101)
