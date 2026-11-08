@@ -1427,7 +1427,7 @@ func (n *Network) countRefusal(ctx context.Context, req *common.NormalizedReques
 	}
 	method, _ := req.Method()
 	switch {
-	case err == nil && resp != nil && !resp.IsObjectNull(ctx) && !isEmptyNetworkResult(method, resp):
+	case err == nil && resp != nil && !resp.IsObjectNull(ctx) && !refusalMiss(ctx, method, resp):
 		switch {
 		case !v.Retried():
 			n.countHeadRefusal("served")
@@ -1467,6 +1467,17 @@ func isNullResult(ctx context.Context, resp *common.NormalizedResponse) bool {
 	}
 	jrr, err := resp.JsonRpcResponse(ctx)
 	return err == nil && jrr != nil && isJSONNull(jrr.GetResultBytes())
+}
+
+// refusalMiss reports whether resp, an emptyish answer of method for a
+// block above Firm, is a node's miss of it (evm.RefusalMiss), not the
+// block's empty answer.
+func refusalMiss(ctx context.Context, method string, resp *common.NormalizedResponse) bool {
+	if !isEmptyNetworkResult(method, resp) {
+		return false
+	}
+	jrr, err := resp.JsonRpcResponse(ctx)
+	return err != nil || jrr == nil || evm.RefusalMiss(method, jrr.GetResultBytes())
 }
 
 func (n *Network) countHeadRefusal(rule string) {
@@ -2868,7 +2879,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// retry asks the upstreams whose head reaches the block first.
 				// The answer after it goes to the client as the upstream gave it.
 				refusal := effectiveReq.HeadRefusal()
-				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && isEmptyNetworkResult(method, r)
+				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r)
 				missing := emptyAnswer || missingDataErr(err)
 				// A held block's answers, served or missing, measure how
 				// long after its first sight u holds it (spec §6.4 held).
@@ -2915,16 +2926,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// Return immediately when the result is usable:
 				//  - Non-empty success always qualifies.
 				//  - Emptyish success qualifies when the refusal rule calls it
-				//    final, or, below Latest, when the method is in
-				//    emptyResultAccept and consensus is not required, because
-				//    failsafe would accept the empty result anyway so trying
-				//    more upstreams just wastes time on slow ones.
+				//    final; above Firm, when it is no miss of the block
+				//    (refusalMiss: eth_call's 0x is its answer); below, when
+				//    the method is in emptyResultAccept. Neither when
+				//    consensus is required. Failsafe would accept the empty
+				//    result anyway, so trying more upstreams just wastes time
+				//    on slow ones.
 				//  - Otherwise emptyish results continue to the next upstream.
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := isEmptyNetworkResult(method, r)
 					acceptEmpty := !emptyish || finalEmpty ||
-						(!refusal.AboveFirm() && !failsafeExecutor.HasConsensus() &&
-							failsafeExecutor.acceptsEmptyResult(method, r))
+						(!failsafeExecutor.HasConsensus() && (refusal.AboveFirm() && !emptyAnswer ||
+							!refusal.AboveFirm() && failsafeExecutor.acceptsEmptyResult(method, r)))
 					if acceptEmpty {
 						st := effectiveReq.ExecState()
 						st.MarkUpstreamAttemptWon(r.UpstreamId())
@@ -4165,10 +4178,11 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
-		// A by-number answer with data shows its upstream holds the block:
-		// holder evidence for Firm and routing (spec §6.5).
+		// A by-number answer with data, or an empty one that is no miss
+		// (refusalMiss: eth_call's 0x), shows its upstream holds the
+		// block: holder evidence for Firm and routing (spec §6.5).
 		if ups, ok := resp.Upstream().(common.EvmUpstream); ok && ups != nil {
-			if bn := requestBlockNumber(ctx, req); bn > 0 && !resp.IsObjectNull(ctx) && !isEmptyNetworkResult(method, resp) {
+			if bn := requestBlockNumber(ctx, req); bn > 0 && !resp.IsObjectNull(ctx) && !refusalMiss(ctx, method, resp) {
 				n.noteHeld(ups, bn)
 			}
 		}

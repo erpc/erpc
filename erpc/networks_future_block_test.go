@@ -722,6 +722,32 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	assert.Equal(t, int64(1), holder.Load(), "the upstream at the block, asked once")
 	assert.GreaterOrEqual(t, below.Load(), int64(3), "the miss, its retry, and the hedge beside them")
 
+	// An eth_call's 0x is the block's answer, never a node's miss of it: a
+	// node lacking the block errors (arc-mainnet: 277 thin_missing, 2-5
+	// attempts each). It is served at once, with no retry.
+	var calls atomic.Int64
+	for _, id := range []string{"bh1", "bh2", "bh3", "bh4"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != id+".localhost" || !strings.Contains(util.SafeReadBody(r), "eth_call") {
+					return false
+				}
+				calls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x"}`))
+	}
+	callReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xcA11bde05977b3631167028862bE2a173976CA11","data":"0x42cbb15c"},"0x65"]}`))
+	resp, err = network.Forward(ctx, callReq)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, `"0x"`, string(jrr.GetResultBytes()), "the call's empty answer, as the upstream gave it")
+	assert.Equal(t, int64(1), calls.Load(), "an empty eth_call answer is no miss: no retry")
+
 	slots, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "cs1", chainID: 123, latestBlock: 101},
 		{id: "cs2", chainID: 123, latestBlock: 100},

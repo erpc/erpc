@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"time"
@@ -60,6 +61,26 @@ func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 	}
 	method, _ := rq.Method()
 	return strings.EqualFold(method, "eth_getBlockByNumber")
+}
+
+// RefusalMiss reports whether result, method's answer for a block above
+// Firm, is a node's miss of that block (spec §6.4): null or nothing, what
+// a node lacking the block answers a lookup by block (the block, its
+// receipts, a transaction in it); for a range query (eth_getLogs,
+// trace_filter), also an empty array, what a node behind the range
+// answers. Any other empty value is the block's answer: eth_call's 0x, a
+// zero balance or nonce, an empty block's [] receipts or traces; a node
+// that lacks the block errors instead. Counted as misses, arc-mainnet's
+// `eth_call`s of 0x at a thin Head took 2-5 attempts each (277
+// thin_missing on image 22).
+func RefusalMiss(method string, result []byte) bool {
+	switch r := bytes.TrimSpace(result); {
+	case len(r) == 0 || bytes.Equal(r, []byte("null")):
+		return true
+	case bytes.Equal(r, []byte("[]")):
+		return method == "eth_getLogs" || isTraceFilterMethod(method)
+	}
+	return false
 }
 
 // DecideHeadRefusal applies the refusal rule to block n on head h of
