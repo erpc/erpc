@@ -229,6 +229,32 @@ func TestMain_Validate_RealConfigFile(t *testing.T) {
 	}
 }
 
+func TestMain_Validate_ReportFormat(t *testing.T) {
+	tests := []struct {
+		format  string
+		wantErr bool
+	}{
+		{format: "json", wantErr: false},
+		{format: "md", wantErr: false},
+		{format: "mdx", wantErr: true},
+		{format: "yaml", wantErr: true},
+		{format: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		err := validateReportFormat(tt.format)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("expected format %q to be rejected", tt.format)
+			} else if !strings.Contains(err.Error(), "unsupported format") {
+				t.Errorf("expected 'unsupported format' error for %q, got %v", tt.format, err)
+			}
+		} else if err != nil {
+			t.Errorf("expected format %q to be accepted, got %v", tt.format, err)
+		}
+	}
+}
+
 // Test that the very first requests issued against the local erpc instance
 // successfully wait for upstream lazy‑loading to complete, ensuring they are
 // not rejected due to missing upstreams.
