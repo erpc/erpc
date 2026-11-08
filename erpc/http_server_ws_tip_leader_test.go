@@ -102,9 +102,11 @@ func mockHashedLatest(id, body string) {
 		JSON([]byte(body))
 }
 
-// "latest" is interpolated to the Head, a number only the upstream whose
-// poller has the tip can serve: the request must reach it, not settle for
-// the lagging sibling preferred by selection order.
+// "latest" goes to the upstreams as the tag, by round trip (spec §6.4
+// client read): rpc2 answers its tip at once, and rpc1's lagging answer,
+// which the view does not take, makes the leg read the Head's number from
+// rpc2, the upstream whose poller has the tip. Either way the client gets
+// rpc2's tip block, never the lagging sibling's.
 func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -115,9 +117,9 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	const tip = int64(0x22228889)
 	tipHex := "0x22228889"
 	var leaderHits atomic.Int64
-
 	gock.New("http://rpc2.localhost").
 		Post("").
+		Persist().
 		Filter(func(r *http.Request) bool {
 			body := util.SafeReadBody(r)
 			if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, tipHex) {
@@ -128,7 +130,6 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`))
-
 	// rpc1 lags; "latest" becomes the tip's number. Quorum 1: rpc2's head
 	// alone is the tip.
 	sendRequest, shutdown, nw, leader := setupTipLeaderServer(t, &common.EvmNetworkConfig{
@@ -161,8 +162,7 @@ func TestHttpServer_GetBlockByNumberLatest_InterpolatedReachesTipUpstream(t *tes
 	require.True(t, ok, "response should have a result object, got: %s", body)
 	assert.Equal(t, tipHex, result["number"])
 	assert.Equal(t, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result["hash"])
-	assert.GreaterOrEqual(t, leaderHits.Load(), int64(1),
-		"the interpolated request must reach the upstream that has the tip")
+	assert.LessOrEqual(t, leaderHits.Load(), int64(1), "at most the one by-number read of the Head's block")
 }
 
 // Direct eth_getBlockByNumber(tip) goes first to the upstream that has the
