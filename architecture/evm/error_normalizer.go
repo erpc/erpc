@@ -98,6 +98,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "try paginating") ||
 			(strings.Contains(msg, "maximum") && strings.Contains(msg, "blocks distance")) ||
 			strings.Contains(msg, "eth_getLogs is limited") ||
+			// Chainstack (-32602) and Filecoin (-32005); as a client or capacity
+			// error the first stopped the sweep and the second never split.
+			strings.Contains(msg, "block range exceeds") ||
+			// thirdweb (-32005).
+			strings.Contains(msg, "number of requested blocks") ||
 			// jsonrpsee — which reth and everything built on it uses — rejects an
 			// oversized response body with "Response is too big" and carries the
 			// byte cap in Data ("Exceeded max limit of 167772160"). That is a SIZE
