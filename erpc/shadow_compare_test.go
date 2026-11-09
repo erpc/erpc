@@ -415,10 +415,11 @@ func TestShadowCompare_ForwardPath(t *testing.T) {
 	}
 }
 
-// TestShadowCompare_SkipConditions calls executeShadowRequests directly with a
-// concrete-height eth_getBalance. Only the control shadow may be sent the
-// request; the ignored-method, zero-sample-rate, out-of-range and
-// invalid-pattern shadows are skipped before any goroutine is spawned.
+// TestShadowCompare_SkipConditions mirrors a concrete-height eth_getBalance
+// through shadowTargets and executeShadowRequests, the path Forward takes.
+// Only the control shadow may be sent the request; the ignored-method,
+// zero-sample-rate and invalid-pattern shadows are no targets, and the
+// out-of-range one is skipped before any goroutine is spawned.
 func TestShadowCompare_SkipConditions(t *testing.T) {
 	zero := 0.0
 	f := newShadowCmpFixture(t, "shadowcmp_skip",
@@ -470,7 +471,7 @@ func TestShadowCompare_SkipConditions(t *testing.T) {
 	resp := shadowCmpResponse(f.network,
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","0x1"]}`,
 		`"0x64"`, "")
-	f.prj.executeShadowRequests(f.ctx, f.network, f.network.ShadowUpstreams(), resp)
+	f.prj.executeShadowRequests(f.ctx, f.network, f.prj.shadowTargets(method, f.network.ShadowUpstreams()), resp)
 
 	shadowCmpAwait(t, "shadowcmp-skip-control", method, beforeControl, shadowCmpOutcome{identical: 1})
 	assert.Equal(t, 1, controlHits.count(), "control shadow is sent the request once")
