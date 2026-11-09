@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,19 +65,28 @@ func winnerWithHead(t *testing.T, cfg *config, method string, block, head int64,
 
 func winnerOnNetwork(t *testing.T, cfg *config, method string, block int64, net *headNetwork, results []*execResult) *slotResult {
 	t.Helper()
+	return winnerForRequest(t, cfg, blockRequest(method, block), net, results)
+}
+
+func winnerForRequest(t *testing.T, cfg *config, rpc *common.JsonRpcRequest, net *headNetwork, results []*execResult) *slotResult {
+	t.Helper()
 	lg := zerolog.Nop()
-	ctx := requestCtx(method, block, net)
+	ctx := requestCtx(rpc, net)
 	analysis := newConsensusAnalysis(&lg, ctx, cfg, results)
 	require.False(t, analysis.hasRemaining(), "test must present a complete round")
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
 	return e.determineWinner(ctx, &lg, analysis)
 }
 
-func requestCtx(method string, block int64, net *headNetwork) context.Context {
+func blockRequest(method string, block int64) *common.JsonRpcRequest {
 	rpc := &common.JsonRpcRequest{Method: method}
 	if block > 0 {
 		rpc.Params = []interface{}{fmt.Sprintf("0x%x", block), false}
 	}
+	return rpc
+}
+
+func requestCtx(rpc *common.JsonRpcRequest, net *headNetwork) context.Context {
 	req := common.NewNormalizedRequestFromJsonRpcRequest(rpc)
 	req.SetNetwork(net)
 	return context.WithValue(context.Background(), common.RequestContextKey, req)
@@ -170,7 +180,7 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 		before := waivedMetricValue()
 
 		lg := zerolog.Nop()
-		ctx := requestCtx(method, oldBlock, &headNetwork{latest: head})
+		ctx := requestCtx(blockRequest(method, oldBlock), &headNetwork{latest: head})
 		analysis := newConsensusAnalysis(&lg, ctx, cfg, []*execResult{
 			emptyResultFrom(t, internal1, 0),
 			objResultFrom(t, ext1, tx, 1),
@@ -486,24 +496,80 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 		require.NotNil(t, winner.Error, "without opt-in the tie must remain unresolved")
 	})
 
-	// Guard (issue 1363): a hash lookup names no block. Two agreeing archives
-	// claim the tx sits in ancient block 16; that claim is theirs, so it must
-	// not prove the empty internal pruned it. The round stays a dispute.
-	t.Run("hash lookup with fabricated old block in answers fails closed", func(t *testing.T) {
-		cfg := newCfg()
-		before := waivedMetricValue()
-		fake := map[string]interface{}{"blockNumber": "0x10"}
+	// Guard (issue 1363): a hash lookup names no block, and the archives'
+	// claim of where the data sits is theirs, so it proves nothing alone. The
+	// waiver may judge that block only once an upstream outside the winners
+	// holds it at that number, under that hash, with the requested tx in it.
+	// The first upstream that returns the block decides; a disagreeing one
+	// fails closed rather than letting the waiver ask the next.
+	t.Run("hash lookup block needs a confirmer outside the winners", func(t *testing.T) {
+		txHash := "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060"
+		block16 := "0x" + strings.Repeat("ab", 32)
+		otherHash := "0x" + strings.Repeat("cd", 32)
+		held := func(txs ...string) map[string]interface{} {
+			return map[string]interface{}{"number": "0x10", "hash": block16, "transactions": txs}
+		}
+		tx := map[string]interface{}{"hash": txHash, "blockNumber": "0x10", "blockHash": block16}
+		receipt := map[string]interface{}{"transactionHash": txHash, "blockNumber": "0x10", "blockHash": block16}
 
-		winner := winnerWithHead(t, cfg, "eth_getTransactionByHash", 0, head, []*execResult{
-			emptyResultFrom(t, internal1, 0),
-			emptyResultFrom(t, internal2, 1),
-			objResultFrom(t, ext1, fake, 2),
-			objResultFrom(t, ext2, fake, 3),
-		})
+		cases := []struct {
+			name     string
+			method   string
+			subject  string
+			answer   map[string]interface{}
+			int1     map[string]interface{} // block 16 as internal-1 holds it; nil = pruned
+			int2     map[string]interface{}
+			fires    bool
+			probesTo []string
+		}{
+			{"tx confirmed by the first abstainer", "eth_getTransactionByHash", txHash, tx, held(txHash), held(txHash), true, []string{"internal-1"}},
+			{"receipt confirmed past a pruned abstainer", "eth_getTransactionReceipt", txHash, receipt, nil, held(txHash), true, []string{"internal-1", "internal-2"}},
+			{"block by hash confirmed", "eth_getBlockByHash", block16, map[string]interface{}{"number": "0x10", "hash": block16}, held(), nil, true, []string{"internal-1"}},
+			{"fabricated tx is not in the block", "eth_getTransactionByHash", txHash, tx, held(), held(txHash), false, []string{"internal-1"}},
+			{"fabricated block hash", "eth_getTransactionByHash", txHash, map[string]interface{}{"hash": txHash, "blockNumber": "0x10", "blockHash": otherHash}, held(txHash), held(txHash), false, []string{"internal-1"}},
+			{"no upstream outside the winners holds the block", "eth_getTransactionByHash", txHash, tx, nil, nil, false, []string{"internal-1", "internal-2"}},
+			{"answer names no block", "eth_getTransactionByHash", txHash, map[string]interface{}{"hash": txHash}, held(txHash), held(txHash), false, nil},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				var probes []string
+				holder := func(id string, blk map[string]interface{}) common.Upstream {
+					return common.NewFakeUpstream(id, common.WithTags("type:internal"), common.WithForward(
+						func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+							probes = append(probes, id)
+							jrq, err := r.JsonRpcRequest(ctx)
+							require.NoError(t, err)
+							require.Equal(t, "eth_getBlockByNumber", jrq.Method)
+							require.Equal(t, []interface{}{"0x10", false}, jrq.Params)
+							var result interface{}
+							if blk != nil {
+								result = blk
+							}
+							jrr, err := common.NewJsonRpcResponse(1, result, nil)
+							require.NoError(t, err)
+							return common.NewNormalizedResponse().WithJsonRpcResponse(jrr), nil
+						}))
+				}
+				before := waivedMetricValue()
 
-		require.NotNil(t, winner)
-		require.NotNil(t, winner.Error, "answers must never prove their own block is outside retention")
-		assert.Equal(t, 0.0, waivedMetricValue()-before, "no waiver may fire without a requested block")
+				winner := winnerForRequest(t, newCfg(), &common.JsonRpcRequest{Method: tc.method, Params: []interface{}{tc.subject}}, &headNetwork{latest: head}, []*execResult{
+					emptyResultFrom(t, holder("internal-1", tc.int1), 0),
+					emptyResultFrom(t, holder("internal-2", tc.int2), 1),
+					objResultFrom(t, ext1, tc.answer, 2),
+					objResultFrom(t, ext2, tc.answer, 3),
+				})
+
+				require.NotNil(t, winner)
+				assert.Equal(t, tc.probesTo, probes, "probes must go to non-winners in order and stop at the first block returned")
+				if tc.fires {
+					require.Nil(t, winner.Error, "a confirmed block outside retention must release the internal quota")
+					assert.Equal(t, 1.0, waivedMetricValue()-before)
+					return
+				}
+				require.NotNil(t, winner.Error, "an unconfirmed answer block must never prove itself outside retention")
+				assert.Equal(t, 0.0, waivedMetricValue()-before)
+			})
+		}
 	})
 }
 

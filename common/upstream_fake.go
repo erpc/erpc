@@ -26,6 +26,7 @@ type FakeUpstream struct {
 	cordonMu           sync.RWMutex
 	tracker            HealthTracker
 	stateProvenBlock   atomic.Int64
+	forward            func(context.Context, *NormalizedRequest) (*NormalizedResponse, error)
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -84,6 +85,14 @@ func WithGrpcConfig(cfg *GrpcUpstreamConfig) func(*FakeUpstream) {
 func WithFakeUpstreamNetworkID(networkID string) func(*FakeUpstream) {
 	return func(u *FakeUpstream) {
 		u.networkIDOverride = networkID
+	}
+}
+
+// WithForward makes Forward answer through fn; without it Forward returns
+// nil, nil.
+func WithForward(fn func(context.Context, *NormalizedRequest) (*NormalizedResponse, error)) func(*FakeUpstream) {
+	return func(u *FakeUpstream) {
+		u.forward = fn
 	}
 }
 
@@ -158,6 +167,9 @@ func (u *FakeUpstream) EvmStatePoller() EvmStatePoller {
 }
 
 func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck, isHedgeAttempt bool) (*NormalizedResponse, error) {
+	if u.forward != nil {
+		return u.forward(ctx, nq)
+	}
 	return nil, nil
 }
 

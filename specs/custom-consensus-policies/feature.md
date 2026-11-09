@@ -540,18 +540,24 @@ Layers that make those grades work:
    Null-shaped pruning is ambiguous at the source, and a block number inside
    an answer is the answering upstreams' own claim: two upstreams that agree on
    a fabricated tx can also agree on a fabricated old block (issue 1363). So
-   the proof reads only the block the client's request names.
+   the proof reads the block the client's request names. A hash lookup
+   (`eth_getTransactionByHash`, `eth_getTransactionReceipt`,
+   `eth_getBlockByHash`) names none: its answer's block number and hash count
+   only once an upstream **outside the agreeing set** returns that block for
+   `eth_getBlockByNumber(n, false)` under the same hash, with the requested
+   hash as the block or one of its transactions. Abstainers are asked first,
+   then the round's other upstreams; the first block returned decides, so a
+   liar cannot shop for a confirmer, and a null or an error moves on.
    `waiveAgreementOnEmptyOutsideRetention` fires only when **≥ `minAgreement`**
    distinct matching participants returned empty, **no** matching participant
-   returned non-empty data, **and** the requested block is proven outside
-   retention. Proof prefers each abstainer's finite `blockAvailability` lower
-   bound (`requestedBlock < lower`); else chain-head depth
-   (`head − requestedBlock > retentionBlocks`), where `head` is trusted from
-   the network served tip **only** under majority served-tip mode
-   (`evm.servedTip.enabledFor: latest`), otherwise the min of ≥ 2 corroborated
-   participant poller latests. Default max-mode tip is **not** trusted. A
-   request that names no concrete block (hash lookups, tags) → no proof →
-   dispute.
+   returned non-empty data, **and** that block is proven outside retention.
+   Proof prefers each abstainer's finite `blockAvailability` lower bound
+   (`block < lower`); else chain-head depth (`head − block >
+   retentionBlocks`), where `head` is trusted from the network served tip
+   **only** under majority served-tip mode (`evm.servedTip.enabledFor:
+   latest`), otherwise the min of ≥ 2 corroborated participant poller
+   latests. Default max-mode tip is **not** trusted. A tag request, or a hash
+   lookup whose block no non-winner confirms → no proof → dispute.
 
  The synthesized default mixed-node tie (a lone non-empty archive group tying
  an equally-sized empty internal group at `agreementThreshold`) produces an
@@ -586,7 +592,7 @@ check from the eval) with zero extra JS.
 | Old block, `blockAvailability` correct | Guard short-circuit → MissingData. **`waive-missing`**: waiver → external 2-agreement. **default**: composition dispute |
 | Old block, `blockAvailability` stale/wrong | Provider error normalized to MissingData → same split by selected policy |
 | Pruned tx, node returns MissingData error | `waive-missing` (strategy) → waiver; other callers on default → dispute |
-| Pruned block, node returns `null` | Empty-waiver serves when ≥ `minAgreement` matching nulls + requested block proven outside retention; recent null (inside retention/bounds) or hash lookup → dispute |
+| Pruned block, node returns `null` | Empty-waiver serves when ≥ `minAgreement` matching nulls + block proven outside retention (the request's block, or a hash lookup's answer block confirmed by a non-winner); recent null (inside retention/bounds), or a hash lookup no non-winner confirms → dispute |
 | Data never existed (all null / all MissingData) | `null` served (empty ≥ threshold) / agreed MissingData error — correct |
 | Internal + external both return MissingData, one external returns the value | **Composition dispute** — a matching participant that returned data holds the quota; waiver does not fire |
 | Just-mined tx not yet on internal (internal null) | Dispute → retry succeeds |
@@ -639,7 +645,7 @@ Metric names are `erpc_`-prefixed; all carry `project` + `network` labels.
 | `X-ERPC-Consensus-Policy` response header | Chosen policy name; **output-only** (never read from the request), emitted only when a selector is configured |
 | `erpc_consensus_policy_selected_total{consensus_policy}` | Named policy chosen per served round (`default` = inline / `return "default"` / null / fail-closed) |
 | `erpc_consensus_composition_waived_total{tag,reason}` | Waiver fires (`missing_data` / `empty_outside_retention`) |
-| `erpc_consensus_composition_waiver_unproven_total{reason}` | Empty-waiver held for missing proof (`no_request_block` / `no_avail_bound` / `no_head`); mid-round deferral is **debug-only**, not counted |
+| `erpc_consensus_composition_waiver_unproven_total{reason}` | Empty-waiver held for missing proof (`no_request_block` / `block_unconfirmed` / `block_contradicted` / `no_avail_bound` / `no_head`); mid-round deferral is **debug-only**, not counted |
 | `erpc_consensus_policy_eval_duration_seconds` | Eval latency histogram |
 | `erpc_consensus_policy_eval_failed_total{reason}` | Eval **ran** and failed (`timeout`, `throw`, `unknown_name`) — not for intentional `"default"` |
 | Warn log on unknown policy name | Config typo signal |
