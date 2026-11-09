@@ -694,8 +694,8 @@ func TestMissingDataWaiver_OptInOnly(t *testing.T) {
 // agreementThreshold 2, maxParticipants 4, internal minParticipants 2 /
 // minAgreement 1 with BOTH waiver flags, external floor minParticipants 2 /
 // minAgreement 1, both internals wrapped ErrUpstreamRequest/ErrEndpointMissingData
-// (jsonrpc:-32014), both externals agree on one non-empty value, method has no
-// blockEvidenceFields (empty-waiver cannot prove). PreferNonEmpty+ReturnError
+// (jsonrpc:-32014), both externals agree on one non-empty value, the request
+// names no block (empty-waiver cannot prove). PreferNonEmpty+ReturnError
 // without AcceptMostCommon used to flake: the generic threshold rule picked the
 // MissingData ConsensusError group by map iteration, then composition-disputed
 // because the MissingData waiver releases the internal quota on the wrong winner.
@@ -718,7 +718,7 @@ func TestMissingDataWaiver_StgShape_TwoInternalsWrappedMissingData(t *testing.T)
 			},
 			{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
 		},
-		// eth_getBalance is not in blockEvidenceFields — empty waiver cannot prove.
+		// The test request names no block — the empty waiver cannot prove.
 	}
 	int1 := taggedUpstream("internal-blue", "type:internal")
 	int2 := taggedUpstream("internal-green", "type:internal")
@@ -1138,7 +1138,7 @@ func TestEmptyOutsideRetentionWaivedQuotas_Unit(t *testing.T) {
 	})
 
 	t.Run("finite bound in-range blocks chain-head fallback", func(t *testing.T) {
-		// Bound says winner is still served (lower <= winnerBlock); head depth
+		// Bound says the requested block is still served (lower <= requestedBlock); head depth
 		// alone would prove outside retention. Prefer bound evidence — do not
 		// waive via the chain-head fallback (feature §7.1).
 		lower := int64(100)
@@ -1158,14 +1158,14 @@ func TestEmptyOutsideRetentionWaivedQuotas_Unit(t *testing.T) {
 			"contradictory finite avail bound must not be overridden by chain-head depth")
 	})
 
-	t.Run("no waiver without winner block evidence", func(t *testing.T) {
+	t.Run("no waiver without a requested block", func(t *testing.T) {
 		cfg := &config{maxParticipants: 2, agreementThreshold: 1, requiredParticipants: reqs}
 		analysis := analyze(cfg, []*execResult{
 			emptyResultFrom(t, internal, 0),
 			objResultFrom(t, ext1, map[string]interface{}{"blockNumber": "0x10"}, 1),
 		})
 		assert.Empty(t, emptyOutsideRetentionWaivedQuotas(analysis, reqs, nil, head),
-			"no extractable winner block means no proof — fail closed")
+			"a request naming no block means no proof — fail closed")
 	})
 
 	t.Run("no waiver without opt-in", func(t *testing.T) {
@@ -1213,70 +1213,6 @@ func TestEmptyOutsideRetentionWaivedQuotas_Unit(t *testing.T) {
 	})
 }
 
-func TestWinnerBlockEvidence(t *testing.T) {
-	ext1 := taggedUpstream("external-1", "type:external")
-	cfg := &config{
-		maxParticipants:     2,
-		agreementThreshold:  1,
-		blockEvidenceFields: map[string][]string{"eth_getTransactionByHash": {"blockNumber"}},
-	}
-	lg := zerolog.Nop()
-	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-
-	nonEmptyGroup := func(analysis *consensusAnalysis) *responseGroup {
-		for _, g := range analysis.groups {
-			if g.ResponseType == ResponseTypeNonEmpty {
-				return g
-			}
-		}
-		return nil
-	}
-
-	t.Run("extracts the winner block for a configured method", func(t *testing.T) {
-		analysis := analyze(cfg, []*execResult{
-			objResultFrom(t, ext1, map[string]interface{}{"blockNumber": "0x10"}, 0),
-		})
-		analysis.method = "eth_getTransactionByHash"
-		got := e.winnerBlockEvidence(analysis, nonEmptyGroup(analysis))
-		require.NotNil(t, got)
-		assert.Equal(t, int64(16), got.Int64())
-	})
-
-	t.Run("nil for an unlisted method", func(t *testing.T) {
-		analysis := analyze(cfg, []*execResult{
-			objResultFrom(t, ext1, map[string]interface{}{"blockNumber": "0x10"}, 0),
-		})
-		analysis.method = "eth_getBalance" // not in blockEvidenceFields
-		assert.Nil(t, e.winnerBlockEvidence(analysis, nonEmptyGroup(analysis)))
-	})
-
-	t.Run("nil for negative block evidence", func(t *testing.T) {
-		analysis := analyze(cfg, []*execResult{
-			objResultFrom(t, ext1, map[string]interface{}{"blockNumber": "-1"}, 0),
-		})
-		analysis.method = "eth_getTransactionByHash"
-		assert.Nil(t, e.winnerBlockEvidence(analysis, nonEmptyGroup(analysis)),
-			"negative block numbers must not prove outside retention")
-	})
-
-	t.Run("first independently resolved field wins", func(t *testing.T) {
-		multi := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: &config{
-			maxParticipants:    2,
-			agreementThreshold: 1,
-			blockEvidenceFields: map[string][]string{
-				"eth_getTransactionByHash": {"missingField", "blockNumber", "slot"},
-			},
-		}}}
-		analysis := analyze(cfg, []*execResult{
-			objResultFrom(t, ext1, map[string]interface{}{"blockNumber": "0x10", "slot": "0x99"}, 0),
-		})
-		analysis.method = "eth_getTransactionByHash"
-		got := multi.winnerBlockEvidence(analysis, nonEmptyGroup(analysis))
-		require.NotNil(t, got)
-		assert.Equal(t, int64(16), got.Int64(), "must use first present field, not require all fields")
-	})
-}
-
 func TestEmptyOutsideRetentionWaiver_FailsClosedWithoutNetworkHead(t *testing.T) {
 	// End-to-end through enforceWinnerComposition: two externals agree on a
 	// tx, the lone internal returned empty. But the test analysis carries no
@@ -1287,7 +1223,6 @@ func TestEmptyOutsideRetentionWaiver_FailsClosedWithoutNetworkHead(t *testing.T)
 		maxParticipants:      3,
 		agreementThreshold:   2,
 		requiredParticipants: emptyWaiverQuota(),
-		blockEvidenceFields:  map[string][]string{"eth_getTransactionByHash": {"blockNumber"}},
 	}
 	internal := taggedUpstream("internal-1", "type:internal")
 	ext1 := taggedUpstream("external-1", "type:external")
@@ -1319,7 +1254,7 @@ func TestParticipantLatestBlock(t *testing.T) {
 			resultFrom(t, a, "0x1", 0),
 			resultFrom(t, b, "0x1", 1),
 		})
-		assert.Equal(t, int64(20_000_000), participantLatestBlock(analysis),
+		assert.Equal(t, int64(20_000_000), participantLatestBlock(analysis, nil),
 			"an inflated poller must not raise the fallback head")
 	})
 
@@ -1331,7 +1266,7 @@ func TestParticipantLatestBlock(t *testing.T) {
 			resultFrom(t, a, "0x1", 0),
 			resultFrom(t, b, "0x1", 1),
 		})
-		assert.Equal(t, int64(0), participantLatestBlock(analysis),
+		assert.Equal(t, int64(0), participantLatestBlock(analysis, nil),
 			"one uncorroborated poller is not a chain head")
 	})
 
@@ -1342,7 +1277,7 @@ func TestParticipantLatestBlock(t *testing.T) {
 			resultFrom(t, a, "0x1", 0),
 			resultFrom(t, a, "0x2", 1),
 		})
-		assert.Equal(t, int64(0), participantLatestBlock(analysis),
+		assert.Equal(t, int64(0), participantLatestBlock(analysis, nil),
 			"two results from one upstream are still a single poller")
 	})
 }

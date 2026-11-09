@@ -601,6 +601,21 @@ func FindDefaultCacheMethodConfig(method string) *CacheMethodConfig {
 	return defaultCacheMethodsByLower[strings.ToLower(method)]
 }
 
+// ResolveMethodConfig resolves a method against the network's
+// methods.definitions, then the built-in tables. Networks configured with
+// preserveDefaultMethods:false keep only their own definitions, so the
+// built-in fallback is what still resolves the standard methods.
+func ResolveMethodConfig(method string, network Network) *CacheMethodConfig {
+	if network != nil {
+		if cfg := network.Config(); cfg != nil {
+			if mc := cfg.Methods.FindMethodConfig(method); mc != nil {
+				return mc
+			}
+		}
+	}
+	return FindDefaultCacheMethodConfig(method)
+}
+
 // IsKnownMethodName reports whether method is, exactly, a name m defines or a
 // built-in table does: a set config bounds, so a cache keyed by it cannot be
 // grown by client input (casing variants included).
@@ -3297,12 +3312,6 @@ func overlayConsensusPolicy(base, child *ConsensusPolicyConfig) {
 		base.PreferHighestValueFor = make(map[string][]string, len(child.PreferHighestValueFor))
 		for method, fields := range child.PreferHighestValueFor {
 			base.PreferHighestValueFor[method] = append([]string(nil), fields...)
-		}
-	}
-	if child.BlockEvidenceFields != nil {
-		base.BlockEvidenceFields = make(map[string][]string, len(child.BlockEvidenceFields))
-		for method, fields := range child.BlockEvidenceFields {
-			base.BlockEvidenceFields[method] = append([]string(nil), fields...)
 		}
 	}
 	if child.fireAndForgetSet {

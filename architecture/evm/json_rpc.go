@@ -62,7 +62,7 @@ func deepCopyValue(val interface{}) interface{} {
 // translated: eRPC tracks neither state.
 func TagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, tag string) int64 {
 	method, _ := nrq.Method()
-	return tagBlockNumber(ctx, nrq, getMethodConfig(method, nrq.Network()), tag)
+	return tagBlockNumber(ctx, nrq, common.ResolveMethodConfig(method, nrq.Network()), tag)
 }
 
 func tagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, cfg *common.CacheMethodConfig, tag string) int64 {
@@ -117,7 +117,7 @@ func ReadsLatest(ctx context.Context, network common.Network, nrq *common.Normal
 		finalized, ok := headNumberAxis(ctx, nrq)
 		return ok && !finalized && d != nil && d.EnforceHighestBlock, true
 	}
-	return !(d != nil && d.SkipInterpolation) && requestBlockTag(ctx, nrq) == "latest" && !keepsLatestTag(getMethodConfig(method, network)), false
+	return !(d != nil && d.SkipInterpolation) && requestBlockTag(ctx, nrq) == "latest" && !keepsLatestTag(common.ResolveMethodConfig(method, network)), false
 }
 
 func namesFinalized(v interface{}) bool {
@@ -330,7 +330,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 	method = jrq.Method
 	reqId = jrq.ID
 	network := nrq.Network()
-	methodCfg := getMethodConfig(method, network)
+	methodCfg := common.ResolveMethodConfig(method, network)
 	if methodCfg == nil || len(methodCfg.ReqRefs) == 0 {
 		jrq.RUnlock()
 		return
@@ -406,7 +406,7 @@ func NormalizeHttpJsonRpc(ctx context.Context, nrq *common.NormalizedRequest, jr
 		}
 
 		// Use composite parser to distinguish block numbers, tags, and hashes.
-		blockRef, blockNum, err := parseCompositeBlockParam(p.value)
+		blockRef, blockNum, err := common.ParseEvmBlockParam(p.value)
 		if err == nil && (blockRef != "" || blockNum > 0) {
 			selectorSeen = true
 		}

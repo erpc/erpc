@@ -563,11 +563,11 @@ func (p *stateProber) runTagStates(ctx context.Context) {
 // familyKeepsTag reports whether a family-3 method's config keeps "latest"
 // on its way to upstreams (translateLatestTag: false).
 func (p *stateProber) familyKeepsTag() bool {
-	if keepsLatestTag(getMethodConfig("eth_callMany", p.network)) {
+	if keepsLatestTag(common.ResolveMethodConfig("eth_callMany", p.network)) {
 		return true
 	}
 	for method := range stateBlockParam {
-		if keepsLatestTag(getMethodConfig(method, p.network)) {
+		if keepsLatestTag(common.ResolveMethodConfig(method, p.network)) {
 			return true
 		}
 	}
