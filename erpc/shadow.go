@@ -14,6 +14,37 @@ import (
 	"github.com/erpc/erpc/upstream"
 )
 
+// shadowTargets picks the shadow upstreams that mirror a request for method:
+// those that allow the method and win their sample roll. It runs in the
+// client's request path before the response is parsed and cloned, so a
+// request no shadow takes costs neither; nil when none does.
+func (p *PreparedProject) shadowTargets(method string, shadowUpstreams []*upstream.Upstream) []*upstream.Upstream {
+	var targets []*upstream.Upstream
+	for _, ups := range shadowUpstreams {
+		allowed, err := ups.ShouldHandleMethod(method)
+		if err != nil {
+			p.Logger.Error().Err(err).Msg("failed to check if method is allowed for shadow upstream")
+			continue
+		}
+		if !allowed {
+			p.Logger.Debug().Str("method", method).Str("upstreamId", ups.Id()).Msg("method not allowed for shadow upstream")
+			continue
+		}
+		if sampleRate := ups.Config().Shadow.SampleRate; sampleRate != nil && *sampleRate < 1.0 && rand.Float64() >= *sampleRate {
+			p.Logger.Debug().
+				Str("method", method).
+				Str("upstreamId", ups.Id()).
+				Float64("sampleRate", *sampleRate).
+				Msg("shadow request skipped due to sampling")
+			continue
+		}
+		targets = append(targets, ups)
+	}
+	return targets
+}
+
+// executeShadowRequests mirrors resp's request to each of shadowUpstreams,
+// the targets shadowTargets picked.
 func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Network, shadowUpstreams []*upstream.Upstream, resp *common.NormalizedResponse) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -60,15 +91,6 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 
 	// Fire shadow requests concurrently
 	for _, ups := range shadowUpstreams {
-		allowed, err := ups.ShouldHandleMethod(method)
-		if err != nil {
-			p.Logger.Error().Err(err).Msg("failed to check if method is allowed for shadow upstream")
-			continue
-		}
-		if !allowed {
-			p.Logger.Debug().Str("method", method).Str("upstreamId", ups.Id()).Msg("method not allowed for shadow upstream")
-			continue
-		}
 		// Block availability, same question the real routing path asks.
 		//
 		// Shadow used to mirror EVERY sampled request regardless of whether
@@ -98,19 +120,6 @@ func (p *PreparedProject) executeShadowRequests(ctx context.Context, network *Ne
 					Msg("shadow request skipped: block outside the upstream's available range")
 				continue
 			}
-		}
-		// Apply sample rate: skip this shadow upstream based on configured probability
-		sampleRate := 1.0
-		if ups.Config().Shadow.SampleRate != nil {
-			sampleRate = *ups.Config().Shadow.SampleRate
-		}
-		if sampleRate < 1.0 && rand.Float64() >= sampleRate {
-			p.Logger.Debug().
-				Str("method", method).
-				Str("upstreamId", ups.Id()).
-				Float64("sampleRate", sampleRate).
-				Msg("shadow request skipped due to sampling")
-			continue
 		}
 
 		ups := ups // capture loop variable

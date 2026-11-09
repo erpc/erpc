@@ -1179,7 +1179,7 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	}
 	// Shadow upstreams never join the network's upstreams, so intake would
 	// drop every header they feed.
-	if e.SubscriptionSource != nil && *e.SubscriptionSource && u.Shadow != nil && u.Shadow.Enabled {
+	if e.SubscriptionSource != nil && *e.SubscriptionSource && u.IsShadow() {
 		return fmt.Errorf("upstream '%s': evm.subscriptionSource cannot be true on a shadow upstream", u.Id)
 	}
 	// NodeType deprecated; keep syntax validation for back-compat only

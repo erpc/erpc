@@ -299,6 +299,21 @@ func TestShadowCompare_ForwardPath(t *testing.T) {
 	)
 	const ign, plain = "shadowcmp-fwd-ign", "shadowcmp-fwd-plain"
 
+	// The shadows poll heads far above the primary's (rpc2, rpc3 mocks). A
+	// shadow only receives copies, so its head must move no network value
+	// that routing reads: the finalized head and the primary's lag.
+	primary := f.network.upstreamsRegistry.GetNetworkUpstreams(f.ctx, f.network.networkId)[0]
+	shadowCmpWaitHead(t, primary, 0x11118888)
+	shadowCmpWaitHead(t, f.shadowUpstream(t, ign), 0x22228888)
+	shadowCmpWaitHead(t, f.shadowUpstream(t, plain), 0x33338888)
+	tr, net := f.network.metricsTracker, f.network.networkId
+	require.Eventually(t, func() bool { return tr.GetNetworkFinalizedBlock(net) == 0x11117777 },
+		3*time.Second, 10*time.Millisecond, "the network finalized head is the primary's")
+	require.Never(t, func() bool {
+		return tr.GetNetworkFinalizedBlock(net) != 0x11117777 ||
+			tr.GetUpstreamMethodMetrics(primary, "*", common.DataFinalityStateAll).BlockHeadLag.Load() != 0
+	}, time.Second, 20*time.Millisecond, "a shadow's head moved the network finalized head or the primary's lag")
+
 	cases := []struct {
 		name          string
 		method        string
@@ -412,10 +427,11 @@ func TestShadowCompare_ForwardPath(t *testing.T) {
 	}
 }
 
-// TestShadowCompare_SkipConditions calls executeShadowRequests directly with a
-// concrete-height eth_getBalance. Only the control shadow may be sent the
-// request; the ignored-method, zero-sample-rate, out-of-range and
-// invalid-pattern shadows are skipped before any goroutine is spawned.
+// TestShadowCompare_SkipConditions mirrors a concrete-height eth_getBalance
+// through shadowTargets and executeShadowRequests, the path Forward takes.
+// Only the control shadow may be sent the request; the ignored-method,
+// zero-sample-rate and invalid-pattern shadows are no targets, and the
+// out-of-range one is skipped before any goroutine is spawned.
 func TestShadowCompare_SkipConditions(t *testing.T) {
 	zero := 0.0
 	f := newShadowCmpFixture(t, "shadowcmp_skip", nil,
@@ -467,7 +483,7 @@ func TestShadowCompare_SkipConditions(t *testing.T) {
 	resp := shadowCmpResponse(f.network,
 		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","0x1"]}`,
 		`"0x64"`, "")
-	f.prj.executeShadowRequests(f.ctx, f.network, f.network.ShadowUpstreams(), resp)
+	f.prj.executeShadowRequests(f.ctx, f.network, f.prj.shadowTargets(method, f.network.ShadowUpstreams()), resp)
 
 	shadowCmpAwait(t, "shadowcmp-skip-control", method, beforeControl, shadowCmpOutcome{identical: 1})
 	assert.Equal(t, 1, controlHits.count(), "control shadow is sent the request once")
