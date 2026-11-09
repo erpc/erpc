@@ -1431,7 +1431,9 @@ func TestCheckUpstreamBlockAvailability_ErrorHasCorrectDetails(t *testing.T) {
 //
 // EXPECTED: The upstream should be selected once, fail block availability check, and
 // the error should be recorded. The loop should then exhaust upstreams and return
-// ErrUpstreamsExhausted, NOT spin until context timeout.
+// ErrUpstreamsExhausted, NOT spin until context timeout. The network has a block time
+// sample, so the block is far future and refused at once; before the first sample a
+// report age is unknown and bounds nothing, so the block would wait up to W (spec §6.4).
 func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -1492,6 +1494,7 @@ func TestRetryableBlockUnavailability_NoInfiniteLoop(t *testing.T) {
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
+	sampleBlockTime(t, network)
 
 	// Request block 0x111188BA = latestBlock(0x11118888) + 50
 	// Distance of 50 is within default MaxRetryableBlockDistance of 128, so this is a RETRYABLE error
