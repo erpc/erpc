@@ -27,6 +27,7 @@ type Faults struct {
 	HeadJitter      time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
 	TagDelay        time.Duration // eth_blockNumber and the latest tag name its newest block served at least this long, as a load balancer whose head readers trail its block readers; newHeads pushes do not wait
 	BlockLag        time.Duration // eth_getBlockByNumber of a number and eth_getBlockByHash serve a block only this long after its tag names it, as a load balancer whose head readers lead its block readers; receipts, logs and state do not wait
+	LogsLag         time.Duration // eth_getLogs by range leaves out a block's logs until this long after its tag names it, as a vendor whose log index trails its head: its [] for the block reads as a block with no logs; by blockHash, receipts and blocks do not wait
 	PushDelay       time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
 	Frozen          bool          // head stops moving; still answers what it holds
 	WrongChainID    bool          // eth_chainId answers another chain
@@ -276,13 +277,16 @@ func (v *Vendor) Head() *Block {
 
 // ServesAt is when the vendor first answers method for b: its mint, plus
 // HeadDelay and its HeadJitter share, plus BlockLag for a block read by
-// number or hash.
+// number or hash, or LogsLag for its logs.
 func (v *Vendor) ServesAt(b *Block, method string) time.Time {
 	v.chain.mu.Lock()
 	defer v.chain.mu.Unlock()
 	at := b.MintedAt.Add(v.serveDelayLocked(b))
-	if method == "eth_getBlockByNumber" || method == "eth_getBlockByHash" {
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash":
 		at = at.Add(v.faults.BlockLag)
+	case "eth_getLogs":
+		at = at.Add(v.faults.LogsLag)
 	}
 	return at
 }
@@ -1166,7 +1170,7 @@ func (v *Vendor) logsLocked(params []interface{}) (interface{}, *rpcError) {
 			to, _ = parseNumber(s)
 		}
 		for n := from; n <= to && n <= v.tip.Number; n++ {
-			if b := v.byNumberLocked(n); b != nil {
+			if b := v.byNumberLocked(n); b != nil && (v.faults.LogsLag == 0 || !time.Now().Before(b.MintedAt.Add(v.serveDelayLocked(b)+v.faults.LogsLag))) {
 				blocks = append(blocks, b)
 			}
 		}

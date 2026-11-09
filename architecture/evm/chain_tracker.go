@@ -15,6 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm/integrity"
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
@@ -3657,6 +3658,38 @@ func (t *ChainTracker) HeaderAt(number int64) (*integrity.Header, bool) {
 		return p.parsed, true
 	}
 	return nil, false
+}
+
+// LogsVerdict is the logs gate's verdict on a range (LogsMayExist).
+type LogsVerdict uint8
+
+const (
+	LogsUnheld LogsVerdict = iota // the range is below the pins, or none is held: no header judges it
+	LogsNone                      // every pinned block of the range proves no log matches
+	LogsMaybe                     // a block of the range may hold a matching log
+)
+
+// LogsMayExist is the logs gate (spec §6.4 logs gate) for an empty
+// eth_getLogs answer of f over [from, to]: LogsMaybe, with the highest
+// such block, when the range reaches above the pins (no header shows that
+// block yet) or a pinned header there does not prove that none of its
+// logs match (bloomGate.provesNoLogs); LogsNone when every pinned block of
+// the range proves it. Held data only: it fetches nothing and locks
+// nothing.
+func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64) (int64, LogsVerdict) {
+	s := t.state.Load()
+	if len(s.pins) == 0 || to < int64(s.base) {
+		return 0, LogsUnheld
+	}
+	if to > int64(s.head().number) {
+		return to, LogsMaybe
+	}
+	for n := to; n >= max(from, int64(s.base)); n-- {
+		if !t.fetch.bloom.provesNoLogs(s.pinAt(uint64(n)), f.MayMatch) {
+			return n, LogsMaybe
+		}
+	}
+	return 0, LogsNone
 }
 
 // HeaderByHash is a held header by hash, pinned or not. It never fetches.

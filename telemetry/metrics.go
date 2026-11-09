@@ -1014,6 +1014,20 @@ var (
 		Help:      "Total requests naming a block, by the refusal rule's outcome: served, thin_found and thin_missing (Firm < N <= Latest, found or still empty or missing after the retry), retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_wait; by-hash waits for a block above Latest: held_served, held_null.",
 	}, []string{"project", "network", "rule"})
 
+	// MetricLogsEmptyGateTotal counts the logs gate's verdicts on empty
+	// eth_getLogs answers the refusal rule would serve (spec §6.4 logs
+	// gate, §17): no (the pinned headers prove the range has no matching
+	// log: served at once), or, for a range that may hold one,
+	// maybe_agreed (a second holder answered it empty too), maybe_found
+	// (the sweep found logs) and maybe_unavailable (none did: a
+	// block-unavailable error). The maybe verdicts are the reads that paid
+	// a sweep.
+	MetricLogsEmptyGateTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "logs_empty_gate_total",
+		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: no (headers prove no matching log; served), maybe_agreed (a second holder answered empty; served), maybe_found (the sweep found logs), maybe_unavailable (block-unavailable error). maybe_* reads paid a sweep.",
+	}, []string{"project", "network", "verdict"})
+
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its
 	// caller and how it was met.
 	MetricHeadAskTotal = DefineCounter(prometheus.CounterOpts{

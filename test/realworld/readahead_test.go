@@ -42,8 +42,8 @@ const (
 // p23Shape is one chain P23 runs on: its vendors, block time and mint
 // jitter (blocks come bt ± jitter apart, so the block clock's predicted
 // sight misses some and its tail finds them), the faults every vendor
-// has, vendor-a's BlockLag, the blocks before the bar (warm), the
-// clock-only, by-hash and read-ahead runs' lengths, and the read-ahead
+// has, vendor-a's BlockLag and LogsLag, the blocks before the bar (warm),
+// the clock-only, by-hash and read-ahead runs' lengths, and the read-ahead
 // run's head fetch budget (0: p23FetchBudget). With old, it runs 2
 // old-image and 2 new-image pods, each image's pair sharing redis as a
 // fleet's pods do, and reports the new image's reads beside the old's
@@ -56,7 +56,7 @@ type p23Shape struct {
 	ups               []freshUp
 	bt, jitter        time.Duration
 	faults            chainsim.Faults
-	blockLag          time.Duration
+	blockLag, logsLag time.Duration
 	warm              int
 	base, hash, ahead time.Duration
 	budget            float64
@@ -105,17 +105,20 @@ var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time
 	}}
 
 // p23Band: P23-slow's vendors without TagDelay, vendor-a's block readers
-// trailing its tag by 300 ms (BlockLag): its tag names each block first,
-// so a read of it is a band read whose first attempt, vendor-a, answers
-// it empty, and no vendor serves the block by number for 250 ms. Main's
-// retry waited for the block clock's next turn: by-number reads 0.56 s
-// later than the first vendor's serve at p50 (production, mantle and
-// optimism: retried_found reads 1-3 s on 2 s blocks). No read can answer
-// before a vendor serves the block: the new image's are no later than the
-// old's. Main: 1.90-1.93 head fetches per new block.
+// trailing its tag by 300 ms (BlockLag) and its log index by 500 ms
+// (LogsLag): its tag names each block first, so a read of it is a band
+// read whose first attempt, vendor-a, answers it empty, and no vendor
+// serves the block by number for 250 ms; its eth_getLogs answer [] for
+// the block until vendor-c serves it too, as a vendor whose log index
+// trails its head. Main's retry waited for the block clock's next turn:
+// by-number reads 0.56 s later than the first vendor's serve at p50
+// (production, mantle and optimism: retried_found reads 1-3 s on 2 s
+// blocks). No read can answer before a vendor serves the block: the new
+// image's are no later than the old's. Main: 1.90-1.93 head fetches per
+// new block.
 var p23Band = p23Shape{name: "P23-band", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	base: 2 * time.Minute, hash: 2 * time.Minute, ahead: 3 * time.Minute,
-	blockLag: 300 * time.Millisecond, budget: 1.95, old: true, peer: true,
+	blockLag: 300 * time.Millisecond, logsLag: 500 * time.Millisecond, budget: 1.95, old: true, peer: true,
 	ups: []freshUp{
 		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 250 * time.Millisecond},
@@ -183,9 +186,9 @@ func p23(sh p23Shape) spec {
 	if sh.old {
 		sp.pods, sp.oldPods, sp.memory, sp.splitState = 4, []int{0, 1}, false, true
 	}
-	if sh.blockLag > 0 {
+	if sh.blockLag > 0 || sh.logsLag > 0 {
 		f := sp.faults["http-a"]
-		f.BlockLag = sh.blockLag
+		f.BlockLag, f.LogsLag = sh.blockLag, sh.logsLag
 		sp.faults["http-a"] = f
 	}
 	if sh.future {
@@ -205,6 +208,9 @@ type p23Reads struct {
 	// empty counts by-number reads answered empty or failed: a band
 	// read answered so is a retried_missing (§17).
 	empty int
+	// wrongEmpty counts eth_getLogs answered [] for a block whose
+	// canonical logs match the read (§6.4 logs gate): wrong data.
+	wrongEmpty int
 }
 
 func newP23Reads() *p23Reads {
@@ -323,6 +329,16 @@ func p23Body(s *scenario, sh p23Shape) {
 		s.p23Judge(&b, p.idx, "by-hash reads", hashReads[p.idx], hashJudged, strict)
 		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx], hashJudged, strict)
 		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %d by-number reads answered empty or failed\n", p.idx+1, s.image(p.idx), reads[p.idx].empty)
+		var gate []string
+		for _, v := range []string{"no", "maybe_agreed", "maybe_found", "maybe_unavailable"} {
+			n, _ := s.metric(p.idx, "erpc_logs_empty_gate_total", map[string]string{"verdict": v})
+			gate = append(gate, fmt.Sprintf("%s %.0f", v, n))
+		}
+		fmt.Fprintf(&b, "pod-%d (%s image) eth_getLogs answered [] for a block with matching logs (wrongEmpty): %d; logs gate verdicts: %s\n",
+			p.idx+1, s.image(p.idx), reads[p.idx].wrongEmpty, strings.Join(gate, ", "))
+		if !p.old && reads[p.idx].wrongEmpty > 0 {
+			s.violate(s.name, "pod-%d: %d eth_getLogs answered [] for a block with matching logs", p.idx+1, reads[p.idx].wrongEmpty)
+		}
 		if !p.old {
 			s.judgeView(&b, taps[p.idx], vl, viewRules{bound: liveViewBound, numbers: true})
 		}
@@ -360,7 +376,10 @@ func p23Body(s *scenario, sh p23Shape) {
 // eth_blockNumber answer (polled every bt/20): a client's eth_blockNumber
 // lands on one pod and its read of that block on another, the band's
 // source in production. With the shape's old, each read has beside it
-// the same read of the block p23Back below.
+// the same read of the block p23Back below. Each block's first
+// eth_getLogs read has beside it one filtered by an address and topic of
+// its first log (p23Filtered), so the logs gate tests a filter against
+// the header's bloom (§6.4 logs gate).
 func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23Shape) {
 	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.h.podClient()))
 	if err != nil {
@@ -391,6 +410,7 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 		}
 	}()
 	period := time.Duration(float64(time.Second) / p23AheadRate)
+	var filtered uint64
 	for i := 0; ctx.Err() == nil; i++ {
 		sleepCtx(ctx, period/2+rand.N(period))
 		v := view.Load()
@@ -420,6 +440,11 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 			case want == nil:
 				r.fail(kind, "%s(%d) answered %s before the chain made it", method, n, got)
 			case got != p12Want(method, want):
+				if method == "eth_getLogs" && got == "0 logs of []" {
+					r.mu.Lock()
+					r.wrongEmpty++
+					r.mu.Unlock()
+				}
 				r.fail(kind, "%s(%d) answered %s, not %s, after %s", method, n, got, p12Want(method, want), took.Round(time.Millisecond))
 			default:
 				r.ok(kind, s.p23Took(want, method, start, end))
@@ -427,10 +452,71 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 		}
 		wg.Add(1)
 		go read(v+ahead, method)
+		if n := v + ahead; method == "eth_getLogs" && n > filtered {
+			filtered = n
+			wg.Add(1)
+			go func() { defer wg.Done(); s.p23Filtered(call, r, n) }()
+		}
 		if sh.old && v > p23Back {
 			wg.Add(1)
 			go read(v+ahead-p23Back, method+" control")
 		}
+	}
+}
+
+// p23Filtered reads eth_getLogs(n, n) filtered by the address and first
+// topic of block n's first log, tallied as "eth_getLogs filtered"; a block
+// the chain has not made, or one with no logs, is not read. An answer of
+// [] is a wrongEmpty.
+func (s *scenario) p23Filtered(call func(result interface{}, method string, args ...interface{}) error, r *p23Reads, n uint64) {
+	const kind = "eth_getLogs filtered"
+	b := s.chain.CanonAt(n)
+	if b == nil || len(b.Logs()) == 0 {
+		return
+	}
+	first := b.Logs()[0]
+	want := 0
+	for _, l := range b.Logs() {
+		if l.Address == first.Address && l.Topics[0] == first.Topics[0] {
+			want++
+		}
+	}
+	q := map[string]interface{}{
+		"fromBlock": hexutil.EncodeUint64(n), "toBlock": hexutil.EncodeUint64(n),
+		"address": first.Address.Hex(), "topics": []interface{}{first.Topics[0].Hex()},
+	}
+	var logs []struct {
+		BlockHash hash `json:"blockHash"`
+	}
+	onBlock := func() bool {
+		for _, l := range logs {
+			if l.BlockHash.Hex() != b.Hash.Hex() {
+				return false
+			}
+		}
+		return true
+	}
+	start := time.Now()
+	err := call(&logs, "eth_getLogs", q)
+	end := time.Now()
+	took := end.Sub(start).Round(time.Millisecond)
+	if err != nil || len(logs) == 0 {
+		r.mu.Lock()
+		r.empty++
+		if err == nil {
+			r.wrongEmpty++
+		}
+		r.mu.Unlock()
+	}
+	switch {
+	case err != nil:
+		r.fail(kind, "eth_getLogs(%d) filtered failed after %s: %v", n, took, err)
+	case len(logs) == 0:
+		r.fail(kind, "eth_getLogs(%d) filtered answered [], not %d logs, after %s", n, want, took)
+	case len(logs) != want || !onBlock():
+		r.fail(kind, "eth_getLogs(%d) filtered answered %d logs, not %d of %s, after %s", n, len(logs), want, b.Hash.Hex(), took)
+	default:
+		r.ok(kind, s.p23Took(b, "eth_getLogs", start, end))
 	}
 }
 
