@@ -60,7 +60,7 @@ func PinLatestTag(ctx context.Context, n common.Network, u common.Upstream, r *c
 	method := jrq.Method
 	_, ok := latestStateSelector(method, jrq.Params)
 	jrq.RUnlock()
-	if !ok || keepsLatestTag(getMethodConfig(method, n)) {
+	if !ok || keepsLatestTag(common.ResolveMethodConfig(method, n)) {
 		return nil, 0, false
 	}
 	height = common.EvmHeadOf(n, ctx, r).Latest

@@ -43,24 +43,6 @@ func extractFieldValues(resp *common.NormalizedResponse, fields []string) []*big
 					rawValue = numVal
 				}
 			}
-		} else if strings.HasPrefix(field, "*.") {
-			// Array wildcard "*.field": result is an array; the evidence value
-			// is the max of the field across elements (the newest block in the
-			// batch — the right proof for retention). Supported so
-			// blockEvidenceFields can cover array results (eth_getLogs,
-			// eth_getBlockReceipts). An empty array has no proof.
-			var arr []map[string]interface{}
-			if err := common.SonicCfg.Unmarshal(resultBytes, &arr); err == nil {
-				key := strings.TrimPrefix(field, "*.")
-				var max *big.Int
-				for _, el := range arr {
-					v := parseNumericValue(el[key])
-					if v != nil && (max == nil || v.Cmp(max) > 0) {
-						max = v
-					}
-				}
-				rawValue = max
-			}
 		} else {
 			// Parse result as object and extract nested field
 			var resultObj map[string]interface{}
@@ -82,17 +64,12 @@ func extractFieldValues(resp *common.NormalizedResponse, fields []string) []*big
 // parseNumericValue converts various types to big.Int.
 // Handles hex strings (0x...), decimal strings, json.Number, and numeric types.
 // For float64, converts via string representation to preserve precision for large values.
-// A *big.Int passes through (used by the array-wildcard max path).
 func parseNumericValue(v interface{}) *big.Int {
 	if v == nil {
 		return nil
 	}
 
 	switch val := v.(type) {
-	case *big.Int:
-		// Already converted (e.g. array-wildcard max): pass through. Without
-		// this case a pre-computed *big.Int falls through to nil.
-		return val
 	case string:
 		val = strings.TrimSpace(val)
 		if val == "" {

@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"iter"
@@ -1341,40 +1340,32 @@ func (n *Network) blockTimeOrCold() time.Duration {
 }
 
 // byHashFamily is the §7 by-hash family, eth_getLogs by blockHash included
-// (spec §6.4): each method's paths to the number and the hash of the block
-// its answer names. debug_traceTransaction is not here: its answer names
-// no block.
-var byHashFamily = map[string]struct{ number, hash []interface{} }{
-	"eth_getBlockByHash":        {[]interface{}{"number"}, []interface{}{"hash"}},
-	"eth_getTransactionByHash":  {[]interface{}{"blockNumber"}, []interface{}{"blockHash"}},
-	"eth_getTransactionReceipt": {[]interface{}{"blockNumber"}, []interface{}{"blockHash"}},
-	"trace_transaction":         {[]interface{}{0, "blockNumber"}, []interface{}{0, "blockHash"}},
-	"eth_getLogs":               {[]interface{}{0, "blockNumber"}, []interface{}{0, "blockHash"}},
+// (spec §6.4): each method's path to the number of the block its answer
+// names. debug_traceTransaction is not here: its answer names no block.
+var byHashFamily = map[string][]interface{}{
+	"eth_getBlockByHash":        {"number"},
+	"eth_getTransactionByHash":  {"blockNumber"},
+	"eth_getTransactionReceipt": {"blockNumber"},
+	"trace_transaction":         {0, "blockNumber"},
+	"eth_getLogs":               {0, "blockNumber"},
 }
 
-// holdByHash returns the answer to send for resp, an answer to req, from
-// an upstream or the cache (spec §6.4). A by-hash answer from a block
-// above its lane's Latest, the view's Head, proves that block exists:
-// the wait is the lane's demand, and the block clock takes the proof
-// (ChainTracker.Proven). An upstream's answer naming the block's hash
-// makes that upstream's fetch of the block by number the block's one
-// probe, at once, whatever clock fetch is out: its header is that
-// upstream's canonical block there and its vote, so the view takes the
-// block within that round trip when the header serves at 1 holder, or
-// pins another hash there when the client's was a side block. A cache
-// answer prefers the cache's own upstream when it is a lane voter
-// (cacheVoter), which holds what the cache served, else the lane's first
-// voter whose counter holds the block, for the clock's probe of its head.
-// A header that serves only at q holders (a mismatch, §6.5) gets them
-// from the clock's holder fetch (§6.8). The answer is sent once the view
-// includes its block, and its upstream then counts as the block's holder
-// (noteHeld); it is null once the view pins another block at that number,
-// or when W passed, or ctx ended, with neither. Each wait counts its
-// outcome. held: resp was replaced by null.
-func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
-	bn, bh := byHashBlock(ctx, req, resp)
+// byHashAboveLatest reports whether resp, an answer to req from an
+// upstream or the cache, is a by-hash answer (byHashFamily) that names a
+// block above its lane's Latest (spec §6.4 by-hash answer). Such an answer
+// is sent as it came, at once, and never cached: its hash may be
+// provisional, a preconfirmation's that the sealed block replaces (an
+// optimism flashblocks upstream's receipts), so a wait for the view to
+// include it ended null for a receipt that exists, and a cached copy
+// would outlive the hash. It is the block clock's proof that the block
+// came (ChainTracker.Proven): the voter that answered gets the fetch of
+// that block by number (held), once per block, else the cache's own voter
+// (cacheVoter), else the lane's first voter whose counter holds it, gets
+// the probe of its head. No read waits on either.
+func (n *Network) byHashAboveLatest(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) bool {
+	bn := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
-		return resp, false
+		return false
 	}
 	sel := ""
 	if d := req.Directives(); d != nil {
@@ -1382,96 +1373,33 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	}
 	t := n.laneTracker(sel)
 	if t == nil {
-		return resp, false
-	}
-	var hash [32]byte
-	named := false
-	if len(bh) == 66 {
-		if b, err := hex.DecodeString(bh[2:]); err == nil {
-			named = copy(hash[:], b) == len(hash)
-		}
-	}
-	// includes is whether the view holds the block: Latest at or above it
-	// and its pin there, if any, the answer's; off: another block is
-	// pinned there.
-	includes := func() (in, off bool, moved <-chan struct{}) {
-		moved = t.Changed()
-		if h := n.headFor(tipScope{sel: sel}); h.Latest < bn {
-			return false, false, moved
-		}
-		if named {
-			if c, pinned := t.View().PinAt(uint64(bn)); pinned && c.Hash != hash {
-				return false, true, moved
-			}
-		}
-		return true, false, moved
+		return false
 	}
 	if h := n.headFor(tipScope{sel: sel}); h.Latest <= 0 || bn <= h.Latest {
-		return resp, false
+		return false
 	}
-	prover, _ := resp.Upstream().(common.EvmUpstream)
-	fromUpstream := prover != nil && !resp.SentAt().IsZero()
-	by := ""
-	if fromUpstream {
-		by = prover.Id()
+	by, held := "", false
+	if u, ok := resp.Upstream().(common.EvmUpstream); ok && u != nil && !resp.SentAt().IsZero() {
+		by, held = u.Id(), true
 	} else if by = n.cacheVoter(sel); by == "" {
 		by = n.firstHolder(sel, bn)
 	}
-	t.Proven(uint64(bn), fromUpstream && named, by, resp.SentAt())
-	asks, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
-	defer cancel()
-	for {
-		in, off, moved := includes()
-		switch {
-		case in:
-			if fromUpstream {
-				n.noteHeld(prover, bn)
-			}
-			n.countHeadRefusal("held_served")
-			return resp, false
-		case off:
-			n.countHeadRefusal("held_null")
-			return nullAnswer(req, resp)
-		}
-		select {
-		case <-moved:
-			continue
-		case <-asks.Done():
-		}
-		// The clock's fetch returned once intake had its header; the
-		// vote may still wait in the tracker's mailbox.
-		t.Sync(ctx)
-		if in, _, _ := includes(); in {
-			continue
-		}
-		n.countHeadRefusal("held_null")
-		return nullAnswer(req, resp)
-	}
+	t.Proven(uint64(bn), held, by, resp.SentAt())
+	return true
 }
 
-// nullAnswer is a null answer to req, held instead of resp; resp itself
-// when the null cannot be built.
-func nullAnswer(req *common.NormalizedRequest, resp *common.NormalizedResponse) (*common.NormalizedResponse, bool) {
-	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
-	if err != nil {
-		return resp, false
-	}
-	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), true
-}
-
-// byHashBlock is the number and hash of the block resp names when req is
-// of the by-hash family (byHashFamily), else 0; the hash "" when resp
-// names none.
-func byHashBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (int64, string) {
+// byHashBlock is the number of the block resp names when req is of the
+// by-hash family (byHashFamily), else 0.
+func byHashBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) int64 {
 	if resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx) {
-		return 0, ""
+		return 0
 	}
 	jrq, err := req.JsonRpcRequest(ctx)
 	if err != nil || jrq == nil {
-		return 0, ""
+		return 0
 	}
 	jrq.RLock()
-	paths, ok := byHashFamily[jrq.Method]
+	path, ok := byHashFamily[jrq.Method]
 	if ok && jrq.Method == "eth_getLogs" {
 		var f map[string]interface{}
 		if len(jrq.Params) > 0 {
@@ -1481,20 +1409,19 @@ func byHashBlock(ctx context.Context, req *common.NormalizedRequest, resp *commo
 	}
 	jrq.RUnlock()
 	if !ok {
-		return 0, ""
+		return 0
 	}
 	jrr, err := resp.JsonRpcResponse(ctx)
 	if err != nil || jrr == nil {
-		return 0, ""
+		return 0
 	}
-	s, err := jrr.PeekStringByPath(ctx, paths.number...)
+	s, err := jrr.PeekStringByPath(ctx, path...)
 	if err != nil {
-		return 0, ""
+		return 0
 	}
 	bn, err := common.HexToInt64(s)
 	if err != nil {
-		return 0, ""
+		return 0
 	}
-	bh, _ := jrr.PeekStringByPath(ctx, paths.hash...)
-	return bn, bh
+	return bn
 }

@@ -114,7 +114,7 @@ type headClock struct {
 	// proven is the highest block shown to exist above the top sight, by a
 	// by-hash answer (Proven) or the cache's head (Sighted), at provenAt;
 	// provenBy the voter it prefers for the probe, provenHeld when that
-	// voter answered it by hash; 0 once spent (proveTarget). provedFor is
+	// voter's own answer showed it; 0 once spent (proveTarget). provedFor is
 	// the last target a proof's probe was planned for: one per target;
 	// heldFor the last target a held fetch went for, whose proof stands
 	// until that fetch brings the block.
@@ -1563,7 +1563,7 @@ func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
 }
 
 // MarkRead marks a read that needs the lane's view to move, a lane tap's
-// or a by-hash wait's: the block clock runs for readDemand after it,
+// or a by-hash answer's above it: the block clock runs for readDemand after it,
 // without the idle edge's wait.
 func (t *ChainTracker) MarkRead() {
 	if prev := t.latestReadAt.Swap(time.Now().UnixNano()); prev == 0 || time.Since(time.Unix(0, prev)) >= t.readDemand() {
@@ -1599,12 +1599,12 @@ func (t *ChainTracker) ReadAhead(n uint64) {
 	}})
 }
 
-// Proven takes a by-hash answer that showed block n to exist above the
-// view (spec §6.4 by-hash wait), its request sent at at (zero: now): it is
-// the lane's demand from now on, and the clock's proof of n (prove): voter
-// by is the upstream that answered, held when it answered by hash, or for
-// a cache answer (held false) the cache's own voter or a voter whose
-// counter holds n.
+// Proven takes a by-hash answer that showed block n above the view (spec
+// §6.4 by-hash answer), its request sent at at (zero: now): it is the
+// lane's demand from now on, and the clock's proof of n (prove): voter by
+// is the upstream that answered, held, or for a cache answer (held false)
+// the cache's own voter or a voter whose counter holds n. No read waits
+// on it: the answer went out as it came.
 func (t *ChainTracker) Proven(n uint64, held bool, by string, at time.Time) {
 	t.latestReadAt.Store(time.Now().UnixNano())
 	t.prove(n, held, by, at)
@@ -1655,12 +1655,14 @@ func (t *ChainTracker) prove(n uint64, held bool, by string, at time.Time) {
 // at once: that voter's fetch of the proven block by number (held), no
 // head fetch. By hash, a node answers a side block it saw too, and that
 // orphan would have been its vote; by number it answers its canonical
-// block, which the by-hash wait then compares with the client's hash.
+// block. A preconfirmed block's number answers null there (an optimism
+// flashblocks upstream): that fetch is spent, and the head probe below
+// takes the proof. Where a vendor's tag trails its block readers only the
+// fetch by number moves the view: by head probes alone, P23-slow's view
+// trailed by-hash answers 3.2 s at p90, at 2.31 head fetches per block.
 // The held fetch and a clock fetch never both go for one target unless
 // the first answers below it: sent beside a probe already out, held
-// fetches cost 0.077 head fetches per block over the bar (§19 P23); the
-// wait for a fetch sent before the by-hash request ends within a round
-// trip of that request's answer.
+// fetches cost 0.077 head fetches per block over the bar (§19 P23).
 func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt time.Duration) {
 	c := &t.clock
 	if c.proven < c.target || c.provedFor == c.target {

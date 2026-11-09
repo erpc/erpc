@@ -1162,23 +1162,20 @@ func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...st
 	}
 }
 
-// A by-hash answer from a block above Latest waits up to 1 bt, then is
-// null, from the cache as from an upstream (spec §6.4, §7 family 5): two
-// instances share a cache, and instance 1, one block ahead, cached a
-// receipt of its Latest. eth_getLogs by blockHash is of the family, and a
-// request that ends during the wait gets null too. The wait has the block
-// clock fetch the answering upstream's head: on instance 3, whose voters'
-// counters are fresh but whose nodes already hold the block, a mismatch
-// that serves at q holders, that vote and the block clock's holder fetch
-// of the other voter serve it; on instance 4, whose nodes hold a verified
-// block but answer that fetch only after 1 bt, as a loaded host or a slow
-// link does, the wait waits for the answer and serves it. On instance 5
-// only the shared cache holds the receipt, as Prism does before any voter
-// reports its block: the cache answer proves the block, so the clock
-// fetches a voter's head at once, within its round trip, and the receipt
-// is served then, not at the clock's next predicted fire. Each wait
-// counts its outcome.
-func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
+// A by-hash answer that names a block above Latest is sent as it came, at
+// once, and never cached (spec §6.4 by-hash answer, §7 family 5): its hash
+// may be provisional, a flashblocks preconfirmation's. Two instances share
+// a cache, and instance 1, one block ahead, cached a receipt of its
+// Latest: instance 2, a block behind, serves it from the cache at once.
+// eth_getLogs by blockHash is of the family. On instance 3 an upstream
+// answers a preconfirmed receipt whose hash the sealed block does not
+// keep: it goes out as returned, uncached, and once the view pins the
+// sealed hash at that number the receipt read again is still the
+// upstream's. Each answer is the block clock's hint: on instance 3 it has
+// the view take the block; on instance 5 only the shared cache holds the
+// receipt, and the clock fetches a voter's head within a round trip; on
+// instance 6 that fetch goes to the cache's own voter.
+func TestForward_ByHash_AboveLatestServedAsReturned(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
@@ -1248,36 +1245,36 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
 	}, 2*time.Second, 20*time.Millisecond, "instance 1 cached the receipt")
 
-	// The instances share a label, so the waits' counts are read as deltas.
-	held := func(rule string) float64 {
-		return promUtil.ToFloat64(telemetry.MetricHeadRefusalTotal.WithLabelValues("test", behind.Label(), rule))
-	}
-	nulls := held("held_null")
 	start := time.Now()
 	req = common.NewNormalizedRequest([]byte(receiptReq))
 	resp, err = behind.Forward(ctx, req)
 	require.NoError(t, err)
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, "null", jrr.GetResultString(), "a cached receipt above instance 2's Latest is null after the hold")
-	assert.GreaterOrEqual(t, time.Since(start), 500*time.Millisecond, "held up to 1 bt first")
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cached receipt above instance 2's Latest, as cached")
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "at once: no wait for the view")
 	assert.Zero(t, behindCalls.Load(), "served from the cache")
 
 	var logsCalls atomic.Int64
 	mockMethodAnswer("eth_getLogs", `[{"blockNumber":"0x65","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1","logIndex":"0x0"}]`, &logsCalls, "hd1", "hd2")
-	reqCtx, reqCancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer reqCancel()
-	req = common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1"}]}`))
-	resp, err = behind.Forward(reqCtx, req)
+	const logsReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1"}]}`
+	start = time.Now()
+	resp, err = behind.Forward(ctx, common.NewNormalizedRequest([]byte(logsReq)))
 	require.NoError(t, err)
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, "null", jrr.GetResultString(), "logs by hash above Latest, request ended during the hold")
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "logs by hash above Latest, as returned")
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "at once: no wait for the view")
 	assert.Positive(t, logsCalls.Load(), "dispatched to an upstream")
-	assert.Equal(t, nulls+2, held("held_null"), "both waits on instance 2 ended null")
+	time.Sleep(100 * time.Millisecond)
+	probe := common.NewNormalizedRequest([]byte(logsReq))
+	probe.SetNetwork(behind)
+	got, err := cache.WithProjectId("test").Get(ctx, probe)
+	assert.True(t, err != nil || got == nil || got.IsResultEmptyish(ctx), "logs above Latest are not cached")
 
-	// Instance 3: its voters reported 100 just now, with a cadence of an
-	// hour, so their counters meet any number need; their nodes hold 101.
+	// Instance 3: its voters reported 100 with a cadence of an hour; an
+	// upstream answers a preconfirmed receipt of block 101 under a hash
+	// (b1) the sealed block, tipHash("a", 101), does not keep.
 	var head atomic.Int64
 	head.Store(100)
 	for _, id := range []string{"hf1", "hf2"} {
@@ -1296,80 +1293,43 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 				return res
 			})
 	}
-	nulls, served := held("held_null"), held("held_served")
 	fresh, freshUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "hf1", chainID: 123, latestBlock: 100, debounce: time.Hour},
 		{id: "hf2", chainID: 123, latestBlock: 100, debounce: time.Hour},
 	})
-	// As a registry's network does: the wait's fetch is a hash vote.
 	fresh.sources.start(ctx)
 	for _, u := range freshUps {
 		setServedTipFinalized(t, u, 90)
 	}
+	require.Eventually(t, func() bool { return servedHead(fresh, ctx).Finalized == 90 }, 2*time.Second, 10*time.Millisecond)
 	require.Equal(t, int64(100), servedHead(fresh, ctx).Latest)
+	fresh.cacheDal = cache.WithProjectId("test")
+	const preconfReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a3"]}`
+	preconf := `{"blockNumber":"0x65","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a3","status":"0x1"}`
 	var freshCalls atomic.Int64
-	mockMethodAnswer("eth_getTransactionReceipt", receiptIn(tipHash("a", 101)), &freshCalls, "hf1", "hf2")
+	mockMethodAnswer("eth_getTransactionReceipt", preconf, &freshCalls, "hf1", "hf2")
 	head.Store(101)
-	resp, err = fresh.Forward(ctx, common.NewNormalizedRequest([]byte(receiptReq)))
-	require.NoError(t, err)
-	jrr, err = resp.JsonRpcResponse(ctx)
-	require.NoError(t, err)
-	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the wait's fetch finds 101 on both voters: the receipt is served")
-	assert.Equal(t, int64(101), servedHead(fresh, ctx).Latest)
-	assert.Equal(t, served+1, held("held_served"), "the wait on instance 3 ended served")
-	assert.Equal(t, nulls, held("held_null"))
-
-	// Instance 4: as instance 3, but block 101 verifies, so its one vote
-	// serves it, and its nodes answer the wait's fetch of latest 1.5 bt
-	// after it is sent (bt is the cold 1s here, W 3s). The fetch is the
-	// only evidence that the nodes lack the block, so the wait outlives
-	// 1 bt until it answers.
-	verifyTipAt(t, "a", 101)
-	var slowHead atomic.Int64
-	slowHead.Store(100)
-	var slowAnswers atomic.Bool
-	for _, id := range []string{"hl1", "hl2"} {
-		gock.New("http://" + id + ".localhost").
-			Post("").
-			Persist().
-			Filter(func(r *http.Request) bool {
-				body := util.SafeReadBody(r)
-				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
-			}).
-			Reply(200).
-			Map(func(res *http.Response) *http.Response {
-				if slowAnswers.Load() {
-					time.Sleep(1500 * time.Millisecond)
-				}
-				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, tipHead("a", uint64(slowHead.Load())))
-				res.Body = io.NopCloser(strings.NewReader(body))
-				res.ContentLength = int64(len(body))
-				return res
-			})
-	}
-	slow, slowUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
-		{id: "hl1", chainID: 123, latestBlock: 100, debounce: time.Hour},
-		{id: "hl2", chainID: 123, latestBlock: 100, debounce: time.Hour},
-	})
-	slow.sources.start(ctx)
-	for _, u := range slowUps {
-		setServedTipFinalized(t, u, 90)
-	}
-	require.Equal(t, int64(100), servedHead(slow, ctx).Latest)
-	var slowCalls atomic.Int64
-	mockMethodAnswer("eth_getTransactionReceipt", receiptIn(tipHash("a", 101)), &slowCalls, "hl1", "hl2")
-	slowHead.Store(101)
-	slowAnswers.Store(true)
-	nulls, served = held("held_null"), held("held_served")
 	start = time.Now()
-	resp, err = slow.Forward(ctx, common.NewNormalizedRequest([]byte(receiptReq)))
+	resp, err = fresh.Forward(ctx, common.NewNormalizedRequest([]byte(preconfReq)))
 	require.NoError(t, err)
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the wait's fetch answers 101 after 1 bt: the receipt is served")
-	assert.GreaterOrEqual(t, time.Since(start), 1500*time.Millisecond, "held until the fetch answered")
-	assert.Equal(t, served+1, held("held_served"), "the wait on instance 4 ended served")
-	assert.Equal(t, nulls, held("held_null"))
+	assert.Contains(t, jrr.GetResultString(), `"0x00000000000000000000000000000000000000000000000000000000000000b1"`, "the preconfirmed receipt, as returned")
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "within a round trip: no wait for the view")
+	require.Eventually(t, func() bool { return servedHead(fresh, ctx).Latest == 101 }, 2*time.Second, 10*time.Millisecond, "the answer's hint has the clock fetch a voter's head")
+	c, pinned := fresh.chainTracker.View().PinAt(101)
+	require.True(t, pinned)
+	require.NotEqual(t, "b1", fmt.Sprintf("%x", c.Hash[31:]), "the view pins the sealed hash at 101")
+	probe = common.NewNormalizedRequest([]byte(preconfReq))
+	probe.SetNetwork(fresh)
+	got, err = cache.WithProjectId("test").Get(ctx, probe)
+	assert.True(t, err != nil || got == nil || got.IsResultEmptyish(ctx), "a receipt above Latest is not cached")
+	resp, err = fresh.Forward(ctx, common.NewNormalizedRequest([]byte(preconfReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "never null once the view pins another hash there")
+	assert.Equal(t, int64(2), freshCalls.Load(), "each read asked an upstream: nothing was cached")
 
 	// Instance 5: its voters reported 100 at boot, poll once an hour and
 	// hold 101 by the time the request comes; only the cache holds the
@@ -1423,7 +1383,6 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	var proofCalls atomic.Int64
 	mockMethodAnswer("eth_getTransactionReceipt", cached, &proofCalls, "hp1", "hp2")
 	proofHead.Store(101)
-	served = held("held_served")
 	armed.Store(true)
 	start = time.Now()
 	resp, err = proof.Forward(ctx, common.NewNormalizedRequest([]byte(proofReq)))
@@ -1431,12 +1390,11 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	require.NoError(t, err)
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt is served once the voter's head shows 101")
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt, as cached")
 	assert.Zero(t, proofCalls.Load(), "served from the cache")
-	require.Positive(t, firstFetch.Load(), "the wait had a voter's head fetched")
-	assert.Less(t, time.Unix(0, firstFetch.Load()).Sub(start), 100*time.Millisecond, "the voter's head is fetched within a round trip of the hold's start")
-	assert.Less(t, took, 300*time.Millisecond, "the receipt is served within a round trip and slack")
-	assert.Equal(t, served+1, held("held_served"), "the wait on instance 5 ended served")
+	assert.Less(t, took, 100*time.Millisecond, "at once: no wait for the view")
+	require.Eventually(t, func() bool { return firstFetch.Load() > 0 }, time.Second, 5*time.Millisecond, "the answer's hint had a voter's head fetched")
+	assert.Less(t, time.Unix(0, firstFetch.Load()).Sub(start), 100*time.Millisecond, "the voter's head is fetched within a round trip of the answer")
 
 	// Instance 6: as instance 5, but the receipt comes from a cache whose
 	// head-aware connector reads a BDS server that voter hq9 also names, the
@@ -1461,6 +1419,7 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	ownHead.Store(100)
 	var ownArmed atomic.Bool
 	var ownFetches, otherFetches atomic.Int64
+	var firstProbed atomic.Value
 	for _, m := range []struct {
 		host  string
 		head  func() int64
@@ -1477,6 +1436,7 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 			Map(func(res *http.Response) *http.Response {
 				if ownArmed.Load() {
 					m.count.Add(1)
+					firstProbed.CompareAndSwap(nil, m.host)
 				}
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, tipHead("a", uint64(m.head())))
 				res.Body = io.NopCloser(strings.NewReader(body))
@@ -1513,17 +1473,15 @@ func TestForward_ByHash_AboveLatestHeldFromCacheAndUpstream(t *testing.T) {
 	var ownCalls atomic.Int64
 	mockMethodAnswer("eth_getTransactionReceipt", ownReceipt, &ownCalls, "hq2")
 	ownHead.Store(101)
-	served = held("held_served")
 	ownArmed.Store(true)
 	resp, err = own.Forward(ctx, common.NewNormalizedRequest([]byte(ownReq)))
 	require.NoError(t, err)
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt is served once its own voter's head shows 101")
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt, as cached")
 	assert.Zero(t, ownCalls.Load(), "served from the cache")
-	assert.Positive(t, ownFetches.Load(), "the proof's probe went to the cache's own voter")
-	assert.Zero(t, otherFetches.Load(), "the voter lacking the block was not probed")
-	assert.Equal(t, served+1, held("held_served"), "the wait on instance 6 ended served")
+	require.Eventually(t, func() bool { return ownFetches.Load() > 0 }, time.Second, 5*time.Millisecond, "the answer's hint probed the cache's own voter")
+	assert.Equal(t, bdsHost, firstProbed.Load(), "the proof's probe went to the cache's own voter, not the one lacking the block")
 }
 
 // sampleBlockTime gives network its first block time sample: before it,

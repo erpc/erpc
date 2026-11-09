@@ -603,35 +603,38 @@ func TestSvmGetBlockRequestCarriesMappedFields(t *testing.T) {
 	}
 }
 
-// fakeSvmRootNetwork reports a fixed network finalized root; 0 is unknown.
+// fakeSvmRootNetwork reports the network's finalized roots; 0 is unknown.
+// root is the leading upstream's root, majority the median one.
 type fakeSvmRootNetwork struct {
 	common.SvmNetwork
-	root int64
+	root, majority int64
 }
 
-func (n fakeSvmRootNetwork) SvmHighestFinalizedSlot(context.Context) int64 { return n.root }
+func (n fakeSvmRootNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 { return n.root }
+func (n fakeSvmRootNetwork) SvmHighestFinalizedSlot(context.Context) int64    { return n.majority }
 
 // Config is nil: no SVM history, so every field renders as recorded.
 func (fakeSvmRootNetwork) Config() *common.NetworkConfig { return nil }
 
 // TestSvmGetBlockFinalizedUsesNetworkRoot: the reader's own FINALIZED ceiling
 // trails the network root by tens of seconds, so a finalized read at or below
-// the root the pollers report asks the reader at CONFIRMED (one state since
-// Alpenglow), a slot above the root falls through without a reader call, and
-// an unknown root leaves the reader's ceiling as the bound.
+// the leading upstream's root asks the reader at CONFIRMED (one state since
+// Alpenglow), a slot above it falls through without a reader call, and an
+// unknown root leaves the reader's ceiling as the bound.
 func TestSvmGetBlockFinalizedUsesNetworkRoot(t *testing.T) {
 	tests := []struct {
 		name           string
-		root           int64
+		root, majority int64
 		params         string
 		wantCall       bool
 		wantCommitment svm.Commitment
 	}{
-		{"at root asks confirmed", 1000, `[1000]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
-		{"explicit finalized below root asks confirmed", 1000, `[990,{"commitment":"finalized"}]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
-		{"above root falls through", 1000, `[1001]`, false, 0},
-		{"unknown root keeps reader ceiling", 0, `[1001]`, true, svm.Commitment_COMMITMENT_FINALIZED},
-		{"confirmed above root is untouched", 1000, `[1001,{"commitment":"confirmed"}]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
+		{"at root asks confirmed", 1000, 1000, `[1000]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
+		{"above majority at leading root asks confirmed", 1000, 990, `[1000]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
+		{"explicit finalized below root asks confirmed", 1000, 1000, `[990,{"commitment":"finalized"}]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
+		{"above root falls through", 1000, 1000, `[1001]`, false, 0},
+		{"unknown root keeps reader ceiling", 0, 0, `[1001]`, true, svm.Commitment_COMMITMENT_FINALIZED},
+		{"confirmed above root is untouched", 1000, 1000, `[1001,{"commitment":"confirmed"}]`, true, svm.Commitment_COMMITMENT_CONFIRMED},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -639,7 +642,7 @@ func TestSvmGetBlockFinalizedUsesNetworkRoot(t *testing.T) {
 			req := common.NewNormalizedRequest([]byte(
 				`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":` + tc.params + `}`,
 			))
-			req.SetNetwork(fakeSvmRootNetwork{root: tc.root})
+			req.SetNetwork(fakeSvmRootNetwork{root: tc.root, majority: tc.majority})
 			jrReq, err := req.JsonRpcRequest()
 			require.NoError(t, err)
 			_, err = (&GenericGrpcBdsClient{}).handleSvmGetBlock(context.Background(), &bdsConn{svmClient: fake}, req, jrReq)

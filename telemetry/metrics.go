@@ -1011,7 +1011,7 @@ var (
 	MetricHeadRefusalTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_refusal_total",
-		Help:      "Total requests naming a block, by the refusal rule's outcome: served, thin_found and thin_missing (Firm < N <= Latest, found or still empty or missing after the retry), retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_wait; by-hash waits for a block above Latest: held_served, held_null.",
+		Help:      "Total requests naming a block, by the refusal rule's outcome: served, thin_found and thin_missing (Firm < N <= Latest, found or still empty or missing after the retry), retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_wait.",
 	}, []string{"project", "network", "rule"})
 
 	// MetricLogsEmptyGateTotal counts the logs gate's verdicts on empty
@@ -1337,9 +1337,9 @@ var (
 	}, []string{"project", "network", "tag", "reason"})
 
 	// MetricConsensusCompositionWaiverUnproven counts fail-closed empty-outside-
-	// retention evaluations where the waiver could not be proven (no winner
+	// retention evaluations where the waiver could not be proven (no requested
 	// block, no finite abstainer availability lower bound, and/or no known
-	// chain head). Reason is one of: no_winner_block, no_avail_bound, no_head.
+	// chain head). Reason is one of: no_request_block, no_avail_bound, no_head.
 	// Mid-round deferral (round still collecting) is debug-logged, not counted.
 	MetricConsensusCompositionWaiverUnproven = DefineLabeledCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
