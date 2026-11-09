@@ -1145,9 +1145,15 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 // reaches it), an untried upstream of u's tier whose evidence shows it
 // goes first: u is skipped with no fetch (holderAhead). With none, u is
 // Asked for toBlock once (askRange), one Ask per upstream and block that
-// every range check waiting on it shares, and the wait runs to its
-// answer. u holds toBlock only by its evidence: its hash vote, counter or
-// a by-number answer (reachedHead, uncredited). Time is no evidence: a
+// every range check waiting on it shares, at the time u most likely holds
+// it (ChainTracker.HeldAt, its longest bound on a retry; at once with no
+// bound), and the wait runs to its answer. Asked at once, a vendor that
+// serves each block 250-750 ms after the lane sees it answered below the
+// block every time (P23-band: 486 of 486 Asks), a wasted fetch whose
+// report, taken at its lag, kept it benched, so one voter set Firm alone
+// and band reads lost their hold wait. u holds toBlock only by its
+// evidence: its hash vote, counter or a by-number answer (reachedHead,
+// uncredited). Time is no evidence: a
 // node lacking the block answers a one-block range empty, the same answer
 // as an empty block's, and admitted on its held wait alone, that empty
 // answer reached clients as the range's. An answer that leaves u below
@@ -1194,19 +1200,32 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 		short = limit()
 	}
 	asked := !known || eu == nil
+	t := n.laneTracker(sel)
+	var due <-chan time.Time
 	var answer <-chan struct{}
 	for {
 		computed := n.headsComputed()
 		if reached := n.reachedHead(u, 0); reached > 0 && common.EvmHeadReaches(u, reached, toBlock) {
 			return true
 		}
-		if !asked && n.headFor(tipScope{sel: sel}).Latest >= toBlock {
+		if !asked && due == nil && n.headFor(tipScope{sel: sel}).Latest >= toBlock {
 			if n.holderAhead(req, u, toBlock) {
 				return false
 			}
-			answer, asked, short = n.askRange(eu, toBlock), true, limit()
+			if t != nil {
+				if at, ok := t.HeldAt(u.Id(), uint64(toBlock), retry); ok && time.Until(at) > 0 {
+					hold := time.NewTimer(time.Until(at))
+					defer hold.Stop()
+					due = hold.C
+				}
+			}
+			if due == nil {
+				answer, asked, short = n.askRange(eu, toBlock), true, limit()
+			}
 		}
 		select {
+		case <-due:
+			answer, asked, short = n.askRange(eu, toBlock), true, limit()
 		case <-computed:
 		case <-answer:
 			if !common.EvmHeadReaches(u, n.reachedHead(u, 0), toBlock) {
