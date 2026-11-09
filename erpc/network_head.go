@@ -950,9 +950,8 @@ type bandSweep struct {
 // (spec §6.4 band sweep): at once, the routed upstreams the leg has not
 // tried, in hold-evidence order (bandOrder), each the client's own
 // request, as the old image's sweep was; with every one tried, the first
-// that shows the block since its miss (awaitBandHolder), unless req
-// answers at once (evm.AnswersAtOnce) and the block is above its Latest:
-// we never announced it. nil: none, and the last answer is the request's.
+// that shows the block since its miss (awaitBandHolder). nil: none within
+// W, and the last answer is the request's.
 func (n *Network) bandNext(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, sw *bandSweep, u common.Upstream, block int64) func() (common.Upstream, error) {
 	credit := creditCap(n.requestHead(ctx, req))
 	if sw.missed == nil {
@@ -968,9 +967,6 @@ func (n *Network) bandNext(ctx context.Context, req *common.NormalizedRequest, a
 	if len(next) > 0 {
 		next = n.bandOrder(req, next, block, credit)
 	} else {
-		if r := req.HeadRefusal(); evm.AnswersAtOnce(req) && r != nil && r.Block > r.Latest {
-			return nil
-		}
 		r := n.awaitBandHolder(ctx, req, sw, block, credit)
 		if r == nil {
 			return nil
@@ -1012,6 +1008,37 @@ func (n *Network) bandOrder(req *common.NormalizedRequest, ups []common.Upstream
 	}
 	slices.SortStableFunc(ups, func(a, b common.Upstream) int { return at[a.Id()].Compare(at[b.Id()]) })
 	return ups
+}
+
+// bandHolders is the next pick of an eth_getBlockByNumber above req's
+// Latest after a miss (spec §6.4 band): only the routed upstreams the leg
+// has not tried whose evidence reaches the block (mayHold), fastest first
+// (byRoundTrip); nil with none, and the last answer is the request's. The
+// first attempt's order can put such a holder behind (a syncing archive,
+// a stale hash vote); an upstream with no evidence of the block is no
+// holder to ask.
+func (n *Network) bandHolders(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, block int64) func() (common.Upstream, error) {
+	credit := creditCap(n.requestHead(ctx, req))
+	var next []common.Upstream
+	for _, u := range req.Upstreams() {
+		if _, seen := attempted[u.Id()]; !seen && n.mayHold(u, block, credit, nil) {
+			next = append(next, u)
+		}
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	n.byRoundTrip(next)
+	return func() (common.Upstream, error) {
+		for len(next) > 0 {
+			u := next[0]
+			next = next[1:]
+			if req.ReserveUpstream(u) {
+				return u, nil
+			}
+		}
+		return nil, common.NewErrNoUpstreamsLeftToSelect(req, "no holder left for the band read")
+	}
 }
 
 // awaitBandHolder waits, once every routed upstream of req answered its
