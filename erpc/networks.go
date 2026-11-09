@@ -2934,11 +2934,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				sent := time.Now()
 				var read *latestRead
-				fwdCtx := loopCtx
+				fwdCtx, cancelBound := loopCtx, context.CancelFunc(func() {})
+				var bound time.Duration
 				if tag {
 					fwdCtx, read = n.startLatestRead(loopCtx, effectiveReq, u, sent)
+				} else if bound = n.aboveLatestBound(effectiveReq, u); bound > 0 {
+					fwdCtx, cancelBound = context.WithTimeoutCause(loopCtx, bound, errAboveLatestBound)
 				}
 				r, err := tryForward(u, effectiveReq, fwdCtx, &ulg, hedges, attempts, snap.Retries)
+				if err != nil && loopCtx.Err() == nil && errors.Is(context.Cause(fwdCtx), errAboveLatestBound) {
+					// A vendor that holds a read until the block exists
+					// held it past its usual answer: that attempt is a
+					// miss (spec §6.4 band).
+					r, err = nil, common.NewErrEndpointMissingData(fmt.Errorf("no answer within %s for a block above Latest", bound), u)
+				}
+				cancelBound()
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
@@ -3042,7 +3052,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						if next := n.bandHolders(loopCtx, effectiveReq, attempted, refusal.Block); next != nil {
 							verdict, nextUpstream = common.MissRetry, next
 						} else {
+							// The truthful null, whatever form the miss
+							// took: a node's null, its missing-data error,
+							// or a held read cut at its bound.
 							refusal.Refuse()
+							if nr, ok := evm.NullAnswer(effectiveReq, refusal.Block); ok && !emptyAnswer {
+								nr.SetUpstream(u)
+								r, err, emptyAnswer = nr, nil, true
+							}
 						}
 					case !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin):
 						// A band or thin miss sweeps the routed upstreams
