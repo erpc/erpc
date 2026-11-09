@@ -1870,13 +1870,13 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 }
 
 // SvmHighestFinalizedSlotMax returns the MAX finalized root across SVM
-// upstreams. Used only by the networkPreForward_getBlock guard: at finalized
-// commitment an upstream answers -32004 for any slot above its own root, so
-// the pool can serve a slot iff the LEADING upstream has rooted it. The
-// majority tip is the wrong aggregate for that decision — with three upstreams
-// whose roots are 1000/1000/1100, it reports 1000 and the guard would null out
-// ~100 slots the third upstream is holding, converting a served request into a
-// client-visible -32014.
+// upstreams. Used by the networkPreForward_getBlock guard and by the gRPC BDS
+// client's finalized bound: at finalized commitment an upstream answers
+// -32004 for any slot above its own root, so the pool can serve a slot iff the
+// LEADING upstream has rooted it. The majority tip is the wrong aggregate for
+// that decision — with three upstreams whose roots are 1000/1000/1100, it
+// reports 1000 and the guard would null out ~100 slots the third upstream is
+// holding, converting a served request into a client-visible -32014.
 //
 // Same rationale as SvmHighestIndexedSlot and the EVM Head's ceiling: never
 // reject a block the most-ahead upstream actually has. Zero means UNKNOWN (no

@@ -89,16 +89,19 @@ func svmReaderCommitment(ctx context.Context, req *common.NormalizedRequest, wan
 	return svm.Commitment_COMMITMENT_CONFIRMED, true
 }
 
-// svmFinalizedSlot is the network's majority finalized root, or ok=false when
-// the request carries no SVM network or no upstream has reported one. The
-// reader stores blocks at confirmed and does not read commitment for these
-// calls, so this is what proves an answer rooted.
+// svmFinalizedSlot is the leading upstream's finalized root
+// (SvmHighestFinalizedSlotMax), or ok=false when the request carries no SVM
+// network or no upstream has reported one. The reader stores blocks at
+// confirmed and does not read commitment for these calls, so this is what
+// proves an answer rooted. A slot above it falls through to an upstream, so
+// the bound is the most-advanced root: the majority root would send rooted
+// blocks the reader holds to an upstream.
 func svmFinalizedSlot(ctx context.Context, req *common.NormalizedRequest) (uint64, bool) {
 	n, ok := req.Network().(common.SvmNetwork)
 	if !ok {
 		return 0, false
 	}
-	tip := n.SvmHighestFinalizedSlot(ctx)
+	tip := n.SvmHighestFinalizedSlotMax(ctx)
 	if tip <= 0 {
 		return 0, false
 	}
