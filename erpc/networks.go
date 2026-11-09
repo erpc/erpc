@@ -3010,9 +3010,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// retry asks the upstreams whose head reaches the block first.
 				// The answer after it goes to the client as the upstream gave it.
 				// An empty range from an upstream whose evidence reaches its
-				// toBlock is the range's answer (rangeHeld).
+				// toBlock is the range's answer (rangeHeld). From one without
+				// that evidence it is no answer, never served nor kept: a
+				// node lacking the block answers it empty too, and an indexer
+				// served that loses the block's logs.
 				refusal := effectiveReq.HeadRefusal()
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r) && !n.rangeHeld(method, u, refusal)
+				if emptyAnswer && refusal.AboveFirm() && evm.IsRangeQuery(method) {
+					effectiveReq.ClearLastValidResponseIf(r)
+					r, err, emptyAnswer = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), refusal.Block, upstreamLatestBlock(u), 0), false
+				}
 				missing := emptyAnswer || missingDataErr(err)
 				// A held block's answers, served or missing, measure how
 				// long after its first sight u holds it (spec §6.4 held).

@@ -10,7 +10,7 @@ import (
 // rangeHolder is the network's side of the range check (spec §6.4): the
 // wait for an upstream to hold a range's toBlock, its counter below it.
 type rangeHolder interface {
-	EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64, likely bool) bool
+	EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64) bool
 }
 
 // CheckBlockRangeAvailability verifies that both fromBlock and toBlock are available
@@ -20,9 +20,8 @@ type rangeHolder interface {
 // It checks:
 //  1. toBlock (upper bound) by the one head predicate on the upstream's
 //     counter; below it, within its configured bounds, the network waits
-//     until the upstream holds toBlock, at most W (EvmAwaitRangeHolder,
-//     spec §6.4 range check): its evidence, or, for a one-block range,
-//     its held wait since toBlock's first sight. A toBlock above the
+//     until the upstream's evidence shows toBlock, at most W
+//     (EvmAwaitRangeHolder, spec §6.4 range check). A toBlock above the
 //     lane's Latest is the lane's read ahead, whose one shared fetch
 //     brings it; once the lane holds it, an untried holder goes first,
 //     else the upstream is Asked for it once, one Ask per upstream and
@@ -55,9 +54,7 @@ func CheckBlockRangeAvailability(
 		// Behind by its counter only, not by its configured bounds: a
 		// latestBlockMinus upper bound moves with the head, so the
 		// upstream holds toBlock once its head reaches toBlock plus that
-		// margin. A node lacking the top of a longer range answers the
-		// part it has, so only a one-block range, which it answers empty
-		// (a miss the refusal rule retries), goes on a likely hold.
+		// margin.
 		need := toBlock
 		minBound, maxBound := up.EvmBlockAvailabilityBounds()
 		if m := upperLatestMinus(up); m != nil {
@@ -65,7 +62,7 @@ func CheckBlockRangeAvailability(
 		}
 		if toBlock >= minBound && toBlock <= maxBound && !common.EvmHeadReaches(up, statePoller.LatestBlock(), need) {
 			if h, ok := nw.(rangeHolder); ok {
-				available = h.EvmAwaitRangeHolder(ctx, req, up, need, fromBlock == toBlock)
+				available = h.EvmAwaitRangeHolder(ctx, req, up, need)
 			}
 		}
 	}

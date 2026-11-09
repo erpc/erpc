@@ -974,21 +974,17 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 // goes first: u is skipped with no fetch (holderAhead). With none, u is
 // Asked for toBlock once (askRange), one Ask per upstream and block that
 // every range check waiting on it shares, and the wait runs to its
-// answer. u holds toBlock by its evidence: its hash vote, counter or a
-// by-number answer (reachedHead, credited only for a likely hold). With
-// likely, a one-block range, also once its held wait since toBlock's
-// first sight passed (ChainTracker.HeldAt), the miss's retry reading its
-// longest bound, as a held block's attempts do (awaitHolder): a node
-// lacking the block answers the range empty, a miss the refusal rule
-// retries, while one lacking the top of a longer range answers the part
-// it has. An answer that leaves u below toBlock ends the wait, unless a
-// likely hold's held wait is still to come. A first attempt waits at most
-// a block time, from its start at or below Latest, else from its Ask; the
-// retry up to W. A node one block
-// short of a block the lane holds is the usual case at a 0.3 s chain's
-// tip: with no Ask its counter waited for its next poll and the range
-// failed (§19 P12).
-func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64, likely bool) bool {
+// answer. u holds toBlock only by its evidence: its hash vote, counter or
+// a by-number answer (reachedHead, uncredited). Time is no evidence: a
+// node lacking the block answers a one-block range empty, the same answer
+// as an empty block's, and admitted on its held wait alone, that empty
+// answer reached clients as the range's. An answer that leaves u below
+// toBlock ends the wait. A first attempt waits at most a block time, from
+// its start at or below Latest, else from its Ask; the retry up to W. A
+// node one block short of a block the lane holds is the usual case at a
+// 0.3 s chain's tip: with no Ask its counter waited for its next poll and
+// the range failed (§19 P12).
+func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64) bool {
 	sel := selectorOf(req)
 	head := n.requestHead(ctx, req)
 	if toBlock > head.Latest {
@@ -1003,11 +999,6 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefusal)
 		}
-	}
-	t := n.laneTracker(sel)
-	var credit int64
-	if likely {
-		credit = creditCap(head)
 	}
 	retry := req.HeadRefusal().Retried()
 	bt := n.EvmBlockTime()
@@ -1030,13 +1021,11 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 	if toBlock <= head.Latest {
 		short = limit()
 	}
-	due := time.NewTimer(health.FreshnessWindow(bt))
-	defer due.Stop()
 	asked := !known || eu == nil
 	var answer <-chan struct{}
 	for {
 		computed := n.headsComputed()
-		if reached := n.reachedHead(u, credit); reached > 0 && common.EvmHeadReaches(u, reached, toBlock) {
+		if reached := n.reachedHead(u, 0); reached > 0 && common.EvmHeadReaches(u, reached, toBlock) {
 			return true
 		}
 		if !asked && n.headFor(tipScope{sel: sel}).Latest >= toBlock {
@@ -1045,28 +1034,13 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 			}
 			answer, asked, short = n.askRange(eu, toBlock), true, limit()
 		}
-		var moved <-chan struct{}
-		held := false
-		if t != nil {
-			moved = t.CreditMoved()
-			if at, ok := t.HeldAt(u.Id(), uint64(toBlock), retry); likely && ok {
-				wait := time.Until(at)
-				if wait <= 0 {
-					return true
-				}
-				due.Reset(wait)
-				held = true
-			}
-		}
 		select {
 		case <-computed:
-		case <-moved:
 		case <-answer:
-			if !held && !common.EvmHeadReaches(u, n.reachedHead(u, credit), toBlock) {
+			if !common.EvmHeadReaches(u, n.reachedHead(u, 0), toBlock) {
 				return false
 			}
 			answer = nil
-		case <-due.C:
 		case <-short:
 			return false
 		case <-ctx.Done():
