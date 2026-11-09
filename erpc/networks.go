@@ -193,9 +193,13 @@ type servedTipLane struct {
 	// finalizedStepSize and finalizedStepDepth are the lane's finality
 	// step and its depth below the voters' sight of the head, the smallest
 	// of the last advances (finalizedSteps); 0 while none was seen.
+	// finalizedStepTypical is the lower median of those advances once two
+	// were seen, else 0: a voter one batch behind lags by about that much,
+	// and one outlier (a halt resuming, a recovery from a poisoned pick)
+	// cannot set it (servedTipMaxRegressionBlocks).
 	// finalizedDueAt is the sight a due step's refresh last started at,
 	// finalizedDueStartedAt (unix ns) when (dueFinalizedStep).
-	finalizedStepSize, finalizedStepDepth, finalizedDueAt, finalizedDueStartedAt atomic.Int64
+	finalizedStepSize, finalizedStepDepth, finalizedStepTypical, finalizedDueAt, finalizedDueStartedAt atomic.Int64
 	// finalizedSteps are the last advances of the lane's Finalized, size
 	// and depth below Latest, newest at finalizedStepsAt-1 mod len.
 	// Guarded by mu.
@@ -208,17 +212,21 @@ type servedTipLane struct {
 func (l *servedTipLane) learnFinalizedStep(size, depth int64) {
 	l.finalizedSteps[l.finalizedStepsAt%len(l.finalizedSteps)] = [2]int64{size, depth}
 	l.finalizedStepsAt++
-	minSize, minDepth := int64(0), int64(0)
-	for i, st := range l.finalizedSteps[:min(l.finalizedStepsAt, len(l.finalizedSteps))] {
-		if i == 0 || st[0] < minSize {
-			minSize = st[0]
-		}
+	n := min(l.finalizedStepsAt, len(l.finalizedSteps))
+	var sizes [len(l.finalizedSteps)]int64
+	minDepth := int64(0)
+	for i, st := range l.finalizedSteps[:n] {
+		sizes[i] = st[0]
 		if i == 0 || st[1] < minDepth {
 			minDepth = st[1]
 		}
 	}
-	l.finalizedStepSize.Store(minSize)
+	slices.Sort(sizes[:n])
+	l.finalizedStepSize.Store(sizes[0])
 	l.finalizedStepDepth.Store(minDepth)
+	if n >= 2 {
+		l.finalizedStepTypical.Store(sizes[(n-1)/2])
+	}
 }
 
 // holdFinalized returns the Finalized to serve for the computed tip and
@@ -242,14 +250,15 @@ func (l *servedTipLane) holdFinalized(tip, backing, tolerance int64) int64 {
 	return tip
 }
 
-// finalizedFloorTolerance is the deepest drop a finalized floor holds: the
-// regression guard's tolerance (servedTip.maxRegressionBlocks), the default
-// one when the guard is off, so the two split the drops between them.
-func (n *Network) finalizedFloorTolerance() int64 {
-	if t := n.servedTipMaxRegressionBlocks(); t >= 0 {
+// finalizedFloorTolerance is the deepest drop lane l's finalized floor
+// holds: the regression guard's tolerance (servedTipMaxRegressionBlocks),
+// the learned one when the guard is off, so the two split the drops between
+// them.
+func (n *Network) finalizedFloorTolerance(l *servedTipLane) int64 {
+	if t := n.servedTipMaxRegressionBlocks(l); t >= 0 {
 		return t
 	}
-	return common.DefaultToleratedBlockHeadRollback
+	return learnedRegressionTolerance(l)
 }
 
 // shareFinalized lifts the network-wide lane's Finalized `served` to the
@@ -1599,7 +1608,7 @@ func missingDataErr(err error) bool {
 // While it holds, the served-tip lag gauge (Freshest - Tip) would read negative —
 // the served value is above the corroborated freshest view — so it is clamped at
 // 0; erpc_network_served_tip_regression_total is what says a hold is in progress.
-func (n *Network) guardServedTipRegression(axis string, label string, anchor *servedTipAnchor, ballot common.ServedTipPick, live bool) int64 {
+func (n *Network) guardServedTipRegression(axis string, label string, anchor *servedTipAnchor, ballot common.ServedTipPick, live bool, tolerance int64) int64 {
 	pick := ballot.Tip
 	if pick <= 0 {
 		return pick
@@ -1608,7 +1617,6 @@ func (n *Network) guardServedTipRegression(axis string, label string, anchor *se
 	if live {
 		corroborated, liveMax = ballot.Freshest, ballot.Max
 	}
-	tolerance := n.servedTipMaxRegressionBlocks()
 	if tolerance < 0 {
 		// maxRegressionBlocks: -1 — the operator turned the guard off.
 		return pick
@@ -1834,16 +1842,32 @@ func (n *Network) maxRetryableBlockDistance() int64 {
 	return distance
 }
 
-// servedTipMaxRegressionBlocks is how far below the corroborated live head a
-// pick may fall before the regression guard treats it as poisoned. Defaults to
-// the rollback tolerance the state poller and health tracker already use, so
-// every layer agrees on what a genuine deep correction looks like. A configured
-// -1 is returned as-is: it disables the guard.
-func (n *Network) servedTipMaxRegressionBlocks() int64 {
+// servedTipMaxRegressionBlocks is how far below the corroborated live head
+// lane l's finalized pick may fall before the regression guard treats it as
+// poisoned. An explicit servedTip.maxRegressionBlocks is returned as
+// configured, -1 (guard off) included: an operator's number is not second-
+// guessed. Otherwise learnedRegressionTolerance.
+func (n *Network) servedTipMaxRegressionBlocks(l *servedTipLane) int64 {
 	if n.cfg != nil && n.cfg.Evm != nil && n.cfg.Evm.ServedTip != nil && n.cfg.Evm.ServedTip.MaxRegressionBlocks != 0 {
 		return n.cfg.Evm.ServedTip.MaxRegressionBlocks
 	}
-	return common.DefaultToleratedBlockHeadRollback
+	return learnedRegressionTolerance(l)
+}
+
+// learnedRegressionTolerance is the rollback tolerance the state poller and
+// health tracker use, widened to twice lane l's typical finality step, the
+// lower median of its last eight (nil l: the tolerance alone). A chain that
+// finalizes in batches larger than the tolerance (base: median 1,914 blocks
+// a step, horizen: 1,482) puts a voter one batch behind further below the
+// rest than the tolerance, so a voter change among them is the chain, not a
+// poisoned ballot. Twice the step leaves room for a batch above the median;
+// a poisoned pick (celo: 53M blocks below) stays far outside it.
+func learnedRegressionTolerance(l *servedTipLane) int64 {
+	t := int64(common.DefaultToleratedBlockHeadRollback)
+	if l != nil {
+		t = max(t, 2*l.finalizedStepTypical.Load())
+	}
+	return t
 }
 
 // SvmHighestLatestSlot returns the majority-vote latest slot across SVM

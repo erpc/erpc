@@ -190,7 +190,7 @@ Behind without a break for its stall window (`headStallAfter`), `max(30s, 3 × m
 
 #### Regression guard
 
-`finalized` axis only. When a pick falls more than `maxRegressionBlocks` (0 = 1024) below the corroborated evidence — the second-highest live head, or the last live-corroborated pick — the lane serves its last corroborated pick instead, never above the highest live head (`guardServedTipRegression`). It holds for at most 1 minute, then fails open and serves the pick as computed. In-process only; selectors without a lane get no guard; `-1` disables it. Each transition increments `erpc_network_served_tip_regression_total`. `latest` needs no guard: its view moves back only when the pins move.
+`finalized` axis only. When a pick falls more than `maxRegressionBlocks` below the corroborated evidence — the second-highest live head, or the last live-corroborated pick — the lane serves its last corroborated pick instead, never above the highest live head (`guardServedTipRegression`). Unset (`0`), the tolerance is 1024 widened to twice the lane's typical finality step: the lower median of its last eight finalized advances, once two were seen. A chain that finalizes in batches (base: median 1,914 blocks a step) thus does not hold when one voter lags a batch; an explicit value is used as configured. It holds for at most 1 minute, then fails open and serves the pick as computed. In-process only; selectors without a lane get no guard; `-1` disables it. Each transition increments `erpc_network_served_tip_regression_total`. `latest` needs no guard: its view moves back only when the pins move.
 
 #### Subscriber delivery
 

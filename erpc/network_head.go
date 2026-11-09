@@ -546,7 +546,7 @@ func (n *Network) laneFinalized(l *servedTipLane, s tipScope, latest int64) int6
 	// which is a deliberate operator-configured clamp the guard must not
 	// fight.
 	if l != nil {
-		tip = n.guardServedTipRegression("finalized", l.label, &l.finalized, pick, live)
+		tip = n.guardServedTipRegression("finalized", l.label, &l.finalized, pick, live, n.servedTipMaxRegressionBlocks(l))
 	}
 
 	// Capability guarantee (#855): the served finalized must never exceed
@@ -575,7 +575,7 @@ func (n *Network) laneFinalized(l *servedTipLane, s tipScope, latest int64) int6
 	// are read together.
 	if l != nil {
 		computed := tip
-		tolerance := n.finalizedFloorTolerance()
+		tolerance := n.finalizedFloorTolerance(l)
 		held := l.holdFinalized(tip, backing, tolerance)
 		if l == &n.servedTipAll {
 			held = n.shareFinalized(held, tip, backing, tolerance)
