@@ -208,28 +208,11 @@ func TestCovLogs_NetworkPreForward_Guards(t *testing.T) {
 		assert.Nil(t, resp)
 		assert.NoError(t, err)
 	})
-
-	t.Run("split threshold above max range is capped and does not split an in-cap range", func(t *testing.T) {
-		n := &queryTestNetwork{
-			cfg: &common.NetworkConfig{Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}},
-			forwardFn: func(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-				t.Fatal("must not forward")
-				return nil, nil
-			},
-		}
-		ups := []common.Upstream{
-			nil,
-			&queryTestConfigUpstream{cfg: &common.UpstreamConfig{}},
-			&queryTestConfigUpstream{cfg: &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 100}}},
-		}
-		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, ups, createTestRequest(map[string]interface{}{"fromBlock": "0x1", "toBlock": "0xa"}))
-		assert.False(t, handled)
-		assert.Nil(t, resp)
-		assert.NoError(t, err)
-	})
 }
 
-func TestCovLogs_NetworkPreForward_ProactiveSplitSkipsUnconfiguredUpstreams(t *testing.T) {
+// Each upstream splits to its own threshold, every piece pinned to it; an
+// upstream without a threshold gets the whole range.
+func TestCovLogs_UpstreamPreForward_SplitsToItsOwnThreshold(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
 	var seen []string
@@ -239,30 +222,41 @@ func TestCovLogs_NetworkPreForward_ProactiveSplitSkipsUnconfiguredUpstreams(t *t
 			jrq, _ := r.JsonRpcRequest()
 			f := jrq.Params[0].(map[string]interface{})
 			mu.Lock()
-			seen = append(seen, f["fromBlock"].(string)+"-"+f["toBlock"].(string)+"/"+r.Directives().SkipCacheRead)
+			seen = append(seen, f["fromBlock"].(string)+"-"+f["toBlock"].(string)+"/"+r.Directives().UseUpstream+"/"+r.Directives().SkipCacheRead)
 			mu.Unlock()
 			return covLogsResult(`["` + f["fromBlock"].(string) + `"]`), nil
 		},
 	}
-	ups := []common.Upstream{
-		nil,
-		&queryTestConfigUpstream{cfg: &common.UpstreamConfig{}},
-		&queryTestConfigUpstream{cfg: &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 2}}},
+	small := common.NewFakeUpstream("small")
+	small.Config().Evm = &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 2}
+	whole := common.NewFakeUpstream("whole")
+	newReq := func() *common.NormalizedRequest {
+		rq := createTestRequest(map[string]interface{}{"fromBlock": "0x1", "toBlock": "0x4"})
+		rq.SetDirectives(&common.RequestDirectives{SkipCacheRead: "true"})
+		return rq
 	}
-	rq := createTestRequest(map[string]interface{}{"fromBlock": "0x1", "toBlock": "0x4"})
-	rq.SetDirectives(&common.RequestDirectives{SkipCacheRead: "true"})
 
-	handled, resp, err := networkPreForward_eth_getLogs(ctx, n, ups, rq)
+	handled, resp, err := upstreamPreForward_eth_getLogs(ctx, n, whole, newReq())
+	require.NoError(t, err)
+	assert.False(t, handled)
+	assert.Nil(t, resp)
+	assert.Empty(t, seen)
+
+	rq := newReq()
+	handled, resp, err = upstreamPreForward_eth_getLogs(ctx, n, small, rq)
 	require.NoError(t, err)
 	require.True(t, handled)
+	assert.Equal(t, "small", resp.Upstream().Id())
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)
 	var buf bytes.Buffer
 	_, err = jrr.WriteResultTo(&buf, false)
 	require.NoError(t, err)
 	assert.JSONEq(t, `["0x1","0x3"]`, buf.String())
-	assert.ElementsMatch(t, []string{"0x1-0x2/true", "0x3-0x4/true"}, seen)
-	assert.Equal(t, common.CompositeTypeLogsSplitProactive, rq.CompositeType())
+	assert.ElementsMatch(t, []string{"0x1-0x2/small/true", "0x3-0x4/small/true"}, seen)
+	// The parent stays retryable and hedgeable for the next upstream.
+	assert.False(t, rq.IsCompositeRequest())
+	assert.Empty(t, rq.Directives().UseUpstream)
 }
 
 func TestCovLogs_UpstreamPreForward_Guards(t *testing.T) {
@@ -420,7 +414,7 @@ func TestCovLogs_ExecuteSubRequests_FailureModes(t *testing.T) {
 					return tc.forward(r)
 				},
 			}
-			merged, fromCache, err := executeGetLogsSubRequests(ctx, n, newReq(), subs, "")
+			merged, fromCache, err := executeGetLogsSubRequests(ctx, n, newReq(), subs, "", "")
 			require.Error(t, err)
 			assert.Nil(t, merged)
 			assert.False(t, fromCache)
@@ -434,7 +428,7 @@ func TestCovLogs_ExecuteSubRequests_FailureModes(t *testing.T) {
 		}}
 		jrq := common.NewJsonRpcRequest("eth_getLogs", []interface{}{map[string]interface{}{"fromBlock": "0x1", "toBlock": "0x2"}})
 		jrq.ID = make(chan int)
-		merged, _, err := executeGetLogsSubRequests(ctx, n, common.NewNormalizedRequestFromJsonRpcRequest(jrq), subs, "")
+		merged, _, err := executeGetLogsSubRequests(ctx, n, common.NewNormalizedRequestFromJsonRpcRequest(jrq), subs, "", "")
 		require.Error(t, err)
 		assert.Nil(t, merged)
 	})
