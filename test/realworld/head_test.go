@@ -14,13 +14,14 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
+// refusalDispatches is how often a request of a band block reaches the
+// vendors at most: the band sweep asks each routed upstream once (§6.4
+// band sweep), with shortCircuitFutureBlocks on or off (§19 K7).
+func (s *scenario) refusalDispatches() int { return len(s.vendors) }
+
 // Bounds of Head, the refusal rule and finality (specs/chain-tracker/
 // feature.md on the unified-head-engine branch).
 const (
-	// refusalDispatches: in the refusal band an empty answer is a
-	// retryable miss once (§6.4), so a request reaches upstreams at most
-	// twice; with shortCircuitFutureBlocks off at most 2 as well (§19 K7).
-	refusalDispatches = 2
 	// peerBlockNumberWait: another instance's eth_blockNumber reaches a
 	// block delivered here within 1 bt, plus the tracker's processing
 	// (§19 oracle; P1 "on the other within 1 Ask").
@@ -181,8 +182,8 @@ func u12() spec {
 				switch d := s.dispatches(n, false, from, time.Now()); {
 				case d == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling %s raised", pod+1, n, got, up)
-				case d > refusalDispatches:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d)", pod+1, n, d, refusalDispatches)
+				case d > s.refusalDispatches():
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d)", pod+1, n, d, s.refusalDispatches())
 				}
 				if got != "null" {
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), a block no vendor has, answered %s", pod+1, n, got)
@@ -301,8 +302,8 @@ func u14() spec {
 					// after the probe: the archive's answer took longer, a
 					// latency verdict.
 					s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: eth_getBlockByNumber(%d) answered without asking the archive, after %s", pod+1, n, to.Sub(from).Round(time.Millisecond))))
-				case s.dispatches(n, false, from, to) > refusalDispatches:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, false, from, to), refusalDispatches)
+				case s.dispatches(n, false, from, to) > s.refusalDispatches():
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, false, from, to), s.refusalDispatches())
 				}
 				s.blocks(5)
 			}
@@ -873,8 +874,8 @@ func pollNext(s *scenario, farFuture bool) {
 		pod := int(next % uint64(len(s.h.pods)))
 		from := time.Now()
 		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(next), true)
-		if d := s.dispatches(next, true, from, time.Now()); d > refusalDispatches {
-			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d); answered %s", pod+1, next, d, refusalDispatches, got)
+		if d := s.dispatches(next, true, from, time.Now()); d > s.refusalDispatches() {
+			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d); answered %s", pod+1, next, d, s.refusalDispatches(), got)
 		}
 		if got == "null" {
 			nulls[pod]++

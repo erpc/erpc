@@ -73,12 +73,13 @@ func TestEmptyResultBeyondConfidence_Finalized(t *testing.T) {
 	assert.True(t, EmptyResultBeyondConfidence(ctx, mk(1000)), "latest head but unfinalized → beyond at finalized confidence")
 }
 
-// TestEnforceNonNullBlock_FutureBlockNotErrored pins the #6 fix under the refusal
-// rule: the network-level enforceNonNullBlock converts the first null for a
-// block above Latest, band or future, into a retryable miss; after the
-// request's one miss it returns the null as the upstream gave it, matching
-// the upstream-level markUnexpectedEmpty guard. A behind-head numeric null
-// still errors.
+// TestEnforceNonNullBlock_FutureBlockNotErrored pins the #6 fix under the
+// band sweep (spec §6.4): the network-level enforceNonNullBlock returns a
+// numbered block's null above Latest, band or future, as the answer, never
+// a missing-data error: the leg's sweep already asked every routed
+// upstream (the upstream-level markUnexpectedEmpty guard makes each empty
+// answer a miss there), and we never announced the block. A behind-head
+// numeric null still errors.
 func TestEnforceNonNullBlock_FutureBlockNotErrored(t *testing.T) {
 	ctx := context.Background()
 	nw := &queryTestNetwork{
@@ -97,12 +98,10 @@ func TestEnforceNonNullBlock_FutureBlockNotErrored(t *testing.T) {
 		bn   int64
 	}{{"future", 1002}, {"band", 1001}} {
 		resp := mkNullResp(c.bn)
-		_, err := enforceNonNullBlock(ctx, resp.Request(), resp)
-		assert.Error(t, err, "a %s block's first null is a retryable miss", c.name)
-		assert.Equal(t, common.MissRetry, HeadRefusalOf(ctx, resp.Request()).Miss(&common.RefusalLeg{}))
 		got, err := enforceNonNullBlock(ctx, resp.Request(), resp)
-		assert.NoError(t, err, "a %s block's null after its miss is the answer", c.name)
+		assert.NoError(t, err, "a %s block's null is the answer", c.name)
 		assert.True(t, got.IsResultEmptyish())
+		assert.True(t, EmptyResultBeyondConfidence(ctx, resp.Request()), "a %s block's null is final once answered", c.name)
 	}
 
 	// Behind head: null is genuinely missing/pruned → still errors (unchanged).

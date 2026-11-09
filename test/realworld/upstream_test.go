@@ -545,8 +545,8 @@ func (s *scenario) requireCeiling(in bool, when string) {
 		switch {
 		case in && d == 0:
 			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) short-circuited %s: the ceiling left it out", pod+1, n, when)
-		case in && d > refusalDispatches:
-			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d) %s", pod+1, n, d, refusalDispatches, when)
+		case in && d > s.refusalDispatches():
+			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d) %s", pod+1, n, d, s.refusalDispatches(), when)
 		case !in && d > 0:
 			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) dispatched %d times %s: its claim still raises the ceiling", pod+1, n, d, when)
 		}

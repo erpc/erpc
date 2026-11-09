@@ -54,13 +54,15 @@ func p12Policy(method string) map[string]interface{} {
 
 // P12: a 0.3s chain behind three https vendors, eth_getLogs and
 // eth_getBlockByNumber through 1-of-3 consensus slots and a hedge. Clients
-// ask 1–5 blocks above every vendor's head: each is answered once the
-// chain reaches its block, within W, never with a block-unavailable error
-// (§6.4 near future), first with fresh reports, then with http-c's
-// reports older than 1 bt. http-c lags, so its slot misses blocks the
-// others serve: its siblings are not stopped (§6.4 every leg). A block
-// more than W of chain ahead gets an error: refused at once, counted
-// future, or, with a stale report, after the band's retry.
+// ask 1–5 blocks above every vendor's head: eth_getLogs is answered once
+// the chain reaches its block, within W, never with a block-unavailable
+// error (§6.4 near future); eth_getBlockByNumber never waits, as a node
+// does not: it answers null while no vendor served its block, else the
+// block; first with fresh reports, then with http-c's reports older than
+// 1 bt. http-c lags, so its slot misses blocks the others serve: its
+// siblings are not stopped (§6.4 every leg). A block more than W of chain
+// ahead gets an error: refused at once, counted future, or, with a stale
+// report, after the band's retry.
 func p12() spec {
 	bound := map[string]interface{}{"upper": map[string]interface{}{"latestBlockMinus": 0, "probe": "blockHeader"}}
 	return spec{name: "P12", bound: healthyDelivery, sim: chainsim.Config{BlockTime: p12BlockTime},
@@ -132,6 +134,7 @@ func (s *scenario) p12Probe(label string, stale bool, empty []float64) {
 				unavailable[method]++
 			}
 			s.violate(s.name, "%s, pod-%d: %s(%d), %d above the tip, answered %v after %s", label, pod+1, method, n, k, err, took.Round(time.Millisecond))
+		case method == "eth_getBlockByNumber" && got == "null" && (want == nil || s.p23FirstServe(want, method).After(start)):
 		case want == nil:
 			s.violate(s.name, "%s, pod-%d: %s(%d) answered %s before the chain reached it", label, pod+1, method, n, got)
 		case got != p12Want(method, want):

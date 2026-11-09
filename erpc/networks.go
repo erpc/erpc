@@ -1398,14 +1398,8 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	if v == nil || v.Rule != common.HeadFuture {
 		return nil, false
 	}
-	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
-	if err != nil {
-		return nil, false
-	}
 	v.Refuse()
-	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-	resp.SetEvmBlockNumber(v.Block)
-	return resp, true
+	return evm.NullAnswer(req, v.Block)
 }
 
 // refuseFutureRange refuses a range method (eth_getLogs, trace_filter)
@@ -2840,6 +2834,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// retryable miss, whatever its sibling slots and hedges got (spec
 		// §6.4).
 		leg := &common.RefusalLeg{}
+		// sweep is this leg's band or thin retries of its block (spec
+		// §6.4 band sweep).
+		var sweep bandSweep
 		// tag: this leg's attempts send the "latest" tag, until one
 		// answer the view did not take; then they read the Head's block
 		// by number (spec §6.4 client read).
@@ -3030,15 +3027,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				finalEmpty := false
 				if refusal.AboveFirm() && missing {
-					switch refusal.Miss(leg) {
-					case common.MissRetry:
-						if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
-							// The retry waits for a routed upstream that
-							// may hold the block, at most W: the lane's read
-							// ahead brings its holders.
-							n.awaitBandHolder(loopCtx, effectiveReq, attempted, refusal.Block)
+					verdict := refusal.Miss(leg)
+					if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
+						// A band or thin miss sweeps the routed upstreams
+						// at once, then waits for one that shows the
+						// block, at most W (spec §6.4 band sweep).
+						verdict = common.MissFinal
+						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, refusal.Block); next != nil {
+							verdict, nextUpstream = common.MissRetry, next
 						}
+					} else if verdict == common.MissRetry {
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
+					}
+					switch verdict {
+					case common.MissRetry:
 						// One more pick for the retry, a slot's included.
 						maxLoopIterations = max(maxLoopIterations, loopIteration+2)
 						// With no upstream left to retry, the client gets

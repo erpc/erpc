@@ -804,11 +804,12 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 // No other read at or below Latest is counted (§17): logs answered with an
 // empty array, a transaction index past a block's count answered null, a
 // block below the head region answered null. Once the block time is known,
-// a block at most W / bt + 1 above the ceiling waits for
-// it, at most W, while the voters are Asked every bt (near future): a
-// numbered read and a log range are served once the nodes reach them,
-// and a range still above the ceiling after W is refused, counted
-// future_after_wait.
+// a log range at most W / bt + 1 above the ceiling waits for it, at most
+// W, as the lane's read ahead (near future): it is served once the nodes
+// reach it, and a range still above the ceiling after W is refused,
+// counted future_after_wait. A numbered block read there never waits
+// (§6.4 band sweep): it answers what the nodes answer, null before they
+// hold it.
 func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -963,13 +964,12 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 		time.AfterFunc(after, func() { head.Store(n) })
 	}
 
-	reach(0x66, 300*time.Millisecond)
 	start := time.Now()
 	resp = forwardGetBlockByNumber(t, ctx, network, "0x66")
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, jrr.GetResultString(), "0x270f", "a block 2 above the ceiling, served once the nodes reach it")
-	assert.Less(t, time.Since(start), 3*time.Second, "within W")
+	assert.Equal(t, "null", jrr.GetResultString(), "a block 2 above the ceiling, as the nodes answer it")
+	assert.Less(t, time.Since(start), time.Second, "no wait for the chain")
 	assert.Positive(t, nearCalls.Load())
 
 	logs := func(toHex string) (*common.NormalizedResponse, error) {
@@ -995,8 +995,9 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 
 	// A report taken just now can still trail the chain by a block: the
 	// nodes made 0x68 right after it. 0x6b is 4 above the ceiling, yet
-	// only 3 blocks, W of chain, above the nodes' head (§19 P12): it waits,
-	// and is served once they reach it, never answered null before.
+	// only 3 blocks, W of chain, above the nodes' head (§19 P12): a log
+	// range would wait; a numbered block read answers at once what the
+	// nodes answer, null before they hold it.
 	var farCalls atomic.Int64
 	for _, id := range ids {
 		gock.New("http://" + id + ".localhost").
@@ -1031,10 +1032,10 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	resp = forwardGetBlockByNumber(t, ctx, network, "0x6b")
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, jrr.GetResultString(), "0x270f", "a block W of chain above the nodes, served once they reach it")
-	assert.GreaterOrEqual(t, time.Since(start), 850*time.Millisecond, "it waited for the chain")
-	assert.Less(t, time.Since(start), 3*time.Second, "within W")
+	assert.Equal(t, "null", jrr.GetResultString(), "a block W of chain above the nodes, null before they hold it")
+	assert.Less(t, time.Since(start), 850*time.Millisecond, "no wait for the chain")
 	assert.Equal(t, refused+1, afterWait(), "not refused")
+	time.Sleep(time.Second)
 
 	// On a 100ms chain, W 2s, a block that never comes waits all of W as
 	// the lane's read ahead (spec §6.4 near future, §6.8 shared early

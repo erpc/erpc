@@ -1572,12 +1572,14 @@ func (t *ChainTracker) MarkRead() {
 }
 
 // ReadAhead takes a read that waits for block n above the view (spec
-// §6.4 near future, band, gate skip): it is the lane's demand, and the
-// clock's target sends its shared early fetch once a read waits for it or
-// a block above it (aheadProbe). Every read of n waits on that fetch and
-// the clock's after it: no read fetches a head of its own. The mark holds
-// W after the last such read (readAheadStale); the first read after it
-// ended sends its block whatever the mark held.
+// §6.4 near future, band verdict, gate skip): it is the lane's demand, and,
+// for n above the top sight, the clock's target sends its shared early
+// fetch once a read waits for it or a block above it (aheadProbe). A block
+// at or below the top sight came already: the clock fetches it no more,
+// and a band or thin miss of it asks the request's routed upstreams
+// itself (spec §6.4 band sweep). The mark holds W after the last such
+// read (readAheadStale); the first read after it ended sends its block
+// whatever the mark held.
 func (t *ChainTracker) ReadAhead(n uint64) {
 	t.MarkRead()
 	fresh := t.readAheadAt.Swap(time.Now().UnixNano()) == 0

@@ -17,6 +17,8 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // headRefreshInterval is the longest a lane's number facts go without
@@ -915,9 +917,8 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 }
 
 // EvmAskBand takes a band block of selector's lane (spec §6.4 band): the
-// lane's read ahead of it (readAhead), so the band's retry finds the
-// block's holders by the clock's fetches, with no Ask per upstream below
-// it.
+// lane's read ahead of it (readAhead), with no Ask per upstream below it.
+// A miss sweeps the request's routed upstreams (bandNext).
 func (n *Network) EvmAskBand(selector string, block int64) {
 	n.readAhead(selector, block)
 }
@@ -931,36 +932,152 @@ func (n *Network) readAhead(selector string, block int64) {
 	}
 }
 
-// awaitBandHolder waits, for the band's or the thin region's retry of
-// req's block (spec §6.4), until one of req's routed upstreams not yet
-// attempted may hold it (mayHold), at most W or until ctx ends. The wait
-// is the lane's read ahead of block (readAhead): the clock's fetches bring
-// its holders, and the first ends the wait, so one slow upstream never
-// holds the retry back (rule 2). It fetches nothing of its own.
-func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, block int64) {
-	sel := selectorOf(req)
-	n.readAhead(sel, block)
+// bandSweep is one leg's band or thin retries of its block (spec §6.4
+// band): per routed upstream that answered it empty or missing, the head
+// it reached then (missed); the upstreams whose hold time was tried
+// (guessed); and the leg's first miss (since), whose wait ends W after.
+type bandSweep struct {
+	missed  map[string]int64
+	guessed map[string]bool
+	since   time.Time
+}
+
+// bandNext is the leg's next pick for req's block after u answered it
+// empty or missing (spec §6.4 band sweep): at once, the routed upstreams
+// the leg has not tried, in hold-evidence order (bandOrder), each the
+// client's own request, as the old image's sweep was; with every one
+// tried, the first that shows the block since its miss (awaitBandHolder),
+// unless req answers at once (evm.AnswersAtOnce) and the block is above
+// its Latest: we never announced it. nil: none, and the last answer is the
+// request's.
+func (n *Network) bandNext(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, sw *bandSweep, u common.Upstream, block int64) func() (common.Upstream, error) {
 	credit := creditCap(n.requestHead(ctx, req))
-	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
-	defer cancel()
-	t := n.laneTracker(sel)
-	for {
-		computed := n.headsComputed()
-		var moved <-chan struct{}
-		if t != nil {
-			moved = t.Changed()
+	if sw.missed == nil {
+		sw.missed, sw.guessed, sw.since = map[string]int64{}, map[string]bool{}, time.Now()
+	}
+	sw.missed[u.Id()] = n.reachedHead(u, credit)
+	var next []common.Upstream
+	for _, r := range req.Upstreams() {
+		if _, seen := attempted[r.Id()]; !seen {
+			next = append(next, r)
 		}
-		for _, u := range req.Upstreams() {
-			if _, seen := attempted[u.Id()]; !seen && n.mayHold(u, block, credit, nil) {
-				return
+	}
+	if len(next) > 0 {
+		next = n.bandOrder(req, next, block, credit)
+	} else {
+		if r := req.HeadRefusal(); evm.AnswersAtOnce(req) && r != nil && r.Block > r.Latest {
+			return nil
+		}
+		r := n.awaitBandHolder(ctx, req, sw, block, credit)
+		if r == nil {
+			return nil
+		}
+		delete(attempted, r.Id())
+		next = []common.Upstream{r}
+	}
+	return func() (common.Upstream, error) {
+		for len(next) > 0 {
+			r := next[0]
+			next = next[1:]
+			if req.ReserveUpstream(r) {
+				return r, nil
 			}
 		}
+		return nil, common.NewErrNoUpstreamsLeftToSelect(req, "no upstream left for the band sweep")
+	}
+}
+
+// bandOrder orders ups for a sweep of block (spec §6.4 band sweep): those
+// whose evidence may hold it first (mayHold), then by when each most
+// likely holds it (ChainTracker.HeldAt), then the rest; equals by round
+// trip (byRoundTrip).
+func (n *Network) bandOrder(req *common.NormalizedRequest, ups []common.Upstream, block, credit int64) []common.Upstream {
+	n.byRoundTrip(ups)
+	t := n.laneTracker(selectorOf(req))
+	never := time.Unix(1<<40, 0)
+	at := make(map[string]time.Time, len(ups))
+	for _, u := range ups {
+		a := never
+		if n.mayHold(u, block, credit, nil) {
+			a = time.Time{}
+		} else if t != nil {
+			if held, ok := t.HeldAt(u.Id(), uint64(block), false); ok {
+				a = held
+			}
+		}
+		at[u.Id()] = a
+	}
+	slices.SortStableFunc(ups, func(a, b common.Upstream) int { return at[a.Id()].Compare(at[b.Id()]) })
+	return ups
+}
+
+// awaitBandHolder waits, once every routed upstream of req answered its
+// block empty or missing (spec §6.4 band sweep), for the first that may
+// hold it now: its evidence reached the block since its miss (reachedHead:
+// its counter, a by-number answer here or a push's hash vote), or, once
+// per upstream, its longest hold bound passed since the block's first
+// sight (ChainTracker.HeldAt, surely). It waits at most W from the leg's
+// first miss, or until ctx ends; nil then. Without a span the wait was a
+// gap in a trace between the miss and the retry.
+func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedRequest, sw *bandSweep, block, credit int64) common.Upstream {
+	start := time.Now()
+	ctx, span := common.StartSpan(ctx, "Network.awaitBandHolder", trace.WithAttributes(attribute.Int64("block", block)))
+	outcome := "timeout"
+	defer func() {
+		span.SetAttributes(attribute.String("outcome", outcome), attribute.Int64("waited_ms", time.Since(start).Milliseconds()))
+		span.End()
+	}()
+	t := n.laneTracker(selectorOf(req))
+	deadline := sw.since.Add(health.FreshnessWindow(n.EvmBlockTime()))
+	for {
+		computed := n.headsComputed()
+		var moved, credited <-chan struct{}
+		if t != nil {
+			moved, credited = t.Changed(), t.CreditMoved()
+		}
+		now := time.Now()
+		due := deadline
+		for _, u := range req.Upstreams() {
+			// Only an upstream that answered: one the availability gate
+			// skipped would be skipped again.
+			was, missed := sw.missed[u.Id()]
+			if !missed {
+				continue
+			}
+			if head := n.reachedHead(u, credit); head > was && common.EvmHeadReaches(u, head, block) {
+				outcome = "holder"
+				return u
+			}
+			if sw.guessed[u.Id()] || t == nil {
+				continue
+			}
+			at, ok := t.HeldAt(u.Id(), uint64(block), true)
+			switch {
+			case !ok:
+			case !at.After(now):
+				sw.guessed[u.Id()] = true
+				outcome = "held_wait"
+				return u
+			case at.Before(due):
+				due = at
+			}
+		}
+		wait := time.Until(due)
+		if !due.Before(deadline) && wait <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(max(wait, 0))
 		select {
+		case <-timer.C:
 		case <-computed:
 		case <-moved:
+		case <-credited:
 		case <-ctx.Done():
-			return
+			timer.Stop()
+			outcome = "canceled"
+			return nil
 		}
+		timer.Stop()
 	}
 }
 
