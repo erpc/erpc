@@ -121,10 +121,12 @@ func TestUpstreamPreForward_trace_filter(t *testing.T) {
 		u := new(mockEvmUpstream)
 		poller := &fixedPoller{latest: 10, finalized: 10}
 		u.On("Id").Return("u1").Maybe()
+		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
-		// toBlock=100 is not available
+		// toBlock=100 is not available; the network holds no range wait
+		// (rangeHolder), so nothing admits it (spec §6.4 Sites)
 		u.On("EvmAssertBlockAvailability", mock.Anything, "trace_filter", common.AvailbilityConfidenceBlockHead, false, int64(100)).
-			Return(false, nil).Twice() // before and after the Ask
+			Return(false, nil).Once()
 
 		r := createTraceFilterRequest(map[string]interface{}{
 			"fromBlock": "0x1",
