@@ -2085,6 +2085,15 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.StatePollerDebounce == 0 && defaults != nil && defaults.StatePollerDebounce != 0 {
 		e.StatePollerDebounce = defaults.StatePollerDebounce
 	}
+	// Static and provider-generated upstreams both inherit here. eth_getLogs
+	// splits at each upstream's own threshold, so a provider upstream left at 0
+	// sent whole ranges its vendor refuses.
+	if e.GetLogsAutoSplittingRangeThreshold == 0 && defaults != nil {
+		e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
+	}
+	if e.TraceFilterAutoSplittingRangeThreshold == 0 && defaults != nil {
+		e.TraceFilterAutoSplittingRangeThreshold = defaults.TraceFilterAutoSplittingRangeThreshold
+	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {
 			e.NodeType = defaults.NodeType
