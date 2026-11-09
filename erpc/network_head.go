@@ -933,27 +933,30 @@ func (n *Network) readAhead(selector string, block int64) {
 }
 
 // bandSweep is one leg's band or thin retries of its block (spec §6.4
-// band): per routed upstream that answered it empty or missing, the head
-// it reached then (missed); the upstreams whose hold time was tried
-// (guessed); and the leg's first miss (since), whose wait ends W after.
+// band): the block (the first miss's); per routed upstream that answered
+// it empty or missing, or that the availability gate skipped during the
+// sweep, the head it reached then (missed); the upstreams whose hold time
+// was tried (guessed); and the leg's first miss (since), whose wait ends W
+// after.
 type bandSweep struct {
+	block   int64
 	missed  map[string]int64
 	guessed map[string]bool
 	since   time.Time
 }
 
 // bandNext is the leg's next pick for req's block after u answered it
-// empty or missing (spec §6.4 band sweep): at once, the routed upstreams
-// the leg has not tried, in hold-evidence order (bandOrder), each the
-// client's own request, as the old image's sweep was; with every one
-// tried, the first that shows the block since its miss (awaitBandHolder),
-// unless req answers at once (evm.AnswersAtOnce) and the block is above
-// its Latest: we never announced it. nil: none, and the last answer is the
-// request's.
+// empty or missing, or the availability gate skipped u during the sweep
+// (spec §6.4 band sweep): at once, the routed upstreams the leg has not
+// tried, in hold-evidence order (bandOrder), each the client's own
+// request, as the old image's sweep was; with every one tried, the first
+// that shows the block since its miss (awaitBandHolder), unless req
+// answers at once (evm.AnswersAtOnce) and the block is above its Latest:
+// we never announced it. nil: none, and the last answer is the request's.
 func (n *Network) bandNext(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, sw *bandSweep, u common.Upstream, block int64) func() (common.Upstream, error) {
 	credit := creditCap(n.requestHead(ctx, req))
 	if sw.missed == nil {
-		sw.missed, sw.guessed, sw.since = map[string]int64{}, map[string]bool{}, time.Now()
+		sw.block, sw.missed, sw.guessed, sw.since = block, map[string]int64{}, map[string]bool{}, time.Now()
 	}
 	sw.missed[u.Id()] = n.reachedHead(u, credit)
 	var next []common.Upstream
@@ -1038,8 +1041,8 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 		now := time.Now()
 		due := deadline
 		for _, u := range req.Upstreams() {
-			// Only an upstream that answered: one the availability gate
-			// skipped would be skipped again.
+			// Only an upstream that missed during the sweep: one the
+			// availability gate skipped before it would be skipped again.
 			was, missed := sw.missed[u.Id()]
 			if !missed {
 				continue

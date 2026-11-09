@@ -3015,6 +3015,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					if !oneUpstreamOnly {
 						lastErr = skipErr
 					}
+					// During a sweep, the skip is u's miss of the swept block:
+					// with every routed upstream tried, the leg waits for a
+					// holder (spec §6.4 band sweep).
+					if sweep.missed != nil {
+						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, sweep.block); next != nil {
+							nextUpstream = next
+							maxLoopIterations = max(maxLoopIterations, loopIteration+2)
+						}
+					}
 					loopSpan.End()
 					continue
 				}
