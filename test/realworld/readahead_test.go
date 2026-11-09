@@ -134,19 +134,20 @@ var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time
 // (production, mantle and optimism: retried_found reads 1-3 s on 2 s
 // blocks). No read can answer before a vendor serves the block. A read at
 // or below Latest of a block vendor-a's tag announced fails while no
-// vendor serves it, on a788b613 (this branch's parent) as here; runs
-// alternated with one harness, 4 each: a788b613 failed 3.76%, 4.70%,
-// 4.18%, 4.23% of its reads, served_missing per pod at most 53, 67, 61,
-// 58, p99 648, 589, 676, 610 ms; this branch 5.10%, 4.36%, 3.82%, 4.21%,
-// at most 72, 64, 54, 59, p99 660 and 610 ms in its last two. Those are
-// judged against a788b613's highest plus 5% (pre). Head fetches per new
-// block, polls left out, the higher pod of each run: a788b613 1.867,
-// 1.823, 1.933, 1.944; this branch 1.911, 1.822, 1.845, 1.811; bar 1.944
-// x 1.05.
+// vendor serves it, on this branch's base 172a2ec7 as here. Runs with
+// this harness (LogsLag included), alternated, 4 each, base 172a2ec7
+// then this branch: eth_getBlockByNumber failed on 4.09%, 4.63%, 4.43%,
+// 3.82% of the base's reads, 6.26%, 6.28%, 6.64%, 6.28% of this
+// branch's; served_missing per pod at most 58, 65, 70, 53 on the base,
+// 88, 87, 91, 88 here; p99 565, 575, 345, 683 ms on the base, 457, 179,
+// 490, 92 ms here. Those are judged against the base's highest plus 5%
+// (pre). Head fetches per new block, polls left out, the higher pod of
+// each run: base 1.889, 1.845, 1.866, 1.900; this branch 4.089, 4.256,
+// 4.067, 4.300; bar 1.900 x 1.05.
 var p23Band = p23Shape{name: "P23-band", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	base: 2 * time.Minute, hash: 2 * time.Minute, ahead: 3 * time.Minute,
-	blockLag: 300 * time.Millisecond, logsLag: 500 * time.Millisecond, budget: 2.04, old: true, peer: true,
-	pre: &p23Pre{p99: 676 * time.Millisecond, failed: 0.0470, servedMissing: 67},
+	blockLag: 300 * time.Millisecond, logsLag: 500 * time.Millisecond, budget: 2.00, old: true, peer: true,
+	pre: &p23Pre{p99: 683 * time.Millisecond, failed: 0.0463, servedMissing: 70},
 	ups: []freshUp{
 		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 250 * time.Millisecond},
