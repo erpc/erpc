@@ -466,6 +466,30 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		}
 
+		// A nonce above the sender's next nonce (a nonce gap). Nodes that keep
+		// no queue for future nonces refuse it (Arbitrum's sequencer; geth-family
+		// preChecks on eth_call/eth_estimateGas). Wordings: geth, reth, Nethermind
+		// "nonce too high"; Besu "Nonce too high" (-32006) and "Transaction nonce
+		// is too distant from current sender nonce"; Erigon "nonce gap too large".
+		// The chain's nonce is the same on every upstream, so the verdict is
+		// final: one upstream answers and the caller gets its message to repair
+		// the nonce. Left to the server-side fallback it was retried on every
+		// upstream and each refusal counted toward the circuit breaker, so a
+		// relayer's nonce gap opened the breakers and refused its reads as well.
+		if strings.Contains(ml, "nonce too high") ||
+			strings.Contains(ml, "nonce is too distant") ||
+			strings.Contains(ml, "nonce gap too large") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
 		// HyperEVM (Hyperliquid) returns opaque HyperCore↔HyperEVM boundary
 		// errors as JSON-RPC -32100 with message "Unexpected error (code=10055)".
 		// Per Hyperliquid docs that bucket covers nonce conflicts, duplicate

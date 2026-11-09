@@ -2567,6 +2567,89 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 			assert.Less(t, elapsed, 3*time.Second)
 		})
 	}
+
+	// A nonce gap ("nonce too high") is a verdict on the sender's nonce, not
+	// an upstream fault: the client must get the node's message after one
+	// upstream, and a stream of them must not open the upstream breakers,
+	// which would also refuse the reads (eth_getTransactionCount) a relayer
+	// needs to repair its nonce.
+	for _, refusal := range []struct {
+		code    int
+		message string
+	}{
+		{-32000, "nonce too high"},
+		{-32006, "Nonce too high"},
+		{-32000, "Transaction nonce is too distant from current sender nonce"},
+		{-32000, "nonce gap too large: transaction nonce is too far ahead of sender's on-chain nonce"},
+	} {
+		code, message := refusal.code, refusal.message
+		t.Run("NonceTooHighIsFinalAndKeepsBreakersClosed/"+message, func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			util.SetupMocksForEvmStatePoller()
+
+			sends := &atomic.Int64{}
+			for _, endpoint := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+				gock.New(endpoint).
+					Post("").
+					Persist().
+					Filter(func(r *http.Request) bool {
+						if !strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction") {
+							return false
+						}
+						sends.Add(1)
+						return true
+					}).
+					Reply(200).
+					JSON(map[string]interface{}{
+						"jsonrpc": "2.0",
+						"id":      1,
+						"error":   map[string]interface{}{"code": code, "message": message},
+					})
+				gock.New(endpoint).
+					Post("").
+					Persist().
+					Filter(func(r *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(r), "eth_getTransactionCount")
+					}).
+					Reply(200).
+					JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x9"})
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			breaker := []*common.FailsafeConfig{{
+				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
+					FailureThresholdCount:    2,
+					FailureThresholdCapacity: 2,
+					HalfOpenAfter:            common.Duration(5 * time.Minute),
+				},
+			}}
+			network := setupTwoUpstreamNetworkForSkip(t, ctx, breaker, breaker, nil, nil,
+				[]*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}}},
+				nil, nil,
+			)
+			t.Cleanup(cancel)
+
+			const broadcasts = 4
+			for range broadcasts {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+				_, err := network.Forward(ctx, req)
+				require.Error(t, err)
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointExecutionException),
+					"client must get the node's refusal, got: %v", err)
+				assert.Contains(t, err.Error(), message)
+			}
+			assert.Equal(t, int64(broadcasts), sends.Load(),
+				"each broadcast must ask exactly one upstream, never retry or fail over")
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getTransactionCount","params":["0x3535353535353535353535353535353535353535","pending"]}`))
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err, "nonce refusals must not open the breakers that serve reads")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Equal(t, `"0x9"`, string(jrr.GetResultBytes()))
+		})
+	}
 }
 
 // sendBroadcastParticipants is the consensus fan-out of the production
