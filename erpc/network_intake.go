@@ -128,21 +128,25 @@ func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessa
 }
 
 // Polled takes the header a poll of upstreamId's latest, sent at sent,
-// fetched, or a held fetch of a block by hash or number (evm.HeaderHeld); malformed:
-// it failed intake check 0. A success ends its failing polls and renews
-// the hash vote they expired (PollFailed). passed: the header passed
-// intake's checks (header). A header that passed seeds the cache, unless
-// it lacks the block's transaction hashes (HeaderReadFull).
+// fetched, or a held fetch of a block by number (evm.HeaderHeld);
+// malformed: it failed intake check 0. A poll's success ends its failing
+// polls and renews the hash vote they expired (PollFailed); a held fetch
+// leaves them: a block read says nothing of the node's latest, and it
+// brought back a failing upstream's stale report. passed: the header
+// passed intake's checks (header). A header that passed seeds the cache,
+// unless it lacks the block's transaction hashes (HeaderReadFull).
 func (in *networkIntake) Polled(upstreamId string, sh evm.SourceHeader, malformed error, kind evm.HeaderKind, sent time.Time) (passed bool) {
-	in.mu.Lock()
-	failing := in.polls[upstreamId].failing
-	in.polls[upstreamId] = pollRecord{ok: sent}
-	in.mu.Unlock()
-	if failing {
-		in.nw.headsChanged()
-		if u := in.upstream(upstreamId); !in.nw.sources.pushSource(upstreamId) && u != nil && in.nw.metricsTracker != nil && in.nw.metricsTracker.RenewHashVote(u) {
-			evm.VotersChanged(in.nw)
-			in.nw.sources.wake()
+	if kind != evm.HeaderHeld {
+		in.mu.Lock()
+		failing := in.polls[upstreamId].failing
+		in.polls[upstreamId] = pollRecord{ok: sent}
+		in.mu.Unlock()
+		if failing {
+			in.nw.headsChanged()
+			if u := in.upstream(upstreamId); !in.nw.sources.pushSource(upstreamId) && u != nil && in.nw.metricsTracker != nil && in.nw.metricsTracker.RenewHashVote(u) {
+				evm.VotersChanged(in.nw)
+				in.nw.sources.wake()
+			}
 		}
 	}
 	if malformed != nil {
