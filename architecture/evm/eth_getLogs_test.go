@@ -448,7 +448,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 			ctx := context.Background()
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","address":"0x123","topics":["0xabc"]}],"id":1}`))
 
-			result, fromCache, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, "")
+			result, fromCache, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, "", "")
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -693,6 +693,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			n, u, r := tt.setup()
+			u.On("Config").Return(&common.UpstreamConfig{}).Maybe()
 
 			handled, resp, err := upstreamPreForward_eth_getLogs(context.Background(), n, u, r)
 
@@ -1110,7 +1111,7 @@ func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
 		{fromBlock: 0x2, toBlock: 0x2},
 		{fromBlock: 0x3, toBlock: 0x3},
 	}
-	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, "")
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, "", "")
 	assert.NoError(t, err)
 	var buf bytes.Buffer
 	_, _ = jrr.WriteTo(&buf)
@@ -1174,7 +1175,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x1, toBlock: 0x2, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x3, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, "")
+				}, "", "")
 				if err != nil {
 					return nil, err
 				}
@@ -1182,7 +1183,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x5, toBlock: 0x6, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x7, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, "")
+				}, "", "")
 				if err != nil {
 					return nil, err
 				}
@@ -1207,7 +1208,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
 		{fromBlock: 0x1, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 		{fromBlock: 0x5, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-	}, "")
+	}, "", "")
 
 	// Verify results
 	assert.NoError(t, err)
@@ -1350,80 +1351,6 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		assert.Error(t, err)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeGetLogsExceededMaxAllowedTopics))
 		n.AssertExpectations(t)
-	})
-
-	t.Run("proactive_split_by_block_range_and_merge", func(t *testing.T) {
-		n := new(mockNetwork)
-		n.On("ProjectId").Return("test")
-		n.On("Config").Return(&common.NetworkConfig{
-			Evm: &common.EvmNetworkConfig{},
-		})
-
-		// Upstreams with thresholds: min is 2
-		u1 := new(mockEvmUpstream)
-		u2 := new(mockEvmUpstream)
-		u1.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 2}})
-		u2.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 4}})
-
-		// Expect 3 sub-requests for range 1..5 with threshold 2: [1-2],[3-4],[5-5]
-		n.On("Forward", mock.Anything, mock.Anything).Return(
-			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-				jrq, err := r.JsonRpcRequest()
-				assert.NoError(t, err)
-				filter := jrq.Params[0].(map[string]interface{})
-				fb := filter["fromBlock"].(string)
-				tb := filter["toBlock"].(string)
-				body := []byte(fmt.Sprintf(`[{"data":"%s-%s"}]`, fb, tb))
-				subJrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), body, nil)
-				return common.NewNormalizedResponse().WithJsonRpcResponse(subJrr), nil
-			},
-			nil,
-		).Times(3)
-
-		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x5",
-		})
-
-		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u1, u2}, r)
-		assert.True(t, handled)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse(ctx)
-		assert.NoError(t, err)
-		var buf bytes.Buffer
-		_, _ = jrr.WriteTo(&buf)
-		var out map[string]interface{}
-		err = json.Unmarshal(buf.Bytes(), &out)
-		assert.NoError(t, err)
-		res, ok := out["result"].([]interface{})
-		assert.True(t, ok)
-		assert.Equal(t, 3, len(res))
-
-		n.AssertExpectations(t)
-		u1.AssertExpectations(t)
-		u2.AssertExpectations(t)
-	})
-
-	t.Run("no_split_when_request_range_below_threshold", func(t *testing.T) {
-		n := new(mockNetwork)
-		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}})
-		u := new(mockEvmUpstream)
-		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 10}})
-
-		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x5",
-		})
-
-		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u}, r)
-		assert.False(t, handled)
-		assert.NoError(t, err)
-		assert.Nil(t, resp)
-
-		n.AssertExpectations(t)
-		u.AssertExpectations(t)
 	})
 
 	// Tests for block tag resolution before validation (fixes bypass when using "latest", "finalized", etc.)
@@ -1790,7 +1717,7 @@ func TestExecuteGetLogsSubRequests_MergedResponseSizeBudget(t *testing.T) {
 		n := new(mockNetwork)
 		setup(n, 200) // two pieces fit, the third crosses
 
-		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "", "")
 
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -1808,7 +1735,7 @@ func TestExecuteGetLogsSubRequests_MergedResponseSizeBudget(t *testing.T) {
 		n := new(mockNetwork)
 		setup(n, 0)
 
-		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "", "")
 
 		require.NoError(t, err)
 		require.NotNil(t, result)

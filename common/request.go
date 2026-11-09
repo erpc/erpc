@@ -16,7 +16,6 @@ import (
 const (
 	CompositeTypeNone                      = "none"
 	CompositeTypeLogsSplitOnError          = "logs-split-on-error"
-	CompositeTypeLogsSplitProactive        = "logs-split-proactive"
 	CompositeTypeTraceFilterSplitOnError   = "trace-filter-split-on-error"
 	CompositeTypeTraceFilterSplitProactive = "trace-filter-split-proactive"
 	CompositeTypeMulticall3                = "multicall3"

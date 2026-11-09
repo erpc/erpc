@@ -163,8 +163,9 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 	}
 }
 
-// This test validates proactive range splitting (pre-forward) at network-level, ensuring
-// eth_getLogs is broken into contiguous block sub-requests and the merged response is returned.
+// Proactive range splitting is per upstream: rpc1 (threshold 2) gets its own
+// pieces, and rpc2 (no threshold) gets the whole range. When one of rpc1's
+// pieces fails, the retry gives rpc2 the whole range, not rpc1's pieces.
 func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -174,9 +175,24 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 		return strings.Split(req.URL.Host, ":")[0] == "localhost"
 	})
 	util.SetupMocksForEvmStatePoller()
-	defer util.AssertNoPendingMocks(t, 0)
+	// The persisted failure mocks stay pending.
+	defer util.AssertNoPendingMocks(t, 2)
 
-	// Sub-requests expected (threshold=2, range=0x100..0x104): [0x100-0x101], [0x102-0x103], [0x104-0x104]
+	// 0x100..0x104: rpc2 fails the whole range; rpc1 serves its pieces
+	// [0x100-0x101], [0x102-0x103], [0x104-0x104].
+	gock.New("http://rpc2.localhost").
+		Post("/").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x10")
+		}).
+		Reply(500).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      7,
+			"error":   map[string]interface{}{"code": -32603, "message": "internal error"},
+		})
 	gock.New("http://rpc1.localhost").
 		Post("/").
 		Filter(func(r *http.Request) bool {
@@ -225,6 +241,38 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 			},
 		})
 
+	// 0x200..0x204: every rpc1 piece fails; rpc2 takes the whole range in one
+	// call.
+	gock.New("http://rpc1.localhost").
+		Post("/").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x20")
+		}).
+		Reply(500).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      5,
+			"error":   map[string]interface{}{"code": -32603, "message": "internal error"},
+		})
+	gock.New("http://rpc2.localhost").
+		Post("/").
+		Filter(func(r *http.Request) bool {
+			b := util.SafeReadBody(r)
+			return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\"0x200\"") && strings.Contains(b, "\"toBlock\":\"0x204\"")
+		}).
+		Times(1).
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      6,
+			"result": []map[string]interface{}{
+				{"blockNumber": "0x200", "logIndex": "0x1"},
+				{"blockNumber": "0x202", "logIndex": "0x2"},
+			},
+		})
+
 	// --- Real server setup ---
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
@@ -239,13 +287,22 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 					{
 						Architecture: common.ArchitectureEvm,
 						Evm:          &common.EvmNetworkConfig{ChainId: 123, GetLogsSplitOnError: util.BoolPtr(true), GetLogsSplitConcurrency: 8},
+						// Frozen, so the first request reaches rpc1 first.
+						SelectionPolicy: &common.SelectionPolicyConfig{EvalInterval: 0},
 					},
 				},
 				Upstreams: []*common.UpstreamConfig{
 					{
+						Id:       "rpc1",
 						Type:     common.UpstreamTypeEvm,
 						Endpoint: "http://rpc1.localhost",
 						Evm:      &common.EvmUpstreamConfig{ChainId: 123, GetLogsAutoSplittingRangeThreshold: 2},
+					},
+					{
+						Id:       "rpc2",
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc2.localhost",
+						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 					},
 				},
 			},
@@ -262,6 +319,11 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
+	prj, err := erpcInstance.GetProject("test_project")
+	require.NoError(t, err)
+	ntw, err := prj.GetNetwork(ctx, util.EvmNetworkId(123))
+	require.NoError(t, err)
+	ntw.PinUpstreamOrderForTest("rpc1", "rpc2")
 
 	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
 	require.NoError(t, err)
@@ -291,19 +353,21 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 		return resp.StatusCode, string(b)
 	}
 
-	payload := `{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x104"}],"id":1}`
-	status, body := send(payload, nil)
-	if status != 200 {
-		t.Fatalf("unexpected status: %d body=%s", status, body)
-	}
-	if !strings.Contains(body, "\"result\":") {
-		t.Fatalf("expected merged result, got: %s", body)
-	}
-	// Validate parsing and presence of 3 logs
+	// Sent first, while the pinned order puts rpc1 first: its pieces fail, so
+	// this exercises the retry of the whole range on rpc2.
+	status, body := send(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x200","toBlock":"0x204"}],"id":2}`, nil)
+	require.Equal(t, 200, status, body)
 	var out map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(body), &out))
 	arr, _ := out["result"].([]interface{})
-	require.Equal(t, 3, len(arr))
+	require.Equal(t, 2, len(arr), body)
+
+	status, body = send(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x104"}],"id":1}`, nil)
+	require.Equal(t, 200, status, body)
+	var out2 map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(body), &out2))
+	arr, _ = out2["result"].([]interface{})
+	require.Equal(t, 3, len(arr), body)
 }
 
 // The network's getLogsMaxAllowedRange is enforced before the cache read: an
