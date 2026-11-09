@@ -291,7 +291,7 @@ All metric names carry the `erpc_` prefix. Full definitions: <SourceLink file="t
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name | Each actual attempt sent to an upstream. `composite` ∈ `"none"`, `"logs-split-on-error"`, `"logs-split-proactive"`, `"trace-filter-split-on-error"`, `"trace-filter-split-proactive"`, `"query-blocks-shim"`, `"query-transactions-shim"`, `"query-logs-shim"`, `"query-traces-shim"`, `"query-transfers-shim"`. |
+| `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name | Each actual attempt sent to an upstream. `composite` ∈ `"none"`, `"logs-split-on-error"`, `"trace-filter-split-on-error"`, `"trace-filter-split-proactive"`, `"query-blocks-shim"`, `"query-transactions-shim"`, `"query-logs-shim"`, `"query-traces-shim"`, `"query-transfers-shim"`. |
 | `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name | Upstream attempt returned an error. `severity` ∈ `"critical"`, `"warning"`, `"info"` via `common.ClassifySeverity`. Also incremented with severity=info for block-availability-gated skips. |
 | `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream pre-forward checks decided to skip. |
 | `erpc_upstream_request_missing_data_error_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned missing-data / not-synced error. |
