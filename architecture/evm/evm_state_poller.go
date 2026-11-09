@@ -778,39 +778,33 @@ func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool
 	}
 }
 
-// errHeldNotFound: a held fetch's node answered no block for the hash or
-// number.
+// errHeldNotFound: a held fetch's node answered no block for the number.
 var errHeldNotFound = errors.New("node answered no block")
 
-// FetchHeld fetches one block from the upstream for the block clock: by
-// hash for a by-hash wait (spec §6.4), else block number, the shared early
-// fetch of a block reads wait for (§6.8). Its header, with an intake
-// bound, goes to it as this upstream's held header (HeaderHeld), sent at
-// the answer's At; the answer carries it once it passed intake's checks.
-// It is no head fetch: the head schedule's single flight and backoff stay
-// the polls' (§6.8).
-func (e *EvmStatePoller) FetchHeld(ctx context.Context, hash string, number uint64) common.HeadAnswer {
+// FetchHeld fetches block number from the upstream for the block clock:
+// a by-hash wait's proven block (spec §6.4), or the shared early fetch of
+// a block reads wait for (§6.8). By number, the node answers its
+// canonical block: by hash it answers a side block it saw too, which
+// would vote an orphan. Its header, with an intake bound, goes to it as
+// this upstream's held header (HeaderHeld), sent at the answer's At; the
+// answer carries it once it passed intake's checks. It is no head fetch:
+// the head schedule's single flight and backoff stay the polls' (§6.8).
+func (e *EvmStatePoller) FetchHeld(ctx context.Context, number uint64) common.HeadAnswer {
 	bound := e.pollSrc.Load()
 	if e.IsObjectNull() || !e.askable() || bound == nil {
 		return common.HeadAnswer{Outcome: common.AskBackoff}
 	}
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
-	method, ref := "eth_getBlockByHash", hash
-	if hash == "" {
-		method, ref = "eth_getBlockByNumber", "0x"+strconv.FormatUint(number, 16)
-	}
 	sent := time.Now()
 	a := common.HeadAnswer{Outcome: common.AskFetched, At: sent}
-	b, err := e.fetchBlock(ctx, method, ref, common.UpstreamPoliciesHeadAsk)
+	b, err := e.fetchBlock(ctx, "0x"+strconv.FormatUint(number, 16), common.UpstreamPoliciesHeadAsk)
 	switch {
 	case err != nil:
 		a.Err = err
 	case b.number == 0:
 		a.Err = errHeldNotFound
-	case hash != "" && b.malformed == nil && !strings.EqualFold(b.header.h.hashHex, hash):
-		a.Err = fmt.Errorf("node answered block %s for hash %s", b.header.h.hashHex, hash)
-	case hash == "" && uint64(b.number) != number:
+	case uint64(b.number) != number:
 		a.Err = fmt.Errorf("node answered block %d for number %d", b.number, number)
 	case bound.intake.Polled(e.upstream.Id(), b.header, b.malformed, HeaderHeld, sent):
 		a.Header = b.header
@@ -1029,7 +1023,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 	e.stateMu.RUnlock()
 	polled.Inc()
 	bound := e.pollSrc.Load()
-	b, err := e.fetchBlock(ctx, "eth_getBlockByNumber", "latest", common.UpstreamPoliciesHeadAsk)
+	b, err := e.fetchBlock(ctx, "latest", common.UpstreamPoliciesHeadAsk)
 	if err != nil || b.number == 0 {
 		if refusedPoll(err) {
 			e.refused(&e.latestGiveUp, "latest", err)
@@ -1338,8 +1332,8 @@ const (
 	// its header lacks the block's transaction hashes, so it seeds no
 	// cache entry of the block (§6.8 seed).
 	HeaderReadFull
-	// HeaderHeld: a block the block clock fetched by hash for a by-hash
-	// wait, or by number as a read ahead's shared early fetch (FetchHeld,
+	// HeaderHeld: a block the block clock fetched by number, a by-hash
+	// wait's proven block or a read ahead's shared early fetch (FetchHeld,
 	// spec §6.4, §6.8): it votes as a poll does, the node holds the block;
 	// it says nothing of the node's head above it, so it bounds no hold of
 	// a later block (§6.8 hold bounds).
@@ -1793,7 +1787,7 @@ func (e *EvmStatePoller) fetchFinalized(ctx context.Context) (int64, error) {
 	polled.Inc()
 
 	// Actually fetch from upstream
-	b, err := e.fetchBlock(ctx, "eth_getBlockByNumber", "finalized", common.UpstreamPoliciesTimeoutOnly)
+	b, err := e.fetchBlock(ctx, "finalized", common.UpstreamPoliciesTimeoutOnly)
 	if err != nil || b.number == 0 {
 		if refusedPoll(err) {
 			e.refused(&e.finalizedGiveUp, "finalized", err)
@@ -2383,12 +2377,12 @@ type polledBlock struct {
 	malformed         error
 }
 
-// fetchBlock fetches the block method names by ref (latest or finalized
-// by number, a hash by hash); policies are the probe's upstream policies.
-// A zero number: the answer was empty.
-func (e *EvmStatePoller) fetchBlock(ctx context.Context, method, ref string, policies common.UpstreamPolicies) (polledBlock, error) {
+// fetchBlock fetches the block at ref, a tag (latest, finalized) or a
+// number; policies are the probe's upstream policies. A zero number: the
+// answer was empty.
+func (e *EvmStatePoller) fetchBlock(ctx context.Context, ref string, policies common.UpstreamPolicies) (polledBlock, error) {
 	pr := common.NewNormalizedRequest([]byte(
-		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"%s","params":["%s",false]}`, util.RandomID(), method, ref),
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), ref),
 	))
 	pr.SetDirectives(&common.RequestDirectives{UpstreamPolicies: policies})
 	resp, err := e.upstream.Forward(ctx, pr, true, false)

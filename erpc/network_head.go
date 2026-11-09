@@ -1197,19 +1197,20 @@ var byHashFamily = map[string]struct{ number, hash []interface{} }{
 // above its lane's Latest, the view's Head, proves that block exists:
 // the wait is the lane's demand, and the block clock takes the proof
 // (ChainTracker.Proven). An upstream's answer naming the block's hash
-// makes that upstream's fetch of the block by hash the block's one probe,
-// at once, whatever clock fetch is out: its header is that upstream's
-// vote, so the view takes the block within that round trip when the
-// header serves at 1 holder. A cache answer prefers the cache's own
-// upstream when it is a lane voter (cacheVoter), which holds what the
-// cache served, else the lane's first voter whose counter holds the
-// block, for the clock's probe of its head. A header that serves only at
-// q holders (a mismatch, §6.5) gets them from the clock's holder fetch
-// (§6.8). The answer is sent once the view includes its block, and its
-// upstream then counts as the block's holder (noteHeld); it is null once
-// the view pins another block at that number, or when W passed, or ctx
-// ended, with neither. Each wait counts its outcome. held: resp was
-// replaced by null.
+// makes that upstream's fetch of the block by number the block's one
+// probe, at once, whatever clock fetch is out: its header is that
+// upstream's canonical block there and its vote, so the view takes the
+// block within that round trip when the header serves at 1 holder, or
+// pins another hash there when the client's was a side block. A cache
+// answer prefers the cache's own upstream when it is a lane voter
+// (cacheVoter), which holds what the cache served, else the lane's first
+// voter whose counter holds the block, for the clock's probe of its head.
+// A header that serves only at q holders (a mismatch, §6.5) gets them
+// from the clock's holder fetch (§6.8). The answer is sent once the view
+// includes its block, and its upstream then counts as the block's holder
+// (noteHeld); it is null once the view pins another block at that number,
+// or when W passed, or ctx ended, with neither. Each wait counts its
+// outcome. held: resp was replaced by null.
 func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
 	bn, bh := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
@@ -1250,16 +1251,13 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	}
 	prover, _ := resp.Upstream().(common.EvmUpstream)
 	fromUpstream := prover != nil && !resp.SentAt().IsZero()
-	by, probe := "", ""
+	by := ""
 	if fromUpstream {
 		by = prover.Id()
-		if named {
-			probe = "0x" + hex.EncodeToString(hash[:])
-		}
 	} else if by = n.cacheVoter(sel); by == "" {
 		by = n.firstHolder(sel, bn)
 	}
-	t.Proven(uint64(bn), probe, by, resp.SentAt())
+	t.Proven(uint64(bn), fromUpstream && named, by, resp.SentAt())
 	asks, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
 	defer cancel()
 	for {

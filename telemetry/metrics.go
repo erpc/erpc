@@ -303,7 +303,7 @@ var (
 
 	// MetricHeadClockTotal counts a lane's block clock fetches, one per
 	// answer, by kind (rung, probe, retry, vote, catch_up, guarantee,
-	// holder, edge, cold, held: a by-hash answer's block fetched by hash,
+	// holder, edge, cold, held: a by-hash answer's block fetched by number,
 	// ahead: the shared early fetch, its block by number) and outcome: new
 	// (a new block), early (a rung's, probe's or retry's answer: the block
 	// was not there yet; an ahead fetch answered null), behind (another

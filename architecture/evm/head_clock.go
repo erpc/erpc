@@ -113,14 +113,14 @@ type headClock struct {
 	edgeDone bool
 	// proven is the highest block shown to exist above the top sight, by a
 	// by-hash answer (Proven) or the cache's head (Sighted), at provenAt;
-	// provenBy the voter it prefers for the probe, provenHash the block's
-	// hash when that voter answered it by hash, "" else; 0 once spent
-	// (proveTarget). provedFor is the last target a proof's probe was
-	// planned for: one per target; heldFor the last target a held fetch
-	// went for, whose proof stands until that fetch brings the block.
+	// provenBy the voter it prefers for the probe, provenHeld when that
+	// voter answered it by hash; 0 once spent (proveTarget). provedFor is
+	// the last target a proof's probe was planned for: one per target;
+	// heldFor the last target a held fetch went for, whose proof stands
+	// until that fetch brings the block.
 	proven     uint64
 	provenBy   string
-	provenHash string
+	provenHeld bool
 	provenAt   time.Time
 	provedFor  uint64
 	heldFor    uint64
@@ -176,7 +176,7 @@ type clockFire struct {
 	// S_k, or the block's one fire), retry (a tail rung, or a fire whose
 	// delay doubles), vote (a turn sent at the target's sight), catch_up,
 	// guarantee, holder, edge (the idle edge's), cold (before any sight),
-	// held (a by-hash proof's block fetched by hash from the voter that
+	// held (a by-hash proof's block fetched by number from the voter that
 	// answered it, proveTarget), ahead (the shared early fetch of a block
 	// reads wait for: the target by number, aheadProbe). Only a rung's,
 	// probe's or retry's answer is the ladder's.
@@ -1597,12 +1597,12 @@ func (t *ChainTracker) ReadAhead(n uint64) {
 // Proven takes a by-hash answer that showed block n to exist above the
 // view (spec §6.4 by-hash wait), its request sent at at (zero: now): it is
 // the lane's demand from now on, and the clock's proof of n (prove): voter
-// by is the upstream that answered, with hash the block's hash, or for a
-// cache answer (hash "") the cache's own voter or a voter whose counter
-// holds n.
-func (t *ChainTracker) Proven(n uint64, hash, by string, at time.Time) {
+// by is the upstream that answered, held when it answered by hash, or for
+// a cache answer (held false) the cache's own voter or a voter whose
+// counter holds n.
+func (t *ChainTracker) Proven(n uint64, held bool, by string, at time.Time) {
 	t.latestReadAt.Store(time.Now().UnixNano())
-	t.prove(n, hash, by, at)
+	t.prove(n, held, by, at)
 }
 
 // Sighted takes the cache's head reaching block n where no lane voter is
@@ -1610,19 +1610,19 @@ func (t *ChainTracker) Proven(n uint64, hash, by string, at time.Time) {
 // of n (prove). It adds no demand: a lane nobody reads fetches nothing
 // for it. Where one is, its head is that voter's poll instead (CacheHead).
 func (t *ChainTracker) Sighted(n uint64) {
-	t.prove(n, "", "", time.Time{})
+	t.prove(n, false, "", time.Time{})
 }
 
-// prove records that block n, hash when by answered it by hash, existed
-// by at (zero: now), so the target's probe goes once n reaches it
+// prove records that block n existed by at (zero: now), held when by
+// answered it by hash, so the target's probe goes once n reaches it
 // (proveTarget).
-func (t *ChainTracker) prove(n uint64, hash, by string, at time.Time) {
+func (t *ChainTracker) prove(n uint64, held bool, by string, at time.Time) {
 	if at.IsZero() {
 		at = time.Now()
 	}
 	t.mb.put(trackerMsg{kind: msgCall, fn: func() {
 		if c := &t.clock; n > c.top() && n > c.proven {
-			c.proven, c.provenBy, c.provenHash, c.provenAt = n, by, hash, at
+			c.proven, c.provenBy, c.provenHeld, c.provenAt = n, by, held, at
 		}
 	}})
 }
@@ -1647,7 +1647,10 @@ func (t *ChainTracker) prove(n uint64, hash, by string, at time.Time) {
 // the target out it waits for that fetch, which brings the block as soon
 // or answers below it within its round trip; a proof below the target is
 // spent. A proof a voter's by-hash answer gave is then the target's probe
-// at once: that voter's fetch of the block by hash (held), no head fetch.
+// at once: that voter's fetch of the proven block by number (held), no
+// head fetch. By hash, a node answers a side block it saw too, and that
+// orphan would have been its vote; by number it answers its canonical
+// block, which the by-hash wait then compares with the client's hash.
 // The held fetch and a clock fetch never both go for one target unless
 // the first answers below it: sent beside a probe already out, held
 // fetches cost 0.077 head fetches per block over the bar (§19 P23); the
@@ -1656,7 +1659,7 @@ func (t *ChainTracker) prove(n uint64, hash, by string, at time.Time) {
 func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt time.Duration) {
 	c := &t.clock
 	if c.proven < c.target || c.provedFor == c.target {
-		c.proven, c.provenBy, c.provenHash = 0, "", ""
+		c.proven, c.provenBy, c.provenHeld = 0, "", false
 		return
 	}
 	if slices.ContainsFunc(c.sent, func(f *clockFire) bool { return !f.done && !f.hedged }) {
@@ -1669,8 +1672,8 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 	// A held fetch that failed or found no block leaves the proof to the
 	// head probe below: else the block waited for the tail, an explicit
 	// debounce's hour away.
-	if c.provenHash != "" && candidate(c.provenBy) && c.heldFor != c.target {
-		if f := t.fireBlock(c.provenBy, "held", c.provenHash, 0, now); f != nil {
+	if c.provenHeld && candidate(c.provenBy) && c.heldFor != c.target {
+		if f := t.fireBlock(c.provenBy, "held", c.proven, now); f != nil {
 			var turns []string
 			for _, rr := range c.rungs {
 				if rr.turn && rr.id != c.provenBy {
@@ -1692,7 +1695,7 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 		if len(c.rungs) == 1 && c.rungs[0].turn && c.rungs[0].id == c.provenBy && free(c.provenBy) {
 			c.rungs[0].at, c.provedFor = now, c.target
 		}
-		c.proven, c.provenBy, c.provenHash = 0, "", ""
+		c.proven, c.provenBy, c.provenHeld = 0, "", false
 		return
 	}
 	var rungTurns []string
@@ -1724,20 +1727,20 @@ func (t *ChainTracker) proveTarget(cands []clockCandidate, now time.Time, bt tim
 			r = best
 		}
 	}
-	c.proven, c.provenBy, c.provenHash, c.provedFor = 0, "", "", c.target
+	c.proven, c.provenBy, c.provenHeld, c.provedFor = 0, "", false, c.target
 	c.votes = slices.DeleteFunc(append(c.votes, rungTurns...), func(id string) bool { return id == r.id })
 	c.rungs = []clockRung{r}
 }
 
-// fireBlock sends the clock's block fetch of kind to voter id: block hash
-// by hash, else number by number, whose answer is id's held header
-// (HeaderHeld); nil when the network has none. It is no head fetch: it
-// reads no tag, and the voter's turns and head fetches stand.
-func (t *ChainTracker) fireBlock(id, kind, hash string, number uint64, now time.Time) *clockFire {
+// fireBlock sends the clock's block fetch of kind to voter id: block
+// number by number, whose answer is id's held header (HeaderHeld); nil
+// when the network has none. It is no head fetch: it reads no tag, and
+// the voter's turns and head fetches stand.
+func (t *ChainTracker) fireBlock(id, kind string, number uint64, now time.Time) *clockFire {
 	c := &t.clock
 	f := &clockFire{id: id, sent: now, top: c.top(), kind: kind}
 	seq := c.seq
-	if !t.fetchHeld(id, hash, number, func(a common.HeadAnswer) { t.clockAnswered(seq, f, a) }) {
+	if !t.fetchHeld(id, number, func(a common.HeadAnswer) { t.clockAnswered(seq, f, a) }) {
 		return nil
 	}
 	return f
@@ -1748,7 +1751,7 @@ func (t *ChainTracker) fireBlock(id, kind, hash string, number uint64, now time.
 // clock's last fire, which paces the tail.
 func (t *ChainTracker) fireAhead(id string, now time.Time) *clockFire {
 	c := &t.clock
-	f := t.fireBlock(id, "ahead", "", c.target, now)
+	f := t.fireBlock(id, "ahead", c.target, now)
 	if f != nil {
 		c.lastFire = now
 		c.voter(id).out = f
