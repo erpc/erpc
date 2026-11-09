@@ -249,9 +249,12 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 		// A header at the counter's height is evidence of the node's head
 		// when it was taken, so it dates the report (spec §6.4 ceiling); on
 		// a halted chain no newer header would. One below the counter never
-		// does (§6.8).
-		if p := u.EvmStatePoller(); passed && p != nil && !p.IsObjectNull() && int64(cur.Number) >= p.LatestBlock() {
-			p.ObserveHead(int64(cur.Number), at)
+		// does (§6.8), nor a held header at it: the node holds that block,
+		// its head may be above it, and a re-dated report lowered the reach.
+		if p := u.EvmStatePoller(); passed && p != nil && !p.IsObjectNull() {
+			if n, c := int64(cur.Number), p.LatestBlock(); n > c || n == c && kind != evm.HeaderHeld {
+				p.ObserveHead(n, at)
+			}
 		}
 		return passed
 	}
@@ -265,8 +268,10 @@ func (in *networkIntake) header(upstreamId string, sh evm.SourceHeader, kind evm
 		in.count(upstreamId, "gated_integrity")
 		return false
 	}
+	// A held header raises the report and never re-dates an equal one: the
+	// counter holding its block already accepts it.
 	poller := u.EvmStatePoller()
-	if poller == nil || poller.IsObjectNull() || !poller.ObserveHead(int64(cur.Number), at) {
+	if poller == nil || poller.IsObjectNull() || !(kind == evm.HeaderHeld && int64(cur.Number) <= poller.LatestBlock()) && !poller.ObserveHead(int64(cur.Number), at) {
 		in.count(upstreamId, "gated_identity")
 		return false
 	}
