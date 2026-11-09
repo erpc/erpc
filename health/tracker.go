@@ -1725,17 +1725,22 @@ type headReporter struct {
 }
 
 // addHeadReporter registers reporter as a head reporter on the network and
-// returns its metadata. Caller holds ntwMeta.headMu.
-func (t *Tracker) addHeadReporter(ntwMeta *NetworkMetadata, net string, reporter common.Upstream) *NetworkMetadata {
+// returns its metadata. A shadow upstream only receives copies of served
+// requests, so it is no head reporter (votes false): its head moves no
+// network value. Caller holds ntwMeta.headMu.
+func (t *Tracker) addHeadReporter(ntwMeta *NetworkMetadata, net string, reporter common.Upstream) (meta *NetworkMetadata, votes bool) {
+	if reporter.Config().IsShadow() {
+		return t.getMetadata(metadataKey{reporter, net}), false
+	}
 	id := reporter.Id()
 	for _, r := range ntwMeta.reporters {
 		if r.ups.Id() == id {
-			return r.meta
+			return r.meta, true
 		}
 	}
-	meta := t.getMetadata(metadataKey{reporter, net})
+	meta = t.getMetadata(metadataKey{reporter, net})
 	ntwMeta.reporters = append(ntwMeta.reporters, headReporter{ups: reporter, meta: meta})
-	return meta
+	return meta, true
 }
 
 // corroboratedNetworkHead derives the network head for one axis (the lag
@@ -2089,7 +2094,15 @@ func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int
 		upsMeta.headTsFloor = max(upsMeta.headTsFloor, min(blockTimestamp, t.now().Unix()))
 	}
 
-	t.addHeadReporter(ntwMeta, net, upstream)
+	_, votes := t.addHeadReporter(ntwMeta, net, upstream)
+	if !votes {
+		// Its own lag still reads against the network head.
+		upsLag := blocksBehind(ntwMeta.evmLatestBlockNumber.Load(), upsMeta.evmLatestBlockNumber.Load())
+		t.getHeadLagGauge(t.projectId, vendor, netLabel, id).Set(float64(upsLag))
+		t.updateSingleUpstreamLag(id, net, upsLag, func(tm *TrackedMetrics, lag int64) { tm.BlockHeadLag.Store(lag) })
+		t.loadOrStoreUpsMetrics(upstreamKey{upstream, "*", common.DataFinalityStateAll}).BlockHeadLag.Store(upsLag)
+		return
+	}
 	var changed *NetworkMetadata
 	if headChanged {
 		changed = upsMeta
@@ -2372,16 +2385,17 @@ func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber 
 			Msg("applied large finalized block rollback for upstream in tracker")
 	}
 
-	t.addHeadReporter(ntwMeta, net, upstream)
-	ntwVal, _ := t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
-	if ntwVal <= 0 {
-		lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
-		return
+	ntwVal := ntwMeta.evmFinalizedBlockNumber.Load()
+	if _, votes := t.addHeadReporter(ntwMeta, net, upstream); votes {
+		ntwVal, _ = t.rederiveNetworkFinalized(ntwMeta, net, netLabel, &lg)
+		if ntwVal <= 0 {
+			lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
+			return
+		}
+		// The re-derivation above credited this upstream against its previous
+		// report; its lag now is the one at this report.
+		upsMeta.finalizedReport.reported(t.now(), ntwVal)
 	}
-
-	// The re-derivation above credited this upstream against its previous
-	// report; its lag now is the one at this report.
-	upsMeta.finalizedReport.reported(t.now(), ntwVal)
 	upsLag := blocksBehind(ntwVal, upsMeta.evmFinalizedBlockNumber.Load())
 
 	// Update Prometheus for this upstream

@@ -1530,7 +1530,7 @@ func (u *Upstream) guessVendorName() string {
 }
 
 func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest) (reason error, skip bool) {
-	if u.config.Shadow != nil && u.config.Shadow.Enabled {
+	if u.config.IsShadow() {
 		return common.NewErrUpstreamShadowing(u.config.Id), true
 	}
 	method, _ := req.Method()

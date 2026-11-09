@@ -1221,6 +1221,12 @@ func mergeLegacyLabelKeysIntoTags(u *UpstreamConfig, group, cohort string) {
 	}
 }
 
+// IsShadow reports whether the upstream only receives copies of served
+// requests (shadow.enabled): it never serves, and never joins the network.
+func (u *UpstreamConfig) IsShadow() bool {
+	return u != nil && u.Shadow != nil && u.Shadow.Enabled
+}
+
 func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	if c == nil {
 		return nil
