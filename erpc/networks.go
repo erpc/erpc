@@ -3113,15 +3113,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// retry asks the upstreams whose head reaches the block first.
 				// The answer after it goes to the client as the upstream gave it.
 				// An empty range from an upstream whose evidence reaches its
-				// toBlock is the range's answer (rangeHeld). From one without
-				// that evidence it is no answer, never served nor kept: a
-				// node lacking the block answers it empty too, and an indexer
+				// toBlock is the range's answer (rangeHeld), past the logs
+				// gate. From one without that evidence it is no answer, never
+				// served nor kept, above Firm or once the leg sweeps: a node
+				// lacking the block answers it empty too, and an indexer
 				// served that loses the block's logs.
 				refusal := effectiveReq.HeadRefusal()
+				// missBlock is the block a miss here is of: the leg's sweep's,
+				// else the refusal verdict's.
+				missBlock := sweep.block
+				if sweep.missed == nil && refusal != nil {
+					missBlock = refusal.Block
+				}
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r) && !n.rangeHeld(method, u, refusal)
-				if emptyAnswer && refusal.AboveFirm() && evm.IsRangeQuery(method) {
+				if emptyAnswer && (refusal.AboveFirm() || sweep.missed != nil) && evm.IsRangeQuery(method) {
 					effectiveReq.ClearLastValidResponseIf(r)
-					r, err, emptyAnswer = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), refusal.Block, upstreamLatestBlock(u), 0), false
+					r, err, emptyAnswer = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), missBlock, upstreamLatestBlock(u), 0), false
 				}
 				missing := emptyAnswer || missingDataErr(err)
 				// A held block's answers, served or missing, measure how
@@ -3132,14 +3139,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				}
 				finalEmpty := false
-				if refusal.AboveFirm() && missing {
-					verdict := refusal.Miss(leg)
-					if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
+				if missing && (refusal.AboveFirm() || sweep.missed != nil) {
+					verdict := common.MissFinal
+					if refusal.AboveFirm() {
+						verdict = refusal.Miss(leg)
+					}
+					if sweep.missed != nil || !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
 						// A band or thin miss sweeps the routed upstreams
 						// at once, then waits for one that shows the
-						// block, at most W (spec §6.4 band sweep).
+						// block, at most W (spec §6.4 band sweep); so does
+						// any miss once the leg sweeps (a logs gate miss's,
+						// at any N).
 						verdict = common.MissFinal
-						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, refusal.Block); next != nil {
+						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, missBlock); next != nil {
 							verdict, nextUpstream = common.MissRetry, next
 						}
 					} else if verdict == common.MissRetry {
