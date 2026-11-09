@@ -330,7 +330,7 @@ func p23Body(s *scenario, sh p23Shape) {
 		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx], hashJudged, strict)
 		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %d by-number reads answered empty or failed\n", p.idx+1, s.image(p.idx), reads[p.idx].empty)
 		var gate []string
-		for _, v := range []string{"no", "maybe_agreed", "maybe_found", "maybe_unavailable"} {
+		for _, v := range []string{"no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_unavailable"} {
 			n, _ := s.metric(p.idx, "erpc_logs_empty_gate_total", map[string]string{"verdict": v})
 			gate = append(gate, fmt.Sprintf("%s %.0f", v, n))
 		}

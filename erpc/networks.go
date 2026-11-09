@@ -1536,16 +1536,17 @@ const (
 	logsNo                          // the pinned headers prove no matching log: served
 	logsSweeping                    // a miss: the leg sweeps
 	logsAgreed                      // a second holder answered empty: served
+	logsAlone                       // no other routed upstream to ask: served
 )
 
 // logsGateMiss is the logs gate on u's empty eth_getLogs answer of req,
 // one the refusal rule would serve (spec §6.4 logs gate): it is the
 // range's answer when every pinned block of it proves no matching log
-// (ChainTracker.LogsMayExist), or when u is the second upstream whose
-// evidence holds the block that may (holdsBlock) to answer it empty;
-// else a miss of that block, which the leg sweeps. A filter with no
-// concrete range, one below the pins, and a network without a tracker
-// pass as before, unjudged.
+// (ChainTracker.LogsMayExist), when u is the second upstream whose
+// evidence holds the block that may (holdsBlock) to answer it empty, or
+// when req routes no other upstream to ask; else a miss of that block,
+// which the leg sweeps. A filter with no concrete range, one below the
+// pins, and a network without a tracker pass as before, unjudged.
 func (n *Network) logsGateMiss(req *common.NormalizedRequest, u common.Upstream, g *logsGate) (int64, bool) {
 	t := n.laneTracker(selectorOf(req))
 	if t == nil {
@@ -1572,6 +1573,11 @@ func (n *Network) logsGateMiss(req *common.NormalizedRequest, u common.Upstream,
 	case verdict == evm.LogsNone:
 		g.verdict = logsNo
 		return 0, false
+	case !slices.ContainsFunc(req.Upstreams(), func(r common.Upstream) bool { return r.Id() != u.Id() }):
+		// One upstream has no peer to agree: an error after the wait
+		// would be worse than its answer.
+		g.verdict = logsAlone
+		return 0, false
 	case !n.holdsBlock(u, block):
 	case g.empty == "":
 		g.empty = u.Id()
@@ -1595,6 +1601,8 @@ func (n *Network) countLogsGate(g *logsGate, method string, out *common.Normaliz
 		v = "no"
 	case logsAgreed:
 		v = "maybe_agreed"
+	case logsAlone:
+		v = "maybe_alone"
 	case logsSweeping:
 		v = "maybe_unavailable"
 		if outErr == nil && out != nil && !out.IsObjectNull() && !isEmptyNetworkResult(method, out) {
