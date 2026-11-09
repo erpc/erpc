@@ -778,6 +778,41 @@ func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool
 	}
 }
 
+// errHeldNotFound: a held fetch's node answered no block for the number.
+var errHeldNotFound = errors.New("node answered no block")
+
+// FetchHeld fetches block number from the upstream for the block clock:
+// a by-hash wait's proven block (spec §6.4), or the shared early fetch of
+// a block reads wait for (§6.8). By number, the node answers its
+// canonical block: by hash it answers a side block it saw too, which
+// would vote an orphan. Its header, with an intake bound, goes to it as
+// this upstream's held header (HeaderHeld), sent at the answer's At; the
+// answer carries it once it passed intake's checks. It is no head fetch:
+// the head schedule's single flight and backoff stay the polls' (§6.8).
+func (e *EvmStatePoller) FetchHeld(ctx context.Context, number uint64) common.HeadAnswer {
+	bound := e.pollSrc.Load()
+	if e.IsObjectNull() || !e.askable() || bound == nil {
+		return common.HeadAnswer{Outcome: common.AskBackoff}
+	}
+	ctx, cancel := context.WithTimeout(ctx, askTimeout)
+	defer cancel()
+	sent := time.Now()
+	a := common.HeadAnswer{Outcome: common.AskFetched, At: sent}
+	b, err := e.fetchBlock(ctx, "0x"+strconv.FormatUint(number, 16), common.UpstreamPoliciesHeadAsk)
+	switch {
+	case err != nil:
+		a.Err = err
+	case b.number == 0:
+		a.Err = errHeldNotFound
+	case uint64(b.number) != number:
+		a.Err = fmt.Errorf("node answered block %d for number %d", b.number, number)
+	case bound.intake.Polled(e.upstream.Id(), b.header, b.malformed, HeaderHeld, sent):
+		a.Header = b.header
+	}
+	a.Block = e.LatestBlock()
+	return a
+}
+
 // askable: the poller has a latest counter to Ask for.
 func (e *EvmStatePoller) askable() bool {
 	return e.latestBlockShared != nil
@@ -1302,6 +1337,12 @@ const (
 	// its header lacks the block's transaction hashes, so it seeds no
 	// cache entry of the block (§6.8 seed).
 	HeaderReadFull
+	// HeaderHeld: a block the block clock fetched by number, a by-hash
+	// wait's proven block or a read ahead's shared early fetch (FetchHeld,
+	// spec §6.4, §6.8): it votes as a poll does, the node holds the block;
+	// it says nothing of the node's head above it, so it bounds no hold of
+	// a later block (§6.8 hold bounds).
+	HeaderHeld
 )
 
 // pushed: no fetch of the voter brought the header, so to the block clock
@@ -2348,11 +2389,12 @@ type polledBlock struct {
 	malformed         error
 }
 
-// fetchBlock fetches the block at blockTag, latest or finalized; policies
-// are the probe's upstream policies. A zero number: the answer was empty.
-func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, policies common.UpstreamPolicies) (polledBlock, error) {
+// fetchBlock fetches the block at ref, a tag (latest, finalized) or a
+// number; policies are the probe's upstream policies. A zero number: the
+// answer was empty.
+func (e *EvmStatePoller) fetchBlock(ctx context.Context, ref string, policies common.UpstreamPolicies) (polledBlock, error) {
 	pr := common.NewNormalizedRequest([]byte(
-		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), ref),
 	))
 	pr.SetDirectives(&common.RequestDirectives{UpstreamPolicies: policies})
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
@@ -2391,7 +2433,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string, polici
 		Code:    "ErrEvmStatePoller",
 		Message: "cannot get block number from block data",
 		Details: map[string]interface{}{
-			"blockTag": blockTag,
+			"blockRef": ref,
 			"result":   string(raw),
 		},
 	}

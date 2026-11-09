@@ -59,13 +59,20 @@ type EvmHead struct {
 	Finalized int64
 	// Leader is the highest voter within Latest + maxRetryableBlockDistance.
 	Leader Upstream
-	// Ceiling is the raw max report of the lane's counted upstreams, 0
-	// while any of them has none.
+	// Ceiling is the raw max report of the lane's counted upstreams, at
+	// least Latest, which exists; 0 while any of them has none.
 	Ceiling int64
 	// OldestReportAt is when the oldest counted report's evidence was
 	// taken: a poll's send time, a push's receive time; zero while one has
 	// none.
 	OldestReportAt time.Time
+	// Reach and ReachAt are the counted report that puts the chain
+	// furthest once the blocks it made since each report are counted:
+	// Reach its head, ReachAt when its evidence was taken; zero ReachAt
+	// while a report has none. The refusal rule's near future reads them
+	// (ReachNow): no counted upstream can hold a block far above it.
+	Reach   int64
+	ReachAt time.Time
 	// CeilingPeak is the highest Ceiling this instance published for the
 	// lane, and CeilingFellAt when Ceiling last fell below the one before
 	// it: a cursor between the two heights names a block no upstream
@@ -125,11 +132,9 @@ type HeadRefusal struct {
 	// Latest is the Latest Block was decided against, 0 while the head
 	// was unknown: then no block was promised.
 	Latest int64
-	// Ceiling is the ceiling Block was decided against: the one the Ask
-	// returned when Refreshed.
+	// Ceiling is the ceiling Block was decided against: the one the
+	// near-future wait saw when Waited.
 	Ceiling int64
-	// Refreshed: N was decided again after its stale reports were Asked.
-	Refreshed bool
 	// Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
 	// future).
 	Waited bool
@@ -145,14 +150,10 @@ type HeadRefusal struct {
 }
 
 // FutureRule is the refusal counter's rule for a future verdict:
-// future_after_wait when it waited for the ceiling, future_after_refresh
-// when its stale reports were Asked first.
+// future_after_wait when it waited for the ceiling.
 func (r *HeadRefusal) FutureRule() string {
-	switch {
-	case r.Waited:
+	if r.Waited {
 		return "future_after_wait"
-	case r.Refreshed:
-		return "future_after_refresh"
 	}
 	return "future"
 }

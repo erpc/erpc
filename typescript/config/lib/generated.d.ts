@@ -1065,13 +1065,13 @@ export interface ShadowUpstreamConfig {
         [key: string]: string[];
     };
     /**
-     * PinBlockTag rewrites a tag block selector ("latest") in the mirrored copy to the block the
-     * primary was sent: its response's own block number when it carries one, else the request's
-     * Latest, or the serving upstream's own head when the tag reached it as is. Without it the
-     * shadow executes the tag at its OWN head wall-clock-later than the primary did, so any read
-     * of volatile state (pool reserves, oracle prices — most visibly large multicalls) diverges by
-     * construction and reports a mismatch that says nothing about correctness. Default false =
-     * mirror byte-identical requests, exactly as before.
+     * PinBlockTag rewrites a "latest" block selector (stated or omitted) of a state read in the
+     * mirrored copy to the block the primary was sent: its response's own block number when it
+     * carries one, else the request's Latest, or the serving upstream's own head when the tag
+     * reached it as is. Without it the shadow executes the tag at its OWN head wall-clock-later
+     * than the primary did, so any read of volatile state (pool reserves, oracle prices — most
+     * visibly large multicalls) diverges by construction and reports a mismatch that says nothing
+     * about correctness. Default false: the shadow is sent the primary's params as they are.
      */
     pinBlockTag?: boolean;
 }
@@ -3014,8 +3014,8 @@ export interface EvmHead {
      */
     leader: Upstream;
     /**
-     * Ceiling is the raw max report of the lane's counted upstreams, 0
-     * while any of them has none.
+     * Ceiling is the raw max report of the lane's counted upstreams, at
+     * least Latest, which exists; 0 while any of them has none.
      */
     ceiling: number;
     /**
@@ -3024,6 +3024,15 @@ export interface EvmHead {
      * none.
      */
     oldestreportat: any;
+    /**
+     * Reach and ReachAt are the counted report that puts the chain
+     * furthest once the blocks it made since each report are counted:
+     * Reach its head, ReachAt when its evidence was taken; zero ReachAt
+     * while a report has none. The refusal rule's near future reads them
+     * (ReachNow): no counted upstream can hold a block far above it.
+     */
+    reach: number;
+    reachat: any;
     /**
      * CeilingPeak is the highest Ceiling this instance published for the
      * lane, and CeilingFellAt when Ceiling last fell below the one before
@@ -3074,19 +3083,22 @@ export interface HeadRefusal {
      */
     latest: number;
     /**
-     * Ceiling is the ceiling Block was decided against: the one the Ask
-     * returned when Refreshed.
+     * Ceiling is the ceiling Block was decided against: the one the
+     * near-future wait saw when Waited.
      */
     ceiling: number;
-    /**
-     * Refreshed: N was decided again after its stale reports were Asked.
-     */
-    refreshed: boolean;
     /**
      * Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
      * future).
      */
     waited: boolean;
+    /**
+     * Held: Block is pinned in the lane's view, so it exists; only who
+     * holds it is open. Nothing Asks an upstream for it: each attempt
+     * waits for the upstream that most likely holds it soonest (spec §6.4
+     * held).
+     */
+    held: boolean;
 }
 /**
  * RefusalLeg is one execution of a request: a consensus slot, a hedge

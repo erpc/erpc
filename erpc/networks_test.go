@@ -9630,7 +9630,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			},
 		})
 
-		t.Run("SlowLatestUpdate_RangeCheckWaitsForTheAsk", func(t *testing.T) {
+		t.Run("SlowLatestUpdate_RangeCheckWaitsForTheHead", func(t *testing.T) {
 			util.ResetGock()
 			t.Cleanup(util.ResetGock)
 
@@ -9736,8 +9736,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			getLogs.Reply(200).
 				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": []interface{}{}})
 
-			// toBlock is above the head this instance knew; the range check
-			// waits for its Ask's slow answer, which reaches it (spec §6.8).
+			// toBlock is above the head this instance knows, none yet: the
+			// range check waits for the upstream's first head, its one fetch
+			// (spec §6.4 range check), and sends the range.
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`))
 			resp, err := network.Forward(ctx, req)
 			require.NoError(t, err)

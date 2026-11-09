@@ -607,6 +607,29 @@ func (t *ChainTracker) askHead(id string, need common.HeadNeed, pace time.Durati
 	return true
 }
 
+// heldFetcher is the network's fetch of one block by number from one
+// upstream for the block clock (EvmStatePoller.FetchHeld, spec §6.4,
+// §6.8).
+type heldFetcher interface {
+	EvmFetchHeld(ctx context.Context, upstreamId string, number uint64) common.HeadAnswer
+}
+
+// fetchHeld fetches block number from upstream id (heldFetcher) off the
+// tracker's goroutine; done runs on it with the answer, after the vote it
+// carried. A panic in the fetch is a failed answer. false: the network
+// has no such fetch.
+func (t *ChainTracker) fetchHeld(id string, number uint64, done func(common.HeadAnswer)) bool {
+	n, ok := t.network.(heldFetcher)
+	if !ok || t.fetch == nil {
+		return false
+	}
+	return t.fetch.bg.Go(func() {
+		a := common.HeadAnswer{Err: errHeadAskPanicked}
+		t.callNetwork("held-fetch", func() { a = n.EvmFetchHeld(t.ctx, id, number) })
+		t.mb.put(trackerMsg{kind: msgCall, fn: func() { done(a) }})
+	})
+}
+
 // heldAnswer holds an Ask's header; nil for a failed Ask.
 func (t *ChainTracker) heldAnswer(a common.HeadAnswer) *node {
 	sh, ok := a.Header.(SourceHeader)

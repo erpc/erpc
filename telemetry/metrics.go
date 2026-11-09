@@ -303,17 +303,19 @@ var (
 
 	// MetricHeadClockTotal counts a lane's block clock fetches, one per
 	// answer, by kind (rung, probe, retry, vote, catch_up, guarantee,
-	// holder, edge, cold) and outcome: new (a new block), early (a rung's,
-	// probe's or retry's answer: the block was not there yet), behind
-	// (another channel brought the block first), same (another kind's
-	// answer brought none), failed, joined (another fetch met the Ask: no
-	// fetch), dropped (answered after a clock reset), and skipped_push (a
-	// probe a push or another local fetch made needless: no fetch).
-	// Fetches are every outcome but joined and skipped_push.
+	// holder, edge, cold, held: a by-hash answer's block fetched by number,
+	// ahead: the shared early fetch, its block by number) and outcome: new
+	// (a new block), early (a rung's, probe's or retry's answer: the block
+	// was not there yet; an ahead fetch answered null), behind (another
+	// channel brought the block first), same (another kind's answer
+	// brought none), failed, joined (another fetch met the Ask: no fetch),
+	// dropped (answered after a clock reset), and skipped_push (a probe a
+	// push or another local fetch made needless: no fetch). Fetches are
+	// every outcome but joined and skipped_push.
 	MetricHeadClockTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_clock_total",
-		Help:      "Block clock fetches of a lane's chain tracker, by kind (rung, probe, retry, vote, catch_up, guarantee, holder, edge, cold) and outcome (new, early, behind, same, failed, joined, dropped, skipped_push).",
+		Help:      "Block clock fetches of a lane's chain tracker, by kind (rung, probe, retry, vote, catch_up, guarantee, holder, edge, cold, held, ahead) and outcome (new, early, behind, same, failed, joined, dropped, skipped_push).",
 	}, []string{"project", "network", "lane", "kind", "outcome"})
 
 	MetricHeadViewLagSeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
@@ -1004,13 +1006,12 @@ var (
 	// missing after its retry), served_missing (eth_getBlockByNumber in the
 	// head region, Latest − reorgWindow < N ≤ Latest, answered null or
 	// missing: the promise broke on this instance; other methods' null can
-	// be legit), future, future_after_refresh (stale reports Asked first),
-	// future_after_wait (a near-future block still above the ceiling after
-	// W).
+	// be legit), future, future_after_wait (a near-future block still
+	// above the ceiling after W).
 	MetricHeadRefusalTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_refusal_total",
-		Help:      "Total requests naming a block, by the refusal rule's outcome: served, thin_found and thin_missing (Firm < N <= Latest, found or still empty or missing after the retry), retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_refresh, future_after_wait; by-hash waits for a block above Latest: held_served, held_null.",
+		Help:      "Total requests naming a block, by the refusal rule's outcome: served, thin_found and thin_missing (Firm < N <= Latest, found or still empty or missing after the retry), retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_wait; by-hash waits for a block above Latest: held_served, held_null.",
 	}, []string{"project", "network", "rule"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its

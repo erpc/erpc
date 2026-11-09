@@ -119,6 +119,11 @@ type Network struct {
 	// by-number client answers from it held (*atomic.Int64): holder
 	// evidence for Firm and routing only, never a head report (spec §6.5).
 	heldAt sync.Map
+	// rangeAsks is, per upstream id, its newest range-check Ask (spec
+	// §6.4 range check): every range check of that block or a lower one
+	// joins it.
+	rangeAskMu sync.Mutex
+	rangeAsks  map[string]*rangeAsk
 
 	// queryTraceSource remembers which trace method answered the eth_query*
 	// shim on this network (queryTraceSource* values), so a network whose
@@ -1359,6 +1364,25 @@ func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common
 	return common.HeadAnswer{Outcome: common.AskBackoff}
 }
 
+// EvmFetchHeld fetches block number from upstreamId for a chain tracker's
+// block clock (spec §6.4 by-hash wait, §6.8 shared early fetch,
+// evm.EvmStatePoller.FetchHeld); AskBackoff when the network has no such
+// upstream with a poller.
+func (n *Network) EvmFetchHeld(ctx context.Context, upstreamId string, number uint64) common.HeadAnswer {
+	if n.upstreamsRegistry != nil {
+		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+			if u.Id() != upstreamId {
+				continue
+			}
+			if p, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok && !p.IsObjectNull() {
+				return p.FetchHeld(ctx, number)
+			}
+			break
+		}
+	}
+	return common.HeadAnswer{Outcome: common.AskBackoff}
+}
+
 // tryShortCircuitFutureBlock returns a truthful null response (ok=true) for
 // a numbered eth_getBlockByNumber the refusal rule calls future (spec §6.4,
 // #1238): above the ceiling plus its age in blocks, on a ceiling younger
@@ -1478,6 +1502,19 @@ func refusalMiss(ctx context.Context, method string, resp *common.NormalizedResp
 	}
 	jrr, err := resp.JsonRpcResponse(ctx)
 	return err != nil || jrr == nil || evm.RefusalMiss(method, jrr.GetResultBytes())
+}
+
+// rangeHeld reports whether u holds the whole range of method, a range
+// query, by its evidence (reachedHead, uncredited) reaching toBlock, the
+// refusal verdict's block: its empty answer is then the range's answer,
+// no miss (spec §6.4). Retried as a miss, an empty block's logs waited W
+// for an untried holder (§19 P23: eth_getLogs p99 2.07 s).
+func (n *Network) rangeHeld(method string, u common.Upstream, refusal *common.HeadRefusal) bool {
+	if refusal == nil || refusal.Block <= 0 || !evm.IsRangeQuery(method) {
+		return false
+	}
+	head := n.reachedHead(u, 0)
+	return head > 0 && common.EvmHeadReaches(u, head, refusal.Block)
 }
 
 func (n *Network) countHeadRefusal(rule string) {
@@ -2972,8 +3009,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// consensus slot or a hedge pinned to one upstream too; the
 				// retry asks the upstreams whose head reaches the block first.
 				// The answer after it goes to the client as the upstream gave it.
+				// An empty range from an upstream whose evidence reaches its
+				// toBlock is the range's answer (rangeHeld). From one without
+				// that evidence it is no answer, never served nor kept: a
+				// node lacking the block answers it empty too, and an indexer
+				// served that loses the block's logs.
 				refusal := effectiveReq.HeadRefusal()
-				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r)
+				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r) && !n.rangeHeld(method, u, refusal)
+				if emptyAnswer && refusal.AboveFirm() && evm.IsRangeQuery(method) {
+					effectiveReq.ClearLastValidResponseIf(r)
+					r, err, emptyAnswer = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), refusal.Block, upstreamLatestBlock(u), 0), false
+				}
 				missing := emptyAnswer || missingDataErr(err)
 				// A held block's answers, served or missing, measure how
 				// long after its first sight u holds it (spec §6.4 held).
@@ -2987,10 +3033,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					switch refusal.Miss(leg) {
 					case common.MissRetry:
 						if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
-							// The retry waits for the Ask of the voters
-							// that lack the block until it answers, at most
-							// W, and orders on the heads it brings.
-							n.awaitBandAsk(loopCtx, selectorOf(effectiveReq), refusal.Block)
+							// The retry waits for a routed upstream that
+							// may hold the block, at most W: the lane's read
+							// ahead brings its holders.
+							n.awaitBandHolder(loopCtx, effectiveReq, attempted, refusal.Block)
 						}
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
 						// One more pick for the retry, a slot's included.
@@ -3684,25 +3730,19 @@ func (n *Network) handleBlockSkip(
 	}
 	req.MarkUpstreamCompleted(ctx, u, nil, errToStore)
 
-	// When the block is slightly ahead (retryable), Ask the upstream with a
-	// number need in the background (spec §6.4, §6.8), as main polled it:
-	// the request never waits on it, and the retry after
-	// blockUnavailableDelay sees its head; concurrent skips join one fetch.
-	// A block at or below the request Head's Latest, or one the view pins
-	// (Held), Asks nothing: the clock already fetched it for the network,
-	// and an Ask per skipped upstream cost a block up to one fetch per
-	// voter.
+	// When the block is slightly ahead (retryable), the skip is the lane's
+	// read ahead of it (spec §6.4, §6.8): the clock's shared early fetch
+	// brings its holders, the request never waits on it, and the retry
+	// after blockUnavailableDelay sees their heads. A block at or below the
+	// request Head's Latest, or one the view pins (Held), asks nothing more:
+	// the clock already fetched it for the network. An Ask per skipped
+	// upstream cost a block up to one fetch per voter.
 	if isRetryable {
 		if r := req.HeadRefusal(); r != nil && r.Held {
 			return
 		}
-		if bn := requestBlockNumber(ctx, req); bn > 0 && bn <= n.requestHead(ctx, req).Latest {
-			return
-		}
-		if eu, ok := u.(common.EvmUpstream); ok {
-			if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-				sp.AskBackground(common.HeadNeedNumber, 0, time.Time{}, common.AskRefusal)
-			}
+		if bn := requestBlockNumber(ctx, req); bn > n.requestHead(ctx, req).Latest {
+			n.readAhead(selectorOf(req), bn)
 		}
 	}
 }

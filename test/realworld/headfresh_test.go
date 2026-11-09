@@ -648,6 +648,18 @@ func clientTagReads(mix map[string]float64) (n float64) {
 	return n
 }
 
+// blockFetches is how many of mix's block-clock fetches were one block
+// by hash or number (kinds held and ahead), which reach a vendor as no
+// latest read.
+func blockFetches(mix map[string]float64) (n float64) {
+	for k, v := range mix {
+		if (strings.HasPrefix(k, "clock held ") || strings.HasPrefix(k, "clock ahead ")) && !strings.HasSuffix(k, " joined") {
+			n += v
+		}
+	}
+	return n
+}
+
 // freshJudge flags a new image later than the old one past the slacks, or
 // reading the tag from its upstreams (polls and forwarded client reads)
 // more than freshCostSlack times as often as the old one.

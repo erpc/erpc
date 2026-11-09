@@ -152,7 +152,7 @@ func (s *scenario) p12Probe(label string, stale bool, empty []float64) {
 
 	future := func(pod int) float64 {
 		total := 0.0
-		for _, rule := range []string{"future", "future_after_refresh"} {
+		for _, rule := range []string{"future"} {
 			v, _ := s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": rule})
 			total += v
 		}
@@ -193,12 +193,19 @@ func (s *scenario) p12Probe(label string, stale bool, empty []float64) {
 	}
 }
 
-// p12Read is a read of block n: eth_getLogs over [n, n] as the block hash
-// and the count of its logs, or eth_getBlockByNumber's hash.
+// p12Read is a read of block n on pod: eth_getLogs over [n, n] as the
+// block hash and the count of its logs, or eth_getBlockByNumber's hash.
 func (s *scenario) p12Read(pod int, method string, n uint64) (string, error) {
+	return blockRead(func(result interface{}, method string, args ...interface{}) error {
+		return s.call(pod, result, method, args...)
+	}, method, n)
+}
+
+// blockRead is p12Read through call.
+func blockRead(call func(result interface{}, method string, args ...interface{}) error, method string, n uint64) (string, error) {
 	if method == "eth_getBlockByNumber" {
 		var raw json.RawMessage
-		err := s.call(pod, &raw, method, hexutil.EncodeUint64(n), false)
+		err := call(&raw, method, hexutil.EncodeUint64(n), false)
 		if err != nil {
 			return "", err
 		}
@@ -209,7 +216,7 @@ func (s *scenario) p12Read(pod int, method string, n uint64) (string, error) {
 		BlockNumber hexutil.Uint64 `json:"blockNumber"`
 	}
 	q := map[string]interface{}{"fromBlock": hexutil.EncodeUint64(n), "toBlock": hexutil.EncodeUint64(n)}
-	if err := s.call(pod, &logs, method, q); err != nil {
+	if err := call(&logs, method, q); err != nil {
 		return "", err
 	}
 	var hashes []string

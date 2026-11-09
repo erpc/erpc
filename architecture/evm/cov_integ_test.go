@@ -142,10 +142,6 @@ func (n *covIntegRefusingNet) EvmHead(_ context.Context, req *common.NormalizedR
 func (n *covIntegRefusingNet) EvmLaneHead(_, sel string) common.EvmHead { return n.laneHead(sel) }
 func (n *covIntegRefusingNet) EvmBlockTime() time.Duration              { return time.Second }
 func (n *covIntegRefusingNet) EvmPinned(string, int64) bool             { return false }
-func (n *covIntegRefusingNet) EvmAskStale(_ context.Context, sel string) (int64, time.Time) {
-	n.ask(sel)
-	return n.upstreamHead(sel), time.Time{}
-}
 func (n *covIntegRefusingNet) EvmAwaitCeiling(_ context.Context, sel string, _ int64) (int64, time.Time) {
 	return n.upstreamHead(sel), time.Time{}
 }

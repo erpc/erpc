@@ -3038,8 +3038,8 @@ export interface EvmHead {
    */
   leader: Upstream;
   /**
-   * Ceiling is the raw max report of the lane's counted upstreams, 0
-   * while any of them has none.
+   * Ceiling is the raw max report of the lane's counted upstreams, at
+   * least Latest, which exists; 0 while any of them has none.
    */
   ceiling: number /* int64 */;
   /**
@@ -3048,6 +3048,15 @@ export interface EvmHead {
    * none.
    */
   oldestreportat: any /* time.Time */;
+  /**
+   * Reach and ReachAt are the counted report that puts the chain
+   * furthest once the blocks it made since each report are counted:
+   * Reach its head, ReachAt when its evidence was taken; zero ReachAt
+   * while a report has none. The refusal rule's near future reads them
+   * (ReachNow): no counted upstream can hold a block far above it.
+   */
+  reach: number /* int64 */;
+  reachat: any /* time.Time */;
   /**
    * CeilingPeak is the highest Ceiling this instance published for the
    * lane, and CeilingFellAt when Ceiling last fell below the one before
@@ -3098,19 +3107,22 @@ export interface HeadRefusal {
    */
   latest: number /* int64 */;
   /**
-   * Ceiling is the ceiling Block was decided against: the one the Ask
-   * returned when Refreshed.
+   * Ceiling is the ceiling Block was decided against: the one the
+   * near-future wait saw when Waited.
    */
   ceiling: number /* int64 */;
-  /**
-   * Refreshed: N was decided again after its stale reports were Asked.
-   */
-  refreshed: boolean;
   /**
    * Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
    * future).
    */
   waited: boolean;
+  /**
+   * Held: Block is pinned in the lane's view, so it exists; only who
+   * holds it is open. Nothing Asks an upstream for it: each attempt
+   * waits for the upstream that most likely holds it soonest (spec §6.4
+   * held).
+   */
+  held: boolean;
 }
 /**
  * RefusalLeg is one execution of a request: a consensus slot, a hedge

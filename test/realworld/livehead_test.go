@@ -90,8 +90,9 @@ func (s *scenario) fetchMark() fetchMark {
 			r += float64(s.prism.reads(p.idx, false, anyRead))
 		}
 		// A client read of latest the new image sent as the tag is
-		// client demand, as the old image's, not a head fetch.
-		m.fetches = append(m.fetches, f-clientTagReads(m.mix[p.idx]))
+		// client demand, as the old image's, not a head fetch; a block
+		// the clock fetched by number (held, ahead) is one.
+		m.fetches = append(m.fetches, f-clientTagReads(m.mix[p.idx])+blockFetches(m.mix[p.idx]))
 		m.requests = append(m.requests, r)
 		m.numbered = append(m.numbered, num)
 	}
@@ -865,7 +866,7 @@ func (s *scenario) judgeView(b *strings.Builder, vt *viewTap, vl *viewLog, r vie
 			}
 		}
 		// (a)
-		if r.numbers && sm.n < st.last && !slices.ContainsFunc(within, func(e viewEvent) bool { return e.n <= sm.n+1 && e.seg == st.seg && e.n <= st.last }) {
+		if r.numbers && latestRead(sm.method) && sm.n < st.last && !slices.ContainsFunc(within, func(e viewEvent) bool { return e.n <= sm.n+1 && e.seg == st.seg && e.n <= st.last }) {
 			t.behind++
 			example(&t.exBehind, "%s sent with the stream at %d, answered %d", at, st.last, sm.n)
 		}
@@ -913,11 +914,8 @@ func (s *scenario) judgeView(b *strings.Builder, vt *viewTap, vl *viewLog, r vie
 			}
 		}
 	}
-	for _, method := range []string{viewHead, viewLatest} {
+	for _, method := range slices.Sorted(maps.Keys(tallies)) {
 		t := tallies[method]
-		if t == nil {
-			continue
-		}
 		slices.Sort(t.ahead)
 		fmt.Fprintf(b, "pod-%d one view, %s: %d reads (%d skipped while the tap was down), %d behind the stream, %d not owned by the chain, %d reverted, %d late, %d never streamed; stream behind HTTP %d times, by p50 %s p90 %s max %s (bound %s)\n",
 			vt.pod+1, method, t.samples, t.skipped, t.behind, t.unknown, t.reverted, t.late, t.never, len(t.ahead), pctl(t.ahead, 50), pctl(t.ahead, 90), pctl(t.ahead, 100), r.bound)
@@ -934,6 +932,11 @@ func (s *scenario) judgeView(b *strings.Builder, vt *viewTap, vl *viewLog, r vie
 		}
 	}
 }
+
+// latestRead reports whether method is one of the two latest reads a
+// view sample takes: only they answer the newest block whatever the
+// stream received; a by-hash read answers the block it names.
+func latestRead(method string) bool { return method == viewHead || method == viewLatest }
 
 //
 // --- rows ---

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +187,12 @@ func (m *mockEvmUpstream) EvmStatePoller() common.EvmStatePoller {
 func (m *mockEvmUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence common.AvailbilityConfidence, forceRefreshIfStale bool, blockNumber int64) (bool, error) {
 	args := m.Called(ctx, forMethod, confidence, forceRefreshIfStale, blockNumber)
 	return args.Bool(0), args.Error(1)
+}
+
+// EvmBlockAvailabilityBounds: no configured bounds, as an upstream without
+// blockAvailability.
+func (m *mockEvmUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
+	return math.MinInt64, math.MaxInt64
 }
 
 var _ common.EvmStatePoller = (*mockStatePoller)(nil)
@@ -1713,10 +1720,11 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		u.On("Id").Return("u1").Maybe()
 		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
-		// toBlock=101, upstream says not available
+		// toBlock=101, upstream says not available; the network holds no
+		// range wait (rangeHolder), so nothing admits it (spec §6.4 Sites).
 		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(101)).
 			Return(false, nil).
-			Twice() // before and after the Ask
+			Once()
 
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x65", // 101
@@ -1741,7 +1749,7 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		// toBlock=301 (0x12d), upstream says not available
 		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(301)).
 			Return(false, nil).
-			Twice() // before and after the Ask
+			Once()
 
 		r := createTestRequest(map[string]interface{}{
 			"fromBlock": "0x12d",
