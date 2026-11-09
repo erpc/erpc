@@ -553,18 +553,19 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 		"a short-circuited request must reach no upstream, mirrored probes included")
 }
 
-// Every leg of a band request gets the band's one retry (spec §6.4), and a
-// miss in one leg never stops another. Hedges: the first leg routes to the
-// upstream whose head reaches the block (slow); a hedge gets a null below
-// it and retries; a later hedge, beside that leg, dispatches too, and no
-// hedge's null wins over the block. Consensus slots, each pinned to one
-// upstream: all three slots' upstreams miss, one reporting the block it
-// lacks; the band's Ask finds the fourth upstream's node at the block,
-// while another band poller answers only after W/2, and a slot's retry,
-// head first, serves it from that first holder without waiting for the
-// slow one. A slot's retry picks only the upstreams the request may still
-// select: one whose answer was final (#1348) is not asked again.
-func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
+// A band miss of eth_getBlockByNumber asks only the upstreams whose head
+// evidence reaches the block (spec §6.4 band sweep), and a miss in one leg
+// never stops another. Hedges: the first leg routes to the upstream whose
+// head reaches the block (slow); each hedge gets a null below it and asks
+// no upstream below the block again, and no hedge's null wins over the
+// block. Consensus slots, each pinned to one upstream: all three slots'
+// upstreams miss; the fourth's node holds the block but reports a head
+// below it, so the read answers null at once, asking it nothing and
+// waiting for no poller. Once its head evidence reaches the block, the
+// next read gets its block. A slot's retry picks only the upstreams the
+// request may still select: one whose answer was final (#1348) is not
+// asked again.
+func TestForward_BandBlock_AsksEvidenceHoldersOnly(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
@@ -573,8 +574,9 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	defer cancel()
 
 	// Consensus (1 of 3) over four upstreams: cs1 reports 101 but lacks it,
-	// cs2 and cs3 are at 100, cs4's node reaches 101 once Asked; once
-	// csSlow is set, cs3 answers a head fetch only after W/2 (cold W 3s).
+	// cs2 and cs3 are at 100, cs4's node holds 101 while it reports 100
+	// until csHead moves; once csSlow is set, cs3 answers a head fetch
+	// only after W/2 (cold W 3s).
 	var csHead atomic.Int64
 	csHead.Store(100)
 	var csSlow atomic.Bool
@@ -584,7 +586,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 		"cs3": func() int64 { return 100 },
 		"cs4": csHead.Load,
 	}
-	var slotMisses, csHolder atomic.Int64
+	var csReported, csBelow, csHolder atomic.Int64
 	for _, id := range []string{"cs1", "cs2", "cs3", "cs4"} {
 		gock.New("http://" + id + ".localhost").
 			Post("").
@@ -603,8 +605,11 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 				res.ContentLength = int64(len(body))
 				return res
 			})
-		result, calls := "null", &slotMisses
-		if id == "cs4" {
+		result, calls := "null", &csBelow
+		switch id {
+		case "cs1":
+			calls = &csReported
+		case "cs4":
 			result, calls = futureBlockSentinel, &csHolder
 		}
 		gock.New("http://" + id + ".localhost").
@@ -709,7 +714,8 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 			return true
 		}).
 		Reply(200).
-		Delay(300 * time.Millisecond).
+		// Slow, within aboveLatestFloor: a holder that answers.
+		Delay(150 * time.Millisecond).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + futureBlockSentinel + `}`))
 
 	resp := forwardGetBlockByNumber(t, ctx, network, "0x65")
@@ -717,7 +723,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, jrr.GetResultString(), "0x270f", "the band block from the upstream whose head reaches it, not a hedge's null")
 	assert.Equal(t, int64(1), holder.Load(), "the upstream at the block, asked once")
-	assert.GreaterOrEqual(t, below.Load(), int64(3), "the miss, its retry, and the hedge beside them")
+	assert.Equal(t, int64(2), below.Load(), "each hedge's own upstream: a miss asks no upstream below the block again")
 
 	// An eth_call's 0x is the block's answer, never a node's miss of it: a
 	// node lacking the block errors (arc-mainnet: 277 thin_missing, 2-5
@@ -745,7 +751,7 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	assert.Equal(t, `"0x"`, string(jrr.GetResultBytes()), "the call's empty answer, as the upstream gave it")
 	assert.Equal(t, int64(1), calls.Load(), "an empty eth_call answer is no miss: no retry")
 
-	slots, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+	slots, csUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "cs1", chainID: 123, latestBlock: 101},
 		{id: "cs2", chainID: 123, latestBlock: 100},
 		{id: "cs3", chainID: 123, latestBlock: 100},
@@ -766,18 +772,27 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	slots.failsafeExecutors = []*networkExecutor{ex}
 	require.Equal(t, int64(100), servedHead(slots, ctx).Latest)
 
-	csHead.Store(101)
 	csSlow.Store(true)
 	start := time.Now()
 	resp = forwardGetBlockByNumber(t, ctx, slots, "0x65")
 	took := time.Since(start)
 	jrr, err = resp.JsonRpcResponse(ctx)
 	require.NoError(t, err)
-	assert.Contains(t, jrr.GetResultString(), "0x270f", "a slot's retry reaches the upstream the band's Ask found at the block")
-	assert.Equal(t, int64(1), csHolder.Load(), "the upstream at the block, asked once")
-	assert.GreaterOrEqual(t, slotMisses.Load(), int64(3), "every slot dispatched its own upstream")
-	assert.Less(t, took, time.Second, "the retry starts at the first band answer that holds the block, not after the slow poller's W/2")
+	assert.Equal(t, "null", jrr.GetResultString(), "no upstream's head evidence reaches the block: the read answers null")
+	assert.Zero(t, csHolder.Load(), "an upstream whose head evidence is below the block is not asked")
+	assert.Equal(t, int64(2), csBelow.Load(), "cs2 and cs3 asked once each, by their own slots: no retry below the block")
+	assert.Positive(t, csReported.Load(), "cs1, whose report reaches the block, is asked")
+	assert.Less(t, took, 500*time.Millisecond, "the null comes at once, not after the slow poller's W/2")
 	csSlow.Store(false)
+
+	csHead.Store(101)
+	csUps[3].EvmStatePoller().SuggestLatestBlock(101, time.Now())
+	require.Eventually(t, func() bool { return csUps[3].EvmStatePoller().LatestBlock() == 101 }, time.Second, 10*time.Millisecond)
+	resp = forwardGetBlockByNumber(t, ctx, slots, "0x65")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "once its head evidence reaches the block, the holder serves it")
+	assert.Equal(t, int64(1), csHolder.Load(), "the holder, asked once")
 
 	final, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
 		{id: "cf1", chainID: 123, latestBlock: 101},
@@ -794,6 +809,54 @@ func TestForward_BandBlock_EveryLegRetries(t *testing.T) {
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x65",false]}`))
 	_, _ = final.Forward(ctx, req)
 	assert.Equal(t, int64(2), finalAnswers.Load(), "each upstream that gave a final answer, asked once")
+
+	// The one holder (hn2) holds the read until the block exists: its
+	// attempt ends at its bound (aboveLatestFloor, no round trip known), a
+	// miss with no holder left, so the null is the answer at once: no
+	// upstream below the block is asked, and no hedge (500 ms) waited for.
+	var heldNull, held atomic.Int64
+	for id, calls := range map[string]*atomic.Int64{"hn1": &heldNull, "hn2": &held} {
+		delay := time.Duration(0)
+		if id == "hn2" {
+			delay = 2 * time.Second
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				calls.Add(1)
+				return true
+			}).
+			Reply(200).
+			Delay(delay).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+	}
+	hedged, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hn1", chainID: 123, latestBlock: 100},
+		{id: "hn2", chainID: 123, latestBlock: 101},
+		{id: "hn3", chainID: 123, latestBlock: 100},
+	})
+	ex, err = NewNetworkExecutor(&common.FailsafeConfig{
+		MatchMethod: "*",
+		Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(500 * time.Millisecond), MaxCount: 1},
+	}, hedged.logger, nil, nil)
+	require.NoError(t, err)
+	hedged.failsafeExecutors = []*networkExecutor{ex}
+	require.Equal(t, int64(100), servedHead(hedged, ctx).Latest)
+
+	start = time.Now()
+	resp = forwardGetBlockByNumber(t, ctx, hedged, "0x65")
+	took = time.Since(start)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "no holder served the block: null")
+	assert.Less(t, took, 450*time.Millisecond, "the held attempt ends at its bound, and no hedge is waited for")
+	assert.Zero(t, heldNull.Load(), "no upstream below the block is asked")
+	assert.Equal(t, int64(1), held.Load(), "the holder, asked once")
 }
 
 // A future block dispatched (shortCircuitFutureBlocks off) takes one

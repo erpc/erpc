@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"iter"
 	"net/url"
@@ -1039,6 +1040,31 @@ func (n *Network) bandHolders(ctx context.Context, req *common.NormalizedRequest
 		}
 		return nil, common.NewErrNoUpstreamsLeftToSelect(req, "no holder left for the band read")
 	}
+}
+
+// aboveLatestFloor is the least time an attempt of a block above Latest
+// gets: a round trip plus the vendor's answer, on any route.
+const aboveLatestFloor = 200 * time.Millisecond
+
+// errAboveLatestBound ends an attempt that passed aboveLatestBound.
+var errAboveLatestBound = errors.New("attempt above Latest passed its bound")
+
+// aboveLatestBound is how long u may take to answer req, an
+// eth_getBlockByNumber above req's Latest (spec §6.4 band): twice its
+// median round trip for that method, at least aboveLatestFloor; 0 for any
+// other request. Some vendors hold such a read until the block exists, for
+// seconds; past its usual answer the attempt is a miss. The median, not a
+// high quantile: the held reads themselves fill a vendor's tail.
+func (n *Network) aboveLatestBound(req *common.NormalizedRequest, u common.Upstream) time.Duration {
+	v := req.HeadRefusal()
+	if v == nil || v.Latest <= 0 || v.Block <= v.Latest || !evm.AnswersAtOnce(req) {
+		return 0
+	}
+	if n.metricsTracker == nil {
+		return aboveLatestFloor
+	}
+	p50 := n.metricsTracker.GetUpstreamMethodMetrics(u, headFamilyMethod, common.DataFinalityStateAll).ResponseQuantiles.GetQuantile(0.5)
+	return max(aboveLatestFloor, 2*p50)
 }
 
 // awaitBandHolder waits, once every routed upstream of req answered its
