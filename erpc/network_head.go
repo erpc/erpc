@@ -1081,9 +1081,12 @@ type rangeAsk struct {
 }
 
 // askRange Asks u for block (AskReaching), once: a range check of block or
-// a lower one while u's Ask for it is out or answered joins that Ask. The
-// Ask is no request's own, so a request that ends never cuts it short; it
-// ends at most W after it starts.
+// a lower one while u's Ask for it is out or answered joins that Ask. An
+// Ask that failed or backed off is dropped once it ends, so the next
+// check Asks again, paced by the poller's own backoff: kept, every check
+// of that block failed at once until the next poll. The Ask is no
+// request's own, so a request that ends never cuts it short; it ends at
+// most W after it starts.
 func (n *Network) askRange(u common.EvmUpstream, block int64) <-chan struct{} {
 	n.rangeAskMu.Lock()
 	defer n.rangeAskMu.Unlock()
@@ -1104,10 +1107,20 @@ func (n *Network) askRange(u common.EvmUpstream, block int64) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	drop := func() {
+		n.rangeAskMu.Lock()
+		if n.rangeAsks[u.Id()] == a {
+			delete(n.rangeAsks, u.Id())
+		}
+		n.rangeAskMu.Unlock()
+	}
 	if !n.bg.Go(func() {
 		defer close(a.done)
-		sp.AskReaching(ctx, block, 0, common.AskRefusal)
+		if ans := sp.AskReaching(ctx, block, 0, common.AskRefusal); ans.Err != nil || ans.Outcome == common.AskBackoff {
+			drop()
+		}
 	}) {
+		delete(n.rangeAsks, u.Id())
 		close(a.done)
 	}
 	return a.done
