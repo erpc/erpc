@@ -228,6 +228,9 @@ func TestQuicknodeVendor_DiscoveryLifecycle(t *testing.T) {
 		// Earlier SupportsNetwork calls may still be refreshing other chains'
 		// tables against the disabled URL; let them finish before swapping.
 		waitRefreshesIdle(t, v.cuCache)
+		// This phase uses a new API fixture, so discard the previous fixture's
+		// failed-refresh cooldown while keeping the discovered chain slugs.
+		v.cuCache = NewRemoteDataCache[map[string]int64]("quicknode-cu")
 		orig := swapQuicknodeApiCreditsBaseURL(t, cuSrv.URL+"/v0/api-credits/")
 		defer func() {
 			waitRefreshesIdle(t, v.cuCache)
