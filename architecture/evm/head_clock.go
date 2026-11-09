@@ -1176,25 +1176,27 @@ func (t *ChainTracker) climb(cands []clockCandidate, now time.Time, bt time.Dura
 // a lane the cache's poll feeds, that one from the first tail: the block
 // comes by that poll. A hedge's goes now. After a null answer to the
 // shared early fetch the next fire is that fetch once more (aheadNull),
-// to the same voter by number, at its gap and no sooner than its held
-// wait after that fetch: a tail rung asks the tag, which a vendor's head
-// readers answer below the block while its block readers serve it (§19
-// P23-slow).
+// by number, at the gap and no sooner than the null voter's held wait
+// after its fetch, to the voter likeliest to hold the target then
+// (fireRung): a tail rung asks the tag, which a vendor's head readers
+// answer below the block while its block readers serve it (§19 P23-slow).
 func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Duration, hedge bool) {
 	c := &t.clock
-	if f := c.aheadNull; f != nil {
+	if f := c.aheadNull; f != nil && len(cands) > 0 {
 		c.aheadNull = nil
-		if i := slices.IndexFunc(cands, func(cand clockCandidate) bool { return cand.id == f.id }); i >= 0 {
-			r := clockRung{id: f.id, at: now, kind: "ahead", again: true}
-			if !hedge {
-				r.at = c.lastDone.Add(c.tailGap(cands, cands[i], bt))
-				if held := f.sent.Add(c.voter(f.id).heldWait()); held.After(r.at) {
-					r.at = held
-				}
+		r := clockRung{at: now, kind: "ahead", again: true}
+		if !hedge {
+			cand := c.byScore(cands)[0]
+			if i := slices.IndexFunc(cands, func(cand clockCandidate) bool { return cand.id == f.id }); i >= 0 {
+				cand = cands[i]
 			}
-			c.rungs = append(c.rungs, r)
-			return
+			r.at = c.lastDone.Add(c.tailGap(cands, cand, bt))
+			if held := f.sent.Add(c.voter(f.id).heldWait()); held.After(r.at) {
+				r.at = held
+			}
 		}
+		c.rungs = append(c.rungs, r)
+		return
 	}
 	r := clockRung{kind: "retry", at: now}
 	if order := c.byScore(cands); !(c.pushFed() && c.pushCached) && (c.ladder || c.tails < c.k) && len(order) > 0 {
@@ -1234,25 +1236,30 @@ func (c *headClock) tailGap(cands []clockCandidate, cand clockCandidate, bt time
 
 // fireRung sends r. A turn whose voter left the candidates or has a
 // clock fetch in flight is skipped: that fetch is its turn. Any other
-// fire goes to the fastest free voter instead.
+// fire goes to the fastest free voter instead. A shared early fetch
+// goes to the free voter likeliest to hold the target (score), and not
+// at all once a proof of the target came: its held fetch or proof probe
+// is the target's one fetch.
 func (t *ChainTracker) fireRung(cands []clockCandidate, r clockRung, now time.Time) {
 	c := &t.clock
 	if r.kind == "probe" {
 		c.scheduled = false
 	}
-	id := r.id
-	if id == "" || c.busy(id) || !slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id }) {
-		cand, ok := c.fastest(cands)
-		if r.turn || !ok {
-			c.lastDone = now
-			return
-		}
-		id = cand.id
-	}
 	var f *clockFire
 	if r.kind == "ahead" {
-		f = t.fireAhead(id, now)
+		if id := c.aheadVoter(cands); id != "" && !c.provedTarget() {
+			f = t.fireAhead(id, now)
+		}
 	} else {
+		id := r.id
+		if id == "" || c.busy(id) || !slices.ContainsFunc(cands, func(cand clockCandidate) bool { return cand.id == id }) {
+			cand, ok := c.fastest(cands)
+			if r.turn || !ok {
+				c.lastDone = now
+				return
+			}
+			id = cand.id
+		}
 		f = t.fire(id, now, r.kind)
 	}
 	if f == nil {
@@ -1752,7 +1759,8 @@ func (t *ChainTracker) fireAhead(id string, now time.Time) *clockFire {
 // aheadProbe sends the target's shared early fetch (spec §6.8): a read
 // waits for the target or a block above it (ReadAhead), the lane is no
 // push's, no fetch is out, the target's predicted sight passed, or a
-// block time since a read first waited for it, and no rung goes within
+// block time since a read first waited for it, each plus the fit's
+// spread (aheadSpread), and no rung goes within
 // bt/4: one fetch of the target by number now (fireAhead), to the free
 // voter likeliest to hold it first (score: round trip plus held wait), in
 // place of the target's rungs, whose turns vote at its sight, and of S_k,
@@ -1761,26 +1769,32 @@ func (t *ChainTracker) fireAhead(id string, now time.Time) *clockFire {
 // its report to the target. A fetch of the tag answered below the target
 // wherever a vendor's head readers trail its block readers, and the
 // tail's fetches of the tag after it too, so reads waited for the tag to
-// catch up (§19 P23-slow). A null answer leaves the target to the
-// ladder's tail, whose next fire is this fetch once more (addTail).
-// Before that, the ladder's own fire is the fetch the reads wait on. Each
-// waiting read Asking every voter below its block every bt cost a 0.1 s
-// chain with 6 voters 5.0 head fetches per block (§19 P23). The block
-// time bounds a fit that predicts late: a burst of sights at one instant
-// (a boot, a catch-up) put the target's sight blocks ahead, and a read 2
-// blocks ahead waited W with no fetch sent; a read-ahead client asks for
-// a block once another source showed it.
+// catch up (§19 P23-slow). It goes the fit's spread after the predicted
+// sight (aheadSpread), and not at all once a proof of the target came
+// (provedTarget): at the predicted sight, half of a jittery 2 s chain's
+// fetches found the block not yet served and the by-hash proof's held
+// fetch went after them, 0.36 fetches per block (§19 P23-slow). A null
+// answer leaves the target to the ladder's tail, whose next fire is this
+// fetch once more (addTail). Before that, the ladder's own fire is the
+// fetch the reads wait on. Each waiting read Asking every voter below its
+// block every bt cost a 0.1 s chain with 6 voters 5.0 head fetches per
+// block (§19 P23). The block time bounds a fit that predicts late: a
+// burst of sights at one instant (a boot, a catch-up) put the target's
+// sight blocks ahead, and a read 2 blocks ahead waited W with no fetch
+// sent; a read-ahead client asks for a block once another source showed
+// it.
 // wake: when a waiting target's fetch is due, zero with none.
 func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time.Duration) (wake time.Time) {
 	c := &t.clock
-	if c.ahead < c.target || c.aheadFor == c.target || c.pushFed() || bt <= 0 || len(c.fit) == 0 {
+	if c.ahead < c.target || c.aheadFor == c.target || c.provedTarget() || c.pushFed() || bt <= 0 || len(c.fit) == 0 {
 		return time.Time{}
 	}
 	if c.aheadOn != c.target {
 		c.aheadOn, c.aheadAt = c.target, now
 	}
-	p := c.predict(c.target, bt)
-	if late := c.aheadAt.Add(bt); late.Before(p) {
+	spread := c.aheadSpread(bt)
+	p := c.predict(c.target, bt).Add(spread)
+	if late := c.aheadAt.Add(bt + spread); late.Before(p) {
 		p = late
 	}
 	if now.Before(p) {
@@ -1792,13 +1806,7 @@ func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time
 	if len(c.rungs) > 0 && !c.rungs[0].at.After(now.Add(bt/4)) {
 		return time.Time{}
 	}
-	var id string
-	for _, cand := range c.byScore(cands) {
-		if !c.busy(cand.id) {
-			id = cand.id
-			break
-		}
-	}
+	id := c.aheadVoter(cands)
 	if id == "" {
 		return time.Time{}
 	}
@@ -1815,6 +1823,36 @@ func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time
 	c.votes = slices.DeleteFunc(append(c.votes, turns...), func(v string) bool { return v == id })
 	c.rungs, c.sent, c.aheadFor, c.sk = nil, append(c.sent, f), c.target, now
 	return time.Time{}
+}
+
+// aheadVoter is the free voter of cands likeliest to hold the target
+// first (score), "" with none.
+func (c *headClock) aheadVoter(cands []clockCandidate) string {
+	for _, cand := range c.byScore(cands) {
+		if !c.busy(cand.id) {
+			return cand.id
+		}
+	}
+	return ""
+}
+
+// provedTarget reports whether a proof of the target came (Proven,
+// Sighted): its held fetch or proof probe is the target's one fetch.
+func (c *headClock) provedTarget() bool {
+	return c.proven >= c.target || c.heldFor == c.target || c.provedFor == c.target
+}
+
+// aheadSpread is how far first sights stray from the fit's phase: the
+// p90 of the phase points' distance from its median, at most bt/2.
+func (c *headClock) aheadSpread(bt time.Duration) time.Duration {
+	_, offsets := c.phase(bt)
+	mid := offsets[len(offsets)/2]
+	dev := make([]time.Duration, len(offsets))
+	for i, o := range offsets {
+		dev[i] = (o - mid).Abs()
+	}
+	slices.Sort(dev)
+	return min(dev[(9*len(dev)+9)/10-1], bt/2)
 }
 
 // holdCredit is what the clock published for readers on other goroutines:
