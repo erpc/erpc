@@ -3028,7 +3028,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				finalEmpty := false
 				if refusal.AboveFirm() && missing {
 					verdict := refusal.Miss(leg)
-					if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
+					switch {
+					case refusal.Rule == common.HeadBand && evm.AnswersAtOnce(effectiveReq):
+						// An eth_getBlockByNumber above Latest asks only
+						// upstreams whose evidence reaches the block, then
+						// takes the answer, the truthful null included: no
+						// other upstream, leg or network retry asks again
+						// (spec §6.4 band). Swept, a block no vendor served
+						// yet cost every upstream a call, and the ones that
+						// hold such a read until the block exists held it
+						// seconds.
+						verdict = common.MissFinal
+						if next := n.bandHolders(loopCtx, effectiveReq, attempted, refusal.Block); next != nil {
+							verdict, nextUpstream = common.MissRetry, next
+						} else {
+							refusal.Refuse()
+						}
+					case !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin):
 						// A band or thin miss sweeps the routed upstreams
 						// at once, then waits for one that shows the
 						// block, at most W (spec §6.4 band sweep).
@@ -3036,7 +3052,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, refusal.Block); next != nil {
 							verdict, nextUpstream = common.MissRetry, next
 						}
-					} else if verdict == common.MissRetry {
+					case verdict == common.MissRetry:
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
 					}
 					switch verdict {

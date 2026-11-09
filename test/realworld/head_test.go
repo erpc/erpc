@@ -262,11 +262,13 @@ func (s *scenario) dispatches(n uint64, full bool, from, to time.Time) int {
 }
 
 // U14: every vendor serves u14Ahead behind a syncing archive (vendor-c,
-// https). eth_getBlockByNumber(Latest + 3) is served by the archive, in
-// the refusal band, not null (§6.4: the ceiling counts syncing upstreams;
-// the retry orders head ≥ N first). The archive is no source, and its
-// state poll keeps the default interval, so its head reaches the ceiling
-// by the band's refresh, not a sweep of every upstream.
+// https). eth_getBlockByNumber(Latest + 3) is served by the archive once
+// its report reaches the block, in the refusal band, not null (§6.4: the
+// ceiling counts syncing upstreams; after a miss the read asks the
+// upstreams whose evidence reaches the block). The archive is no source,
+// and its state poll keeps the default interval: above its report, the
+// read never waits for it (§6.4 band sweep) and answers what the vendors
+// answer, null.
 func u14() spec {
 	lag := chainsim.Faults{Lag: u14Ahead}
 	return spec{name: "U14", bound: healthyDelivery + u14Ahead*blockTime,
@@ -287,6 +289,7 @@ func u14() spec {
 					continue
 				}
 				n := uint64(bn) + u14Probe
+				reported, _ := s.metric(pod, "erpc_upstream_latest_block_number", map[string]string{"network": s.network(), "upstream": s.upstream("archive")})
 				from := time.Now()
 				got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 				to := time.Now()
@@ -294,6 +297,9 @@ func u14() spec {
 				switch {
 				case want == nil || archive.Head().Number < n:
 					s.logf("pod-%d: Latest %d + %d is above the archive's %d; skipped", pod+1, bn, u14Probe, archive.Head().Number)
+				case got == "null" && uint64(reported) < n:
+					s.logf("pod-%d: Latest %d + %d is above the archive's report %v: null, as the vendors answer", pod+1, bn, u14Probe, reported)
+					s.owe(pod, "retried_missing", 1)
 				case got != want.Hash.Hex():
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), Latest %d + %d, answered %s, not the archive's %s", pod+1, n, bn, u14Probe, got, short(want.Hash))
 				case archive.NumberCalls(n, false, from, to) == 0:
