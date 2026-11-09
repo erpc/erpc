@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/erpc/erpc/test/chainsim"
 )
@@ -28,9 +29,9 @@ const (
 	// the block this far below it, which the view holds: the answering
 	// vendor's round trip through the pod with no wait.
 	p23Back = 20
-	// p23CostSlack: the read-ahead run's head fetches per new block at
-	// most the clock-only run's times this.
-	p23CostSlack = 1.05
+	// p23FetchBudget: the read-ahead run's head fetches per new block,
+	// polls left out, at most this.
+	p23FetchBudget = 1.10
 	// p23Noise is harness, not spec: the spread of a loopback round trip
 	// and a -race pod's scheduling between a p99 and a p50.
 	p23Noise = 10 * time.Millisecond
@@ -94,8 +95,8 @@ var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time
 // first transaction's receipt: the block clock alone moves the view. Then
 // the read-ahead run with those and p23AheadRate by-number reads a second
 // of the pod's eth_blockNumber + 1 (eth_getBlockByNumber and eth_getLogs
-// of that block). Head fetches per new block of the read-ahead run at
-// most p23CostSlack times the bar; in both runs each by-hash read's
+// of that block). Head fetches per new block of the read-ahead run, polls
+// left out, at most p23FetchBudget; in both runs each by-hash read's
 // latency above the pod's p50 for the same read of a block p23Back below
 // (the answering vendor's round trip) at most one such round trip at p99;
 // every read answers the chain's block, none null; no by-hash answer
@@ -192,9 +193,20 @@ func p23Body(s *scenario, sh p23Shape) {
 	for _, p := range s.h.pods {
 		fmt.Fprintf(&b, "pod-%d refusal Asks clock only: %s; by-hash reads: %s; read-ahead: %s\n", p.idx+1,
 			p23AskLine(ask0[p.idx], ask1[p.idx], base.blocks), p23AskLine(ask1[p.idx], ask2[p.idx], byHash.blocks), p23AskLine(ask2[p.idx], ask3[p.idx], ahead.blocks))
-		if bar := base.perBlock(p.idx) * p23CostSlack; ahead.perBlock(p.idx) > bar {
-			s.violate(s.name, "pod-%d: %.3f head fetches per new block with read-ahead clients, above %.3f, %.2f times its %.3f with readers of latest only",
-				p.idx+1, ahead.perBlock(p.idx), bar, p23CostSlack, base.perBlock(p.idx))
+		// The rule's budget is about one head fetch a block, a shared
+		// early fetch or a by-hash read's held fetch included. Polls are
+		// background, the same with or without readers, and stay out:
+		// with no fetch of latest left to meet them, the 10 s polls of a
+		// 2 s chain's 4 vendors cost 0.37 a block (P23-slow).
+		var polls float64
+		if ahead.blocks > 0 {
+			polls = ahead.mix[p.idx]["ask poll fetched"] / float64(ahead.blocks)
+		}
+		fmt.Fprintf(&b, "pod-%d read-ahead: %.3f head fetches per new block, %.3f of them polls; clock only: %.3f\n",
+			p.idx+1, ahead.perBlock(p.idx), polls, base.perBlock(p.idx))
+		if spent := ahead.perBlock(p.idx) - polls; spent > p23FetchBudget {
+			s.violate(s.name, "pod-%d: %.3f head fetches per new block with read-ahead clients, polls left out, above %.2f",
+				p.idx+1, spent, p23FetchBudget)
 		}
 		s.p23Judge(&b, p.idx, "by-hash reads", hashReads[p.idx])
 		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx])
@@ -214,8 +226,23 @@ func p23Body(s *scenario, sh p23Shape) {
 
 // p23ByNumber reads, about p23AheadRate times a second until ctx ends,
 // block view + 1 on pod, view the pod's newest eth_blockNumber answer
-// (polled every block), alternating eth_getBlockByNumber and eth_getLogs.
+// (polled every block), alternating eth_getBlockByNumber and eth_getLogs,
+// on connections of their own, as another client's are: waiting for
+// blocks up to 2 s away, they held all podConns of the pod's shared
+// client, and a by-hash read and its control behind them waited 0.4-0.8 s
+// for a connection while eRPC answered each in under 50 ms.
 func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads) {
+	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.h.podClient()))
+	if err != nil {
+		s.violate("harness", "pod-%d: by-number client: %v", pod+1, err)
+		return
+	}
+	defer c.Close()
+	call := func(result interface{}, method string, args ...interface{}) error {
+		ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
+		defer cancel()
+		return c.CallContext(ctx, result, method, args...)
+	}
 	var view atomic.Uint64
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -245,7 +272,7 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads) {
 			defer wg.Done()
 			n := v + 1
 			start := time.Now()
-			got, err := s.p12Read(pod, method, n)
+			got, err := blockRead(call, method, n)
 			took := time.Since(start)
 			if err != nil || got == "null" || got == "0 logs of []" {
 				r.mu.Lock()
