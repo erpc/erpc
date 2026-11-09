@@ -164,8 +164,11 @@ type ChainTracker struct {
 	latestReadAt atomic.Int64
 	edge         atomic.Pointer[chan struct{}]
 	// readAhead is the highest block a read waits for above the view
-	// (ReadAhead), so many reads of one block send the clock one message.
-	readAhead atomic.Uint64
+	// (ReadAhead), so many reads of one block send the clock one message;
+	// readAheadAt when such a read last came, unix nanoseconds, 0 once the
+	// mark ended (readAheadStale).
+	readAhead   atomic.Uint64
+	readAheadAt atomic.Int64
 	// reached is, for a group tracker, when its view's Head first reached
 	// each of its recent numbers, ascending, at most window steps: a lane
 	// tap's block is deliverable from then (ReachedAt). reachedMu guards it.
@@ -527,6 +530,7 @@ func (t *ChainTracker) clear() {
 	t.pendingAt = make(map[string]time.Time)
 	t.clock.reset()
 	t.readAhead.Store(0)
+	t.readAheadAt.Store(0)
 	t.settle = nil
 	t.pins, t.maxHeld = nil, nil
 	t.offPins = make(map[string]time.Time)

@@ -1575,15 +1575,18 @@ func (t *ChainTracker) MarkRead() {
 // §6.4 near future, band, gate skip): it is the lane's demand, and the
 // clock's target sends its shared early fetch once a read waits for it or
 // a block above it (aheadProbe). Every read of n waits on that fetch and
-// the clock's after it: no read fetches a head of its own.
+// the clock's after it: no read fetches a head of its own. The mark holds
+// W after the last such read (readAheadStale); the first read after it
+// ended sends its block whatever the mark held.
 func (t *ChainTracker) ReadAhead(n uint64) {
 	t.MarkRead()
+	fresh := t.readAheadAt.Swap(time.Now().UnixNano()) == 0
 	for {
 		prev := t.readAhead.Load()
-		if n <= prev {
+		if n <= prev && !fresh {
 			return
 		}
-		if t.readAhead.CompareAndSwap(prev, n) {
+		if n <= prev || t.readAhead.CompareAndSwap(prev, n) {
 			break
 		}
 	}
@@ -1789,6 +1792,9 @@ func (t *ChainTracker) fireAhead(id string, now time.Time) *clockFire {
 // wake: when a waiting target's fetch is due, zero with none.
 func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time.Duration) (wake time.Time) {
 	c := &t.clock
+	if c.ahead >= c.target && t.readAheadStale(now) {
+		c.ahead = 0
+	}
 	if c.ahead < c.target || c.aheadFor == c.target || c.provedTarget() || c.pushFed() || bt <= 0 || len(c.fit) == 0 {
 		return time.Time{}
 	}
@@ -1826,6 +1832,21 @@ func (t *ChainTracker) aheadProbe(cands []clockCandidate, now time.Time, bt time
 	c.votes = slices.DeleteFunc(append(c.votes, turns...), func(v string) bool { return v == id })
 	c.rungs, c.sent, c.aheadFor, c.sk = nil, append(c.sent, f), c.target, now
 	return time.Time{}
+}
+
+// readAheadStale reports whether the read-ahead mark ended: W passed since
+// the last read that waited above the view (ReadAhead). A read waits at
+// most W, so an older mark is no read's: with a latestBlockMinus bound a
+// range check's block sits that margin above Latest, and the clock sent
+// ahead fetches for it long after the read ended. The mark's block is
+// dropped first, so a read racing the end sends its block again.
+func (t *ChainTracker) readAheadStale(now time.Time) bool {
+	at := t.readAheadAt.Load()
+	if at != 0 && now.Sub(time.Unix(0, at)) < t.W() {
+		return false
+	}
+	t.readAhead.Store(0)
+	return t.readAheadAt.CompareAndSwap(at, 0)
 }
 
 // aheadVoter is the free voter of cands likeliest to hold the target
