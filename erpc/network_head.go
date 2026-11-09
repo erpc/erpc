@@ -1049,10 +1049,18 @@ var errAboveLatestBound = errors.New("attempt above Latest passed its bound")
 // median round trip for that method, at least aboveLatestFloor; 0 for any
 // other request. Some vendors hold such a read until the block exists, for
 // seconds; past its usual answer the attempt is a miss. The median, not a
-// high quantile: the held reads themselves fill a vendor's tail.
+// high quantile: the held reads themselves fill a vendor's tail. No bound
+// when u's own head is past the block: the block exists there, and its
+// read is a history read, slower than a tip read (cut at 200 ms, four
+// holders' 400 ms answers ended null in the chain feed's slow reorg walk).
 func (n *Network) aboveLatestBound(req *common.NormalizedRequest, u common.Upstream) time.Duration {
 	v := req.HeadRefusal()
 	if v == nil || v.Latest <= 0 || v.Block <= v.Latest || !evm.AnswersAtOnce(req) {
+		return 0
+	}
+	// A credit never lifts a head above Latest, so Latest as the cap
+	// changes nothing here.
+	if n.reachedHead(u, v.Latest) > v.Block {
 		return 0
 	}
 	if n.metricsTracker == nil {
