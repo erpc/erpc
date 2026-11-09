@@ -587,6 +587,7 @@ func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
 func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
 func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   { r.lastFinalizedSuggested = slot }
 func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
+func (r *recordingSvmPoller) SetSkipProcessedSlotProbe(bool)    {}
 func (r *recordingSvmPoller) FirstAvailableSlot() (int64, bool) {
 	return r.floor, r.floorKnown
 }

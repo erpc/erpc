@@ -212,7 +212,7 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
 
 **Score inputs (health tracker).** Every metric available to `evalFunc` comes from the health tracker's rolling window. The tracker maintains 10 atomic sub-buckets per `(upstream, method, finality)` tuple; one bucket rotates out every `windowSize / 10`, so data drips out with no cliff. A DDSketch per bucket (1% relative accuracy) produces p50/p70/p90/p95/p99 latency quantiles.
 
-`errorRate` counts only genuine upstream-quality failures: connection refused, 5xx, genuine timeouts. EVM reverts, rate-limit 429s, client disconnects, and hedge cancellations are deliberately excluded so a misbehaving caller or aggressive hedger cannot inflate a healthy upstream's error rate.
+`errorRate` counts only genuine upstream-quality failures: connection refused, 5xx, genuine timeouts. EVM reverts, rate-limit 429s, oversized-request rejections (`ErrEndpointRequestTooLarge`), client disconnects, and hedge cancellations are deliberately excluded so a misbehaving caller or aggressive hedger cannot inflate a healthy upstream's error rate.
 
 `throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles come from successful responses plus primary attempts cancelled because another attempt won the hedge race, which count at their elapsed time as a lower bound. Client cancels and deadlines record nothing. An upstream whose every attempt loses the hedge race therefore reads at least the hedge delay, not `0`. A fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
 
@@ -248,7 +248,7 @@ Each `excludeIf` step records per-leaf attribution into `erpc_selection_exclusio
 score(u) = overall / (1 + errorRate×w₁ + respLatency×w₂ + throttledRate×w₃ + blockHeadLag×w₄ + finalizationLag×w₅ + misbehaviors×w₆)
 ```
 
-A clean upstream with no penalties scores `1.0`; every unit of penalty divides the score. Three built-in weight presets:
+A clean upstream with no penalties scores `1.0`; every unit of penalty divides the score. A lag term counts blocks, but never more than seconds of lag: `min(blockHeadLag, blockHeadLagSeconds)`, and the same for `finalizationLag`. On chains with blocks of 1 s or slower, and while the block-time EMA is cold, it is the block count; on sub-second chains it is seconds, so 0.4 s behind costs 0.4, not the 4 blocks it is at 10 blocks/s. Three built-in weight presets:
 
 | Preset | errorRate | respLatency | throttledRate | blockHeadLag | finalizationLag | misbehaviors |
 |---|---|---|---|---|---|---|
@@ -374,7 +374,7 @@ Defaults: <SourceLink file="common/defaults.go" lines="2512-2609" />
 
 | Field | Type | Default | Footguns |
 |---|---|---|---|
-| `evalInterval` | `Duration` | `15s` ([`common/defaults.go:L2532`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2532)) | `0` disables the ticker (frozen cache); tests only. Should be ≥ 3× `scoreMetricsWindowSize / 10` for stable quantile reads. |
+| `evalInterval` | `Duration` | `15s` ([`common/defaults.go:L2532`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2532)) | `0` disables the ticker (frozen cache); tests only. Should be ≥ 3× `scoreMetricsWindowSize / 10` for stable quantile reads. An upstream that registers after its network started is evaluated at once, not at the next tick. |
 | `evalTimeout` | `Duration` | `100ms` ([`common/defaults.go:L3125-3126`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L3125-3126)) | Exceeded → warning logged and `timeout` counted; the eval cannot be interrupted, so its result is still applied. Must be `< evalInterval`. |
 | `evalScope` | `EvalScope` enum | `"network"` ([`common/defaults.go:L2556-2583`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L2556-2583)) | `"network"` \| `"network-method"` \| `"network-finality"` \| `"network-method-finality"`. Narrower scopes multiply goroutines and JS evals. `scoreMultipliers.method`-specific entries **never match** in `"network"` scope because `ctx.method == "*"`. |
 | `evalPerMethod` | `*bool` | `nil` — **deprecated** | Pointer-bool alias for the method axis. `SetDefaults` nils it unconditionally and derives `evalScope` instead. Excluded from TS surface (`tstype:"-"`). |

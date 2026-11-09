@@ -1138,7 +1138,7 @@ func TestEmptyOutsideRetentionWaivedQuotas_Unit(t *testing.T) {
 	})
 
 	t.Run("finite bound in-range blocks chain-head fallback", func(t *testing.T) {
-		// Bound says winner is still served (lower <= winnerBlock); head depth
+		// Bound says the requested block is still served (lower <= requestedBlock); head depth
 		// alone would prove outside retention. Prefer bound evidence — do not
 		// waive via the chain-head fallback (feature §7.1).
 		lower := int64(100)
@@ -1158,14 +1158,14 @@ func TestEmptyOutsideRetentionWaivedQuotas_Unit(t *testing.T) {
 			"contradictory finite avail bound must not be overridden by chain-head depth")
 	})
 
-	t.Run("no waiver without winner block evidence", func(t *testing.T) {
+	t.Run("no waiver without a requested block", func(t *testing.T) {
 		cfg := &config{maxParticipants: 2, agreementThreshold: 1, requiredParticipants: reqs}
 		analysis := analyze(cfg, []*execResult{
 			emptyResultFrom(t, internal, 0),
 			objResultFrom(t, ext1, map[string]interface{}{"blockNumber": "0x10"}, 1),
 		})
 		assert.Empty(t, emptyOutsideRetentionWaivedQuotas(analysis, reqs, nil, head),
-			"no extractable winner block means no proof — fail closed")
+			"a request naming no block means no proof — fail closed")
 	})
 
 	t.Run("no waiver without opt-in", func(t *testing.T) {

@@ -1644,6 +1644,33 @@ func TestSetDefaults_NetworkDefaults_SvmMergesIntoNetwork(t *testing.T) {
 		require.False(t, *n.Svm.EnforceBlockAvailability)
 	})
 
+	// skipProcessedSlotProbe is a plain bool (default false = poll). Only an
+	// opt-in true from networkDefaults is worth propagating — the stg trial
+	// of #267 showed a networkDefaults-only setting was silently dropped
+	// before this merge arm existed.
+	t.Run("networkDefaults skipProcessedSlotProbe=true survives the merge", func(t *testing.T) {
+		d := &NetworkDefaults{Svm: &SvmNetworkConfig{SkipProcessedSlotProbe: true}}
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, d))
+
+		require.True(t, n.Svm.SkipProcessedSlotProbe,
+			"networkDefaults skipProcessedSlotProbe: true must reach the network")
+	})
+
+	t.Run("networkDefaults skipProcessedSlotProbe stays false when unset", func(t *testing.T) {
+		d := &NetworkDefaults{Svm: &SvmNetworkConfig{Chain: "solana"}}
+		n := &NetworkConfig{
+			Architecture: ArchitectureSvm,
+			Svm:          &SvmNetworkConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, n.SetDefaults(nil, d))
+
+		require.False(t, n.Svm.SkipProcessedSlotProbe)
+	})
+
 	t.Run("networkDefaults maxFinalizedSlotLag=0 survives the merge and disables the filter", func(t *testing.T) {
 		d := &NetworkDefaults{Svm: &SvmNetworkConfig{MaxFinalizedSlotLag: int64Ptr(0)}}
 		n := &NetworkConfig{
@@ -1865,6 +1892,46 @@ func TestApplyDefaults_UpstreamDefaultsSvm(t *testing.T) {
 		require.NoError(t, u.ApplyDefaults(&UpstreamConfig{}))
 
 		require.Nil(t, u.Svm)
+	})
+
+	t.Run("statePollerDebounce inherits from upstreamDefaults when upstream omits it", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster:             "mainnet-beta",
+			StatePollerDebounce: Duration(5 * time.Second),
+		}}
+		u := &UpstreamConfig{
+			Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899",
+			Svm: &SvmUpstreamConfig{Cluster: "mainnet-beta"},
+		}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.Equal(t, 5*time.Second, u.Svm.StatePollerDebounce.Duration())
+	})
+
+	t.Run("upstream statePollerDebounce wins over upstreamDefaults", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster:             "mainnet-beta",
+			StatePollerDebounce: Duration(5 * time.Second),
+		}}
+		u := &UpstreamConfig{
+			Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899",
+			Svm: &SvmUpstreamConfig{
+				Cluster:             "mainnet-beta",
+				StatePollerDebounce: Duration(2 * time.Second),
+			},
+		}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.Equal(t, 2*time.Second, u.Svm.StatePollerDebounce.Duration())
+	})
+
+	t.Run("wholesale svm inherit copies statePollerDebounce", func(t *testing.T) {
+		d := &UpstreamConfig{Svm: &SvmUpstreamConfig{
+			Cluster:             "mainnet-beta",
+			StatePollerDebounce: Duration(5 * time.Second),
+		}}
+		u := &UpstreamConfig{Id: "u1", Type: UpstreamTypeSvm, Endpoint: "http://localhost:8899"}
+		require.NoError(t, u.ApplyDefaults(d))
+		require.NotNil(t, u.Svm)
+		require.Equal(t, 5*time.Second, u.Svm.StatePollerDebounce.Duration())
 	})
 }
 

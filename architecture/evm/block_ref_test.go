@@ -514,7 +514,7 @@ func TestResolveCacheBlockRef(t *testing.T) {
 		assert.Equal(t, int64(0x1234), num)
 	})
 
-	t.Run("latest tag + response with block number rewrites ref to response hex", func(t *testing.T) {
+	t.Run("latest tag + response with block number rewrites ref to the response's number", func(t *testing.T) {
 		rpcReq := &common.JsonRpcRequest{
 			Method: "eth_getBlockByNumber",
 			Params: []interface{}{"latest", false},
@@ -526,11 +526,13 @@ func TestResolveCacheBlockRef(t *testing.T) {
 
 		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
 		assert.NoError(t, err)
-		assert.Equal(t, "0xabcdef", ref, "write path must key by response's actual block number, not 'latest'")
+		assert.Equal(t, "11259375", ref, "write path must key by response's actual block number, not 'latest'")
 		assert.Equal(t, int64(0xabcdef), num)
 	})
 
-	t.Run("latest tag with no network and no response falls back to tag literal", func(t *testing.T) {
+	// Plan H2 deletes "the cache key on the word `latest`": with no Head
+	// and no response the request is not cached.
+	t.Run("latest tag with no network and no response gets no key", func(t *testing.T) {
 		rpcReq := &common.JsonRpcRequest{
 			Method: "eth_getBlockByNumber",
 			Params: []interface{}{"latest", false},
@@ -539,7 +541,7 @@ func TestResolveCacheBlockRef(t *testing.T) {
 
 		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nil)
 		assert.NoError(t, err)
-		assert.Equal(t, "latest", ref, "with no response and no network, helper must fall back to tag so caller can decide to skip caching")
+		assert.Equal(t, "", ref, "with no response and no Head, the request must not be cached")
 		assert.Equal(t, int64(0), num)
 	})
 
@@ -555,7 +557,7 @@ func TestResolveCacheBlockRef(t *testing.T) {
 
 		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
 		assert.NoError(t, err)
-		assert.Equal(t, "0x100", ref)
+		assert.Equal(t, "256", ref)
 		assert.Equal(t, int64(0x100), num)
 	})
 

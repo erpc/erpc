@@ -106,7 +106,7 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 
 	t.Run("on by default: eRPC answers, no upstream call", func(t *testing.T) {
 		mockUpstream()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		send, _, _, shutdown, _ := createServerTestFixtures(config(nil), t)
 		defer shutdown()
 
@@ -127,7 +127,7 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 
 	t.Run("off per method: routed to the upstream", func(t *testing.T) {
 		mockUpstream()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		off := map[string]bool{}
 		for method := range upstreamAnswers {
 			off[method] = false
@@ -140,6 +140,25 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 			assert.Equal(t, 1, n, "%s must reach the upstream", method)
 			assert.Equal(t, upstreamValue(t, method), got, method)
 		}
+	})
+
+	t.Run("a network staticResponse wins over the local answer", func(t *testing.T) {
+		mockUpstream()
+		defer util.ResetGock()
+		cfg := config(nil)
+		cfg.Projects[0].Networks[0].StaticResponses = []*common.StaticResponseConfig{
+			{Method: "web3_clientVersion", Response: &common.StaticResponseBodyConfig{Result: "my-chain/v1"}},
+		}
+		send, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		got, n := call(t, send, "web3_clientVersion", nil)
+		assert.Zero(t, n)
+		assert.Equal(t, "my-chain/v1", got)
+
+		got, n = call(t, send, "net_version", nil)
+		assert.Zero(t, n)
+		assert.Equal(t, localAnswers["net_version"], got, "methods without a static response keep the local answer")
 	})
 
 	t.Run("a method without a local answer is refused in config", func(t *testing.T) {

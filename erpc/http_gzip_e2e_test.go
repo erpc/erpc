@@ -88,7 +88,7 @@ func gzipE2ECfg() *common.Config {
 // the raw compressed bytes on the wire.
 func TestHttpServer_Gzip_E2E_StreamedJsonRpc(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		// Real call for the client<->server hop (localhost); intercept upstream.
@@ -167,7 +167,7 @@ func TestHttpServer_Gzip_E2E_StreamedJsonRpc(t *testing.T) {
 // behavior is preserved end to end: sub-threshold responses stay plain.
 func TestHttpServer_Gzip_E2E_SmallResponseUncompressed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		return strings.Split(req.URL.Host, ":")[0] == "localhost"

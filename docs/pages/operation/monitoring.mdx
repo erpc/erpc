@@ -432,7 +432,7 @@ SVM upstreams feed the same tracker as EVM, so the gauges below populate — but
 | `erpc_upstream_finalized_block_number` | The upstream's **finalized (rooted) slot** |
 | `erpc_upstream_block_head_lag` | Processed **slots** behind the freshest upstream |
 | `erpc_upstream_finalization_lag` | Finalized **slots** behind the freshest upstream |
-| `erpc_upstream_cordoned` | An SVM upstream is cordoned by its own state poller when `getHealth` fails **or** shred-insert lag exceeds 100 slots; the `reason` label distinguishes them |
+| `erpc_upstream_cordoned` | An SVM upstream is cordoned by its own state poller after 2 consecutive all-silent state polls **or** when shred-insert lag exceeds 100 slots; the `reason` label distinguishes them |
 | `erpc_upstream_stale_latest_block_total` | A `getSlot` answer was corrected to the highest known slot for its commitment |
 
 Ingestion lag (`maxShredInsertSlot − processedSlot`) has **no gauge** — it is logged and drives cordoning only. See [SVM slot tracking & health](/reference/svm/slot-tracking).
@@ -615,7 +615,7 @@ Top-20 operational metrics:
 | `erpc_auth_failed_total` | counter | project, network, strategy, reason, agent_name | Client-facing auth denial; `agent_name` always `unknown`; closed `reason` sets |
 | `erpc_unexpected_panic_total` | counter | scope, extra, error | Recovered panic; `scope` ∈ request-handler/final-error-writer/top-level-handler/timeout-handler/validate-pattern/redis-pubsub/shared-state-registry/matcher |
 | `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Served tip as served; `lane="all"` = network-wide; `axis` ∈ latest/finalized |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter, clamped at 0 |
+| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | Blocks the served tip sits below the second-highest voter, clamped at 0; `latest` reads 0 while the lane has no read demand |
 | `erpc_network_served_tip_advance_age_seconds` | gauge | project, network, lane, axis | Seconds since the served tip last changed; absent until the first change |
 | `erpc_network_served_tip_regression_total` | counter | project, network, lane, axis, outcome | Regression-guard transitions; `outcome` ∈ held/failed_open |
 | `erpc_upstream_head_benched_total` | counter | project, vendor, network, upstream | Upstream head benched: it stayed behind peers that kept advancing |

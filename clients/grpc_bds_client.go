@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -231,6 +232,19 @@ func renderResult(write func([]byte) []byte) []byte {
 	return out
 }
 
+// renderBlock returns resp's block as the JSON-RPC result.
+func (c *GenericGrpcBdsClient) renderBlock(resp *evm.GetBlockResponse) ([]byte, error) {
+	var err error
+	result := renderResult(func(b []byte) []byte {
+		b, err = evm.AppendBlockJsonRpc(b, resp.Block, resp.Transactions, resp.FullTransactions, resp.Withdrawals, c.signatureEncoding())
+		return b
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	return result, nil
+}
+
 // grpcResponseMetadataInterceptor captures all response metadata (headers)
 // from gRPC calls and records them as span attributes on detailed traces.
 func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
@@ -242,7 +256,7 @@ func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
 		invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption,
 	) error {
-		if !common.IsTracingDetailed {
+		if !common.IsTracingDetailed() {
 			return invoker(ctx, method, req, reply, cc, opts...)
 		}
 		span := trace.SpanFromContext(ctx)
@@ -298,7 +312,7 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, common.NewErrEndpointRequestCanceled(err)
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -327,45 +341,15 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
 	}
 
-	var resp *common.NormalizedResponse
-	switch jrReq.Method {
-	case "eth_getBlockByNumber":
-		resp, err = c.handleGetBlockByNumber(ctx, conn, req, jrReq)
-	case "eth_getBlockByHash":
-		resp, err = c.handleGetBlockByHash(ctx, conn, req, jrReq)
-	case "eth_getLogs":
-		resp, err = c.handleGetLogs(ctx, conn, req, jrReq)
-	case "eth_getTransactionByHash":
-		resp, err = c.handleGetTransactionByHash(ctx, conn, req, jrReq)
-	case "eth_getTransactionReceipt":
-		resp, err = c.handleGetTransactionReceipt(ctx, conn, req, jrReq)
-	case "eth_getBlockReceipts":
-		resp, err = c.handleGetBlockReceipts(ctx, conn, req, jrReq)
-	case "debug_traceBlockByNumber", "debug_traceBlockByHash":
-		resp, err = c.handleTraceBlock(ctx, conn, req, jrReq)
-	case "debug_traceTransaction":
-		resp, err = c.handleTraceTransaction(ctx, conn, req, jrReq)
-	case "trace_block":
-		resp, err = c.handleParityTraceBlock(ctx, conn, req, jrReq)
-	case "eth_getBalance":
-		resp, err = c.handleGetBalance(ctx, conn, req, jrReq)
-	case "eth_chainId":
-		resp, err = c.handleChainId(ctx, conn, req, jrReq)
-	case "getBlock":
-		resp, err = c.handleSvmGetBlock(ctx, conn, req, jrReq)
-	case "getTransaction":
-		resp, err = c.handleSvmGetTransaction(ctx, conn, req, jrReq)
-	case "getBlockTime":
-		resp, err = c.handleSvmGetBlockTime(ctx, conn, req, jrReq)
-	case "getBlocksWithLimit":
-		resp, err = c.handleSvmGetBlocksWithLimit(ctx, conn, req, jrReq)
-	default:
+	handle, ok := bdsHandlers[jrReq.Method]
+	if !ok {
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
 		)
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
+	resp, err := handle(c, ctx, conn, req, jrReq)
 
 	// A request the handler cannot map is the upstream's refusal, not a
 	// transport failure: keep it unsupported so the network tries the next.
@@ -430,6 +414,35 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, c.normalizeGrpcError(err)
 	}
 	return resp, nil
+}
+
+// bdsHandlers maps each method a BDS server serves to its handler; every
+// other method is unsupported.
+var bdsHandlers = map[string]func(*GenericGrpcBdsClient, context.Context, *bdsConn, *common.NormalizedRequest, *common.JsonRpcRequest) (*common.NormalizedResponse, error){
+	"eth_getBlockByNumber":      (*GenericGrpcBdsClient).handleGetBlockByNumber,
+	"eth_getBlockByHash":        (*GenericGrpcBdsClient).handleGetBlockByHash,
+	"eth_getLogs":               (*GenericGrpcBdsClient).handleGetLogs,
+	"eth_getTransactionByHash":  (*GenericGrpcBdsClient).handleGetTransactionByHash,
+	"eth_getTransactionReceipt": (*GenericGrpcBdsClient).handleGetTransactionReceipt,
+	"eth_getBlockReceipts":      (*GenericGrpcBdsClient).handleGetBlockReceipts,
+	"debug_traceBlockByNumber":  (*GenericGrpcBdsClient).handleTraceBlock,
+	"debug_traceBlockByHash":    (*GenericGrpcBdsClient).handleTraceBlock,
+	"debug_traceTransaction":    (*GenericGrpcBdsClient).handleTraceTransaction,
+	"trace_block":               (*GenericGrpcBdsClient).handleParityTraceBlock,
+	"eth_getBalance":            (*GenericGrpcBdsClient).handleGetBalance,
+	"eth_chainId":               (*GenericGrpcBdsClient).handleChainId,
+	"getBlock":                  (*GenericGrpcBdsClient).handleSvmGetBlock,
+	"getTransaction":            (*GenericGrpcBdsClient).handleSvmGetTransaction,
+	"getBlockTime":              (*GenericGrpcBdsClient).handleSvmGetBlockTime,
+	"getBlocksWithLimit":        (*GenericGrpcBdsClient).handleSvmGetBlocksWithLimit,
+}
+
+// GrpcBdsServes reports whether a BDS server serves method: a request
+// method its handlers map, or an eth_query* method, which its QueryService
+// streams (QueryClient).
+func GrpcBdsServes(method string) bool {
+	_, ok := bdsHandlers[method]
+	return ok || len(method) >= len("eth_query") && strings.EqualFold(method[:len("eth_query")], "eth_query")
 }
 
 func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
@@ -497,9 +510,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 		if err != nil {
 			return nil, fmt.Errorf("failed to set ID: %w", err)
 		}
-		jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
-			return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-		}))
+		result, err := c.renderBlock(grpcResp)
+		if err != nil {
+			return nil, err
+		}
+		jsonRpcResp.SetResult(result)
 
 		return common.NewNormalizedResponse().
 			WithRequest(req).
@@ -551,9 +566,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
-		return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}))
+	result, err := c.renderBlock(grpcResp)
+	if err != nil {
+		return nil, err
+	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -614,9 +631,11 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, conn *b
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
-		return evm.AppendBlockJsonRpc(b, grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}))
+	result, err := c.renderBlock(grpcResp)
+	if err != nil {
+		return nil, err
+	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).

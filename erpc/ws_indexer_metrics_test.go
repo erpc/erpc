@@ -32,7 +32,7 @@ func pushingHeadsUpstream(t *testing.T) *httptest.Server {
 					"method":  "eth_subscription",
 					"params": map[string]interface{}{
 						"subscription": subID,
-						"result":       map[string]interface{}{"number": "0x101", "hash": "0xaaa"},
+						"result":       mockHead(0x101),
 					},
 				})
 			}()
@@ -44,7 +44,7 @@ func TestWebSocket_LastHeadTimestampCarriesProjectAndNetwork(t *testing.T) {
 	mockUpstream := pushingHeadsUpstream(t)
 	defer mockUpstream.Close()
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	addr, cleanup := setupTestERPCServer(t, standardWsConfig("ws"+strings.TrimPrefix(mockUpstream.URL, "http")))
 	defer cleanup()

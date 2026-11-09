@@ -34,9 +34,14 @@ type SvmStatePoller interface {
 	Bootstrap(ctx context.Context) error
 	IsObjectNull() bool
 
-	// SetDebounceInterval sets the poll cadence; wired from the network-level
-	// SvmNetworkConfig.StatePollerDebounce via upstream.SetNetworkConfig.
+	// SetDebounceInterval sets the poll fan-out gate; wired from the effective
+	// debounce (upstream.svm.statePollerDebounce when > 0, else the network
+	// SvmNetworkConfig.StatePollerDebounce) via upstream.SetNetworkConfig.
 	SetDebounceInterval(d time.Duration)
+
+	// SetSkipProcessedSlotProbe wires SvmNetworkConfig.SkipProcessedSlotProbe
+	// via upstream.SetNetworkConfig. Default false (probe runs).
+	SetSkipProcessedSlotProbe(v bool)
 
 	Poll(ctx context.Context) error
 

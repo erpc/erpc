@@ -21,7 +21,7 @@ import (
 
 func TestNetwork_TraceExecutionTimeout(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -58,7 +58,7 @@ func TestNetwork_TraceExecutionTimeout(t *testing.T) {
 func TestNetwork_CapacityExceededErrors(t *testing.T) {
 	t.Run("Direct429Response", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -96,7 +96,7 @@ func TestNetwork_CapacityExceededErrors(t *testing.T) {
 
 	t.Run("429WithErrorMessage", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -130,7 +130,7 @@ func TestNetwork_CapacityExceededErrors(t *testing.T) {
 func TestNetwork_BatchRequests(t *testing.T) {
 	t.Run("SimpleBatchRequest", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -193,7 +193,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 		// are correctly handled. We use different methods to ensure they have different
 		// cache hashes and are not multiplexed together.
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -275,7 +275,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 
 	t.Run("SingleObjectResponseForBatchRequest", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -325,7 +325,7 @@ func TestNetwork_BatchRequests(t *testing.T) {
 func TestNetwork_SingleRequestErrors(t *testing.T) {
 	t.Run("SingleRequestUnauthorized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -349,7 +349,7 @@ func TestNetwork_SingleRequestErrors(t *testing.T) {
 
 	t.Run("SingleRequestUnsupported", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -373,7 +373,7 @@ func TestNetwork_SingleRequestErrors(t *testing.T) {
 
 	t.Run("SingleRequestCapacityExceeded", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 

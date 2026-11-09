@@ -1,5 +1,7 @@
 package common
 
+import "time"
+
 // Integrity header-control modes (IntegrityConfig.HeaderMode).
 const (
 	// IntegrityHeaderModeOff ignores per-request integrity headers entirely.
@@ -41,10 +43,6 @@ type IntegritySettings struct {
 	// hardReject | off. Deterministic checks ignore it and always hardReject
 	// (override per check via checks.<id>.onFailure).
 	InvalidBehavior *IntegrityInvalidBehaviorConfig `yaml:"invalidBehavior,omitempty" json:"invalidBehavior,omitempty"`
-	// ReorgWindow is how many blocks back from the tip the integrity ChainView
-	// keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
-	// deep-reorg chains (e.g. polygon 256).
-	ReorgWindow int `yaml:"reorgWindow,omitempty" json:"reorgWindow,omitempty"`
 	// ObserveOnly runs every enabled check but never lets a verdict touch the
 	// response: violations that WOULD have been rejected are recorded with the
 	// outcome "would_reject" and served anyway. This is the safe way to enable
@@ -71,12 +69,14 @@ type IntegritySettings struct {
 	// misbehaviorRateAbove predicate); absence of proof has no effect at all,
 	// and ObserveOnly suppresses the misbehavior recording like every other
 	// integrity effect. Requires follow to be enabled (the verified header is
-	// the trust anchor). Off by default.
+	// the trust anchor). Off by default. The "latest" tag-state probe behind
+	// the tag-state gate runs on every network from its first client
+	// request, whatever this says.
 	StateProbe *IntegrityStateProbeConfig `yaml:"stateProbe,omitempty" json:"stateProbe,omitempty"`
-	// Follow turns the ChainView into an actual chain follower: it walks the
-	// chain forward block by block, requires each block to name its
-	// predecessor's hash, and reconciles reorgs by finding the common ancestor.
-	// Off by default — it costs one eth_getBlockByNumber per block per network.
+	// Follow opens one integrity follow tap per chain tracker at the
+	// network's first client request: it holds demand at its interval's
+	// pace, so source polls run while clients are quiet, and it drives the
+	// state prober on each new head. Off by default.
 	Follow *IntegrityFollowConfig `yaml:"follow,omitempty" json:"follow,omitempty"`
 	// MisbehaviorsDestination durably archives every integrity catch (reject or
 	// soft-flag) as a JSONL record — same file/S3 destination shape as the
@@ -85,22 +85,27 @@ type IntegritySettings struct {
 	MisbehaviorsDestination *MisbehaviorsDestinationConfig `yaml:"misbehaviorsDestination,omitempty" json:"misbehaviorsDestination,omitempty"`
 }
 
-// IntegrityFollowConfig configures the ChainView chain follower.
-//
-// Following gives the module a CONTIGUOUS, parent-linked view of the chain
-// instead of the sparse scatter of heights that client traffic happens to
-// touch. That is what lets it answer "is this block canonical" from a verified
-// chain rather than from whichever source was observed first, and it is the
-// precondition for any check that compares consecutive headers.
+// DefaultIntegrityFollowInterval is the follow tap's pace when its config
+// sets none.
+const DefaultIntegrityFollowInterval = time.Second
+
+// IntegrityFollowConfig configures the integrity follow tap.
 type IntegrityFollowConfig struct {
-	// Enabled turns the follower on for this network. Default false.
+	// Enabled opens the follow tap for this network. Default false.
 	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	// Interval is how often to check for new blocks (default 1s). Keep it below
-	// the chain's block time or the follower will run a step behind.
+	// Interval is the pace the follow tap needs heads at (default 1s): while
+	// it is a network's only newHeads demand, the tracker asks upstreams for
+	// newer heads no more often than this.
 	Interval Duration `yaml:"interval,omitempty" json:"interval" tstype:"Duration"`
-	// MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
-	// follower starting far behind converges steadily instead of bursting.
-	MaxBlocksPerTick int `yaml:"maxBlocksPerTick,omitempty" json:"maxBlocksPerTick,omitempty"`
+}
+
+// IntervalOrDefault is the follow tap's pace: Interval, else
+// DefaultIntegrityFollowInterval. Nil-receiver safe.
+func (c *IntegrityFollowConfig) IntervalOrDefault() time.Duration {
+	if c == nil || c.Interval <= 0 {
+		return DefaultIntegrityFollowInterval
+	}
+	return c.Interval.Duration()
 }
 
 // IntegrityStateProbeConfig configures the per-upstream state-trie probes.
@@ -141,7 +146,7 @@ func (c *IntegrityFollowConfig) Copy() *IntegrityFollowConfig {
 	return &cp
 }
 
-// IsEnabled reports whether the follower should run (nil config = off).
+// IsEnabled reports whether the follow tap should run (nil config = off).
 func (c *IntegrityFollowConfig) IsEnabled() bool {
 	return c != nil && c.Enabled != nil && *c.Enabled
 }
@@ -212,9 +217,6 @@ func MergeIntegrityConfig(base, over *IntegrityConfig) *IntegrityConfig {
 	if over.StateProbe != nil {
 		out.StateProbe = over.StateProbe
 	}
-	if over.ReorgWindow != 0 {
-		out.ReorgWindow = over.ReorgWindow
-	}
 	if over.ObserveOnly != nil {
 		out.ObserveOnly = over.ObserveOnly
 	}
@@ -253,7 +255,6 @@ func (c *IntegritySettings) Copy() *IntegritySettings {
 		Level:                   c.Level,
 		Budget:                  c.Budget.Copy(),
 		InvalidBehavior:         c.InvalidBehavior.Copy(),
-		ReorgWindow:             c.ReorgWindow,
 		ObserveOnly:             c.ObserveOnly,
 		AutoCorrectWhenPossible: c.AutoCorrectWhenPossible,
 		Follow:                  c.Follow.Copy(),

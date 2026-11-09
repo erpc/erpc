@@ -61,10 +61,11 @@ func TestHttpServer_H2C_WithoutSharedGrpc(t *testing.T) {
 	defer cancel()
 
 	erpcInstance, err := NewERPC(ctx, &logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 	require.Nil(t, httpServer.sharedGrpcServer, "precondition: shared gRPC must be disabled")
 
@@ -209,10 +210,11 @@ func TestHttpServer_H2C_ShutdownGoAwaysAndDrainsInFlightStream(t *testing.T) {
 	defer sigterm()
 
 	erpcInstance, err := NewERPC(appCtx, &logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, appCtx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(appCtx)
 
-	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -366,10 +368,11 @@ func TestHttpServer_SharedGrpc_ShutdownDrainsInFlightRPC(t *testing.T) {
 	defer sigterm()
 
 	erpcInstance, err := NewERPC(appCtx, &logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, appCtx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(appCtx)
 
-	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -5,19 +5,18 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"go.opentelemetry.io/otel/attribute"
 )
-
-// Multicall3 is deployed at this address on every chain that has it.
-const multicall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
 
 // aggregate3((address,bool,bytes)[])
 var aggregate3Selector = []byte{0x82, 0xad, 0x56, 0xcb}
@@ -265,11 +264,25 @@ func (b *Multicall3Batcher) send(bt *multicall3Batch, n common.Network, u common
 }
 
 // aggregate sends the pack as one eth_call through the upstream, so its rate
-// limits, retries and credit accounting count it once.
+// limits, retries and credit accounting count it once. A pack whose block
+// selector means "latest" (the tag or an EIP-1898 latest leaf) carries one
+// more call, the network's block-number call (stateContext), once the
+// state prober's first probe decided it: free evidence of the block u
+// executes "latest" at, recorded as u's tag-state sample (spec §6.11) and
+// stripped before the results meet the entries.
 func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3Batch, n common.Network, u common.Upstream) ([]aggregate3Result, bool) {
+	packed := entries
+	_, tag := selectsLatest(bt.block)
+	if tag {
+		if probe := multicall3TagProbe(n); probe != nil {
+			packed = append(entries[:len(entries):len(entries)], probe)
+		} else {
+			tag = false
+		}
+	}
 	call := map[string]interface{}{
-		"to":   multicall3Address,
-		"data": "0x" + hex.EncodeToString(encodeAggregate3(entries)),
+		"to":   integrity.Multicall3Address,
+		"data": "0x" + hex.EncodeToString(encodeAggregate3(packed)),
 	}
 	if bt.gas != "" {
 		call["gas"] = bt.gas
@@ -288,11 +301,17 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 	mrq.SetDirectives(first.Directives().Clone())
 	mrq.SetParentRequestId(first.ID())
 	mrq.CopyHttpContextFrom(first)
+	// The aggregate runs at the Head its entries took (spec §7): a "latest"
+	// it still carries resolves to their Latest, never a newer one.
+	if h := first.EvmHead(); h != nil {
+		mrq.TakeEvmHead(h)
+	}
 
 	ctx, cancel := multicall3Context(entries)
 	defer cancel()
 	ctx = context.WithValue(ctx, common.RequestContextKey, mrq)
 
+	sentAt := time.Now()
 	resp, err := u.Forward(ctx, mrq, false, false)
 	if resp != nil {
 		defer resp.Release()
@@ -321,10 +340,60 @@ func (b *Multicall3Batcher) aggregate(entries []*multicall3Entry, bt *multicall3
 		return nil, false
 	}
 	results, ok := decodeAggregate3(raw)
-	if !ok || len(results) != len(entries) {
+	if !ok || len(results) != len(packed) {
 		return nil, false
 	}
-	return results, true
+	// The sample is dated from the send of the attempt that answered; only a
+	// first attempt's send time is known here (permits never wait), so a
+	// retried or hedged pack gives no sample. Its reader judges it against
+	// its own Latest (spec §6.11).
+	if s := mrq.ExecState().Snapshot(); tag && s.UpstreamRetries == 0 && s.UpstreamHedges == 0 {
+		if executed, ok := multicall3Word(results[len(entries)]); ok {
+			if p := stateProberFor(n); p != nil {
+				p.recordTagSample(u.Id(), executed, sentAt)
+			}
+		}
+	}
+	return results[:len(entries)], true
+}
+
+// multicall3TagProbe is the pack entry for n's block-number call; nil before
+// its state prober decided the call, or when its target cannot be encoded.
+func multicall3TagProbe(n common.Network) *multicall3Entry {
+	p := stateProberFor(n)
+	if p == nil {
+		return nil
+	}
+	probe := p.stateCtx.probe()
+	if probe == nil {
+		return nil
+	}
+	target, err := common.HexToBytes(probe.To)
+	if err != nil || len(target) != 20 {
+		return nil
+	}
+	data, err := common.HexToBytes(probe.Data)
+	if err != nil {
+		return nil
+	}
+	return &multicall3Entry{target: target, data: data}
+}
+
+// multicall3Word decodes a successful call's single uint64 return word.
+func multicall3Word(r aggregate3Result) (int64, bool) {
+	if !r.success || len(r.data) != 32 {
+		return 0, false
+	}
+	for _, c := range r.data[:24] {
+		if c != 0 {
+			return 0, false
+		}
+	}
+	v := binary.BigEndian.Uint64(r.data[24:])
+	if v > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(v), true
 }
 
 // multicall3Context outlives any one caller, so a caller that gives up costs

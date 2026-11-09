@@ -21,7 +21,7 @@ func TestIntegrity_DetailedTracingRecordsValues(t *testing.T) {
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sdktrace.AlwaysSample()))
 	common.SetTracerProviderForTest(tp)
-	t.Cleanup(func() { common.IsTracingEnabled = false; common.IsTracingDetailed = false })
+	t.Cleanup(func() { common.SetTracingEnabled(false); common.SetTracingDetailed(false) })
 
 	res := integrity.Result{
 		Err:             errors.New(`integrity check "transactionsRootRecompute" failed: transactionsRoot 0xAAA does not match recomputed 0xBBB`),
@@ -31,7 +31,7 @@ func TestIntegrity_DetailedTracingRecordsValues(t *testing.T) {
 
 	t.Run("detailed mode records the actual values as an event", func(t *testing.T) {
 		exp.Reset()
-		common.IsTracingDetailed = true
+		common.SetTracingDetailed(true)
 
 		_, span := common.StartSpan(context.Background(), "Integrity.Validate")
 		annotateIntegritySpan(span, res)
@@ -61,7 +61,7 @@ func TestIntegrity_DetailedTracingRecordsValues(t *testing.T) {
 
 	t.Run("the rejected response body is captured for a by-hand sanity check", func(t *testing.T) {
 		exp.Reset()
-		common.IsTracingDetailed = true
+		common.SetTracingDetailed(true)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"]}`))
 		jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), receiptResultBytes(underflowedLogIndexes), nil)
@@ -89,7 +89,7 @@ func TestIntegrity_DetailedTracingRecordsValues(t *testing.T) {
 
 	t.Run("simple mode keeps the outcome but drops per-check detail", func(t *testing.T) {
 		exp.Reset()
-		common.IsTracingDetailed = false
+		common.SetTracingDetailed(false)
 
 		_, span := common.StartSpan(context.Background(), "Integrity.Validate")
 		annotateIntegritySpan(span, res)
