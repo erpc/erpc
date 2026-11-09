@@ -3041,9 +3041,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				sent := time.Now()
 				var read *latestRead
 				fwdCtx := loopCtx
-				if sweep.probe != "" && sweep.probe == u.Id() {
-					fwdCtx, sweep.probe = heldProbe(fwdCtx, u), ""
-				}
 				if tag {
 					fwdCtx, read = n.startLatestRead(loopCtx, effectiveReq, u, sent)
 				}

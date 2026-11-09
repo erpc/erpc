@@ -936,27 +936,13 @@ func (n *Network) readAhead(selector string, block int64) {
 // band): the block (the first miss's); per routed upstream that answered
 // it empty or missing, or that the availability gate skipped during the
 // sweep, the head it reached then (missed); the upstreams whose hold time
-// was tried (guessed); the one picked by its hold time and not yet sent
-// (probe), whose attempt is its range check's evidence (heldProbe); and
-// the leg's first miss (since), whose wait ends W after.
+// was tried (guessed); and the leg's first miss (since), whose wait ends W
+// after.
 type bandSweep struct {
 	block   int64
 	missed  map[string]int64
 	guessed map[string]bool
-	probe   string
 	since   time.Time
-}
-
-// heldProbeKey marks an attempt's context with the upstream a sweep picked
-// by its hold time (bandSweep.probe).
-type heldProbeKey struct{}
-
-// heldProbe is ctx for u's attempt as a sweep's hold-time pick: its range
-// check admits it with no wait and no Ask (EvmAwaitRangeHolder), since the
-// attempt is the probe and its answer the evidence. Its empty answer is a
-// miss as any other's once the leg sweeps, so time alone never serves one.
-func heldProbe(ctx context.Context, u common.Upstream) context.Context {
-	return context.WithValue(ctx, heldProbeKey{}, u.Id())
 }
 
 // bandNext is the leg's next pick for req's block after u answered it
@@ -1072,7 +1058,7 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 			switch {
 			case !ok:
 			case !at.After(now):
-				sw.guessed[u.Id()], sw.probe = true, u.Id()
+				sw.guessed[u.Id()] = true
 				outcome = "held_wait"
 				return u
 			case at.Before(due):
@@ -1112,18 +1098,13 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 // a by-number answer (reachedHead, uncredited). Time is no evidence: a
 // node lacking the block answers a one-block range empty, the same answer
 // as an empty block's, and admitted on its held wait alone, that empty
-// answer reached clients as the range's. The one exception is a sweep's
-// hold-time pick (heldProbe), admitted at once with no Ask: its attempt is
-// the probe, and its empty answer a miss once the leg sweeps (§6.4 logs
-// gate). An answer that leaves u below toBlock ends the wait. A first
-// attempt waits at most a block time, from its start at or below Latest,
-// else from its Ask; the retry up to W. A node one block short of a block
-// the lane holds is the usual case at a 0.3 s chain's tip: with no Ask
-// its counter waited for its next poll and the range failed (§19 P12).
+// answer reached clients as the range's. An answer that leaves u below
+// toBlock ends the wait. A first attempt waits at most a block time, from
+// its start at or below Latest, else from its Ask; the retry up to W. A
+// node one block short of a block the lane holds is the usual case at a
+// 0.3 s chain's tip: with no Ask its counter waited for its next poll and
+// the range failed (§19 P12).
 func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64) bool {
-	if id, _ := ctx.Value(heldProbeKey{}).(string); id == u.Id() {
-		return true
-	}
 	sel := selectorOf(req)
 	head := n.requestHead(ctx, req)
 	if toBlock > head.Latest {
