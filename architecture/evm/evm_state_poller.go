@@ -782,7 +782,8 @@ func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool
 var errHeldNotFound = errors.New("node answered no block")
 
 // FetchHeld fetches block number from the upstream for the block clock:
-// a by-hash wait's proven block (spec §6.4), or the shared early fetch of
+// a by-hash answer's proven block (spec §6.4, §6.8 proof probe), or the
+// shared early fetch of
 // a block reads wait for (§6.8). By number, the node answers its
 // canonical block: by hash it answers a side block it saw too, which
 // would vote an orphan. Its header, with an intake bound, goes to it as
@@ -1338,7 +1339,7 @@ const (
 	// cache entry of the block (§6.8 seed).
 	HeaderReadFull
 	// HeaderHeld: a block the block clock fetched by number, a by-hash
-	// wait's proven block or a read ahead's shared early fetch (FetchHeld,
+	// answer's proven block or a read ahead's shared early fetch (FetchHeld,
 	// spec §6.4, §6.8): it votes as a poll does, the node holds the block;
 	// it says nothing of the node's head above it, so it bounds no hold of
 	// a later block (§6.8 hold bounds).

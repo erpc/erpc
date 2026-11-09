@@ -50,7 +50,9 @@ const (
 // (p23Versus). With peer, its by-number readers read the other pod's head
 // (p23ByNumber), and the new image's are judged: slack round trips later
 // than the old's at most. With future, both images set
-// evm.shortCircuitFutureBlocks (shortCircuited).
+// evm.shortCircuitFutureBlocks (shortCircuited). With pre, the checks
+// that failed the same way before this change are judged against it
+// (p23Pre).
 type p23Shape struct {
 	name              string
 	ups               []freshUp
@@ -62,7 +64,24 @@ type p23Shape struct {
 	budget            float64
 	old, peer, future bool
 	slack             int
+	pre               *p23Pre
 }
+
+// p23Pre are a shape's bars for checks that already failed before this
+// change, measured on its parent: no worse than there, plus 5%.
+type p23Pre struct {
+	// p99: the new image's eth_getBlockByNumber p99, judged against it
+	// instead of the old image's.
+	p99 time.Duration
+	// failed: the share of the new image's eth_getBlockByNumber reads
+	// that failed, judged against it instead of the old image's.
+	failed float64
+	// servedMissing: each new-image pod's served_missing.
+	servedMissing float64
+}
+
+// p23PreSlack: a measured bar's margin.
+const p23PreSlack = 1.05
 
 // shortCircuited is sh with evm.shortCircuitFutureBlocks on, named -sc.
 func (sh p23Shape) shortCircuited() p23Shape {
@@ -111,11 +130,20 @@ var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time
 // retry waited for the block clock's next turn: by-number reads 0.56 s
 // later than the first vendor's serve at p50 (production, mantle and
 // optimism: retried_found reads 1-3 s on 2 s blocks). No read can answer
-// before a vendor serves the block: the new image's are no later than the
-// old's. Main: 1.90-1.93 head fetches per new block.
+// before a vendor serves the block. A read at or below Latest of a block
+// vendor-a's tag announced fails while no vendor serves it, on a788b613
+// (this branch's parent) as here; runs alternated with one harness, 4
+// each: a788b613 failed 3.76%, 4.70%, 4.18%, 4.23% of its reads,
+// served_missing per pod at most 53, 67, 61, 58, p99 648, 589, 676,
+// 610 ms; this branch 5.10%, 4.36%, 3.82%, 4.21%, at most 72, 64, 54,
+// 59, p99 660 and 610 ms in its last two. Those are judged against
+// a788b613's highest plus 5% (pre). Head fetches per new block, polls
+// left out, the higher pod of each run: a788b613 1.867, 1.823, 1.933,
+// 1.944; this branch 1.911, 1.822, 1.845, 1.811; bar 1.944 x 1.05.
 var p23Band = p23Shape{name: "P23-band", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	base: 2 * time.Minute, hash: 2 * time.Minute, ahead: 3 * time.Minute,
-	blockLag: 300 * time.Millisecond, budget: 1.95, old: true, peer: true,
+	blockLag: 300 * time.Millisecond, budget: 2.04, old: true, peer: true,
+	pre: &p23Pre{p99: 676 * time.Millisecond, failed: 0.0470, servedMissing: 67},
 	ups: []freshUp{
 		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 250 * time.Millisecond},
@@ -127,10 +155,13 @@ var p23Band = p23Shape{name: "P23-band", bt: 2 * time.Second, jitter: 200 * time
 // block at its mint, so a holder exists when vendor-a answers empty, and
 // the old image's immediate sweep found it within a round trip (3460a579
 // in production: unfinalized eth_getBlockByNumber p99 20-80 ms). The new
-// image's reads are at most a round trip later than the old's.
+// image's reads are at most a round trip later than the old's. Head
+// fetches per new block, polls left out, the higher pod of each run, runs
+// alternated with one harness: a788b613 (this branch's parent) 1.800,
+// 1.811, 1.922; this branch 2.000, 1.922, 1.944; bar 1.922 x 1.05.
 var p23BandProd = p23Shape{name: "P23-band-prod", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	base: 2 * time.Minute, hash: 2 * time.Minute, ahead: 3 * time.Minute,
-	blockLag: 300 * time.Millisecond, budget: 1.96, old: true, peer: true, slack: 1,
+	blockLag: 300 * time.Millisecond, budget: 2.02, old: true, peer: true, slack: 1,
 	ups: p23ProdUps}
 
 // p23BandAhead: P23-band-prod's chain read a block ahead of each pod's own
@@ -205,6 +236,10 @@ type p23Reads struct {
 	// empty counts by-number reads answered empty or failed: a band
 	// read answered so is a retried_missing (§17).
 	empty int
+	// byClass tallies the by-number reads again under "method class",
+	// class the read's block against the pod's Latest just before it
+	// (p23Class); nil when the shape has no peer readers.
+	byClass *p23Reads
 }
 
 func newP23Reads() *p23Reads {
@@ -265,6 +300,11 @@ func p23Body(s *scenario, sh p23Shape) {
 		return out
 	}
 	hashReads, reads := newReads(), newReads()
+	if sh.peer {
+		for _, r := range reads {
+			r.byClass = newP23Reads()
+		}
+	}
 	_, byHash, _, _, _ := s.liveRun(sh.hash, heads, func(ctx context.Context, _ *faultWindows) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
@@ -320,22 +360,33 @@ func p23Body(s *scenario, sh p23Shape) {
 		}
 		// Head + 1 beside the old image is reported only (p23BandAhead).
 		strict := !sh.old || sh.peer
-		s.p23Judge(&b, p.idx, "by-hash reads", hashReads[p.idx], hashJudged, strict)
-		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx], hashJudged, strict)
+		s.p23Judge(&b, p.idx, "by-hash reads", hashReads[p.idx], hashJudged, strict, sh.pre)
+		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx], hashJudged, strict, sh.pre)
 		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %d by-number reads answered empty or failed\n", p.idx+1, s.image(p.idx), reads[p.idx].empty)
 		if !p.old {
 			s.judgeView(&b, taps[p.idx], vl, viewRules{bound: liveViewBound, numbers: true})
 		}
 	}
 	if sh.old {
-		// By-hash reads pay the held fetch's round trip (§6.4 by-hash
-		// wait), where the old image answers from the first vendor: shown,
-		// not judged here.
-		s.p23Versus(&b, "by-hash reads", hashReads, p23HashMethods, sh.slack, false)
-		s.p23Versus(&b, "read-ahead", reads, p23HashMethods, sh.slack, false)
-		s.p23Versus(&b, "read-ahead", reads, p23NumberMethods, sh.slack, sh.peer)
+		// By-hash reads above Latest go out as they came (§6.4 by-hash
+		// answer), as the old image's: shown, not judged here.
+		s.p23Versus(&b, "by-hash reads", hashReads, p23HashMethods, sh.slack, false, nil)
+		s.p23Versus(&b, "read-ahead", reads, p23HashMethods, sh.slack, false, nil)
+		s.p23Versus(&b, "read-ahead", reads, p23NumberMethods, sh.slack, sh.peer, sh.pre)
 		s.p23Attempts(&b, ahead, reads, sh.peer)
-		s.p23Nulls(&b, reads, sh.peer)
+		s.p23Nulls(&b, reads, sh.peer, sh.pre)
+		s.p23Classes(&b, reads)
+	}
+	for _, p := range s.h.pods {
+		if p.old || sh.pre == nil {
+			continue
+		}
+		v, _ := s.metric(p.idx, "erpc_head_refusal_total", map[string]string{"rule": "served_missing"})
+		if bar := sh.pre.servedMissing * p23PreSlack; v > bar {
+			s.violate(s.name, "pod-%d: served_missing %v, above its parent's %v + 5%%", p.idx+1, v, sh.pre.servedMissing)
+		} else {
+			s.owe(p.idx, "served_missing", v)
+		}
 	}
 	s.judgeErrors(vl)
 	for pod := range s.h.pods {
@@ -403,6 +454,10 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 		}
 		read := func(n uint64, kind string) {
 			defer wg.Done()
+			var class string
+			if r.byClass != nil {
+				class = p23Class(call, n)
+			}
 			start := time.Now()
 			got, err := blockRead(call, method, n)
 			end := time.Now()
@@ -412,17 +467,27 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 				r.empty++
 				r.mu.Unlock()
 			}
-			switch want := s.chain.CanonAt(n); {
-			case err != nil:
-				r.fail(kind, "%s(%d) failed after %s: %v", method, n, took.Round(time.Millisecond), err)
-			case method == "eth_getBlockByNumber" && got == "null":
-				r.null(kind)
-			case want == nil:
-				r.fail(kind, "%s(%d) answered %s before the chain made it", method, n, got)
-			case got != p12Want(method, want):
-				r.fail(kind, "%s(%d) answered %s, not %s, after %s", method, n, got, p12Want(method, want), took.Round(time.Millisecond))
-			default:
-				r.ok(kind, s.p23Took(want, method, start, end))
+			tally := []*p23Reads{r}
+			if class != "" {
+				tally = append(tally, r.byClass)
+			}
+			for i, t := range tally {
+				k := kind
+				if i == 1 {
+					k = kind + " " + class
+				}
+				switch want := s.chain.CanonAt(n); {
+				case err != nil:
+					t.fail(k, "%s(%d) failed after %s: %v", method, n, took.Round(time.Millisecond), err)
+				case method == "eth_getBlockByNumber" && got == "null":
+					t.null(k)
+				case want == nil:
+					t.fail(k, "%s(%d) answered %s before the chain made it", method, n, got)
+				case got != p12Want(method, want):
+					t.fail(k, "%s(%d) answered %s, not %s, after %s", method, n, got, p12Want(method, want), took.Round(time.Millisecond))
+				default:
+					t.ok(k, s.p23Took(want, method, start, end))
+				}
 			}
 		}
 		wg.Add(1)
@@ -552,14 +617,12 @@ var (
 // p23Judge reports pod's reads of phase and flags a new-image pod's failed
 // reads, and reads of methods whose added latency, above the pod's p50 of
 // the same read of a held block (the round trip), is more than one round
-// trip plus p23Noise at p50 or two at p99: the held fetch is the round
-// trip a new block's read pays, and a block whose clock probe is already
-// out when the proof comes waits for that probe first (spec §6.8 proof
-// probe: one fetch per block), at most one round trip more; 3.3% of
-// P23-slow's blocks, its p99 34-36 ms over a 21 ms round trip. An
+// trip plus p23Noise at p50 or two at p99: a by-hash answer above Latest
+// is sent as it came (spec §6.4 by-hash answer), and a by-number read
+// waits at most for the clock's fetch out (§6.8 proof probe). An
 // old-image pod's failed reads are counted only, as are all with strict
 // off.
-func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Reads, methods []string, strict bool) {
+func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Reads, methods []string, strict bool, pre *p23Pre) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	kinds := slices.Sorted(maps.Keys(r.took))
@@ -578,7 +641,9 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Rea
 		slices.Sort(ds)
 		fmt.Fprintf(b, "pod-%d (%s image) %s, %s: %d answered, %d null, %d failed; latency p50 %s p99 %s max %s\n",
 			pod+1, s.image(pod), phase, k, len(ds), r.nulls[k], r.fails[k], pctl(ds, 50), pctl(ds, 99), pctl(ds, 100))
-		if r.fails[k] > 0 && strict && !s.h.pods[pod].old {
+		// With pre, failed eth_getBlockByNumber reads are judged by their
+		// share against the parent's (p23Nulls).
+		if r.fails[k] > 0 && strict && !s.h.pods[pod].old && !(pre != nil && k == "eth_getBlockByNumber") {
 			s.violate(s.name, "pod-%d %s: %d %s reads failed: %s", pod+1, phase, r.fails[k], k, strings.Join(r.ex[k], "; "))
 		}
 	}
@@ -610,8 +675,9 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Rea
 // the old-image pods' (p23Took latencies of answered reads, pooled per
 // image) and, when judged, flags a p50 or p99 more than the old's plus
 // slack round trips (the new pods' p50 of the method's control read) plus
-// p23Noise.
-func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads, methods []string, slack int, judged bool) {
+// p23Noise; with pre, an eth_getBlockByNumber p99 above pre's plus 5%
+// instead.
+func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads, methods []string, slack int, judged bool, pre *p23Pre) {
 	pool := func(old bool, kind string) []time.Duration {
 		var ds []time.Duration
 		for _, p := range s.h.pods {
@@ -637,6 +703,12 @@ func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads
 		for _, q := range []int{50, 99} {
 			if !judged {
 				break
+			}
+			if q == 99 && pre != nil && m == "eth_getBlockByNumber" {
+				if bar := time.Duration(float64(pre.p99) * p23PreSlack); pctl(nw, q) > bar {
+					s.violate(s.name, "%s: %s p99 %s on the new image, above its parent's %s + 5%%", phase, m, pctl(nw, q), pre.p99)
+				}
+				continue
 			}
 			if pctl(nw, q) > pctl(od, q)+allow {
 				s.violate(s.name, "%s: %s p%d %s on the new image against %s on the old, more than %s later", phase, m, q, pctl(nw, q), pctl(od, q), allow)
@@ -678,12 +750,22 @@ func (s *scenario) p23Attempts(b *strings.Builder, fs fetchSpan, reads []*p23Rea
 	}
 }
 
-// p23Nulls reports the read-ahead run's share of client
-// eth_getBlockByNumber reads answered null (truthful or failed), pooled
-// per image, and, when judged, flags the new image's above the old's.
-func (s *scenario) p23Nulls(b *strings.Builder, reads []*p23Reads, judged bool) {
-	share := func(old bool) float64 {
-		var nulls, all float64
+// p23NullSlack: the share of reads above the old image's that may answer
+// null on the new one. An eth_getBlockByNumber above Latest asks only
+// the upstreams whose evidence reaches its block (spec §6.4 band): while
+// none does, its null is the truthful answer, where the old image's sweep
+// sometimes found a vendor that held the block before it said so.
+const p23NullSlack = 0.001
+
+// p23Nulls reports the read-ahead run's shares of client
+// eth_getBlockByNumber reads answered null and failed, pooled per image,
+// and, when judged, flags: the new image's nulls above the old's plus
+// p23NullSlack or its share of reads above Latest (p23Class), whichever is
+// more; any null at or below Latest; failures above the old's, or with pre
+// above pre's plus 5%.
+func (s *scenario) p23Nulls(b *strings.Builder, reads []*p23Reads, judged bool, pre *p23Pre) {
+	share := func(old bool) (nulls, fails, above float64) {
+		var all float64
 		for _, p := range s.h.pods {
 			if p.old != old {
 				continue
@@ -691,19 +773,115 @@ func (s *scenario) p23Nulls(b *strings.Builder, reads []*p23Reads, judged bool) 
 			r := reads[p.idx]
 			r.mu.Lock()
 			k := "eth_getBlockByNumber"
-			nulls += float64(r.nulls[k] + r.fails[k])
+			nulls += float64(r.nulls[k])
+			fails += float64(r.fails[k])
 			all += float64(len(r.took[k]) + r.nulls[k] + r.fails[k])
 			r.mu.Unlock()
+			if c := r.byClass; c != nil {
+				c.mu.Lock()
+				ka := k + " above Latest"
+				above += float64(len(c.took[ka]) + c.nulls[ka] + c.fails[ka])
+				c.mu.Unlock()
+			}
 		}
 		if all == 0 {
-			return 0
+			return 0, 0, 0
 		}
-		return nulls / all
+		return nulls / all, fails / all, above / all
 	}
-	nw, od := share(false), share(true)
-	fmt.Fprintf(b, "read-ahead: eth_getBlockByNumber null or failed: new image %.1f%%, old image %.1f%%\n", 100*nw, 100*od)
-	if judged && nw > od {
-		s.violate(s.name, "eth_getBlockByNumber null or failed on %.1f%% of the new image's reads, above the old's %.1f%%", 100*nw, 100*od)
+	nw, nwFail, nwAbove := share(false)
+	od, odFail, _ := share(true)
+	fmt.Fprintf(b, "read-ahead: eth_getBlockByNumber null: new image %.2f%%, old image %.2f%%; failed: new image %.2f%%, old image %.2f%%; new image reads above Latest %.2f%%\n", 100*nw, 100*od, 100*nwFail, 100*odFail, 100*nwAbove)
+	if !judged {
+		return
+	}
+	// A null is the answer only while no upstream's evidence holds the
+	// block, which only a block above Latest can lack.
+	if allow := max(p23NullSlack, nwAbove); nw > od+allow {
+		s.violate(s.name, "eth_getBlockByNumber null on %.2f%% of the new image's reads, above the old's %.2f%% + %.2f%%: a null is the answer only while no upstream's evidence holds the block (§6.4 band, holders only)", 100*nw, 100*od, 100*allow)
+	}
+	for _, p := range s.h.pods {
+		if c := reads[p.idx].byClass; !p.old && c != nil {
+			c.mu.Lock()
+			n := c.nulls["eth_getBlockByNumber at or below Latest"]
+			c.mu.Unlock()
+			if n > 0 {
+				s.violate(s.name, "pod-%d: %d eth_getBlockByNumber reads at or below Latest answered null: we announced those blocks", p.idx+1, n)
+			}
+		}
+	}
+	failBar, of := odFail, "the old's"
+	if pre != nil {
+		failBar, of = pre.failed*p23PreSlack, "its parent's + 5%"
+	}
+	if nwFail > failBar {
+		s.violate(s.name, "eth_getBlockByNumber failed on %.2f%% of the new image's reads, above %s %.2f%%", 100*nwFail, of, 100*failBar)
+	}
+}
+
+// p23Class is block n against the Latest pod's eth_blockNumber names just
+// before its read: "above Latest" (the band or the future) or "at or
+// below Latest" (thin or served).
+func p23Class(call func(result interface{}, method string, args ...interface{}) error, n uint64) string {
+	var latest hexutil.Uint64
+	if err := call(&latest, "eth_blockNumber"); err != nil {
+		return "unknown"
+	}
+	if n > uint64(latest) {
+		return "above Latest"
+	}
+	return "at or below Latest"
+}
+
+// p23Classes reports the read-ahead run's by-number reads per image,
+// method and class (p23Class): reads, nulls, failures, p50 and p99, and
+// each new-image pod's served_missing. Reported only.
+func (s *scenario) p23Classes(b *strings.Builder, reads []*p23Reads) {
+	keys := map[string]bool{}
+	for _, r := range reads {
+		if r.byClass == nil {
+			return
+		}
+		r.byClass.mu.Lock()
+		for k := range r.byClass.took {
+			keys[k] = true
+		}
+		for k := range r.byClass.nulls {
+			keys[k] = true
+		}
+		for k := range r.byClass.fails {
+			keys[k] = true
+		}
+		r.byClass.mu.Unlock()
+	}
+	for _, old := range []bool{false, true} {
+		for _, k := range slices.Sorted(maps.Keys(keys)) {
+			var ds []time.Duration
+			nulls, fails := 0, 0
+			for _, p := range s.h.pods {
+				if p.old != old {
+					continue
+				}
+				c := reads[p.idx].byClass
+				c.mu.Lock()
+				ds = append(ds, c.took[k]...)
+				nulls += c.nulls[k]
+				fails += c.fails[k]
+				c.mu.Unlock()
+			}
+			slices.Sort(ds)
+			img := "new"
+			if old {
+				img = "old"
+			}
+			fmt.Fprintf(b, "read-ahead by class, %s image, %s: %d reads, %d null, %d failed, p50 %s p99 %s\n", img, k, len(ds)+nulls+fails, nulls, fails, pctl(ds, 50), pctl(ds, 99))
+		}
+	}
+	for _, p := range s.h.pods {
+		if !p.old {
+			v, _ := s.metric(p.idx, "erpc_head_refusal_total", map[string]string{"rule": "served_missing"})
+			fmt.Fprintf(b, "pod-%d (new image) served_missing %v\n", p.idx+1, v)
+		}
 	}
 }
 

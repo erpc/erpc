@@ -1254,7 +1254,7 @@ func (n *Network) finalizedStep(s voterSet, w time.Duration) (top int64, at time
 // firstHolder is the id of the first voter of selector's lane, in
 // selection order, whose head counter holds block and that has a poller:
 // a hash fetch of it brings the vote that moves the view's Head there
-// (spec §6.4 by-hash wait); "" while none holds it.
+// (spec §6.4 by-hash answer); "" while none holds it.
 func (n *Network) firstHolder(selector string, block int64) (id string) {
 	n.voters(tipScope{sel: selector}, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 		if head < block {
@@ -1365,7 +1365,7 @@ func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common
 }
 
 // EvmFetchHeld fetches block number from upstreamId for a chain tracker's
-// block clock (spec §6.4 by-hash wait, §6.8 shared early fetch,
+// block clock's shared early fetch (spec §6.8,
 // evm.EvmStatePoller.FetchHeld); AskBackoff when the network has no such
 // upstream with a poller.
 func (n *Network) EvmFetchHeld(ctx context.Context, upstreamId string, number uint64) common.HeadAnswer {
@@ -1864,13 +1864,13 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 }
 
 // SvmHighestFinalizedSlotMax returns the MAX finalized root across SVM
-// upstreams. Used only by the networkPreForward_getBlock guard: at finalized
-// commitment an upstream answers -32004 for any slot above its own root, so
-// the pool can serve a slot iff the LEADING upstream has rooted it. The
-// majority tip is the wrong aggregate for that decision — with three upstreams
-// whose roots are 1000/1000/1100, it reports 1000 and the guard would null out
-// ~100 slots the third upstream is holding, converting a served request into a
-// client-visible -32014.
+// upstreams. Used by the networkPreForward_getBlock guard and by the gRPC BDS
+// client's finalized bound: at finalized commitment an upstream answers
+// -32004 for any slot above its own root, so the pool can serve a slot iff the
+// LEADING upstream has rooted it. The majority tip is the wrong aggregate for
+// that decision — with three upstreams whose roots are 1000/1000/1100, it
+// reports 1000 and the guard would null out ~100 slots the third upstream is
+// holding, converting a served request into a client-visible -32014.
 //
 // Same rationale as SvmHighestIndexedSlot and the EVM Head's ceiling: never
 // reject a block the most-ahead upstream actually has. Zero means UNKNOWN (no
@@ -2507,7 +2507,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				lg.Info().Msgf("response served from cache")
 			}
 			if n.cfg.Architecture == common.ArchitectureEvm {
-				resp, _ = n.holdByHash(ctx, req, resp)
+				n.byHashAboveLatest(ctx, req, resp)
 			}
 			if mlx != nil {
 				mlx.Close(ctx, resp, err)
@@ -3357,10 +3357,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	held := false
-	if n.cfg.Architecture == common.ArchitectureEvm {
-		resp, held = n.holdByHash(ctx, req, resp)
-	}
+	// A by-hash answer above Latest goes out as it came, uncached: its hash
+	// may be provisional (spec §6.4 by-hash answer).
+	uncached := n.cfg.Architecture == common.ArchitectureEvm && n.byHashAboveLatest(ctx, req, resp)
 	if resp != nil {
 		// Under a customPolicy selector the store is shared across grades and
 		// with no-consensus routes on the same network (keys omit policy/auth).
@@ -3369,7 +3368,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// Skip Set so defaultAllow cannot admit those into the selector-shared
 		// store. Cache.Set still applies strategy × mark for stamped responses.
 		skipUnmarkedSelectorSet := selectorOn && resp.Cacheable() == nil
-		if n.cacheDal != nil && !held && !skipUnmarkedSelectorSet && !(tagReads && servesAnotherBlock(ctx, req, resp)) {
+		if n.cacheDal != nil && !uncached && !skipUnmarkedSelectorSet && !(tagReads && servesAnotherBlock(ctx, req, resp)) {
 			n.storeInCache(ctx, forwardSpan.SpanContext(), &lg, method, req, resp)
 		} else if skipUnmarkedSelectorSet {
 			lg.Debug().Msg("skipping cache write: unmarked response on selector-enabled network")
