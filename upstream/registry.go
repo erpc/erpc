@@ -740,7 +740,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	}
 
 	// Add to network upstreams map
-	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
+	isShadow := ups.Config().IsShadow()
 	exists := false
 	if isShadow {
 		for _, existingUps := range u.networkShadowUpstreams[networkId] {

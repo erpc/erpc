@@ -299,6 +299,21 @@ func TestShadowCompare_ForwardPath(t *testing.T) {
 	)
 	const ign, plain = "shadowcmp-fwd-ign", "shadowcmp-fwd-plain"
 
+	// The shadows poll heads far above the primary's (rpc2, rpc3 mocks). A
+	// shadow only receives copies, so its head must move no network value
+	// that routing reads: the finalized head and the primary's lag.
+	primary := f.network.upstreamsRegistry.GetNetworkUpstreams(f.ctx, f.network.networkId)[0]
+	shadowCmpWaitHead(t, primary, 0x11118888)
+	shadowCmpWaitHead(t, f.shadowUpstream(t, ign), 0x22228888)
+	shadowCmpWaitHead(t, f.shadowUpstream(t, plain), 0x33338888)
+	tr, net := f.network.metricsTracker, f.network.networkId
+	require.Eventually(t, func() bool { return tr.GetNetworkFinalizedBlock(net) == 0x11117777 },
+		3*time.Second, 10*time.Millisecond, "the network finalized head is the primary's")
+	require.Never(t, func() bool {
+		return tr.GetNetworkFinalizedBlock(net) != 0x11117777 ||
+			tr.GetUpstreamMethodMetrics(primary, "*", common.DataFinalityStateAll).BlockHeadLag.Load() != 0
+	}, time.Second, 20*time.Millisecond, "a shadow's head moved the network finalized head or the primary's lag")
+
 	cases := []struct {
 		name          string
 		method        string

@@ -1693,6 +1693,12 @@ func (u *UpstreamConfig) IsSubscriptionSource() bool {
 	return util.IsWsEndpoint(u.Endpoint)
 }
 
+// IsShadow reports whether the upstream only receives copies of served
+// requests (shadow.enabled): it never serves, and never joins the network.
+func (u *UpstreamConfig) IsShadow() bool {
+	return u != nil && u.Shadow != nil && u.Shadow.Enabled
+}
+
 type FailsafeConfig struct {
 	MatchMethod   string              `yaml:"matchMethod,omitempty" json:"matchMethod"`
 	MatchFinality []DataFinalityState `yaml:"matchFinality,omitempty" json:"matchFinality"`
