@@ -2155,6 +2155,13 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 	return nil
 }
 
+// RunsConsensus reports whether Forward votes req through a consensus
+// policy: the failsafe policy matching req has one and req does not skip it.
+func (n *Network) RunsConsensus(ctx context.Context, req *common.NormalizedRequest) bool {
+	fe := n.getFailsafeExecutor(ctx, req)
+	return fe != nil && fe.runsConsensus(req)
+}
+
 // selectionOrder is the selection policy's order of the upstreams for req:
 // the engine's order, or registration order until its first tick, without
 // upstreams whose method config excludes the method.

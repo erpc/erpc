@@ -132,6 +132,11 @@ fails, and the network's retry gives the whole range to the next upstream, which
 to its own threshold. A range sent as a block tag (`latest`, `finalized`) moves with the head
 and is never split proactively.
 
+**Under consensus the range splits once, at network pre-forward.** Participants must vote on
+the same bytes, so when a consensus policy matches `eth_getLogs` (and the request does not
+skip it), eRPC splits the range at the smallest positive threshold of the selected upstreams,
+and each piece is voted on alone. No participant re-splits a piece or gets the whole range.
+
 **Reactive path (network post-forward)** fires when an upstream returns a too-large error
 (`ErrCodeEndpointRequestTooLarge` or JSON-RPC code `-32012`). Unlike proactive splitting,
 it always **bisects** the block range at the midpoint rather than producing threshold-sized

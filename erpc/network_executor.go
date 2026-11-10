@@ -125,6 +125,31 @@ func (e *networkExecutor) HasConsensus() bool {
 	return e.cfg.Consensus != nil
 }
 
+// runsConsensus reports whether Run votes req through the consensus policy.
+// The SkipConsensus directive (header `X-ERPC-Skip-Consensus: true`, query
+// `?skip-consensus=true`, or `directiveDefaults.skipConsensus: true`) falls
+// through to the standard retry+hedge path; retry, hedge, breaker and timeout
+// still apply.
+//
+// A single-dispatch write (requestAirdrop) must never enter consensus: the
+// executor spawns maxParticipants slots in parallel, each drawing a
+// DISTINCT upstream, so one client call would mint once per participant and
+// then report a dispute over the signatures it just created. Falling
+// through to retry(hedge(sweep)) keeps the single-dispatch guard that the
+// hedge gate and the SVM post-forward write guard already enforce.
+// Tx broadcasts stay consensus-eligible on purpose — consensus
+// short-circuits them to the first valid signature.
+func (e *networkExecutor) runsConsensus(req *common.NormalizedRequest) bool {
+	if !e.HasConsensus() || e.consensus == nil {
+		return false
+	}
+	if rds := req.Directives(); rds != nil && rds.SkipConsensus {
+		return false
+	}
+	m, err := req.Method()
+	return err != nil || !svm.IsSingleDispatchWriteMethod(m)
+}
+
 // consensusKeepsEmptyAsSlotVote reports whether the selected consensus policy
 // opted into empty-outside-retention waiver for this request's method, so a
 // consensus-slot hedge must keep an emptyish result as the slot's vote
@@ -231,28 +256,7 @@ func (e *networkExecutor) Run(
 	}
 
 	// Consensus branch: each slot is retry(hedge(tryOneUpstream)).
-	// Skipped when the request carries the SkipConsensus directive (header
-	// `X-ERPC-Skip-Consensus: true`, query `?skip-consensus=true`, or
-	// `directiveDefaults.skipConsensus: true` in the network/project config).
-	// Falls through to the standard non-consensus retry+hedge path; all
-	// other policies (retry, hedge, breaker, timeout) still apply.
-	skipConsensus := false
-	if rds := req.Directives(); rds != nil {
-		skipConsensus = rds.SkipConsensus
-	}
-	// A single-dispatch write (requestAirdrop) must never enter consensus: the
-	// executor spawns maxParticipants slots in parallel, each drawing a
-	// DISTINCT upstream, so one client call would mint once per participant and
-	// then report a dispute over the signatures it just created. Falling
-	// through to retry(hedge(sweep)) keeps the single-dispatch guard that the
-	// hedge gate below and the SVM post-forward write guard already enforce.
-	// Tx broadcasts stay consensus-eligible on purpose — consensus
-	// short-circuits them to the first valid signature.
-	singleDispatchWrite := false
-	if m, merr := req.Method(); merr == nil {
-		singleDispatchWrite = svm.IsSingleDispatchWriteMethod(m)
-	}
-	if e.HasConsensus() && e.consensus != nil && !skipConsensus && !singleDispatchWrite {
+	if e.runsConsensus(req) {
 		slotInner := func(slotCtx context.Context, slotReq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream, true)
 		}
