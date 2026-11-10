@@ -1524,12 +1524,15 @@ func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 // request's when the held headers prove no matching log (counted no): of
 // every pinned block of a concrete range (ChainTracker.LogsMayExist), or
 // of a blockHash filter's block (ChainTracker.LogsMayExistAt); or when req
-// routes no other upstream to ask (counted maybe_alone). Else it may hold
-// one, and the other upstreams settle it (logsProbe): those whose evidence
-// holds block, the range's toBlock or the hash's held number, or, for a
-// hash whose header no tracker holds (block 0), every other routed one. A
-// range below the pins, a non-concrete one, and a network without a
-// tracker pass as before, unjudged.
+// may select no other upstream (counted maybe_alone): one routed upstream,
+// or a UseUpstream pin, a client's or an eth_getLogs split piece's, that
+// matches only u. A split's merged answer is judged at its parent, which
+// has no pin. Else it may hold one, and the other upstreams settle it
+// (logsProbe): those whose evidence holds block, the range's toBlock or
+// the hash's held number, or, for a hash whose header no tracker holds
+// (block 0), every other routed one. A range below the pins, a
+// non-concrete one, and a network without a tracker pass as before,
+// unjudged.
 func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (block int64, maybe bool) {
 	t := n.laneTracker(selectorOf(req))
 	if t == nil {
@@ -1565,9 +1568,9 @@ func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (bl
 	case verdict == evm.LogsNone:
 		n.countLogsGate("no")
 		return 0, false
-	case !slices.ContainsFunc(req.Upstreams(), func(r common.Upstream) bool { return r.Id() != u.Id() }):
-		// One upstream has no peer to agree: an error after the wait
-		// would be worse than its answer.
+	case !slices.ContainsFunc(req.Upstreams(), func(r common.Upstream) bool { return r.Id() != u.Id() && req.MatchesUseUpstream(r) }):
+		// No peer may agree: an error after the wait would be worse
+		// than its answer.
 		n.countLogsGate("maybe_alone")
 		return 0, false
 	}

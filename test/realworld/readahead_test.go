@@ -37,6 +37,13 @@ const (
 	p23Noise = 10 * time.Millisecond
 	// p23Examples: failed reads quoted per kind.
 	p23Examples = 5
+	// p23SplitRate: split reads a second per pod (p23SplitReads).
+	p23SplitRate = 10.0
+	// p23SplitBlocks: each split read's range, ending at the pod's
+	// eth_blockNumber.
+	p23SplitBlocks = 8
+	// p23SplitKind tallies the split reads.
+	p23SplitKind = "eth_getLogs split"
 )
 
 // p23Shape is one chain P23 runs on: its vendors, block time and mint
@@ -53,7 +60,10 @@ const (
 // evm.shortCircuitFutureBlocks (shortCircuited). With pre, the checks
 // that failed the same way before this change are judged against it
 // (p23Pre). With gate, the logs gate's own costs are judged against it
-// (p23Gate).
+// (p23Gate). With split, every vendor splits an eth_getLogs range longer
+// than split blocks into pieces pinned to it
+// (getLogsAutoSplittingRangeThreshold), and the body is the split reads
+// alone (p23SplitBody).
 type p23Shape struct {
 	name              string
 	ups               []freshUp
@@ -65,6 +75,7 @@ type p23Shape struct {
 	budget            float64
 	old, peer, future bool
 	slack             int
+	split             int64
 	pre               *p23Pre
 	gate              *p23Gate
 }
@@ -113,6 +124,28 @@ var p23Fast = p23Shape{name: "P23", bt: 100 * time.Millisecond, jitter: 20 * tim
 		{"http-d", "vendor-d", 35 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-e", "vendor-e", 40 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-f", "vendor-f", 45 * time.Millisecond, 10 * time.Second, 0, 0},
+	}}
+
+// p23Split: P23's chain and vendors, each splitting an eth_getLogs range
+// longer than 2 blocks into pieces pinned to it, read over 8 blocks ending
+// at the tip with a filter the held blooms call maybe that matches no log
+// (p23SplitReads). A pinned piece may ask no other upstream: gated as a
+// read with peers, its empty answer waited W for a holder it could not
+// reserve, then failed (maybe_unavailable), and so did its upstream's whole
+// split, upstream after upstream. The vendors are polled every block, so
+// other holders of the tip exist when the parent's merged empty answer is
+// gated: polled every 10 s, as P23's, the clock's one fetch a block left
+// no other holder of the tip within W, and unsplit reads of the same
+// filter failed as often (maybe_unavailable).
+var p23Split = p23Shape{name: "P23-split", bt: 100 * time.Millisecond, jitter: 20 * time.Millisecond, warm: 300,
+	ahead: time.Minute, split: 2,
+	ups: []freshUp{
+		{"http-a", "vendor-a", 20 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-b", "vendor-b", 25 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-c", "vendor-c", 30 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-d", "vendor-d", 35 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-e", "vendor-e", 40 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-f", "vendor-f", 45 * time.Millisecond, 100 * time.Millisecond, 0, 0},
 	}}
 
 // p23Slow: four https vendors 20-35 ms away, polled every 10 s, on a 2 s
@@ -241,6 +274,11 @@ func p23(sh p23Shape) spec {
 	if sh.future {
 		sp.evm = map[string]interface{}{"shortCircuitFutureBlocks": true}
 	}
+	if sh.split > 0 {
+		for _, ev := range sp.upEvm {
+			ev["getLogsAutoSplittingRangeThreshold"] = sh.split
+		}
+	}
 	return sp
 }
 
@@ -300,6 +338,10 @@ func p23Body(s *scenario, sh p23Shape) {
 	vl := &viewLog{}
 	// Both latest reads: eth_blockNumber alone is no clock demand.
 	heads := liveReads(p23HeadRate, s.chain.BlockTime(), vl)
+	if sh.split > 0 {
+		s.p23SplitBody(sh, heads)
+		return
+	}
 	taps := make([]*viewTap, len(s.h.pods))
 	for _, p := range s.h.pods {
 		if !p.old {
@@ -438,6 +480,164 @@ func p23Body(s *scenario, sh p23Shape) {
 		}
 	}
 	s.logf("%s", b.String())
+}
+
+// p23SplitBody runs the split reads (p23SplitReads) on each pod beside
+// heads for sh.ahead, then judges each pod: every read answers the
+// chain's logs, none failed; p99 latency at most a quarter of W, since a
+// pinned piece's empty answer is served at once (maybe_alone), not after
+// the probe's wait; and no maybe_unavailable verdict.
+func (s *scenario) p23SplitBody(sh p23Shape, heads []liveRead) {
+	gate := func(pod int, v string) float64 {
+		n, _ := s.metric(pod, "erpc_logs_empty_gate_total", map[string]string{"verdict": v})
+		return n
+	}
+	verdicts := []string{"no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_unavailable"}
+	reads := make([]*p23Reads, len(s.h.pods))
+	before := make([]map[string]float64, len(s.h.pods))
+	for _, p := range s.h.pods {
+		reads[p.idx], before[p.idx] = newP23Reads(), map[string]float64{}
+		for _, v := range verdicts {
+			before[p.idx][v] = gate(p.idx, v)
+		}
+	}
+	_, _, _, from, to := s.liveRun(sh.ahead, heads, func(ctx context.Context, _ *faultWindows) {
+		var wg sync.WaitGroup
+		for _, p := range s.h.pods {
+			wg.Go(func() { s.p23SplitReads(ctx, p.idx, reads[p.idx]) })
+		}
+		wg.Wait()
+	})
+	w := max(3*s.chain.BlockTime(), liveBound)
+	var b strings.Builder
+	for _, p := range s.h.pods {
+		r := reads[p.idx]
+		s.p23Judge(&b, p.idx, "split reads", r, nil, true, nil)
+		delta := map[string]float64{}
+		var line []string
+		for _, v := range verdicts {
+			delta[v] = gate(p.idx, v) - before[p.idx][v]
+			line = append(line, fmt.Sprintf("%s %.0f", v, delta[v]))
+		}
+		fmt.Fprintf(&b, "pod-%d split reads: logs gate verdicts %s\n", p.idx+1, strings.Join(line, ", "))
+		ds := slices.Sorted(slices.Values(r.took[p23SplitKind]))
+		switch {
+		case len(ds) == 0:
+			s.violate(s.name, "pod-%d: no split read answered", p.idx+1)
+		case pctl(ds, 99) > w/4:
+			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: split reads p99 %s, above W/4 (W %s): a pinned piece's empty answer waited", p.idx+1, pctl(ds, 99), w)))
+		}
+		if delta["maybe_unavailable"] > 0 {
+			s.violate(s.name, "pod-%d: %.0f maybe_unavailable verdicts on split reads: a pinned piece has no peer to ask", p.idx+1, delta["maybe_unavailable"])
+		}
+	}
+	s.logf("%s", b.String())
+}
+
+// p23SplitReads reads on pod, about p23SplitRate times a second until ctx
+// ends, eth_getLogs over the p23SplitBlocks blocks ending at the pod's
+// eth_blockNumber, more than the shape's split, so each vendor's attempt
+// splits it into pieces pinned to that vendor. The filter is
+// p23SplitFilter's; the answer must be the chain's logs for it: none.
+func (s *scenario) p23SplitReads(ctx context.Context, pod int, r *p23Reads) {
+	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.h.podClient()))
+	if err != nil {
+		s.violate("harness", "pod-%d: split client: %v", pod+1, err)
+		return
+	}
+	defer c.Close()
+	call := func(result interface{}, method string, args ...interface{}) error {
+		ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
+		defer cancel()
+		return c.CallContext(ctx, result, method, args...)
+	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	period := time.Duration(float64(time.Second) / p23SplitRate)
+	for ctx.Err() == nil {
+		sleepCtx(ctx, period/2+rand.N(period))
+		var tip hexutil.Uint64
+		if err := call(&tip, "eth_blockNumber"); err != nil || ctx.Err() != nil {
+			continue
+		}
+		to := uint64(tip)
+		from := to - p23SplitBlocks + 1
+		q, want, ok := s.p23SplitFilter(from, to)
+		if !ok {
+			continue
+		}
+		wg.Go(func() {
+			read := fmt.Sprintf("eth_getLogs(%d-%d, topic %s)", from, to, q["topics"].([]interface{})[1])
+			var logs []struct {
+				BlockHash hash           `json:"blockHash"`
+				LogIndex  hexutil.Uint64 `json:"logIndex"`
+			}
+			start := time.Now()
+			err := call(&logs, "eth_getLogs", q)
+			took := time.Since(start)
+			got := map[chainsim.LogKey]bool{}
+			for _, l := range logs {
+				got[chainsim.LogKey{BlockHash: l.BlockHash, LogIndex: int(l.LogIndex)}] = true
+			}
+			switch {
+			case err != nil:
+				r.fail(p23SplitKind, "%s failed after %s: %v", read, took.Round(time.Millisecond), err)
+			case len(logs) != len(want) || !maps.Equal(got, want):
+				r.fail(p23SplitKind, "%s answered %d logs, not the chain's %d, after %s", read, len(logs), len(want), took.Round(time.Millisecond))
+			default:
+				r.ok(p23SplitKind, took)
+			}
+		})
+	}
+}
+
+// p23SplitFilter is a filter over from..to that the held headers' blooms
+// call maybe and that matches no log: the address Addrs[0] and, at the
+// second topic position, the topic of one transaction of the range's
+// newest block that has a log of Addrs[0] in another transaction but none
+// in that one (chainsim gives each transaction's logs a topic of its own).
+// That block's bloom holds both, every other block's lacks the topic. want
+// are the chain's logs for it; ok is false for a range with no such block.
+func (s *scenario) p23SplitFilter(from, to uint64) (q map[string]interface{}, want map[chainsim.LogKey]bool, ok bool) {
+	addr := chainsim.Addrs[0]
+	for i := uint64(0); i <= to-from; i++ {
+		b := s.chain.CanonAt(to - i)
+		if b == nil {
+			continue
+		}
+		holds := map[int]bool{}
+		for _, l := range b.Logs() {
+			if l.Address == addr {
+				holds[l.TxIndex] = true
+			}
+		}
+		if len(holds) == 0 {
+			continue
+		}
+		for _, l := range b.Logs() {
+			if holds[l.TxIndex] {
+				continue
+			}
+			topic := l.Topics[1]
+			want = map[chainsim.LogKey]bool{}
+			for n := from; n <= to; n++ {
+				c := s.chain.CanonAt(n)
+				if c == nil {
+					continue
+				}
+				for _, x := range c.Logs() {
+					if x.Address == addr && len(x.Topics) > 1 && x.Topics[1] == topic {
+						want[x.Key()] = true
+					}
+				}
+			}
+			return map[string]interface{}{
+				"fromBlock": hexutil.EncodeUint64(from), "toBlock": hexutil.EncodeUint64(to),
+				"address": addr.Hex(), "topics": []interface{}{nil, topic.Hex()},
+			}, want, true
+		}
+	}
+	return nil, nil, false
 }
 
 // p23ByNumber reads, about p23AheadRate times a second until ctx ends,
