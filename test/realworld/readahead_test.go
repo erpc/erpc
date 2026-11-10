@@ -62,8 +62,9 @@ const (
 // (p23Pre). With gate, the logs gate's own costs are judged against it
 // (p23Gate). With split, every vendor splits an eth_getLogs range longer
 // than split blocks into pieces pinned to it
-// (getLogsAutoSplittingRangeThreshold), and the body is the split reads
-// alone (p23SplitBody).
+// (getLogsAutoSplittingRangeThreshold), and the body is the tip logs reads
+// alone (p23SplitBody). With lone, the body is those reads unsplit, on
+// vendors no other of which holds the tip within W.
 type p23Shape struct {
 	name              string
 	ups               []freshUp
@@ -76,6 +77,7 @@ type p23Shape struct {
 	old, peer, future bool
 	slack             int
 	split             int64
+	lone              bool
 	pre               *p23Pre
 	gate              *p23Gate
 }
@@ -131,12 +133,10 @@ var p23Fast = p23Shape{name: "P23", bt: 100 * time.Millisecond, jitter: 20 * tim
 // at the tip with a filter the held blooms call maybe that matches no log
 // (p23SplitReads). A pinned piece may ask no other upstream: gated as a
 // read with peers, its empty answer waited W for a holder it could not
-// reserve, then failed (maybe_unavailable), and so did its upstream's whole
-// split, upstream after upstream. The vendors are polled every block, so
-// other holders of the tip exist when the parent's merged empty answer is
-// gated: polled every 10 s, as P23's, the clock's one fetch a block left
-// no other holder of the tip within W, and unsplit reads of the same
-// filter failed as often (maybe_unavailable).
+// reserve, then failed, and so did its upstream's whole split, upstream
+// after upstream. The vendors are polled every block, so other holders of
+// the tip exist when the parent's merged empty answer is gated (p23Lone
+// reads with none).
 var p23Split = p23Shape{name: "P23-split", bt: 100 * time.Millisecond, jitter: 20 * time.Millisecond, warm: 300,
 	ahead: time.Minute, split: 2,
 	ups: []freshUp{
@@ -147,6 +147,14 @@ var p23Split = p23Shape{name: "P23-split", bt: 100 * time.Millisecond, jitter: 2
 		{"http-e", "vendor-e", 40 * time.Millisecond, 100 * time.Millisecond, 0, 0},
 		{"http-f", "vendor-f", 45 * time.Millisecond, 100 * time.Millisecond, 0, 0},
 	}}
+
+// p23Lone: p23Split's reads, unsplit, on P23's vendors, polled every 10 s:
+// the clock's one fetch a block leaves no other holder of the tip within
+// W, so a gated read's probe finds none and asks the first upstream again
+// (maybe_reasked). Ending in a block-unavailable error instead, 451 of 605
+// such reads failed.
+var p23Lone = p23Shape{name: "P23-lone", bt: 100 * time.Millisecond, jitter: 20 * time.Millisecond, warm: 300,
+	ahead: time.Minute, lone: true, ups: p23Fast.ups}
 
 // p23Slow: four https vendors 20-35 ms away, polled every 10 s, on a 2 s
 // chain, W 6 s, that serve each block 0-0.75 s after it is minted, and
@@ -338,7 +346,7 @@ func p23Body(s *scenario, sh p23Shape) {
 	vl := &viewLog{}
 	// Both latest reads: eth_blockNumber alone is no clock demand.
 	heads := liveReads(p23HeadRate, s.chain.BlockTime(), vl)
-	if sh.split > 0 {
+	if sh.split > 0 || sh.lone {
 		s.p23SplitBody(sh, heads)
 		return
 	}
@@ -435,7 +443,7 @@ func p23Body(s *scenario, sh p23Shape) {
 		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx], hashJudged, strict, sh.pre)
 		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %d by-number reads answered empty or failed\n", p.idx+1, s.image(p.idx), reads[p.idx].empty)
 		var gate []string
-		for _, v := range []string{"no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_unavailable"} {
+		for _, v := range []string{"no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_reasked"} {
 			n, _ := s.metric(p.idx, "erpc_logs_empty_gate_total", map[string]string{"verdict": v})
 			gate = append(gate, fmt.Sprintf("%s %.0f", v, n))
 		}
@@ -482,17 +490,21 @@ func p23Body(s *scenario, sh p23Shape) {
 	s.logf("%s", b.String())
 }
 
-// p23SplitBody runs the split reads (p23SplitReads) on each pod beside
+// p23SplitBody runs the tip logs reads (p23SplitReads) on each pod beside
 // heads for sh.ahead, then judges each pod: every read answers the
-// chain's logs, none failed; p99 latency at most a quarter of W, since a
-// pinned piece's empty answer is served at once (maybe_alone), not after
-// the probe's wait; and no maybe_unavailable verdict.
+// chain's logs, none failed. Split, p99 latency at most a quarter of W,
+// since a pinned piece's empty answer is served at once (maybe_alone), not
+// after the probe's wait, and no maybe_reasked verdict. Lone, a gated read
+// waits W for a holder, then re-asks: p99 at most W plus two round trips
+// of the slowest vendor (the first answer, the re-ask) plus p23Noise, and
+// some maybe_reasked verdicts, else no read met a tip no other upstream
+// held.
 func (s *scenario) p23SplitBody(sh p23Shape, heads []liveRead) {
 	gate := func(pod int, v string) float64 {
 		n, _ := s.metric(pod, "erpc_logs_empty_gate_total", map[string]string{"verdict": v})
 		return n
 	}
-	verdicts := []string{"no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_unavailable"}
+	verdicts := []string{"no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_reasked"}
 	reads := make([]*p23Reads, len(s.h.pods))
 	before := make([]map[string]float64, len(s.h.pods))
 	for _, p := range s.h.pods {
@@ -509,6 +521,14 @@ func (s *scenario) p23SplitBody(sh p23Shape, heads []liveRead) {
 		wg.Wait()
 	})
 	w := max(3*s.chain.BlockTime(), liveBound)
+	bar, why := w/4, "a pinned piece's empty answer waited"
+	if sh.lone {
+		var rtt time.Duration
+		for _, u := range sh.ups {
+			rtt = max(rtt, u.slow)
+		}
+		bar, why = w+2*rtt+p23Noise, "a gated read waited past W and its re-ask"
+	}
 	var b strings.Builder
 	for _, p := range s.h.pods {
 		r := reads[p.idx]
@@ -519,16 +539,19 @@ func (s *scenario) p23SplitBody(sh p23Shape, heads []liveRead) {
 			delta[v] = gate(p.idx, v) - before[p.idx][v]
 			line = append(line, fmt.Sprintf("%s %.0f", v, delta[v]))
 		}
-		fmt.Fprintf(&b, "pod-%d split reads: logs gate verdicts %s\n", p.idx+1, strings.Join(line, ", "))
+		fmt.Fprintf(&b, "pod-%d %s reads: logs gate verdicts %s\n", p.idx+1, sh.name, strings.Join(line, ", "))
 		ds := slices.Sorted(slices.Values(r.took[p23SplitKind]))
 		switch {
 		case len(ds) == 0:
 			s.violate(s.name, "pod-%d: no split read answered", p.idx+1)
-		case pctl(ds, 99) > w/4:
-			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: split reads p99 %s, above W/4 (W %s): a pinned piece's empty answer waited", p.idx+1, pctl(ds, 99), w)))
+		case pctl(ds, 99) > bar:
+			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: tip logs reads p99 %s, above %s (W %s): %s", p.idx+1, pctl(ds, 99), bar, w, why)))
 		}
-		if delta["maybe_unavailable"] > 0 {
-			s.violate(s.name, "pod-%d: %.0f maybe_unavailable verdicts on split reads: a pinned piece has no peer to ask", p.idx+1, delta["maybe_unavailable"])
+		switch {
+		case sh.lone && delta["maybe_reasked"] == 0:
+			s.violate(s.name, "pod-%d: no maybe_reasked verdict: no read met a tip no other upstream held", p.idx+1)
+		case !sh.lone && delta["maybe_reasked"] > 0:
+			s.violate(s.name, "pod-%d: %.0f maybe_reasked verdicts on split reads: a pinned piece has no peer to ask", p.idx+1, delta["maybe_reasked"])
 		}
 	}
 	s.logf("%s", b.String())

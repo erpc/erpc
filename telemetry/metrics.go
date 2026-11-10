@@ -1022,14 +1022,14 @@ var (
 	// routing or its use-upstream selector, a split piece's pin included:
 	// served at once),
 	// maybe_agreed (another holder answered it empty too), maybe_found
-	// (another holder answered logs) and maybe_unavailable (no holder
-	// answered within W: a block-unavailable error). maybe_agreed,
-	// maybe_found and maybe_unavailable are the reads that probed the
-	// other holders.
+	// (another holder answered logs) and maybe_reasked (no holder
+	// answered within W: the first upstream's second answer). maybe_agreed,
+	// maybe_found and maybe_reasked are the reads that probed the other
+	// holders.
 	MetricLogsEmptyGateTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "logs_empty_gate_total",
-		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: no (headers prove no matching log; served), maybe_alone (the request may select no other upstream, by routing or use-upstream selector, split pieces included; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_unavailable (no holder answered within W; block-unavailable error). maybe_agreed, maybe_found and maybe_unavailable probed the other holders.",
+		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: no (headers prove no matching log; served), maybe_alone (the request may select no other upstream, by routing or use-upstream selector, split pieces included; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_reasked (no holder answered within W; the first upstream asked again and its answer served). maybe_agreed, maybe_found and maybe_reasked probed the other holders.",
 	}, []string{"project", "network", "verdict"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its

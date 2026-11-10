@@ -158,7 +158,7 @@ func catalogue() []phaseSpec {
 		{"p22-blip", 14051, []spec{p22(false)}},
 		{"p22-stall", 14101, []spec{p22(true)}},
 		{"p23", 15101, []spec{p23(p23Fast)}},
-		{"p23-split", 15501, []spec{p23(p23Split)}},
+		{"p23-split", 15501, []spec{p23(p23Split), p23(p23Lone)}},
 		{"p23-slow", 15151, []spec{p23(p23Slow)}},
 		{"p23-band", 15201, []spec{p23(p23Band)}},
 		{"p23-band-prod", 15251, []spec{p23(p23BandProd)}},

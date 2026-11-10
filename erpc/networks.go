@@ -1569,8 +1569,7 @@ func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (bl
 		n.countLogsGate("no")
 		return 0, false
 	case !slices.ContainsFunc(req.Upstreams(), func(r common.Upstream) bool { return r.Id() != u.Id() && req.MatchesUseUpstream(r) }):
-		// No peer may agree: an error after the wait would be worse
-		// than its answer.
+		// No peer may agree: the wait would end in its own re-ask.
 		n.countLogsGate("maybe_alone")
 		return 0, false
 	}
@@ -1586,11 +1585,14 @@ func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (bl
 // none that answered, it waits for one whose evidence reaches block, which
 // the clock's fetches bring (it sends no fetch of its own), and asks it,
 // until W after u's answer. An upstream below block is never asked: its
-// empty answer proves nothing. Nobody within W: the block-unavailable
-// error (maybe_unavailable). With block 0, a hash no tracker holds, every
+// empty answer proves nothing. Nobody within W: u is asked once more and
+// its answer served (maybe_reasked), since a log index that trailed u's
+// head catches up within W. With block 0, a hash no tracker holds, every
 // other routed upstream is asked at once, and since a node lacking the
 // block answers [] too, an empty answer agrees only once every one of them
-// answered. A leg that ends first, a hedge another leg won, counts
+// answered; with none agreeing, u's re-ask still waits for W (asked at
+// once, a lagging log index answered [] again: P23-band, 1 wrongEmpty a
+// run). A leg that ends first, a hedge another leg won, counts
 // nothing. Swept one upstream at a time, each through a range check that
 // Asked a lagging vendor's head or waited for its hold estimate, gated
 // reads waited up to 2 s (P23-band: eth_getLogs p99 1.68-1.90 s).
@@ -1608,16 +1610,19 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 	answers := make(chan answer, len(ups))
 	asked := map[string]bool{u.Id(): true}
 	out := 0
-	var lastErr error = common.NewErrUpstreamBlockUnavailable(u.Id(), block, upstreamLatestBlock(u), 0)
 	var agreed *common.NormalizedResponse
 	wait := time.NewTimer(health.FreshnessWindow(n.EvmBlockTime()))
 	defer wait.Stop()
-	late := false
+	late, expired := false, false
 	t := n.laneTracker(selectorOf(req))
 	done := func(verdict string, r *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
 		n.countLogsGate(verdict)
 		span.SetAttributes(attribute.String("outcome", verdict))
 		return r, err
+	}
+	canceled := func() (*common.NormalizedResponse, error) {
+		span.SetAttributes(attribute.String("outcome", "canceled"))
+		return nil, context.Cause(parent)
 	}
 	for {
 		computed := n.headsComputed()
@@ -1644,15 +1649,27 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 			if agreed != nil {
 				return done("maybe_agreed", agreed, nil)
 			}
-			return done("maybe_unavailable", nil, lastErr)
+			if !expired {
+				select {
+				case <-wait.C:
+				case <-parent.Done():
+					return canceled()
+				}
+			}
+			r, err := send(ctx, u)
+			if parent.Err() != nil {
+				return canceled()
+			}
+			if err == nil && r.IsObjectNull() {
+				r, err = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), block, upstreamLatestBlock(u), 0)
+			}
+			return done("maybe_reasked", r, err)
 		}
 		select {
 		case a := <-answers:
 			out--
 			switch {
-			case a.err != nil:
-				lastErr = a.err
-			case a.r == nil || a.r.IsObjectNull():
+			case a.err != nil, a.r.IsObjectNull():
 			case !isEmptyNetworkResult("eth_getLogs", a.r):
 				return done("maybe_found", a.r, nil)
 			case block > 0:
@@ -1663,10 +1680,9 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 		case <-computed:
 		case <-moved:
 		case <-wait.C:
-			late = true
+			late, expired = true, true
 		case <-parent.Done():
-			span.SetAttributes(attribute.String("outcome", "canceled"))
-			return nil, context.Cause(parent)
+			return canceled()
 		}
 	}
 }
