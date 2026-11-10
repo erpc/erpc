@@ -104,8 +104,8 @@ func NamesFinalizedTag(ctx context.Context, nrq *common.NormalizedRequest) bool 
 // demand): eth_blockNumber, or erigon_blockNumber on the latest axis,
 // answered from the Head; or any request whose "latest" tag, or absent
 // selector, is interpolated to the Head. A tag that reaches upstreams as
-// is reads no Head. number: a head number, which waits at the idle edge
-// only on a stale view (spec §5).
+// is reads no Head. number: a head number, which never waits at the idle
+// edge (spec §7).
 func ReadsLatest(ctx context.Context, network common.Network, nrq *common.NormalizedRequest) (reads, number bool) {
 	method, err := nrq.Method()
 	if err != nil {
