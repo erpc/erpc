@@ -52,7 +52,8 @@ const (
 // than the old's at most. With future, both images set
 // evm.shortCircuitFutureBlocks (shortCircuited). With pre, the checks
 // that failed the same way before this change are judged against it
-// (p23Pre).
+// (p23Pre). With gate, the logs gate's own costs are judged against it
+// (p23Gate).
 type p23Shape struct {
 	name              string
 	ups               []freshUp
@@ -65,6 +66,7 @@ type p23Shape struct {
 	old, peer, future bool
 	slack             int
 	pre               *p23Pre
+	gate              *p23Gate
 }
 
 // p23Pre are a shape's bars for checks that already failed before this
@@ -78,6 +80,16 @@ type p23Pre struct {
 	failed float64
 	// servedMissing: each new-image pod's served_missing.
 	servedMissing float64
+}
+
+// p23Gate are the logs gate's own bars (spec §6.4 logs gate), measured on
+// this branch, no worse than there plus 5%: its eth_getLogs p99, judged
+// against it instead of the old image's, and its range checks' refusal
+// Asks per new block, judged against it and left out of the shape's head
+// fetch budget.
+type p23Gate struct {
+	logsP99 time.Duration
+	asks    float64
 }
 
 // p23PreSlack: a measured bar's margin.
@@ -135,19 +147,22 @@ var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time
 // blocks). No read can answer before a vendor serves the block. A read at
 // or below Latest of a block vendor-a's tag announced fails while no
 // vendor serves it, on this branch's base 172a2ec7 as here. Runs with
-// this harness (LogsLag included), alternated, 4 each, base 172a2ec7
-// then this branch: eth_getBlockByNumber failed on 4.09%, 4.63%, 4.43%,
-// 3.82% of the base's reads, 6.26%, 6.28%, 6.64%, 6.28% of this
-// branch's; served_missing per pod at most 58, 65, 70, 53 on the base,
-// 88, 87, 91, 88 here; p99 565, 575, 345, 683 ms on the base, 457, 179,
-// 490, 92 ms here. Those are judged against the base's highest plus 5%
-// (pre). Head fetches per new block, polls left out, the higher pod of
-// each run: base 1.889, 1.845, 1.866, 1.900; this branch 4.089, 4.256,
-// 4.067, 4.300; bar 1.900 x 1.05.
+// this harness (LogsLag included), alternated, 4 each, base 5fed7f9c
+// then this branch: eth_getBlockByNumber failed on 5.27%, 4.40%, 4.48%,
+// 4.58% of the base's reads, 1.38%, 0.69%, 1.54%, 1.46% of this
+// branch's; served_missing per pod at most 77, 59, 67, 64 on the base,
+// 20, 12, 23, 23 here. Judged against the base 172a2ec7's highest plus 5%
+// (pre). Head fetches per new block, polls and the logs gate's refusal
+// Asks left out, the higher pod of each run, at most 2.100 on the base,
+// 1.878 here; bar 1.900 x 1.05. The logs gate's own costs (gate):
+// refusal Asks per new block, the higher pod, 0.500, 0.556, 0.667, 0.467;
+// eth_getLogs p99 1.679, 1.868, 1.897, 1.835 s, against the base's 23-24
+// ms, which served 815-845 wrong empty answers per pod.
 var p23Band = p23Shape{name: "P23-band", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	base: 2 * time.Minute, hash: 2 * time.Minute, ahead: 3 * time.Minute,
 	blockLag: 300 * time.Millisecond, logsLag: 500 * time.Millisecond, budget: 2.00, old: true, peer: true,
-	pre: &p23Pre{p99: 683 * time.Millisecond, failed: 0.0463, servedMissing: 70},
+	pre:  &p23Pre{p99: 683 * time.Millisecond, failed: 0.0463, servedMissing: 70},
+	gate: &p23Gate{logsP99: 1897 * time.Millisecond, asks: 0.667},
 	ups: []freshUp{
 		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 250 * time.Millisecond},
@@ -350,16 +365,26 @@ func p23Body(s *scenario, sh p23Shape) {
 		// background, the same with or without readers, and stay out:
 		// with no fetch of latest left to meet them, the 10 s polls of a
 		// 2 s chain's 4 vendors cost 0.37 a block (P23-slow).
-		var polls float64
+		var polls, asks float64
 		if ahead.blocks > 0 {
 			polls = ahead.mix[p.idx]["ask poll fetched"] / float64(ahead.blocks)
+			asks = ahead.mix[p.idx]["ask refusal fetched"] / float64(ahead.blocks)
 		}
-		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %.3f head fetches per new block, %.3f of them polls; clock only: %.3f\n",
-			p.idx+1, s.image(p.idx), ahead.perBlock(p.idx), polls, base.perBlock(p.idx))
+		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %.3f head fetches per new block, %.3f of them polls, %.3f refusal Asks; clock only: %.3f\n",
+			p.idx+1, s.image(p.idx), ahead.perBlock(p.idx), polls, asks, base.perBlock(p.idx))
 		// Beside the old image, head+1 readers are reported only (p23BandAhead).
-		if spent := ahead.perBlock(p.idx) - polls; !p.old && (!sh.old || sh.peer) && spent > budget {
-			s.violate(s.name, "pod-%d: %.3f head fetches per new block with read-ahead clients, polls left out, above %.2f",
-				p.idx+1, spent, budget)
+		judged := !p.old && (!sh.old || sh.peer)
+		spent, left := ahead.perBlock(p.idx)-polls, "polls"
+		if sh.gate != nil {
+			spent, left = spent-asks, "polls and the logs gate's refusal Asks"
+			if bar := sh.gate.asks * p23PreSlack; judged && asks > bar {
+				s.violate(s.name, "pod-%d: %.3f refusal Asks per new block with read-ahead clients, above the logs gate's %.3f + 5%%",
+					p.idx+1, asks, sh.gate.asks)
+			}
+		}
+		if judged && spent > budget {
+			s.violate(s.name, "pod-%d: %.3f head fetches per new block with read-ahead clients, %s left out, above %.2f",
+				p.idx+1, spent, left, budget)
 		}
 		var hashJudged []string
 		if !sh.old {
@@ -387,9 +412,9 @@ func p23Body(s *scenario, sh p23Shape) {
 	if sh.old {
 		// By-hash reads above Latest go out as they came (§6.4 by-hash
 		// answer), as the old image's: shown, not judged here.
-		s.p23Versus(&b, "by-hash reads", hashReads, p23HashMethods, sh.slack, false, nil)
-		s.p23Versus(&b, "read-ahead", reads, p23HashMethods, sh.slack, false, nil)
-		s.p23Versus(&b, "read-ahead", reads, p23NumberMethods, sh.slack, sh.peer, sh.pre)
+		s.p23Versus(&b, "by-hash reads", hashReads, p23HashMethods, sh.slack, false, nil, nil)
+		s.p23Versus(&b, "read-ahead", reads, p23HashMethods, sh.slack, false, nil, nil)
+		s.p23Versus(&b, "read-ahead", reads, p23NumberMethods, sh.slack, sh.peer, sh.pre, sh.gate)
 		s.p23Attempts(&b, ahead, reads, sh.peer)
 		s.p23Nulls(&b, reads, sh.peer, sh.pre)
 		s.p23Classes(&b, reads)
@@ -763,8 +788,8 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Rea
 // image) and, when judged, flags a p50 or p99 more than the old's plus
 // slack round trips (the new pods' p50 of the method's control read) plus
 // p23Noise; with pre, an eth_getBlockByNumber p99 above pre's plus 5%
-// instead.
-func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads, methods []string, slack int, judged bool, pre *p23Pre) {
+// instead; with gate, an eth_getLogs p99 above the logs gate's plus 5%.
+func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads, methods []string, slack int, judged bool, pre *p23Pre, gate *p23Gate) {
 	pool := func(old bool, kind string) []time.Duration {
 		var ds []time.Duration
 		for _, p := range s.h.pods {
@@ -794,6 +819,12 @@ func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads
 			if q == 99 && pre != nil && m == "eth_getBlockByNumber" {
 				if bar := time.Duration(float64(pre.p99) * p23PreSlack); pctl(nw, q) > bar {
 					s.violate(s.name, "%s: %s p99 %s on the new image, above its parent's %s + 5%%", phase, m, pctl(nw, q), pre.p99)
+				}
+				continue
+			}
+			if q == 99 && gate != nil && m == "eth_getLogs" {
+				if bar := time.Duration(float64(gate.logsP99) * p23PreSlack); pctl(nw, q) > bar {
+					s.violate(s.name, "%s: %s p99 %s on the new image, above the logs gate's %s + 5%%", phase, m, pctl(nw, q), gate.logsP99)
 				}
 				continue
 			}
