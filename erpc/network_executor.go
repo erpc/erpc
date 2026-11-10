@@ -428,6 +428,13 @@ func (e *networkExecutor) shouldRetry(req *common.NormalizedRequest, resp *commo
 	return e.shouldRetryWithReason(req, resp, err, attempt) != ""
 }
 
+// spentAnswer reports whether an outcome with err is req's answer under
+// the refusal rule (spec §6.4): the request is spent, and err is none or
+// missing data.
+func spentAnswer(req *common.NormalizedRequest, err error) bool {
+	return req != nil && req.HeadRefusal().Spent() && (err == nil || common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+}
+
 // dataUnavailableCapReached reports whether the EmptyResultMaxAttempts cap — the
 // single bound on retries when the requested data simply isn't on the upstream yet
 // (empty/missing-data point-lookups, pending tx-lookups, and
@@ -472,7 +479,7 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	// The refusal rule allows one retryable miss for a band block and none
 	// for a future one (spec §6.4); a spent request's empty or missing
 	// answer is its answer.
-	if req != nil && req.HeadRefusal().Spent() && (err == nil || common.HasErrorCode(err, common.ErrCodeEndpointMissingData)) {
+	if spentAnswer(req, err) {
 		return ""
 	}
 	if err != nil {
@@ -725,6 +732,16 @@ func (e *networkExecutor) runHedge(
 				finality.String(),
 			).Inc()
 		}()
+		// An eth_getBlockByNumber above Latest that the refusal rule
+		// spent has its answer, its null or missing data included (spec
+		// §6.4 band): no sibling hedge is waited for. Kept waiting, it
+		// answered a hedge delay late (optimism: 500 ms).
+		if v := req.HeadRefusal(); spentAnswer(req, err) && v.Block > v.Latest && evm.AnswersAtOnce(req) {
+			if m, _ := req.Method(); err != nil || r != nil && isEmptyNetworkResult(m, r) {
+				kept = true
+				return true
+			}
+		}
 		if err != nil {
 			// No sibling can select an upstream any more: end the race now
 			// instead of waiting for the remaining hedge timers.

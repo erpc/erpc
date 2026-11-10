@@ -1,6 +1,6 @@
 # Selection Policy — Specification
 
-**Status**: Ready for implementation
+**Status**: Implemented ([#888](https://github.com/erpc/erpc/pull/888)); extended in [#913](https://github.com/erpc/erpc/pull/913) and [#931](https://github.com/erpc/erpc/pull/931)
 **Owner**: TBD
 **Last revised**: 2026-05-13
 

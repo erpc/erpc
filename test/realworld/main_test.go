@@ -87,8 +87,9 @@ var erpcBin, oldBin string
 // report then fails its phase (harness.stop).
 var raceBuild = os.Getenv("REALWORLD_RACE") == "1"
 
-// oldImageRef is the image the branch replaces (§18 rollout).
-const oldImageRef = "origin/main"
+// oldImageRef is the image the branch replaces (§18 rollout): 3460a579
+// (#1413), the last before the chain tracker (#1335).
+const oldImageRef = "3460a579"
 
 func TestMain(m *testing.M) {
 	if _, err := exec.LookPath("redis-server"); err != nil {

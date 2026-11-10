@@ -14,13 +14,14 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
+// refusalDispatches is how often a request of a band block reaches the
+// vendors at most: the band sweep asks each routed upstream once (§6.4
+// band sweep), with shortCircuitFutureBlocks on or off (§19 K7).
+func (s *scenario) refusalDispatches() int { return len(s.vendors) }
+
 // Bounds of Head, the refusal rule and finality (specs/chain-tracker/
 // feature.md on the unified-head-engine branch).
 const (
-	// refusalDispatches: in the refusal band an empty answer is a
-	// retryable miss once (§6.4), so a request reaches upstreams at most
-	// twice; with shortCircuitFutureBlocks off at most 2 as well (§19 K7).
-	refusalDispatches = 2
 	// peerBlockNumberWait: another instance's eth_blockNumber reaches a
 	// block delivered here within 1 bt, plus the tracker's processing
 	// (§19 oracle; P1 "on the other within 1 Ask").
@@ -67,6 +68,13 @@ const (
 	// probe asks Latest + 3 (§19 U14).
 	u14Ahead = 5
 	u14Probe = 3
+	// u14NullWithin: a band read no upstream's evidence holds answers null
+	// after its first upstream's answer, one loopback round trip through
+	// the pod, plus scheduling (§6.4 band sweep). Harness, not spec.
+	u14NullWithin = 50 * time.Millisecond
+	// u14Rereads: how many nulls U14 follows to the archive's next report
+	// (u14Reread), each up to u12ReportWait.
+	u14Rereads = 3
 	// u19Ban, u19Window: U19's vendor answers 403 for u19Ban; the
 	// scenario judges its last u19Window. Ask backoff doubles from the
 	// cadence to AskMaxBackoff, 60s, in about 72s (§6.8), so the window
@@ -181,8 +189,8 @@ func u12() spec {
 				switch d := s.dispatches(n, false, from, time.Now()); {
 				case d == 0:
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling %s raised", pod+1, n, got, up)
-				case d > refusalDispatches:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d)", pod+1, n, d, refusalDispatches)
+				case d > s.refusalDispatches():
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d)", pod+1, n, d, s.refusalDispatches())
 				}
 				if got != "null" {
 					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), a block no vendor has, answered %s", pod+1, n, got)
@@ -261,11 +269,13 @@ func (s *scenario) dispatches(n uint64, full bool, from, to time.Time) int {
 }
 
 // U14: every vendor serves u14Ahead behind a syncing archive (vendor-c,
-// https). eth_getBlockByNumber(Latest + 3) is served by the archive, in
-// the refusal band, not null (§6.4: the ceiling counts syncing upstreams;
-// the retry orders head ≥ N first). The archive is no source, and its
-// state poll keeps the default interval, so its head reaches the ceiling
-// by the band's refresh, not a sweep of every upstream.
+// https), whose state poll keeps the default interval, so its report
+// trails its node. eth_getBlockByNumber(Latest + 3) is in the refusal
+// band (§6.4: the ceiling counts syncing upstreams). While the archive's
+// report is below the block, no upstream's evidence holds it: the read
+// answers null within u14NullWithin, never a wrong block. Right after the
+// archive's next report, a read of the reported block above Latest goes
+// to the archive first, its one holder, and gets its block.
 func u14() spec {
 	lag := chainsim.Faults{Lag: u14Ahead}
 	return spec{name: "U14", bound: healthyDelivery + u14Ahead*blockTime,
@@ -278,6 +288,8 @@ func u14() spec {
 		body: func(s *scenario) {
 			s.blocks(25)
 			archive := s.vendors["archive"]
+			up := s.upstream("archive")
+			nulls, rereads, served := 0, 0, 0
 			for i := range 20 {
 				pod := i % len(s.h.pods)
 				var bn hexutil.Uint64
@@ -286,6 +298,7 @@ func u14() spec {
 					continue
 				}
 				n := uint64(bn) + u14Probe
+				reported, ok := s.headReport(pod, up)
 				from := time.Now()
 				got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
 				to := time.Now()
@@ -293,18 +306,34 @@ func u14() spec {
 				switch {
 				case want == nil || archive.Head().Number < n:
 					s.logf("pod-%d: Latest %d + %d is above the archive's %d; skipped", pod+1, bn, u14Probe, archive.Head().Number)
+				case !ok:
+					s.violate(s.name, "pod-%d: no erpc_upstream_latest_block_number for %s", pod+1, up)
+				case got == "null" && uint64(reported) < n:
+					nulls++
+					s.owe(pod, "retried_missing", 1)
+					s.logf("pod-%d: eth_getBlockByNumber(%d), the archive reports %v: null after %s", pod+1, n, reported, to.Sub(from).Round(time.Millisecond))
+					if to.Sub(from) > u14NullWithin {
+						s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: eth_getBlockByNumber(%d) answered null after %s, above %s", pod+1, n, to.Sub(from).Round(time.Millisecond), u14NullWithin)))
+					}
+					if rereads < u14Rereads {
+						rereads++
+						served += s.u14Reread(pod, reported, archive)
+					}
 				case got != want.Hash.Hex():
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), Latest %d + %d, answered %s, not the archive's %s", pod+1, n, bn, u14Probe, got, short(want.Hash))
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), Latest %d + %d, archive reports %v, answered %s, not the archive's %s", pod+1, n, bn, u14Probe, reported, got, short(want.Hash))
 				case archive.NumberCalls(n, false, from, to) == 0:
 					// The right block with no archive dispatch came from a
 					// vendor that caught up, u14Ahead - u14Probe blocks
 					// after the probe: the archive's answer took longer, a
 					// latency verdict.
 					s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: eth_getBlockByNumber(%d) answered without asking the archive, after %s", pod+1, n, to.Sub(from).Round(time.Millisecond))))
-				case s.dispatches(n, false, from, to) > refusalDispatches:
-					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, false, from, to), refusalDispatches)
+				case s.dispatches(n, false, from, to) > s.refusalDispatches():
+					s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d)", pod+1, n, s.dispatches(n, false, from, to), s.refusalDispatches())
 				}
 				s.blocks(5)
+			}
+			if nulls == 0 || served == 0 {
+				s.violate(s.name, "%d nulls below the archive's report, %d of %d reads at its next report served by it: each side needs at least 1", nulls, served, rereads)
 			}
 			for key, v := range s.vendors {
 				if key != "archive" {
@@ -313,6 +342,89 @@ func u14() spec {
 			}
 			s.blocks(25)
 		}}
+}
+
+// u14Reread waits for pod's next report of U14's archive, above was, and
+// at once reads the reported block: above Latest, only the archive's
+// evidence holds it, so the archive serves it. 1 when it did; 0 when the
+// report was not above Latest by then (logged), or on a violation.
+func (s *scenario) u14Reread(pod int, was float64, archive *chainsim.Vendor) int {
+	up := s.upstream("archive")
+	// The archive's polls are shared through Redis: a pod whose poll found
+	// the lock taken reads the other pod's report at its own next poll.
+	wait := 2 * u12ReportWait
+	var v float64
+	for deadline := time.Now().Add(wait); ; time.Sleep(scrapeEvery / 5) {
+		var ok bool
+		if v, ok = s.headReport(pod, up); ok && v > was {
+			break
+		}
+		if time.Now().After(deadline) {
+			s.violate(s.name, "pod-%d: %s's report never passed %v within %s", pod+1, up, was, wait)
+			return 0
+		}
+	}
+	var bn hexutil.Uint64
+	if err := s.call(pod, &bn, "eth_blockNumber"); err != nil {
+		s.violate(s.name, "pod-%d: eth_blockNumber: %v", pod+1, err)
+		return 0
+	}
+	n := uint64(v)
+	if n <= uint64(bn) {
+		s.logf("pod-%d: the archive reports %d, not above Latest %d", pod+1, n, bn)
+		return 0
+	}
+	// The default selection policy drops an upstream 16 blocks behind:
+	// the archive's report trails that far within 3 s of each poll, and
+	// the policy readmits it at a later tick (every 15 s). Out of
+	// rotation, it is no upstream of the read. Its tick may fall between
+	// this check and the read, so the check runs on both sides.
+	excluded := func() bool {
+		ex, _ := s.metric(pod, "erpc_selection_exclusion_total", map[string]string{"upstream": up})
+		in, _ := s.metric(pod, "erpc_selection_readmit_total", map[string]string{"upstream": up})
+		return ex > in
+	}
+	if excluded() {
+		s.logf("pod-%d: the archive reports %d above Latest %d, but the selection policy excludes it", pod+1, n, bn)
+		return 0
+	}
+	want := s.chain.CanonAt(n)
+	from := time.Now()
+	got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+	if got == "null" && excluded() {
+		s.owe(pod, "retried_missing", 1)
+		s.logf("pod-%d: eth_getBlockByNumber(%d) null: the selection policy excluded the archive during the read", pod+1, n)
+		return 0
+	}
+	to := time.Now()
+	switch {
+	case want == nil || got != want.Hash.Hex():
+		s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), the archive's report above Latest %d, answered %s, not its block", pod+1, n, bn, got)
+		return 0
+	case archive.NumberCalls(n, false, from, to) == 0:
+		s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), the archive's report above Latest %d, answered without asking it", pod+1, n, bn)
+		return 0
+	}
+	s.logf("pod-%d: eth_getBlockByNumber(%d), the archive's report above Latest %d: its block after %s", pod+1, n, bn, to.Sub(from).Round(time.Millisecond))
+	return 1
+}
+
+// headReport is pod's latest head report of upstream up: the highest
+// erpc_upstream_latest_block_number series of up in this project. A report
+// taken before the upstream joined its network carries network="n/a", and
+// a non-source upstream's next report comes a state poll later (30 s).
+func (s *scenario) headReport(pod int, up string) (float64, bool) {
+	ss, err := s.h.pods[pod].scrape()
+	if err != nil {
+		return 0, false
+	}
+	best, found := 0.0, false
+	for _, x := range ss {
+		if x.name == "erpc_upstream_latest_block_number" && x.labels["project"] == s.project && x.labels["upstream"] == up {
+			best, found = max(best, x.value), true
+		}
+	}
+	return best, found
 }
 
 // P1: U10 (ws-a 40 behind, advancing) and C1 (1–3 deep reorgs). Every
@@ -873,8 +985,8 @@ func pollNext(s *scenario, farFuture bool) {
 		pod := int(next % uint64(len(s.h.pods)))
 		from := time.Now()
 		got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(next), true)
-		if d := s.dispatches(next, true, from, time.Now()); d > refusalDispatches {
-			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d); answered %s", pod+1, next, d, refusalDispatches, got)
+		if d := s.dispatches(next, true, from, time.Now()); d > s.refusalDispatches() {
+			s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) reached upstreams %d times (at most %d); answered %s", pod+1, next, d, s.refusalDispatches(), got)
 		}
 		if got == "null" {
 			nulls[pod]++
