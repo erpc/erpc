@@ -455,8 +455,8 @@ func p23Body(s *scenario, sh p23Shape) {
 // source in production. With the shape's old, each read has beside it
 // the same read of the block p23Back below. Each block's first
 // eth_getLogs read has beside it one filtered by an address and topic of
-// its first log (p23Filtered), so the logs gate tests a filter against
-// the header's bloom (§6.4 logs gate).
+// its first log, so the logs gate tests a filter against the header's
+// bloom, and one by its blockHash (p23Filtered, §6.4 logs gate).
 func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23Shape) {
 	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.h.podClient()))
 	if err != nil {
@@ -545,8 +545,9 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 		go read(v+ahead, method)
 		if n := v + ahead; method == "eth_getLogs" && n > filtered {
 			filtered = n
-			wg.Add(1)
-			go func() { defer wg.Done(); s.p23Filtered(call, r, n) }()
+			wg.Add(2)
+			go func() { defer wg.Done(); s.p23Filtered(call, r, n, false) }()
+			go func() { defer wg.Done(); s.p23Filtered(call, r, n, true) }()
 		}
 		if sh.old && v > p23Back {
 			wg.Add(1)
@@ -556,11 +557,13 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 }
 
 // p23Filtered reads eth_getLogs(n, n) filtered by the address and first
-// topic of block n's first log, tallied as "eth_getLogs filtered"; a block
-// the chain has not made, or one with no logs, is not read. An answer of
-// [] is a wrongEmpty.
-func (s *scenario) p23Filtered(call func(result interface{}, method string, args ...interface{}) error, r *p23Reads, n uint64) {
-	const kind = "eth_getLogs filtered"
+// topic of block n's first log, tallied as "eth_getLogs filtered", or,
+// byHash, all of block n's logs by its blockHash, tallied as "eth_getLogs
+// by hash" (production: a vendor answered a blockHash read [] for a block
+// with logs); a block the chain has not made, or one with no logs, is not
+// read. An answer of [] is a wrongEmpty.
+func (s *scenario) p23Filtered(call func(result interface{}, method string, args ...interface{}) error, r *p23Reads, n uint64, byHash bool) {
+	kind, read := "eth_getLogs filtered", fmt.Sprintf("eth_getLogs(%d) filtered", n)
 	b := s.chain.CanonAt(n)
 	if b == nil || len(b.Logs()) == 0 {
 		return
@@ -575,6 +578,10 @@ func (s *scenario) p23Filtered(call func(result interface{}, method string, args
 	q := map[string]interface{}{
 		"fromBlock": hexutil.EncodeUint64(n), "toBlock": hexutil.EncodeUint64(n),
 		"address": first.Address.Hex(), "topics": []interface{}{first.Topics[0].Hex()},
+	}
+	if byHash {
+		kind, read = "eth_getLogs by hash", fmt.Sprintf("eth_getLogs(%s)", b.Hash.Hex())
+		q, want = map[string]interface{}{"blockHash": b.Hash.Hex()}, len(b.Logs())
 	}
 	var logs []struct {
 		BlockHash hash `json:"blockHash"`
@@ -601,11 +608,11 @@ func (s *scenario) p23Filtered(call func(result interface{}, method string, args
 	}
 	switch {
 	case err != nil:
-		r.fail(kind, "eth_getLogs(%d) filtered failed after %s: %v", n, took, err)
+		r.fail(kind, "%s failed after %s: %v", read, took, err)
 	case len(logs) == 0:
-		r.fail(kind, "eth_getLogs(%d) filtered answered [], not %d logs, after %s", n, want, took)
+		r.fail(kind, "%s answered [], not %d logs, after %s", read, want, took)
 	case len(logs) != want || !onBlock():
-		r.fail(kind, "eth_getLogs(%d) filtered answered %d logs, not %d of %s, after %s", n, len(logs), want, b.Hash.Hex(), took)
+		r.fail(kind, "%s answered %d logs, not %d of %s, after %s", read, len(logs), want, b.Hash.Hex(), took)
 	default:
 		r.ok(kind, s.p23Took(b, "eth_getLogs", start, end))
 	}

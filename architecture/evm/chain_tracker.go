@@ -3691,6 +3691,26 @@ func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64) Log
 	return LogsNone
 }
 
+// LogsMayExistAt is LogsMayExist for an empty eth_getLogs answer of f by
+// block hash: the held header's number (pinned or not, HeaderByHash), with
+// LogsNone when that header proves no log matches, else LogsMaybe;
+// LogsUnheld when no header with that hash is held.
+func (t *ChainTracker) LogsMayExistAt(f *logfilter.LogsFilter, hash string) (int64, LogsVerdict) {
+	key, ok := hashKey(hash)
+	if !ok {
+		return 0, LogsUnheld
+	}
+	h, ok := t.held.Load(key)
+	if !ok {
+		return 0, LogsUnheld
+	}
+	ch := h.(*chainHeader)
+	if t.fetch.bloom.provesNoLogs(ch, f.MayMatch) {
+		return int64(ch.number), LogsNone
+	}
+	return int64(ch.number), LogsMaybe
+}
+
 // HeaderByHash is a held header by hash, pinned or not. It never fetches.
 func (t *ChainTracker) HeaderByHash(hash string) (*integrity.Header, bool) {
 	key, ok := hashKey(hash)
