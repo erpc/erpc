@@ -3240,7 +3240,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						}
 					case verdict == common.MissRetry:
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
-					case evm.AnswersAtOnce(effectiveReq):
+					case refusal.Held && evm.AnswersAtOnce(effectiveReq):
 						// A held block's eth_getBlockByNumber missed on its
 						// retry too: the block exists, so the leg sweeps
 						// for a holder, at most W, as a thin miss does
