@@ -1519,35 +1519,15 @@ func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 	return head > 0 && common.EvmHeadReaches(u, head, block)
 }
 
-// logsGate is one leg's logs gate on the empty eth_getLogs answers it
-// would serve (spec §6.4 logs gate): its last verdict, and the first
-// holder whose empty answer of a range that may hold a matching log was
-// a miss.
-type logsGate struct {
-	verdict logsVerdict
-	empty   string
-}
-
-// logsVerdict is the logs gate's last verdict on a leg's empty answers.
-type logsVerdict uint8
-
-const (
-	logsUnjudged logsVerdict = iota // no empty answer reached the gate
-	logsNo                          // the pinned headers prove no matching log: served
-	logsSweeping                    // a miss: the leg sweeps
-	logsAgreed                      // a second holder answered empty: served
-	logsAlone                       // no other routed upstream to ask: served
-)
-
-// logsGateMiss is the logs gate on u's empty eth_getLogs answer of req,
-// one the refusal rule would serve (spec §6.4 logs gate): it is the
-// range's answer when every pinned block of it proves no matching log
-// (ChainTracker.LogsMayExist), when u is the second upstream whose
-// evidence holds the block that may (holdsBlock) to answer it empty, or
-// when req routes no other upstream to ask; else a miss of that block,
-// which the leg sweeps. A filter with no concrete range, one below the
-// pins, and a network without a tracker pass as before, unjudged.
-func (n *Network) logsGateMiss(req *common.NormalizedRequest, u common.Upstream, g *logsGate) (int64, bool) {
+// logsGate is the logs gate on u's empty eth_getLogs answer of req, one
+// the refusal rule would serve (spec §6.4 logs gate): the answer is the
+// range's when every pinned block of it proves no matching log
+// (ChainTracker.LogsMayExist, counted no), or when req routes no other
+// upstream to ask (counted maybe_alone); else the range may hold one, and
+// the range's toBlock goes to the other holders (logsProbe). A filter with
+// no concrete range, one below the pins, and a network without a tracker
+// pass as before, unjudged.
+func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (int64, bool) {
 	t := n.laneTracker(selectorOf(req))
 	if t == nil {
 		return 0, false
@@ -1566,50 +1546,106 @@ func (n *Network) logsGateMiss(req *common.NormalizedRequest, u common.Upstream,
 	if !ok {
 		return 0, false
 	}
-	block, verdict := t.LogsMayExist(f, from, to)
-	switch {
+	switch verdict := t.LogsMayExist(f, from, to); {
 	case verdict == evm.LogsUnheld:
 		return 0, false
 	case verdict == evm.LogsNone:
-		g.verdict = logsNo
+		n.countLogsGate("no")
 		return 0, false
 	case !slices.ContainsFunc(req.Upstreams(), func(r common.Upstream) bool { return r.Id() != u.Id() }):
 		// One upstream has no peer to agree: an error after the wait
 		// would be worse than its answer.
-		g.verdict = logsAlone
-		return 0, false
-	case !n.holdsBlock(u, block):
-	case g.empty == "":
-		g.empty = u.Id()
-	case g.empty != u.Id():
-		g.verdict = logsAgreed
+		n.countLogsGate("maybe_alone")
 		return 0, false
 	}
-	g.verdict = logsSweeping
-	return block, true
+	return to, true
 }
 
-// countLogsGate counts a leg's logs gate verdict as the leg ends with out
-// or outErr (MetricLogsEmptyGateTotal): a sweep that served method's logs
-// found them, one that served none left the range unavailable.
-func (n *Network) countLogsGate(g *logsGate, method string, out *common.NormalizedResponse, outErr error) {
-	var v string
-	switch g.verdict {
-	case logsUnjudged:
-		return
-	case logsNo:
-		v = "no"
-	case logsAgreed:
-		v = "maybe_agreed"
-	case logsAlone:
-		v = "maybe_alone"
-	case logsSweeping:
-		v = "maybe_unavailable"
-		if outErr == nil && out != nil && !out.IsObjectNull() && !isEmptyNetworkResult(method, out) {
-			v = "maybe_found"
+// logsProbe settles u's empty eth_getLogs answer of req, a range ending at
+// toBlock that may hold a matching log (spec §6.4 logs gate): at once, in
+// parallel, send (the client's own request) goes to every other routed
+// upstream whose evidence already holds toBlock (holdsBlock), so its range
+// check passes with no Ask; the first answer is served, logs found
+// (maybe_found) or another holder's empty answer (maybe_agreed). With no
+// such holder, or none that answered, it waits for one whose evidence
+// reaches toBlock, which the clock's fetches bring (it sends no fetch of
+// its own), and asks it, until W after u's answer. An upstream below
+// toBlock is never asked: its empty answer proves nothing. Nobody within
+// W: the block-unavailable error (maybe_unavailable). A leg that ends
+// first, a hedge another leg won, counts nothing. Swept one upstream at a
+// time, each through a range check that Asked a lagging vendor's head or
+// waited for its hold estimate, gated reads waited up to 2 s (P23-band:
+// eth_getLogs p99 1.68-1.90 s).
+func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64, send func(context.Context, common.Upstream) (*common.NormalizedResponse, error)) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartSpan(ctx, "Network.logsProbe", trace.WithAttributes(attribute.Int64("block", toBlock)))
+	defer span.End()
+	parent := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type answer struct {
+		r   *common.NormalizedResponse
+		err error
+	}
+	ups := req.Upstreams()
+	answers := make(chan answer, len(ups))
+	asked := map[string]bool{u.Id(): true}
+	out := 0
+	var lastErr error = common.NewErrUpstreamBlockUnavailable(u.Id(), toBlock, upstreamLatestBlock(u), 0)
+	wait := time.NewTimer(health.FreshnessWindow(n.EvmBlockTime()))
+	defer wait.Stop()
+	late := false
+	t := n.laneTracker(selectorOf(req))
+	for {
+		computed := n.headsComputed()
+		var moved <-chan struct{}
+		if t != nil {
+			moved = t.Changed()
+		}
+		for _, v := range ups {
+			if late || asked[v.Id()] || !n.holdsBlock(v, toBlock) || !req.ReserveUpstream(v) {
+				continue
+			}
+			asked[v.Id()] = true
+			out++
+			go func() {
+				r, err := send(ctx, v)
+				answers <- answer{r, err}
+			}()
+		}
+		if late && out == 0 {
+			n.countLogsGate("maybe_unavailable")
+			span.SetAttributes(attribute.String("outcome", "unavailable"))
+			return nil, lastErr
+		}
+		select {
+		case a := <-answers:
+			out--
+			if a.err == nil && a.r != nil && !a.r.IsObjectNull() {
+				verdict := "maybe_agreed"
+				if !isEmptyNetworkResult("eth_getLogs", a.r) {
+					verdict = "maybe_found"
+				}
+				n.countLogsGate(verdict)
+				span.SetAttributes(attribute.String("outcome", verdict), attribute.String("upstream.id", a.r.UpstreamId()))
+				return a.r, nil
+			}
+			if a.err != nil {
+				lastErr = a.err
+			}
+		case <-computed:
+		case <-moved:
+		case <-wait.C:
+			late = true
+		case <-parent.Done():
+			span.SetAttributes(attribute.String("outcome", "canceled"))
+			return nil, context.Cause(parent)
 		}
 	}
-	telemetry.CounterHandle(telemetry.MetricLogsEmptyGateTotal, n.projectId, n.Label(), v).Inc()
+}
+
+// countLogsGate counts one logs gate verdict (MetricLogsEmptyGateTotal).
+func (n *Network) countLogsGate(verdict string) {
+	telemetry.CounterHandle(telemetry.MetricLogsEmptyGateTotal, n.projectId, n.Label(), verdict).Inc()
 }
 
 func (n *Network) countHeadRefusal(rule string) {
@@ -2892,7 +2928,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// Build the per-execution upstream-loop closure. This is what the new
 	// network executor invokes (potentially multiple times for retry/hedge,
 	// and per-slot for consensus).
-	sweepFn := func(execSpanCtx context.Context, effectiveReq *common.NormalizedRequest, oneUpstreamOnly bool) (out *common.NormalizedResponse, outErr error) {
+	sweepFn := func(execSpanCtx context.Context, effectiveReq *common.NormalizedRequest, oneUpstreamOnly bool) (*common.NormalizedResponse, error) {
 		snap := effectiveReq.ExecState().Snapshot()
 		_, execSpan := common.StartSpan(execSpanCtx, "Network.forwardAttempt",
 			trace.WithAttributes(
@@ -2936,12 +2972,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// §6.4).
 		leg := &common.RefusalLeg{}
 		// sweep is this leg's band or thin retries of its block (spec
-		// §6.4 band sweep), the logs gate's misses included.
+		// §6.4 band sweep).
 		var sweep bandSweep
-		// gate is this leg's logs gate on its empty eth_getLogs answers
-		// (spec §6.4 logs gate), counted once as the leg ends.
-		var gate logsGate
-		defer func() { n.countLogsGate(&gate, method, out, outErr) }()
 		// tag: this leg's attempts send the "latest" tag, until one
 		// answer the view did not take; then they read the Head's block
 		// by number (spec §6.4 client read).
@@ -3022,15 +3054,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// slot keeps reporting it as no attempt.
 					if !oneUpstreamOnly {
 						lastErr = skipErr
-					}
-					// During a sweep, the skip is u's miss of the swept block:
-					// with every routed upstream tried, the leg waits for a
-					// holder (spec §6.4 band sweep).
-					if sweep.missed != nil {
-						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, sweep.block); next != nil {
-							nextUpstream = next
-							maxLoopIterations = max(maxLoopIterations, loopIteration+2)
-						}
 					}
 					loopSpan.End()
 					continue
@@ -3133,20 +3156,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// An empty range from an upstream whose evidence reaches its
 				// toBlock is the range's answer (rangeHeld), past the logs
 				// gate. From one without that evidence it is no answer, never
-				// served nor kept, above Firm or once the leg sweeps: a node
-				// lacking the block answers it empty too, and an indexer
-				// served that loses the block's logs.
+				// served nor kept: a node lacking the block answers it empty
+				// too, and an indexer served that loses the block's logs.
 				refusal := effectiveReq.HeadRefusal()
-				// missBlock is the block a miss here is of: the leg's sweep's,
-				// else the refusal verdict's.
-				missBlock := sweep.block
-				if sweep.missed == nil && refusal != nil {
-					missBlock = refusal.Block
-				}
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r) && !n.rangeHeld(method, u, refusal)
-				if emptyAnswer && (refusal.AboveFirm() || sweep.missed != nil) && evm.IsRangeQuery(method) {
+				if emptyAnswer && refusal.AboveFirm() && evm.IsRangeQuery(method) {
 					effectiveReq.ClearLastValidResponseIf(r)
-					r, err, emptyAnswer = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), missBlock, upstreamLatestBlock(u), 0), false
+					r, err, emptyAnswer = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), refusal.Block, upstreamLatestBlock(u), 0), false
 				}
 				missing := emptyAnswer || missingDataErr(err)
 				// A held block's answers, served or missing, measure how
@@ -3157,13 +3173,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				}
 				finalEmpty := false
-				if missing && (refusal.AboveFirm() || sweep.missed != nil) {
-					verdict := common.MissFinal
-					if refusal.AboveFirm() {
-						verdict = refusal.Miss(leg)
+				if refusal.AboveFirm() && missing {
+					verdict := refusal.Miss(leg)
+					if emptyAnswer && evm.AnswersAtOnce(effectiveReq) && (refusal.Held || refusal.Rule == common.HeadThin) {
+						// A block we announced or pin exists: a node's
+						// null for it is that node's missing data, never
+						// the request's answer (spec §6.4 head promise).
+						effectiveReq.ClearLastValidResponseIf(r)
+						r, err, emptyAnswer = nil, common.NewErrEndpointMissingData(fmt.Errorf("upstream answered null for existing block %d", refusal.Block), u), false
 					}
 					switch {
-					case refusal.AboveFirm() && refusal.Rule == common.HeadBand && evm.AnswersAtOnce(effectiveReq):
+					case refusal.Rule == common.HeadBand && evm.AnswersAtOnce(effectiveReq):
 						// An eth_getBlockByNumber above Latest asks only
 						// upstreams whose evidence reaches the block, then
 						// takes the answer, the truthful null included: no
@@ -3185,18 +3205,26 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 								r, err, emptyAnswer = nr, nil, true
 							}
 						}
-					case sweep.missed != nil || !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin):
+					case !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin):
 						// A band or thin miss sweeps the routed upstreams
 						// at once, then waits for one that shows the
-						// block, at most W (spec §6.4 band sweep); so does
-						// any miss once the leg sweeps (a logs gate miss's,
-						// at any N).
+						// block, at most W (spec §6.4 band sweep).
 						verdict = common.MissFinal
-						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, missBlock); next != nil {
+						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, refusal.Block); next != nil {
 							verdict, nextUpstream = common.MissRetry, next
 						}
 					case verdict == common.MissRetry:
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
+					case evm.AnswersAtOnce(effectiveReq):
+						// A held block's eth_getBlockByNumber missed on its
+						// retry too: the block exists, so the leg sweeps
+						// for a holder, at most W, as a thin miss does
+						// (spec §6.4 held). Served as final, the retry's
+						// null said a block we announced did not exist
+						// (P23-band: 1-5 per pod).
+						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, refusal.Block); next != nil {
+							verdict, nextUpstream = common.MissRetry, next
+						}
 					}
 					switch verdict {
 					case common.MissRetry:
@@ -3234,8 +3262,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				//    result anyway, so trying more upstreams just wastes time
 				//    on slow ones.
 				//  - An empty eth_getLogs qualifies only past the logs gate
-				//    (spec §6.4 logs gate); else it is a miss, and the leg
-				//    sweeps as for a band miss.
+				//    (spec §6.4 logs gate); else the other holders settle
+				//    it (logsProbe).
 				//  - Otherwise emptyish results continue to the next upstream.
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := isEmptyNetworkResult(method, r)
@@ -3243,21 +3271,29 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						(!failsafeExecutor.HasConsensus() && (refusal.AboveFirm() && !emptyAnswer ||
 							!refusal.AboveFirm() && failsafeExecutor.acceptsEmptyResult(method, r)))
 					if acceptEmpty && emptyish && method == "eth_getLogs" {
-						if block, miss := n.logsGateMiss(effectiveReq, u, &gate); miss {
+						if toBlock, maybe := n.logsGate(effectiveReq, u); maybe {
 							effectiveReq.ClearLastValidResponseIf(r)
-							lastErr = common.NewErrUpstreamBlockUnavailable(u.Id(), block, upstreamLatestBlock(u), 0)
-							common.SetTraceSpanError(loopSpan, lastErr)
-							loopSpan.End()
 							if refusal.AboveFirm() {
 								refusal.Miss(leg)
 							}
-							next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, block)
-							if next == nil {
-								return nil, lastErr
+							send := func(c context.Context, v common.Upstream) (*common.NormalizedResponse, error) {
+								vlg := lg.With().Str("upstreamId", v.Id()).Logger()
+								vr, verr := tryForward(v, effectiveReq, c, &vlg, hedges, attempts, snap.Retries)
+								if e := n.normalizeResponse(c, effectiveReq, vr); e != nil {
+									verr = e
+								}
+								effectiveReq.MarkUpstreamCompleted(c, v, vr, verr)
+								if vr != nil {
+									vr.SetUpstream(v)
+									vr.WithRequest(effectiveReq)
+								}
+								return vr, verr
 							}
-							nextUpstream = next
-							maxLoopIterations = max(maxLoopIterations, loopIteration+2)
-							continue
+							if r, err = n.logsProbe(loopCtx, effectiveReq, u, toBlock, send); err != nil {
+								common.SetTraceSpanError(loopSpan, err)
+								loopSpan.End()
+								return nil, err
+							}
 						}
 					}
 					if acceptEmpty {

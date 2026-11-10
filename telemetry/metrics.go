@@ -1019,14 +1019,15 @@ var (
 	// gate, §17): no (the pinned headers prove the range has no matching
 	// log: served at once), or, for a range that may hold one,
 	// maybe_alone (no other routed upstream to ask: served at once),
-	// maybe_agreed (a second holder answered it empty too), maybe_found
-	// (the sweep found logs) and maybe_unavailable (none did: a
-	// block-unavailable error). maybe_agreed, maybe_found and
-	// maybe_unavailable are the reads that paid a sweep.
+	// maybe_agreed (another holder answered it empty too), maybe_found
+	// (another holder answered logs) and maybe_unavailable (no holder
+	// answered within W: a block-unavailable error). maybe_agreed,
+	// maybe_found and maybe_unavailable are the reads that probed the
+	// other holders.
 	MetricLogsEmptyGateTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "logs_empty_gate_total",
-		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: no (headers prove no matching log; served), maybe_alone (no other routed upstream; served unconfirmed), maybe_agreed (a second holder answered empty; served), maybe_found (the sweep found logs), maybe_unavailable (block-unavailable error). maybe_agreed, maybe_found and maybe_unavailable paid a sweep.",
+		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: no (headers prove no matching log; served), maybe_alone (no other routed upstream; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_unavailable (no holder answered within W; block-unavailable error). maybe_agreed, maybe_found and maybe_unavailable probed the other holders.",
 	}, []string{"project", "network", "verdict"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its

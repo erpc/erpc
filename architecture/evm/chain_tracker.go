@@ -3670,26 +3670,25 @@ const (
 )
 
 // LogsMayExist is the logs gate (spec §6.4 logs gate) for an empty
-// eth_getLogs answer of f over [from, to]: LogsMaybe, with the highest
-// such block, when the range reaches above the pins (no header shows that
-// block yet) or a pinned header there does not prove that none of its
-// logs match (bloomGate.provesNoLogs); LogsNone when every pinned block of
-// the range proves it. Held data only: it fetches nothing and locks
-// nothing.
-func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64) (int64, LogsVerdict) {
+// eth_getLogs answer of f over [from, to]: LogsMaybe when the range
+// reaches above the pins (no header shows that block yet) or a pinned
+// header there does not prove that none of its logs match
+// (bloomGate.provesNoLogs); LogsNone when every pinned block of the range
+// proves it. Held data only: it fetches nothing and locks nothing.
+func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64) LogsVerdict {
 	s := t.state.Load()
 	if len(s.pins) == 0 || to < int64(s.base) {
-		return 0, LogsUnheld
+		return LogsUnheld
 	}
 	if to > int64(s.head().number) {
-		return to, LogsMaybe
+		return LogsMaybe
 	}
 	for n := to; n >= max(from, int64(s.base)); n-- {
 		if !t.fetch.bloom.provesNoLogs(s.pinAt(uint64(n)), f.MayMatch) {
-			return n, LogsMaybe
+			return LogsMaybe
 		}
 	}
-	return 0, LogsNone
+	return LogsNone
 }
 
 // HeaderByHash is a held header by hash, pinned or not. It never fetches.

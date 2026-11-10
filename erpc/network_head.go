@@ -933,29 +933,25 @@ func (n *Network) readAhead(selector string, block int64) {
 }
 
 // bandSweep is one leg's band or thin retries of its block (spec §6.4
-// band): the block (the first miss's); per routed upstream that answered
-// it empty or missing, or that the availability gate skipped during the
-// sweep, the head it reached then (missed); the upstreams whose hold time
-// was tried (guessed); and the leg's first miss (since), whose wait ends W
-// after.
+// band): per routed upstream that answered it empty or missing, the head
+// it reached then (missed); the upstreams whose hold time was tried
+// (guessed); and the leg's first miss (since), whose wait ends W after.
 type bandSweep struct {
-	block   int64
 	missed  map[string]int64
 	guessed map[string]bool
 	since   time.Time
 }
 
 // bandNext is the leg's next pick for req's block after u answered it
-// empty or missing, or the availability gate skipped u during the sweep
-// (spec §6.4 band sweep): at once, the routed upstreams the leg has not
-// tried, in hold-evidence order (bandOrder), each the client's own
-// request, as the old image's sweep was; with every one tried, the first
-// that shows the block since its miss (awaitBandHolder). nil: none within
-// W, and the last answer is the request's.
+// empty or missing (spec §6.4 band sweep): at once, the routed upstreams
+// the leg has not tried, in hold-evidence order (bandOrder), each the
+// client's own request, as the old image's sweep was; with every one
+// tried, the first that shows the block since its miss (awaitBandHolder).
+// nil: none within W, and the last answer is the request's.
 func (n *Network) bandNext(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, sw *bandSweep, u common.Upstream, block int64) func() (common.Upstream, error) {
 	credit := creditCap(n.requestHead(ctx, req))
 	if sw.missed == nil {
-		sw.block, sw.missed, sw.guessed, sw.since = block, map[string]int64{}, map[string]bool{}, time.Now()
+		sw.missed, sw.guessed, sw.since = map[string]int64{}, map[string]bool{}, time.Now()
 	}
 	sw.missed[u.Id()] = n.reachedHead(u, credit)
 	var next []common.Upstream
@@ -1101,8 +1097,8 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 		now := time.Now()
 		due := deadline
 		for _, u := range req.Upstreams() {
-			// Only an upstream that missed during the sweep: one the
-			// availability gate skipped before it would be skipped again.
+			// Only an upstream that answered: one the availability gate
+			// skipped would be skipped again.
 			was, missed := sw.missed[u.Id()]
 			if !missed {
 				continue
@@ -1153,15 +1149,9 @@ func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedReq
 // reaches it), an untried upstream of u's tier whose evidence shows it
 // goes first: u is skipped with no fetch (holderAhead). With none, u is
 // Asked for toBlock once (askRange), one Ask per upstream and block that
-// every range check waiting on it shares, at the time u most likely holds
-// it (ChainTracker.HeldAt, its longest bound on a retry; at once with no
-// bound), and the wait runs to its answer. Asked at once, a vendor that
-// serves each block 250-750 ms after the lane sees it answered below the
-// block every time (P23-band: 486 of 486 Asks), a wasted fetch whose
-// report, taken at its lag, kept it benched, so one voter set Firm alone
-// and band reads lost their hold wait. u holds toBlock only by its
-// evidence: its hash vote, counter or a by-number answer (reachedHead,
-// uncredited). Time is no evidence: a
+// every range check waiting on it shares, and the wait runs to its
+// answer. u holds toBlock only by its evidence: its hash vote, counter or
+// a by-number answer (reachedHead, uncredited). Time is no evidence: a
 // node lacking the block answers a one-block range empty, the same answer
 // as an empty block's, and admitted on its held wait alone, that empty
 // answer reached clients as the range's. An answer that leaves u below
@@ -1208,32 +1198,19 @@ func (n *Network) EvmAwaitRangeHolder(ctx context.Context, req *common.Normalize
 		short = limit()
 	}
 	asked := !known || eu == nil
-	t := n.laneTracker(sel)
-	var due <-chan time.Time
 	var answer <-chan struct{}
 	for {
 		computed := n.headsComputed()
 		if reached := n.reachedHead(u, 0); reached > 0 && common.EvmHeadReaches(u, reached, toBlock) {
 			return true
 		}
-		if !asked && due == nil && n.headFor(tipScope{sel: sel}).Latest >= toBlock {
+		if !asked && n.headFor(tipScope{sel: sel}).Latest >= toBlock {
 			if n.holderAhead(req, u, toBlock) {
 				return false
 			}
-			if t != nil {
-				if at, ok := t.HeldAt(u.Id(), uint64(toBlock), retry); ok && time.Until(at) > 0 {
-					hold := time.NewTimer(time.Until(at))
-					defer hold.Stop()
-					due = hold.C
-				}
-			}
-			if due == nil {
-				answer, asked, short = n.askRange(eu, toBlock), true, limit()
-			}
+			answer, asked, short = n.askRange(eu, toBlock), true, limit()
 		}
 		select {
-		case <-due:
-			answer, asked, short = n.askRange(eu, toBlock), true, limit()
 		case <-computed:
 		case <-answer:
 			if !common.EvmHeadReaches(u, n.reachedHead(u, 0), toBlock) {
