@@ -1748,11 +1748,12 @@ func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
 	return selectable > 0
 }
 
-// EveryUpstreamAnswered reports whether every upstream this request may
-// select has an answer stored (an error or an empty result): none is still
-// in flight in a sibling leg, whose answer could differ from the rest.
-// False with no selectable upstream.
-func (r *NormalizedRequest) EveryUpstreamAnswered() bool {
+// EveryUpstreamAnsweredEmpty reports whether every upstream this request
+// may select answered empty or with an error no retry changes: a transient
+// error (timeout, 429, 5xx) or an attempt still in flight in a sibling leg
+// is no answer, and that upstream may hold what the rest lack. False with
+// no selectable upstream.
+func (r *NormalizedRequest) EveryUpstreamAnsweredEmpty() bool {
 	if r == nil {
 		return false
 	}
@@ -1765,7 +1766,12 @@ func (r *NormalizedRequest) EveryUpstreamAnswered() bool {
 			continue
 		}
 		selectable++
-		if _, answered := r.ErrorsByUpstream.Load(upstream); !answered {
+		stored, ok := r.ErrorsByUpstream.Load(upstream)
+		if !ok {
+			return false
+		}
+		err, _ := stored.(error)
+		if err == nil || !HasErrorCode(err, ErrCodeEndpointMissingData) && IsRetryableTowardsUpstream(err) {
 			return false
 		}
 	}

@@ -237,6 +237,18 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	}
 }
 
+// viewStands reports whether req's lane's view still stands at latest, the
+// Latest req took at its start: a block that landed during its sweep moves
+// the view, whatever the Head's NextAt predicted (spec §6.4 settled head).
+func (n *Network) viewStands(req *common.NormalizedRequest, latest int64) bool {
+	t := n.laneTracker(selectorOf(req))
+	if t == nil {
+		return false
+	}
+	head, ok := t.View().Head()
+	return ok && int64(head.Number) == latest
+}
+
 // laneTracker is the chain tracker whose view selector sel's lane serves:
 // its group's, or the network-wide one for "" and for a selector that
 // forms no lane; nil on a network without trackers.

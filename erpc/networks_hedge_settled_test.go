@@ -28,8 +28,9 @@ func init() {
 // fire, so the first sweep's null is the answer, at once, one call per
 // vendor. Asked just before a block reaches the vendors, the Head is not
 // settled and the hedge finds the receipt the block brought; a vendor
-// still in flight when the hedge leg's null comes keeps the race, and its
-// receipt is the answer (spec §6.4 settled head). Full HTTP server, the
+// still in flight, or one that failed transiently, when the hedge leg's
+// null comes keeps the race, and its receipt is the answer (spec §6.4
+// settled head). Full HTTP server, the
 // real chain tracker and block clock on a running simulated chain whose
 // three vendors serve each block 500 ms after its mint.
 func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
@@ -203,5 +204,41 @@ func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 		require.NoError(t, json.Unmarshal(res, &got), "result: %s", res)
 		assert.Equal(t, b.TxHash(0).Hex(), got.TransactionHash, "result: %s", res)
 		assert.GreaterOrEqual(t, took, hedgeDelay+300*time.Millisecond, "http-c answered it, after its delay")
+	})
+
+	t.Run("an upstream that failed transiently keeps the race on a settled head", func(t *testing.T) {
+		// An old block's receipt: http-a and http-b pruned it and answer null;
+		// http-c holds it, answers -32603 in the first sweep and recovers
+		// 100 ms in, before the hedge fires and asks it again.
+		var b *chainsim.Block
+		for n := chain.Tip().Number - 10; b == nil; n-- {
+			if c := chain.CanonAt(n); c != nil && c.TxCount() > 0 {
+				b = c
+			}
+		}
+		for _, v := range vendors[:2] {
+			v.Update(func(f *chainsim.Faults) { f.Pruned = 5 })
+		}
+		vendors[2].Update(func(f *chainsim.Faults) { f.TxReceiptsDown = true })
+		t.Cleanup(func() {
+			for _, v := range vendors {
+				v.Update(func(f *chainsim.Faults) { f.Pruned, f.TxReceiptsDown = 0, false })
+			}
+		})
+		require.Eventually(t, func() bool {
+			return nw.EvmLaneHead("", "").Settled(time.Now(), hedgeDelay+300*time.Millisecond)
+		}, 4*bt, 10*time.Millisecond, "the head settles mid-block")
+		heal := time.AfterFunc(100*time.Millisecond, func() {
+			vendors[2].Update(func(f *chainsim.Faults) { f.TxReceiptsDown = false })
+		})
+		defer heal.Stop()
+		before := vendors[2].MethodCalls("eth_getTransactionReceipt")
+		res, _ := receipt(b.TxHash(0).Hex())
+		var got struct {
+			TransactionHash string `json:"transactionHash"`
+		}
+		require.NoError(t, json.Unmarshal(res, &got), "result: %s", res)
+		assert.Equal(t, b.TxHash(0).Hex(), got.TransactionHash, "result: %s", res)
+		assert.GreaterOrEqual(t, vendors[2].MethodCalls("eth_getTransactionReceipt")-before, int64(2), "the hedge asked http-c again")
 	})
 }

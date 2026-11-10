@@ -36,6 +36,7 @@ type Faults struct {
 	BareHeaders     bool          // blocks and newHeads pushes lack stateRoot (Bare): no header format encodes them
 	NullReceipts    bool          // eth_getBlockReceipts answers null
 	ReceiptsDown    bool          // eth_getBlockReceipts answers -32603
+	TxReceiptsDown  bool          // eth_getTransactionReceipt answers -32603
 	LogsDown        bool          // eth_getLogs answers -32603
 	CapLogs         bool          // eth_getLogs one log short where the bloom and logIndexes hide it (lastLogCovered)
 	TruncReceipts   bool          // receipts without their last 10
@@ -980,6 +981,9 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		}
 		return rs, nil
 	case "eth_getTransactionReceipt":
+		if f.TxReceiptsDown {
+			return nil, &rpcError{-32603, "receipt unavailable"}
+		}
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
 		if !ok {
