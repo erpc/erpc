@@ -97,6 +97,15 @@ func EvmRefreshLatestBlock(n Network, ctx context.Context) {
 	}
 }
 
+// RunsConsensus reports whether n votes req through a consensus policy;
+// false for a network that cannot say.
+func RunsConsensus(n Network, ctx context.Context, req *NormalizedRequest) bool {
+	c, ok := n.(interface {
+		RunsConsensus(context.Context, *NormalizedRequest) bool
+	})
+	return ok && c.RunsConsensus(ctx, req)
+}
+
 func IsValidArchitecture(architecture string) bool {
 	switch NetworkArchitecture(architecture) {
 	case ArchitectureEvm, ArchitectureSvm:

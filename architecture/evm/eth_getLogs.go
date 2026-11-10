@@ -324,13 +324,16 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	return false, nil, nil
 }
 
-// networkPreForward_eth_getLogs performs network-level validation. Proactive
-// range splitting is per upstream, in upstreamPreForward_eth_getLogs: one
-// upstream's small limit must not cut the range for every other upstream.
+// networkPreForward_eth_getLogs performs network-level validation, and splits
+// a range that consensus will vote on. Otherwise range splitting is per
+// upstream, in upstreamPreForward_eth_getLogs: one upstream's small limit must
+// not cut the range for every other upstream. Under consensus every
+// participant would split the whole range again, so the range splits once
+// here, at the smallest threshold of ups, and each piece is voted on alone.
 // The hard limits are re-checked here as a backstop for callers that reach
 // Network.Forward without the project hook; normally projectPreForward_eth_getLogs
 // has already refused an over-cap request before the cache read.
-func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, _ []common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	if nrq == nil || n == nil {
 		return false, nil, nil
 	}
@@ -368,18 +371,67 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, _ []co
 
 	fbStr, _ := filter["fromBlock"].(string)
 	tbStr, _ := filter["toBlock"].(string)
+	address, topics := filter["address"], filter["topics"]
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
 	// Resolve block tags (like "latest", "finalized") and enforce the hard limits.
 	// If either bound cannot be resolved (e.g., "safe", "pending", or no state
 	// available), pass through to upstream without validation.
-	_, _, resolved, err := checkGetLogsHardLimits(ctx, n, fbStr, tbStr, addrCount, topicCount)
-	if resolved && err != nil {
+	fromBlock, toBlock, resolved, err := checkGetLogsHardLimits(ctx, n, fbStr, tbStr, addrCount, topicCount)
+	if !resolved {
+		return false, nil, nil
+	}
+	if err != nil {
 		return true, nil, err
 	}
 
-	return false, nil, nil
+	threshold := minGetLogsSplitThreshold(ups)
+	if threshold <= 0 || toBlock-fromBlock+1 <= threshold || !common.RunsConsensus(n, ctx, nrq) {
+		return false, nil, nil
+	}
+	subRequests := getLogsRangePieces(fromBlock, toBlock, threshold, address, topics)
+	skipCache := ""
+	if dirs := nrq.Directives(); dirs != nil {
+		skipCache = dirs.SkipCacheRead
+	}
+	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache, "")
+	if err != nil {
+		return true, nil, err
+	}
+	return true, common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
+}
+
+// minGetLogsSplitThreshold is the smallest positive
+// getLogsAutoSplittingRangeThreshold of ups, or 0 when none has one.
+func minGetLogsSplitThreshold(ups []common.Upstream) int64 {
+	threshold := int64(0)
+	for _, u := range ups {
+		if u == nil || u.Config() == nil || u.Config().Evm == nil {
+			continue
+		}
+		if th := u.Config().Evm.GetLogsAutoSplittingRangeThreshold; th > 0 && (threshold == 0 || th < threshold) {
+			threshold = th
+		}
+	}
+	return threshold
+}
+
+// getLogsRangePieces cuts fromBlock..toBlock into contiguous pieces of at
+// most size blocks.
+func getLogsRangePieces(fromBlock, toBlock, size int64, address, topics interface{}) []ethGetLogsSubRequest {
+	pieces := make([]ethGetLogsSubRequest, 0, (toBlock-fromBlock)/size+1)
+	for sb := fromBlock; sb <= toBlock; {
+		eb := min(sb+size-1, toBlock)
+		pieces = append(pieces, ethGetLogsSubRequest{
+			fromBlock: sb,
+			toBlock:   eb,
+			address:   address,
+			topics:    topics,
+		})
+		sb = eb + 1
+	}
+	return pieces
 }
 
 // upstreamPreForward_eth_getLogs checks the range against u's block
@@ -468,17 +520,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	if threshold <= 0 || toBlock-fromBlock+1 <= threshold {
 		return false, nil, nil
 	}
-	subRequests := make([]ethGetLogsSubRequest, 0, (toBlock-fromBlock)/threshold+1)
-	for sb := fromBlock; sb <= toBlock; {
-		eb := min(sb+threshold-1, toBlock)
-		subRequests = append(subRequests, ethGetLogsSubRequest{
-			fromBlock: sb,
-			toBlock:   eb,
-			address:   address,
-			topics:    topics,
-		})
-		sb = eb + 1
-	}
+	subRequests := getLogsRangePieces(fromBlock, toBlock, threshold, address, topics)
 	span.SetAttributes(attribute.Int("split.pieces", len(subRequests)))
 	skipCache := ""
 	if dirs := nrq.Directives(); dirs != nil {

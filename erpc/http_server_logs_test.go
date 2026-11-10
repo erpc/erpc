@@ -166,6 +166,9 @@ func TestHttp_EvmGetLogs_SplitOnError_MergedResponse(t *testing.T) {
 // Proactive range splitting is per upstream: rpc1 (threshold 2) gets its own
 // pieces, and rpc2 (no threshold) gets the whole range. When one of rpc1's
 // pieces fails, the retry gives rpc2 the whole range, not rpc1's pieces.
+// Those two requests skip consensus by directive. Under consensus the range
+// splits once, at the smallest threshold, and every participant answers each
+// piece exactly once: none re-splits it or gets the whole range.
 func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 	util.ResetGock()
 	defer util.ResetGock()
@@ -273,6 +276,26 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 			},
 		})
 
+	// 0x300..0x304 under consensus: rpc1 (threshold 2) and rpc2 (no
+	// threshold) each answer the same three pieces, once.
+	for _, host := range []string{"rpc1", "rpc2"} {
+		for _, piece := range [][2]string{{"0x300", "0x301"}, {"0x302", "0x303"}, {"0x304", "0x304"}} {
+			gock.New("http://" + host + ".localhost").
+				Post("/").
+				Filter(func(r *http.Request) bool {
+					b := util.SafeReadBody(r)
+					return strings.Contains(b, "eth_getLogs") && strings.Contains(b, "\"fromBlock\":\""+piece[0]+"\"") && strings.Contains(b, "\"toBlock\":\""+piece[1]+"\"")
+				}).
+				Times(1).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      8,
+					"result":  []map[string]interface{}{{"blockNumber": piece[0], "logIndex": "0x1"}},
+				})
+		}
+	}
+
 	// --- Real server setup ---
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
@@ -289,6 +312,15 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 						Evm:          &common.EvmNetworkConfig{ChainId: 123, GetLogsSplitOnError: util.BoolPtr(true), GetLogsSplitConcurrency: 8},
 						// Frozen, so the first request reaches rpc1 first.
 						SelectionPolicy: &common.SelectionPolicyConfig{EvalInterval: 0},
+						// The first two requests skip consensus by directive.
+						Failsafe: []*common.FailsafeConfig{{
+							MatchMethod: "eth_getLogs",
+							Retry:       &common.RetryPolicyConfig{MaxAttempts: 3},
+							Consensus: &common.ConsensusPolicyConfig{
+								MaxParticipants:    2,
+								AgreementThreshold: 2,
+							},
+						}},
 					},
 				},
 				Upstreams: []*common.UpstreamConfig{
@@ -355,18 +387,26 @@ func TestHttp_EvmGetLogs_ProactiveRangeSplit_MergedResponse(t *testing.T) {
 
 	// Sent first, while the pinned order puts rpc1 first: its pieces fail, so
 	// this exercises the retry of the whole range on rpc2.
-	status, body := send(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x200","toBlock":"0x204"}],"id":2}`, nil)
+	skipConsensus := map[string]string{"X-ERPC-Skip-Consensus": "true"}
+	status, body := send(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x200","toBlock":"0x204"}],"id":2}`, skipConsensus)
 	require.Equal(t, 200, status, body)
 	var out map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(body), &out))
 	arr, _ := out["result"].([]interface{})
 	require.Equal(t, 2, len(arr), body)
 
-	status, body = send(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x104"}],"id":1}`, nil)
+	status, body = send(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x100","toBlock":"0x104"}],"id":1}`, skipConsensus)
 	require.Equal(t, 200, status, body)
 	var out2 map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(body), &out2))
 	arr, _ = out2["result"].([]interface{})
+	require.Equal(t, 3, len(arr), body)
+
+	status, body = send(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x300","toBlock":"0x304"}],"id":3}`, nil)
+	require.Equal(t, 200, status, body)
+	var out3 map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(body), &out3))
+	arr, _ = out3["result"].([]interface{})
 	require.Equal(t, 3, len(arr), body)
 }
 

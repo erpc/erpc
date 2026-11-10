@@ -2041,6 +2041,12 @@ func (n *Network) getFailsafeExecutor(ctx context.Context, req *common.Normalize
 	return nil
 }
 
+// RunsConsensus reports whether Forward votes req through a consensus
+// policy: the failsafe policy matching req has one and req does not skip it.
+func (n *Network) RunsConsensus(ctx context.Context, req *common.NormalizedRequest) bool {
+	fe := n.getFailsafeExecutor(ctx, req)
+	return fe != nil && fe.runsConsensus(req)
+}
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
