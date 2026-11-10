@@ -115,6 +115,8 @@ type Vendor struct {
 	served   map[Hash]bool
 	// latestCalls are the eth_getBlockByNumber(latest) calls answered.
 	latestCalls []LatestCall
+	// methodCalls counts the JSON-RPC calls answered, per method.
+	methodCalls map[string]int64
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
@@ -197,7 +199,7 @@ func (c *Chain) AddVendor(id, name string, ws bool) (*Vendor, error) {
 		return nil, err
 	}
 	v := &Vendor{ID: id, Name: name, WS: ws, chain: c, ln: ln, seen: make(map[Hash]bool), conns: make(map[*wsConn]bool),
-		numberCalls: make(map[uint64][]numberCall), receipts: make(map[Hash]int), served: make(map[Hash]bool)}
+		numberCalls: make(map[uint64][]numberCall), receipts: make(map[Hash]int), served: make(map[Hash]bool), methodCalls: make(map[string]int64)}
 	v.srv = &http.Server{Handler: v, ReadHeaderTimeout: 10 * time.Second}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
@@ -321,6 +323,14 @@ func (v *Vendor) NumberCalls(n uint64, full bool, from, to time.Time) int {
 		}
 	}
 	return k
+}
+
+// MethodCalls counts the method calls the vendor answered, over HTTP and
+// ws, batch members each.
+func (v *Vendor) MethodCalls(method string) int64 {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	return v.methodCalls[method]
 }
 
 // Stats are the vendor's counters.
@@ -814,6 +824,9 @@ func (v *Vendor) byNumberLocked(n uint64) *Block {
 // answer serves one JSON-RPC call from the vendor's view and faults.
 func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcError) {
 	v.calls.Add(1)
+	v.chain.mu.Lock()
+	v.methodCalls[method]++
+	v.chain.mu.Unlock()
 	if method == "eth_getBlockReceipts" {
 		if res, ok := v.trapped(params); ok {
 			return res, nil

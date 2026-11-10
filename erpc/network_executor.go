@@ -784,7 +784,7 @@ func (e *networkExecutor) runHedge(
 				kept = true
 				return true
 			}
-			if !e.acceptsEmptyResult(method, r) {
+			if !e.acceptsEmptyResult(method, r) && !e.settledNull(req, consensusSlot) {
 				return false
 			}
 		}
@@ -810,4 +810,17 @@ func (e *networkExecutor) runHedge(
 	return failsafe.RunHedged[*common.NormalizedResponse](
 		ctx, e.cfg.Hedge.MaxCount, delayFn, wrapInner, keep, release, hooks,
 	)
+}
+
+// settledNull reports whether req's empty result ends its hedge race: a
+// lookup whose null only a new block changes (evm.NullUntilMined), outside
+// a consensus slot, on a Head no block can move before the hedge would
+// fire (common.EvmHead.Settled, spec §6.4 settled head). A hedge then
+// asks every upstream again for the answer the first sweep already had.
+func (e *networkExecutor) settledNull(req *common.NormalizedRequest, consensusSlot bool) bool {
+	if consensusSlot || !evm.NullUntilMined(req) {
+		return false
+	}
+	h := req.EvmHead()
+	return h != nil && h.Settled(time.Now(), e.cfg.Hedge.Delay.ResolveForRequest(req))
 }

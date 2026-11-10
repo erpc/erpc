@@ -104,6 +104,7 @@ func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
 		c = indexer.Cursor{Number: uint64(latest)}
 	}
 	a.Latest, a.LatestHash = latest, c.Hash
+	a.LatestAt, a.NextAt = time.Time{}, time.Time{}
 	a.Firm = min(a.Firm, latest)
 	a.Finalized = min(a.Finalized, latest)
 	return &a
@@ -183,7 +184,8 @@ func (n *Network) requestScope(ctx context.Context, req *common.NormalizedReques
 // no lane, or a method only some of its upstreams serve, takes the
 // stateless pick of the facts and the selector lane's view, its Head
 // capped at the block q of the scope's upstreams likely hold
-// (likelyHolders); Firm stays the view's, by proof.
+// (likelyHolders); Firm stays the view's, by proof. A Head that is the
+// view's own carries the block clock's next sight (NextAt).
 func (n *Network) headFor(s tipScope) *common.EvmHead {
 	var h common.EvmHead
 	var limit int64
@@ -193,8 +195,12 @@ func (n *Network) headFor(s tipScope) *common.EvmHead {
 		h = n.computeHead(nil, s)
 		limit = n.likelyHolders(s)
 	}
+	h.LatestAt, h.NextAt = time.Time{}, time.Time{}
 	if t := n.laneTracker(s.sel); t != nil {
 		viewHead(&h, t.View(), limit)
+		if !h.LatestAt.IsZero() {
+			h.NextAt = t.NextSight(uint64(h.Latest) + 1)
+		}
 	}
 	return &h
 }
@@ -204,25 +210,27 @@ func (n *Network) headFor(s tipScope) *common.EvmHead {
 // (its upstreams' branch is not linked to them yet), or a guarantee cap
 // below the pins (View.Capped), serves the number alone: no hash to check
 // an answer against, and never a block above what the selector's or the
-// guarantee's upstreams hold.
+// guarantee's upstreams hold. LatestAt is set only for the view's own
+// Head.
 func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	head, ok := v.Head()
+	at := v.HeadAt()
 	if !ok {
 		n, capped := v.Capped()
 		if !capped {
-			h.Latest, h.LatestHash, h.Firm = 0, [32]byte{}, 0
+			h.Latest, h.LatestHash, h.Firm, h.LatestAt = 0, [32]byte{}, 0, time.Time{}
 			return
 		}
-		head = indexer.Cursor{Number: n}
+		head, at = indexer.Cursor{Number: n}, time.Time{}
 	}
 	if limit > 0 && uint64(limit) < head.Number {
 		c, pinned := v.PinAt(uint64(limit))
 		if !pinned {
 			c = indexer.Cursor{Number: uint64(limit)}
 		}
-		head = c
+		head, at = c, time.Time{}
 	}
-	h.Latest, h.LatestHash = int64(head.Number), head.Hash
+	h.Latest, h.LatestHash, h.LatestAt = int64(head.Number), head.Hash, at
 	h.Firm = int64(min(v.Firm(), head.Number))
 	if h.Finalized > h.Latest {
 		h.Finalized = h.Latest
