@@ -1,6 +1,6 @@
 # Custom Consensus Policies Engine — Specification
 
-**Status**: Proposal (for core maintainer review)
+**Status**: Implemented ([#1248](https://github.com/erpc/erpc/pull/1248)); phases 6 and 8 deferred, see [plan.md](./plan.md)
 **Issue**: [#1088](https://github.com/erpc/erpc/issues/1088)
 **Direction**: [@aramalipoor](https://github.com/erpc/erpc/issues/1088#issuecomment-5492667906), accepted in [PR #18](https://github.com/andreclaro/erpc/pull/18#discussion_r4082158555)
 **Last revised**: 2026-09-29
