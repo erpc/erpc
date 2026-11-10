@@ -327,10 +327,12 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 	return false, nil, nil
 }
 
-// networkPreForward_eth_getLogs performs network-level validation and proactive splitting
-// It must be called after upstreams have been selected for the request.
-// It returns (handled=true) when it produced a merged response without contacting an upstream
-// for the top-level request. Sub-requests will flow through normal Network.Forward.
+// networkPreForward_eth_getLogs performs network-level validation, and splits
+// a range that consensus will vote on. Otherwise range splitting is per
+// upstream, in upstreamPreForward_eth_getLogs: one upstream's small limit must
+// not cut the range for every other upstream. Under consensus every
+// participant would split the whole range again, so the range splits once
+// here, at the smallest threshold of ups, and each piece is voted on alone.
 // The hard limits are re-checked here as a backstop for callers that reach
 // Network.Forward without the project hook; normally projectPreForward_eth_getLogs
 // has already refused an over-cap request before the cache read.
@@ -373,12 +375,13 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	fbStr := rangeBound(filter, "fromBlock")
 	tbStr := rangeBound(filter, "toBlock")
 	sentAsTag := rangeSentAsTag(filter)
+	address, topics := filter["address"], filter["topics"]
 	addrCount, topicCount := getLogsFilterCounts(filter)
 	jrq.RUnlock()
 
 	// Resolve block tags (like "latest", "finalized") and enforce the hard limits.
 	// If either bound cannot be resolved (e.g., "safe", "pending", or no state
-	// available), pass through to upstream without validation or splitting.
+	// available), pass through to upstream without validation.
 	fromBlock, toBlock, resolved, err := checkGetLogsHardLimits(ctx, n, fbStr, tbStr, addrCount, topicCount)
 	if !resolved {
 		return false, nil, nil
@@ -387,66 +390,60 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return true, nil, err
 	}
 
-	ncfg := n.Config()
-	if ncfg == nil || ncfg.Evm == nil {
+	// A range sent as a tag moves with the head: it goes whole.
+	threshold := minGetLogsSplitThreshold(ups)
+	if sentAsTag || threshold <= 0 || toBlock-fromBlock+1 <= threshold || !common.RunsConsensus(n, ctx, nrq) {
 		return false, nil, nil
 	}
-	requestRange := toBlock - fromBlock + 1
-
-	// Compute effective auto-splitting threshold (min across upstreams)
-	effectiveThreshold := int64(0)
-	foundPositive := false
-	for _, cu := range ups {
-		if cu == nil || cu.Config() == nil || cu.Config().Evm == nil {
-			continue
-		}
-		th := cu.Config().Evm.GetLogsAutoSplittingRangeThreshold
-		if th > 0 {
-			if !foundPositive || th < effectiveThreshold || effectiveThreshold == 0 {
-				effectiveThreshold = th
-			}
-			foundPositive = true
-		}
+	subRequests := getLogsRangePieces(fromBlock, toBlock, threshold, address, topics)
+	skipCache := ""
+	if dirs := nrq.Directives(); dirs != nil {
+		skipCache = dirs.SkipCacheRead
 	}
-	// If none configured positively, keep default (disabled). Then cap by network max allowed range.
-	if maxRange := ncfg.Evm.GetLogsMaxAllowedRange; maxRange > 0 && effectiveThreshold > maxRange {
-		effectiveThreshold = maxRange
+	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache, "")
+	if err != nil {
+		return true, nil, err
 	}
-
-	// Proactive split if needed
-	if !sentAsTag && requestRange > 0 && effectiveThreshold > 0 && requestRange > effectiveThreshold {
-		// Build contiguous block sub-requests
-		subRequests := make([]ethGetLogsSubRequest, 0)
-		sb := fromBlock
-		for sb <= toBlock {
-			eb := min(sb+effectiveThreshold-1, toBlock)
-			subRequests = append(subRequests, ethGetLogsSubRequest{
-				fromBlock: sb,
-				toBlock:   eb,
-				address:   filter["address"],
-				topics:    filter["topics"],
-			})
-			sb = eb + 1
-		}
-
-		nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-		skipCache := ""
-		if dirs := nrq.Directives(); dirs != nil {
-			skipCache = dirs.SkipCacheRead
-		}
-		mergedResponse, fromCache, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache)
-		if err != nil {
-			return true, nil, err
-		}
-
-		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse).SetFromCache(fromCache)
-		nrq.SetLastValidResponse(ctx, nrs)
-		return true, nrs, nil
-	}
-
-	return false, nil, nil
+	return true, common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
 }
 
+// minGetLogsSplitThreshold is the smallest positive
+// getLogsAutoSplittingRangeThreshold of ups, or 0 when none has one.
+func minGetLogsSplitThreshold(ups []common.Upstream) int64 {
+	threshold := int64(0)
+	for _, u := range ups {
+		if u == nil || u.Config() == nil || u.Config().Evm == nil {
+			continue
+		}
+		if th := u.Config().Evm.GetLogsAutoSplittingRangeThreshold; th > 0 && (threshold == 0 || th < threshold) {
+			threshold = th
+		}
+	}
+	return threshold
+}
+
+// getLogsRangePieces cuts fromBlock..toBlock into contiguous pieces of at
+// most size blocks.
+func getLogsRangePieces(fromBlock, toBlock, size int64, address, topics interface{}) []ethGetLogsSubRequest {
+	pieces := make([]ethGetLogsSubRequest, 0, (toBlock-fromBlock)/size+1)
+	for sb := fromBlock; sb <= toBlock; {
+		eb := min(sb+size-1, toBlock)
+		pieces = append(pieces, ethGetLogsSubRequest{
+			fromBlock: sb,
+			toBlock:   eb,
+			address:   address,
+			topics:    topics,
+		})
+		sb = eb + 1
+	}
+	return pieces
+}
+
+// upstreamPreForward_eth_getLogs checks the range against u's block
+// availability (when the network enforces it) and splits a range larger than
+// u's getLogsAutoSplittingRangeThreshold into pieces pinned to u. A failed
+// piece fails this attempt, so the network's retry gives the whole range to
+// the next upstream, which splits it to its own threshold or not at all.
 func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	up, ok := u.(common.EvmUpstream)
 	if !ok {
@@ -455,12 +452,16 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	ncfg := n.Config()
-	if ncfg == nil ||
-		ncfg.Evm == nil ||
-		ncfg.Evm.Integrity == nil ||
-		ncfg.Evm.Integrity.EnforceGetLogsBlockRange == nil ||
-		!*ncfg.Evm.Integrity.EnforceGetLogsBlockRange {
-		// If integrity check for eth_getLogs block range is disabled, skip this hook.
+	enforceRange := ncfg != nil &&
+		ncfg.Evm != nil &&
+		ncfg.Evm.Integrity != nil &&
+		ncfg.Evm.Integrity.EnforceGetLogsBlockRange != nil &&
+		*ncfg.Evm.Integrity.EnforceGetLogsBlockRange
+	threshold := int64(0)
+	if ucfg := u.Config(); ucfg != nil && ucfg.Evm != nil {
+		threshold = ucfg.Evm.GetLogsAutoSplittingRangeThreshold
+	}
+	if !enforceRange && threshold <= 0 {
 		return false, nil, nil
 	}
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook.eth_getLogs", trace.WithAttributes(
@@ -486,8 +487,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	// EIP 234: If blockHash is present, we set handled to false to directly forward to upstream since there
-	// is no need to break the request into sub-requests.
+	// EIP 234: a blockHash filter names one block: nothing to check or split.
 	blockHash, ok := filter["blockHash"].(string)
 	if ok && blockHash != "" {
 		jrq.RUnlock()
@@ -496,11 +496,13 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 	fb := rangeBound(filter, "fromBlock")
 	tb := rangeBound(filter, "toBlock")
+	sentAsTag := rangeSentAsTag(filter)
+	address, topics := filter["address"], filter["topics"]
 	jrq.RUnlock()
 
-	// Resolve block tags (like "latest", "finalized") to hex numbers for validation.
+	// Resolve block tags (like "latest", "finalized") to hex numbers.
 	// If tags cannot be resolved (e.g., "safe", "pending", or no state available),
-	// pass through to upstream without block range validation.
+	// pass through to upstream without validation or splitting.
 	fromHex, fromBlock := resolveBlockTagForGetLogs(ctx, n, fb)
 	toHex, toBlock := resolveBlockTagForGetLogs(ctx, n, tb)
 
@@ -510,18 +512,32 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	if fromBlock > toBlock {
-		return true, nil, common.NewErrInvalidRequest(
-			errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
-		)
+	if enforceRange {
+		if fromBlock > toBlock {
+			return true, nil, common.NewErrInvalidRequest(
+				errors.New("fromBlock (" + strconv.FormatInt(fromBlock, 10) + ") must be less than or equal to toBlock (" + strconv.FormatInt(toBlock, 10) + ")"),
+			)
+		}
+		if err := CheckBlockRangeAvailability(ctx, n, nrq, up, "eth_getLogs", fromBlock, toBlock); err != nil {
+			return true, nil, err
+		}
 	}
 
-	if err := CheckBlockRangeAvailability(ctx, n, nrq, up, "eth_getLogs", fromBlock, toBlock); err != nil {
+	// A range sent as a tag moves with the head: it goes whole.
+	if sentAsTag || threshold <= 0 || toBlock-fromBlock+1 <= threshold {
+		return false, nil, nil
+	}
+	subRequests := getLogsRangePieces(fromBlock, toBlock, threshold, address, topics)
+	span.SetAttributes(attribute.Int("split.pieces", len(subRequests)))
+	skipCache := ""
+	if dirs := nrq.Directives(); dirs != nil {
+		skipCache = dirs.SkipCacheRead
+	}
+	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, nrq, subRequests, skipCache, up.Id())
+	if err != nil {
 		return true, nil, err
 	}
-
-	// Continue with the original forward flow
-	return false, nil, nil
+	return true, common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(merged).SetFromCache(fromCache).SetUpstream(up), nil
 }
 
 func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
@@ -579,7 +595,7 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	if dirs := rq.Directives(); dirs != nil {
 		skipCacheRead = dirs.SkipCacheRead
 	}
-	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead)
+	merged, fromCache, err := executeGetLogsSubRequests(ctx, n, rq, subs, skipCacheRead, "")
 	if err != nil {
 		return rs, re
 	}
@@ -825,7 +841,10 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 	return fromBlock, toBlock, nil
 }
 
-func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead string) (*common.JsonRpcResponse, bool, error) {
+// executeGetLogsSubRequests runs the pieces through the network and merges
+// them in order. A non-empty pin is the id of the one upstream every piece
+// goes to.
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead string, pin string) (*common.JsonRpcResponse, bool, error) {
 	logger := n.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
@@ -890,7 +909,9 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, r *common.
 			sbnrq := common.NewNormalizedRequestFromJsonRpcRequest(srq)
 			dr := r.Directives().Clone()
 			dr.SkipCacheRead = skipCacheRead
-			// TODO dr.UseUpstream = u.Config().Id should we force this (or opposite of it)?
+			if pin != "" {
+				dr.UseUpstream = pin
+			}
 			sbnrq.SetDirectives(dr)
 			sbnrq.SetNetwork(n)
 			sbnrq.SetParentRequestId(r.ID())
