@@ -1748,6 +1748,30 @@ func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
 	return selectable > 0
 }
 
+// EveryUpstreamAnswered reports whether every upstream this request may
+// select has an answer stored (an error or an empty result): none is still
+// in flight in a sibling leg, whose answer could differ from the rest.
+// False with no selectable upstream.
+func (r *NormalizedRequest) EveryUpstreamAnswered() bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	selectable := 0
+	for _, upstream := range r.upstreamList {
+		if !r.matchesUseUpstreamLocked(upstream) {
+			continue
+		}
+		selectable++
+		if _, answered := r.ErrorsByUpstream.Load(upstream); !answered {
+			return false
+		}
+	}
+	return selectable > 0
+}
+
 func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream Upstream, resp *NormalizedResponse, err error) {
 	r.upstreamMutex.Lock()
 	defer r.upstreamMutex.Unlock()

@@ -23,14 +23,15 @@ func init() {
 	util.ConfigureTestLogger()
 }
 
-// A null eth_getTransactionReceipt on a settled Head ends the hedge race:
-// no block can reach an upstream before the hedge would fire, so the first
-// sweep's null is the answer, at once, one call per vendor. Asked just
-// before a block reaches the vendors, the Head is not settled and the
-// hedge finds the receipt the block brought (spec §6.4 settled head). Full
-// HTTP server, the real chain tracker and block clock on a running
-// simulated chain whose three vendors serve each block 500 ms after its
-// mint.
+// A null eth_getTransactionReceipt from every vendor on a settled Head ends
+// the hedge race: no block can reach an upstream before the hedge would
+// fire, so the first sweep's null is the answer, at once, one call per
+// vendor. Asked just before a block reaches the vendors, the Head is not
+// settled and the hedge finds the receipt the block brought; a vendor
+// still in flight when the hedge leg's null comes keeps the race, and its
+// receipt is the answer (spec §6.4 settled head). Full HTTP server, the
+// real chain tracker and block clock on a running simulated chain whose
+// three vendors serve each block 500 ms after its mint.
 func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 	const (
 		bt         = 2 * time.Second
@@ -167,5 +168,40 @@ func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 			calls += after[i] - before[i]
 		}
 		assert.Greater(t, calls, int64(len(vendors)), "the hedge asked again after the first sweep's nulls")
+	})
+
+	t.Run("an upstream in flight keeps the race on a settled head", func(t *testing.T) {
+		// An old block's receipt: http-a and http-b pruned it and answer null
+		// at once; http-c holds it and answers 300 ms after the hedge fires.
+		var b *chainsim.Block
+		for n := chain.Tip().Number - 10; b == nil; n-- {
+			if c := chain.CanonAt(n); c != nil && c.TxCount() > 0 {
+				b = c
+			}
+		}
+		for _, v := range vendors[:2] {
+			v.Update(func(f *chainsim.Faults) { f.Pruned = 5 })
+		}
+		vendors[2].Update(func(f *chainsim.Faults) { f.SlowTxReceipts = hedgeDelay + 300*time.Millisecond })
+		t.Cleanup(func() {
+			for _, v := range vendors {
+				v.Update(func(f *chainsim.Faults) { f.Pruned, f.SlowTxReceipts = 0, 0 })
+			}
+		})
+		// Leg 1's sweep reserves http-c whatever the order, so the hedge leg
+		// sweeps only the pruned two and ends null while http-c is in flight.
+		// The Head must stay settled until then: the hedge fires a hedge
+		// delay in, and its null must find the next block more than one away.
+		require.Eventually(t, func() bool {
+			h, now := nw.EvmLaneHead("", ""), time.Now()
+			return h.Settled(now, hedgeDelay+300*time.Millisecond) && h.NextAt.Sub(now) > 2*hedgeDelay+300*time.Millisecond
+		}, 4*bt, 10*time.Millisecond, "the head settles early in the block")
+		res, took := receipt(b.TxHash(0).Hex())
+		var got struct {
+			TransactionHash string `json:"transactionHash"`
+		}
+		require.NoError(t, json.Unmarshal(res, &got), "result: %s", res)
+		assert.Equal(t, b.TxHash(0).Hex(), got.TransactionHash, "result: %s", res)
+		assert.GreaterOrEqual(t, took, hedgeDelay+300*time.Millisecond, "http-c answered it, after its delay")
 	})
 }

@@ -52,6 +52,7 @@ type Faults struct {
 	RefuseFinalized bool          // the finalized and safe tags answer unsupported, as Prism's readers do
 	Slow            time.Duration // every answer waits this long
 	SlowReceipts    time.Duration // receipts and logs answers wait this long more
+	SlowTxReceipts  time.Duration // eth_getTransactionReceipt answers wait this long more
 	SlowHistory     time.Duration // answers by hash, and by number below its head, wait this long more
 	SilentHeads     bool          // newHeads subscriptions stay open and push nothing
 	SilentPending   bool          // newPendingTransactions subscriptions push nothing
@@ -1020,6 +1021,8 @@ func (v *Vendor) delay(method string, params []interface{}) time.Duration {
 	switch method {
 	case "eth_getBlockReceipts", "eth_getLogs":
 		d += f.SlowReceipts
+	case "eth_getTransactionReceipt":
+		d += f.SlowTxReceipts
 	case "eth_getBlockByHash":
 		d += f.SlowHistory
 	case "eth_getBlockByNumber":
