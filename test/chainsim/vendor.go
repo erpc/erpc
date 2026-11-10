@@ -26,6 +26,7 @@ type Faults struct {
 	HeadDelay       time.Duration // serves a canonical block only this long after it was minted
 	HeadJitter      time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
 	TagDelay        time.Duration // eth_blockNumber and the latest tag name its newest block served at least this long, as a load balancer whose head readers trail its block readers; newHeads pushes do not wait
+	BlockLag        time.Duration // eth_getBlockByNumber of a number and eth_getBlockByHash serve a block only this long after its tag names it, as a load balancer whose head readers lead its block readers; receipts, logs and state do not wait
 	PushDelay       time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
 	Frozen          bool          // head stops moving; still answers what it holds
 	WrongChainID    bool          // eth_chainId answers another chain
@@ -273,6 +274,19 @@ func (v *Vendor) Head() *Block {
 	return v.tip
 }
 
+// ServesAt is when the vendor first answers method for b: its mint, plus
+// HeadDelay and its HeadJitter share, plus BlockLag for a block read by
+// number or hash.
+func (v *Vendor) ServesAt(b *Block, method string) time.Time {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	at := b.MintedAt.Add(v.serveDelayLocked(b))
+	if method == "eth_getBlockByNumber" || method == "eth_getBlockByHash" {
+		at = at.Add(v.faults.BlockLag)
+	}
+	return at
+}
+
 // LatestCalls are the eth_getBlockByNumber(latest) calls the vendor
 // answered in [from, to], oldest first.
 func (v *Vendor) LatestCalls(from, to time.Time) []LatestCall {
@@ -415,6 +429,13 @@ func (v *Vendor) tagTipLocked() *Block {
 		}
 	}
 	return b
+}
+
+// servesLocked reports whether the vendor's block readers serve b, a block
+// its branch holds, by number or hash: with BlockLag, only once its tag
+// named b that long ago.
+func (v *Vendor) servesLocked(b *Block) bool {
+	return v.faults.BlockLag == 0 || !time.Now().Before(b.MintedAt.Add(v.serveDelayLocked(b)+v.faults.BlockLag))
 }
 
 func (v *Vendor) setTipLocked(b *Block) {
@@ -862,7 +883,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		if !ok {
 			return nil, &rpcError{-32602, "invalid hash"}
 		}
-		if f.NullHeld || !v.seen[h] {
+		if f.NullHeld || !v.seen[h] || !v.servesLocked(c.byHash[h]) {
 			return nil, nil
 		}
 		return v.blockJSON(c.byHash[h]), nil
@@ -904,7 +925,9 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			if f.NullHeld {
 				return nil, nil
 			}
-			b = v.byNumberLocked(n)
+			if b = v.byNumberLocked(n); b != nil && !v.servesLocked(b) {
+				b = nil
+			}
 		}
 		if b == nil {
 			return nil, nil

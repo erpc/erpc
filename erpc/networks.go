@@ -1254,7 +1254,7 @@ func (n *Network) finalizedStep(s voterSet, w time.Duration) (top int64, at time
 // firstHolder is the id of the first voter of selector's lane, in
 // selection order, whose head counter holds block and that has a poller:
 // a hash fetch of it brings the vote that moves the view's Head there
-// (spec §6.4 by-hash wait); "" while none holds it.
+// (spec §6.4 by-hash answer); "" while none holds it.
 func (n *Network) firstHolder(selector string, block int64) (id string) {
 	n.voters(tipScope{sel: selector}, voterQuery{kind: numberVote}).each(func(u common.Upstream, head int64) bool {
 		if head < block {
@@ -1365,7 +1365,7 @@ func (n *Network) EvmAskHead(ctx context.Context, upstreamId string, need common
 }
 
 // EvmFetchHeld fetches block number from upstreamId for a chain tracker's
-// block clock (spec §6.4 by-hash wait, §6.8 shared early fetch,
+// block clock's shared early fetch (spec §6.8,
 // evm.EvmStatePoller.FetchHeld); AskBackoff when the network has no such
 // upstream with a poller.
 func (n *Network) EvmFetchHeld(ctx context.Context, upstreamId string, number uint64) common.HeadAnswer {
@@ -1398,14 +1398,8 @@ func (n *Network) tryShortCircuitFutureBlock(ctx context.Context, req *common.No
 	if v == nil || v.Rule != common.HeadFuture {
 		return nil, false
 	}
-	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
-	if err != nil {
-		return nil, false
-	}
 	v.Refuse()
-	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
-	resp.SetEvmBlockNumber(v.Block)
-	return resp, true
+	return evm.NullAnswer(req, v.Block)
 }
 
 // refuseFutureRange refuses a range method (eth_getLogs, trace_filter)
@@ -2513,7 +2507,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				lg.Info().Msgf("response served from cache")
 			}
 			if n.cfg.Architecture == common.ArchitectureEvm {
-				resp, _ = n.holdByHash(ctx, req, resp)
+				n.byHashAboveLatest(ctx, req, resp)
 			}
 			if mlx != nil {
 				mlx.Close(ctx, resp, err)
@@ -2840,6 +2834,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// retryable miss, whatever its sibling slots and hedges got (spec
 		// §6.4).
 		leg := &common.RefusalLeg{}
+		// sweep is this leg's band or thin retries of its block (spec
+		// §6.4 band sweep).
+		var sweep bandSweep
 		// tag: this leg's attempts send the "latest" tag, until one
 		// answer the view did not take; then they read the Head's block
 		// by number (spec §6.4 client read).
@@ -2937,11 +2934,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				sent := time.Now()
 				var read *latestRead
-				fwdCtx := loopCtx
+				fwdCtx, cancelBound := loopCtx, context.CancelFunc(func() {})
+				var bound time.Duration
 				if tag {
 					fwdCtx, read = n.startLatestRead(loopCtx, effectiveReq, u, sent)
+				} else if bound = n.aboveLatestBound(effectiveReq, u); bound > 0 {
+					fwdCtx, cancelBound = context.WithTimeoutCause(loopCtx, bound, errAboveLatestBound)
 				}
 				r, err := tryForward(u, effectiveReq, fwdCtx, &ulg, hedges, attempts, snap.Retries)
+				if err != nil && loopCtx.Err() == nil && errors.Is(context.Cause(fwdCtx), errAboveLatestBound) {
+					// A vendor that holds a read until the block exists
+					// held it past its usual answer: that attempt is a
+					// miss (spec §6.4 band).
+					r, err = nil, common.NewErrEndpointMissingData(fmt.Errorf("no answer within %s for a block above Latest", bound), u)
+				}
+				cancelBound()
 				if e := n.normalizeResponse(loopCtx, effectiveReq, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
@@ -3030,15 +3037,43 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				finalEmpty := false
 				if refusal.AboveFirm() && missing {
-					switch refusal.Miss(leg) {
-					case common.MissRetry:
-						if !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin) {
-							// The retry waits for a routed upstream that
-							// may hold the block, at most W: the lane's read
-							// ahead brings its holders.
-							n.awaitBandHolder(loopCtx, effectiveReq, attempted, refusal.Block)
+					verdict := refusal.Miss(leg)
+					switch {
+					case refusal.Rule == common.HeadBand && evm.AnswersAtOnce(effectiveReq):
+						// An eth_getBlockByNumber above Latest asks only
+						// upstreams whose evidence reaches the block, then
+						// takes the answer, the truthful null included: no
+						// other upstream, leg or network retry asks again
+						// (spec §6.4 band). Swept, a block no vendor served
+						// yet cost every upstream a call, and the ones that
+						// hold such a read until the block exists held it
+						// seconds.
+						verdict = common.MissFinal
+						if next := n.bandHolders(loopCtx, effectiveReq, attempted, refusal.Block); next != nil {
+							verdict, nextUpstream = common.MissRetry, next
+						} else {
+							// The truthful null, whatever form the miss
+							// took: a node's null, its missing-data error,
+							// or a held read cut at its bound.
+							refusal.Refuse()
+							if nr, ok := evm.NullAnswer(effectiveReq, refusal.Block); ok && !emptyAnswer {
+								nr.SetUpstream(u)
+								r, err, emptyAnswer = nr, nil, true
+							}
 						}
+					case !refusal.Held && (refusal.Rule == common.HeadBand || refusal.Rule == common.HeadThin):
+						// A band or thin miss sweeps the routed upstreams
+						// at once, then waits for one that shows the
+						// block, at most W (spec §6.4 band sweep).
+						verdict = common.MissFinal
+						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, refusal.Block); next != nil {
+							verdict, nextUpstream = common.MissRetry, next
+						}
+					case verdict == common.MissRetry:
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
+					}
+					switch verdict {
+					case common.MissRetry:
 						// One more pick for the retry, a slot's included.
 						maxLoopIterations = max(maxLoopIterations, loopIteration+2)
 						// With no upstream left to retry, the client gets
@@ -3322,10 +3357,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	held := false
-	if n.cfg.Architecture == common.ArchitectureEvm {
-		resp, held = n.holdByHash(ctx, req, resp)
-	}
+	// A by-hash answer above Latest goes out as it came, uncached: its hash
+	// may be provisional (spec §6.4 by-hash answer).
+	uncached := n.cfg.Architecture == common.ArchitectureEvm && n.byHashAboveLatest(ctx, req, resp)
 	if resp != nil {
 		// Under a customPolicy selector the store is shared across grades and
 		// with no-consensus routes on the same network (keys omit policy/auth).
@@ -3334,7 +3368,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// Skip Set so defaultAllow cannot admit those into the selector-shared
 		// store. Cache.Set still applies strategy × mark for stamped responses.
 		skipUnmarkedSelectorSet := selectorOn && resp.Cacheable() == nil
-		if n.cacheDal != nil && !held && !skipUnmarkedSelectorSet && !(tagReads && servesAnotherBlock(ctx, req, resp)) {
+		if n.cacheDal != nil && !uncached && !skipUnmarkedSelectorSet && !(tagReads && servesAnotherBlock(ctx, req, resp)) {
 			n.storeInCache(ctx, forwardSpan.SpanContext(), &lg, method, req, resp)
 		} else if skipUnmarkedSelectorSet {
 			lg.Debug().Msg("skipping cache write: unmarked response on selector-enabled network")
