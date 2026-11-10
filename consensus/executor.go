@@ -1404,6 +1404,12 @@ func (e *executor) logEmptyWaiverUnproven(ctx context.Context, lg *zerolog.Logge
 	head := e.chainHead(ctx, analysis, g)
 	proof := e.waiverBlock(ctx, analysis, g)
 	reqBlock := proof.block
+	// Claimed answer block is already inside every opted-in retention window
+	// (and avail bounds cannot prove outside either): we skipped the confirmer
+	// probe on purpose. That is an evaluated hold, not missing proof.
+	if proof.reason == waiverUnprovenReasonBlockInsideRetention {
+		return
+	}
 	finiteBounds, matchingEmpties := countFiniteAvailLowerBounds(analysis, e.config.requiredParticipants)
 	// Proven evaluation paths: requested block + (finite avail bounds for every
 	// matching empty OR a known chain head). Inside-retention holds are not
@@ -1483,12 +1489,13 @@ func countFiniteAvailLowerBounds(analysis *consensusAnalysis, reqs []*common.Con
 }
 
 const (
-	waiverUnprovenReasonNoRequestBlock    = "no_request_block"
-	waiverUnprovenReasonBlockUnconfirmed  = "block_unconfirmed"
-	waiverUnprovenReasonBlockContradicted = "block_contradicted"
-	waiverUnprovenReasonNoAvailBound      = "no_avail_bound"
-	waiverUnprovenReasonNoHead            = "no_head"
-	waiverUnprovenReasonRoundIncomplete   = "round_incomplete"
+	waiverUnprovenReasonNoRequestBlock       = "no_request_block"
+	waiverUnprovenReasonBlockUnconfirmed     = "block_unconfirmed"
+	waiverUnprovenReasonBlockContradicted    = "block_contradicted"
+	waiverUnprovenReasonBlockInsideRetention = "block_inside_retention"
+	waiverUnprovenReasonNoAvailBound         = "no_avail_bound"
+	waiverUnprovenReasonNoHead               = "no_head"
+	waiverUnprovenReasonRoundIncomplete      = "round_incomplete"
 )
 
 // participantLatestBlock is the chain-head fallback when the network served

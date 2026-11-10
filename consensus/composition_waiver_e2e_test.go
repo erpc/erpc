@@ -535,6 +535,11 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 			{"answer names no block", "eth_getTransactionByHash", txHash, map[string]interface{}{"hash": txHash}, held(txHash), held(txHash), false, nil, nil},
 			{"opt-in trusts a block no one else holds", "eth_getTransactionReceipt", txHash, receipt, nil, nil, true, []string{"internal-1", "internal-2"}, evidence},
 			{"opt-in still refuses a contradicted block", "eth_getTransactionByHash", txHash, tx, held(), held(txHash), false, []string{"internal-1"}, evidence},
+			// Answer names a recent block (depth 80 <= retention 100). Confirming
+			// it cannot release the quota, so the probe must not run.
+			{"inside-retention hash lookup skips the confirmer probe", "eth_getTransactionByHash", txHash,
+				map[string]interface{}{"hash": txHash, "blockNumber": "0x1312cff0", "blockHash": block16}, // 19_999_920
+				held(txHash), held(txHash), false, nil, nil},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
