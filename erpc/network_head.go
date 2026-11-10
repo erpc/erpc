@@ -2,7 +2,7 @@ package erpc
 
 import (
 	"context"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"iter"
 	"net/url"
@@ -17,6 +17,8 @@ import (
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // headRefreshInterval is the longest a lane's number facts go without
@@ -915,9 +917,8 @@ func (n *Network) EvmAwaitCeiling(ctx context.Context, sel string, block int64) 
 }
 
 // EvmAskBand takes a band block of selector's lane (spec §6.4 band): the
-// lane's read ahead of it (readAhead), so the band's retry finds the
-// block's holders by the clock's fetches, with no Ask per upstream below
-// it.
+// lane's read ahead of it (readAhead), with no Ask per upstream below it.
+// A miss sweeps the request's routed upstreams (bandNext).
 func (n *Network) EvmAskBand(selector string, block int64) {
 	n.readAhead(selector, block)
 }
@@ -931,36 +932,211 @@ func (n *Network) readAhead(selector string, block int64) {
 	}
 }
 
-// awaitBandHolder waits, for the band's or the thin region's retry of
-// req's block (spec §6.4), until one of req's routed upstreams not yet
-// attempted may hold it (mayHold), at most W or until ctx ends. The wait
-// is the lane's read ahead of block (readAhead): the clock's fetches bring
-// its holders, and the first ends the wait, so one slow upstream never
-// holds the retry back (rule 2). It fetches nothing of its own.
-func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, block int64) {
-	sel := selectorOf(req)
-	n.readAhead(sel, block)
+// bandSweep is one leg's band or thin retries of its block (spec §6.4
+// band): per routed upstream that answered it empty or missing, the head
+// it reached then (missed); the upstreams whose hold time was tried
+// (guessed); and the leg's first miss (since), whose wait ends W after.
+type bandSweep struct {
+	missed  map[string]int64
+	guessed map[string]bool
+	since   time.Time
+}
+
+// bandNext is the leg's next pick for req's block after u answered it
+// empty or missing (spec §6.4 band sweep): at once, the routed upstreams
+// the leg has not tried, in hold-evidence order (bandOrder), each the
+// client's own request, as the old image's sweep was; with every one
+// tried, the first that shows the block since its miss (awaitBandHolder).
+// nil: none within W, and the last answer is the request's.
+func (n *Network) bandNext(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, sw *bandSweep, u common.Upstream, block int64) func() (common.Upstream, error) {
 	credit := creditCap(n.requestHead(ctx, req))
-	ctx, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
-	defer cancel()
-	t := n.laneTracker(sel)
-	for {
-		computed := n.headsComputed()
-		var moved <-chan struct{}
-		if t != nil {
-			moved = t.Changed()
+	if sw.missed == nil {
+		sw.missed, sw.guessed, sw.since = map[string]int64{}, map[string]bool{}, time.Now()
+	}
+	sw.missed[u.Id()] = n.reachedHead(u, credit)
+	var next []common.Upstream
+	for _, r := range req.Upstreams() {
+		if _, seen := attempted[r.Id()]; !seen {
+			next = append(next, r)
 		}
-		for _, u := range req.Upstreams() {
-			if _, seen := attempted[u.Id()]; !seen && n.mayHold(u, block, credit, nil) {
-				return
+	}
+	if len(next) > 0 {
+		next = n.bandOrder(req, next, block, credit)
+	} else {
+		r := n.awaitBandHolder(ctx, req, sw, block, credit)
+		if r == nil {
+			return nil
+		}
+		delete(attempted, r.Id())
+		next = []common.Upstream{r}
+	}
+	return func() (common.Upstream, error) {
+		for len(next) > 0 {
+			r := next[0]
+			next = next[1:]
+			if req.ReserveUpstream(r) {
+				return r, nil
 			}
 		}
+		return nil, common.NewErrNoUpstreamsLeftToSelect(req, "no upstream left for the band sweep")
+	}
+}
+
+// bandOrder orders ups for a sweep of block (spec §6.4 band sweep): those
+// whose evidence may hold it first (mayHold), then by when each most
+// likely holds it (ChainTracker.HeldAt), then the rest; equals by round
+// trip (byRoundTrip).
+func (n *Network) bandOrder(req *common.NormalizedRequest, ups []common.Upstream, block, credit int64) []common.Upstream {
+	n.byRoundTrip(ups)
+	t := n.laneTracker(selectorOf(req))
+	never := time.Unix(1<<40, 0)
+	at := make(map[string]time.Time, len(ups))
+	for _, u := range ups {
+		a := never
+		if n.mayHold(u, block, credit, nil) {
+			a = time.Time{}
+		} else if t != nil {
+			if held, ok := t.HeldAt(u.Id(), uint64(block), false); ok {
+				a = held
+			}
+		}
+		at[u.Id()] = a
+	}
+	slices.SortStableFunc(ups, func(a, b common.Upstream) int { return at[a.Id()].Compare(at[b.Id()]) })
+	return ups
+}
+
+// bandHolders is the next pick of an eth_getBlockByNumber above req's
+// Latest after a miss (spec §6.4 band): only the routed upstreams the leg
+// has not tried whose evidence reaches the block (mayHold), fastest first
+// (byRoundTrip); nil with none, and the last answer is the request's. The
+// first attempt's order can put such a holder behind (a syncing archive,
+// a stale hash vote); an upstream with no evidence of the block is no
+// holder to ask.
+func (n *Network) bandHolders(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, block int64) func() (common.Upstream, error) {
+	credit := creditCap(n.requestHead(ctx, req))
+	var next []common.Upstream
+	for _, u := range req.Upstreams() {
+		if _, seen := attempted[u.Id()]; !seen && n.mayHold(u, block, credit, nil) {
+			next = append(next, u)
+		}
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	n.byRoundTrip(next)
+	return func() (common.Upstream, error) {
+		for len(next) > 0 {
+			u := next[0]
+			next = next[1:]
+			if req.ReserveUpstream(u) {
+				return u, nil
+			}
+		}
+		return nil, common.NewErrNoUpstreamsLeftToSelect(req, "no holder left for the band read")
+	}
+}
+
+// aboveLatestFloor is the least time an attempt of a block above Latest
+// gets: a round trip plus the vendor's answer, on any route.
+const aboveLatestFloor = 200 * time.Millisecond
+
+// errAboveLatestBound ends an attempt that passed aboveLatestBound.
+var errAboveLatestBound = errors.New("attempt above Latest passed its bound")
+
+// aboveLatestBound is how long u may take to answer req, an
+// eth_getBlockByNumber above req's Latest (spec §6.4 band): twice its
+// median round trip for that method, at least aboveLatestFloor; 0 for any
+// other request. Some vendors hold such a read until the block exists, for
+// seconds; past its usual answer the attempt is a miss. The median, not a
+// high quantile: the held reads themselves fill a vendor's tail. No bound
+// when u's own head is past the block: the block exists there, and its
+// read is a history read, slower than a tip read (cut at 200 ms, four
+// holders' 400 ms answers ended null in the chain feed's slow reorg walk).
+func (n *Network) aboveLatestBound(req *common.NormalizedRequest, u common.Upstream) time.Duration {
+	v := req.HeadRefusal()
+	if v == nil || v.Latest <= 0 || v.Block <= v.Latest || !evm.AnswersAtOnce(req) {
+		return 0
+	}
+	// A credit never lifts a head above Latest, so Latest as the cap
+	// changes nothing here.
+	if n.reachedHead(u, v.Latest) > v.Block {
+		return 0
+	}
+	if n.metricsTracker == nil {
+		return aboveLatestFloor
+	}
+	p50 := n.metricsTracker.GetUpstreamMethodMetrics(u, headFamilyMethod, common.DataFinalityStateAll).ResponseQuantiles.GetQuantile(0.5)
+	return max(aboveLatestFloor, 2*p50)
+}
+
+// awaitBandHolder waits, once every routed upstream of req answered its
+// block empty or missing (spec §6.4 band sweep), for the first that may
+// hold it now: its evidence reached the block since its miss (reachedHead:
+// its counter, a by-number answer here or a push's hash vote), or, once
+// per upstream, its longest hold bound passed since the block's first
+// sight (ChainTracker.HeldAt, surely). It waits at most W from the leg's
+// first miss, or until ctx ends; nil then. Without a span the wait was a
+// gap in a trace between the miss and the retry.
+func (n *Network) awaitBandHolder(ctx context.Context, req *common.NormalizedRequest, sw *bandSweep, block, credit int64) common.Upstream {
+	start := time.Now()
+	ctx, span := common.StartSpan(ctx, "Network.awaitBandHolder", trace.WithAttributes(attribute.Int64("block", block)))
+	outcome := "timeout"
+	defer func() {
+		span.SetAttributes(attribute.String("outcome", outcome), attribute.Int64("waited_ms", time.Since(start).Milliseconds()))
+		span.End()
+	}()
+	t := n.laneTracker(selectorOf(req))
+	deadline := sw.since.Add(health.FreshnessWindow(n.EvmBlockTime()))
+	for {
+		computed := n.headsComputed()
+		var moved, credited <-chan struct{}
+		if t != nil {
+			moved, credited = t.Changed(), t.CreditMoved()
+		}
+		now := time.Now()
+		due := deadline
+		for _, u := range req.Upstreams() {
+			// Only an upstream that answered: one the availability gate
+			// skipped would be skipped again.
+			was, missed := sw.missed[u.Id()]
+			if !missed {
+				continue
+			}
+			if head := n.reachedHead(u, credit); head > was && common.EvmHeadReaches(u, head, block) {
+				outcome = "holder"
+				return u
+			}
+			if sw.guessed[u.Id()] || t == nil {
+				continue
+			}
+			at, ok := t.HeldAt(u.Id(), uint64(block), true)
+			switch {
+			case !ok:
+			case !at.After(now):
+				sw.guessed[u.Id()] = true
+				outcome = "held_wait"
+				return u
+			case at.Before(due):
+				due = at
+			}
+		}
+		wait := time.Until(due)
+		if !due.Before(deadline) && wait <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(max(wait, 0))
 		select {
+		case <-timer.C:
 		case <-computed:
 		case <-moved:
+		case <-credited:
 		case <-ctx.Done():
-			return
+			timer.Stop()
+			outcome = "canceled"
+			return nil
 		}
+		timer.Stop()
 	}
 }
 
@@ -1168,40 +1344,32 @@ func (n *Network) blockTimeOrCold() time.Duration {
 }
 
 // byHashFamily is the §7 by-hash family, eth_getLogs by blockHash included
-// (spec §6.4): each method's paths to the number and the hash of the block
-// its answer names. debug_traceTransaction is not here: its answer names
-// no block.
-var byHashFamily = map[string]struct{ number, hash []interface{} }{
-	"eth_getBlockByHash":        {[]interface{}{"number"}, []interface{}{"hash"}},
-	"eth_getTransactionByHash":  {[]interface{}{"blockNumber"}, []interface{}{"blockHash"}},
-	"eth_getTransactionReceipt": {[]interface{}{"blockNumber"}, []interface{}{"blockHash"}},
-	"trace_transaction":         {[]interface{}{0, "blockNumber"}, []interface{}{0, "blockHash"}},
-	"eth_getLogs":               {[]interface{}{0, "blockNumber"}, []interface{}{0, "blockHash"}},
+// (spec §6.4): each method's path to the number of the block its answer
+// names. debug_traceTransaction is not here: its answer names no block.
+var byHashFamily = map[string][]interface{}{
+	"eth_getBlockByHash":        {"number"},
+	"eth_getTransactionByHash":  {"blockNumber"},
+	"eth_getTransactionReceipt": {"blockNumber"},
+	"trace_transaction":         {0, "blockNumber"},
+	"eth_getLogs":               {0, "blockNumber"},
 }
 
-// holdByHash returns the answer to send for resp, an answer to req, from
-// an upstream or the cache (spec §6.4). A by-hash answer from a block
-// above its lane's Latest, the view's Head, proves that block exists:
-// the wait is the lane's demand, and the block clock takes the proof
-// (ChainTracker.Proven). An upstream's answer naming the block's hash
-// makes that upstream's fetch of the block by number the block's one
-// probe, at once, whatever clock fetch is out: its header is that
-// upstream's canonical block there and its vote, so the view takes the
-// block within that round trip when the header serves at 1 holder, or
-// pins another hash there when the client's was a side block. A cache
-// answer prefers the cache's own upstream when it is a lane voter
-// (cacheVoter), which holds what the cache served, else the lane's first
-// voter whose counter holds the block, for the clock's probe of its head.
-// A header that serves only at q holders (a mismatch, §6.5) gets them
-// from the clock's holder fetch (§6.8). The answer is sent once the view
-// includes its block, and its upstream then counts as the block's holder
-// (noteHeld); it is null once the view pins another block at that number,
-// or when W passed, or ctx ended, with neither. Each wait counts its
-// outcome. held: resp was replaced by null.
-func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (out *common.NormalizedResponse, held bool) {
-	bn, bh := byHashBlock(ctx, req, resp)
+// byHashAboveLatest reports whether resp, an answer to req from an
+// upstream or the cache, is a by-hash answer (byHashFamily) that names a
+// block above its lane's Latest (spec §6.4 by-hash answer). Such an answer
+// is sent as it came, at once, and never cached: its hash may be
+// provisional, a preconfirmation's that the sealed block replaces (an
+// optimism flashblocks upstream's receipts), so a wait for the view to
+// include it ended null for a receipt that exists, and a cached copy
+// would outlive the hash. It is the block clock's proof that the block
+// came (ChainTracker.Proven): the voter that answered gets the fetch of
+// that block by number (held), once per block, else the cache's own voter
+// (cacheVoter), else the lane's first voter whose counter holds it, gets
+// the probe of its head. No read waits on either.
+func (n *Network) byHashAboveLatest(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) bool {
+	bn := byHashBlock(ctx, req, resp)
 	if bn <= 0 {
-		return resp, false
+		return false
 	}
 	sel := ""
 	if d := req.Directives(); d != nil {
@@ -1209,96 +1377,33 @@ func (n *Network) holdByHash(ctx context.Context, req *common.NormalizedRequest,
 	}
 	t := n.laneTracker(sel)
 	if t == nil {
-		return resp, false
-	}
-	var hash [32]byte
-	named := false
-	if len(bh) == 66 {
-		if b, err := hex.DecodeString(bh[2:]); err == nil {
-			named = copy(hash[:], b) == len(hash)
-		}
-	}
-	// includes is whether the view holds the block: Latest at or above it
-	// and its pin there, if any, the answer's; off: another block is
-	// pinned there.
-	includes := func() (in, off bool, moved <-chan struct{}) {
-		moved = t.Changed()
-		if h := n.headFor(tipScope{sel: sel}); h.Latest < bn {
-			return false, false, moved
-		}
-		if named {
-			if c, pinned := t.View().PinAt(uint64(bn)); pinned && c.Hash != hash {
-				return false, true, moved
-			}
-		}
-		return true, false, moved
+		return false
 	}
 	if h := n.headFor(tipScope{sel: sel}); h.Latest <= 0 || bn <= h.Latest {
-		return resp, false
+		return false
 	}
-	prover, _ := resp.Upstream().(common.EvmUpstream)
-	fromUpstream := prover != nil && !resp.SentAt().IsZero()
-	by := ""
-	if fromUpstream {
-		by = prover.Id()
+	by, held := "", false
+	if u, ok := resp.Upstream().(common.EvmUpstream); ok && u != nil && !resp.SentAt().IsZero() {
+		by, held = u.Id(), true
 	} else if by = n.cacheVoter(sel); by == "" {
 		by = n.firstHolder(sel, bn)
 	}
-	t.Proven(uint64(bn), fromUpstream && named, by, resp.SentAt())
-	asks, cancel := context.WithTimeout(ctx, health.FreshnessWindow(n.EvmBlockTime()))
-	defer cancel()
-	for {
-		in, off, moved := includes()
-		switch {
-		case in:
-			if fromUpstream {
-				n.noteHeld(prover, bn)
-			}
-			n.countHeadRefusal("held_served")
-			return resp, false
-		case off:
-			n.countHeadRefusal("held_null")
-			return nullAnswer(req, resp)
-		}
-		select {
-		case <-moved:
-			continue
-		case <-asks.Done():
-		}
-		// The clock's fetch returned once intake had its header; the
-		// vote may still wait in the tracker's mailbox.
-		t.Sync(ctx)
-		if in, _, _ := includes(); in {
-			continue
-		}
-		n.countHeadRefusal("held_null")
-		return nullAnswer(req, resp)
-	}
+	t.Proven(uint64(bn), held, by, resp.SentAt())
+	return true
 }
 
-// nullAnswer is a null answer to req, held instead of resp; resp itself
-// when the null cannot be built.
-func nullAnswer(req *common.NormalizedRequest, resp *common.NormalizedResponse) (*common.NormalizedResponse, bool) {
-	jrr, err := common.NewJsonRpcResponse(req.ID(), nil, nil)
-	if err != nil {
-		return resp, false
-	}
-	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), true
-}
-
-// byHashBlock is the number and hash of the block resp names when req is
-// of the by-hash family (byHashFamily), else 0; the hash "" when resp
-// names none.
-func byHashBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (int64, string) {
+// byHashBlock is the number of the block resp names when req is of the
+// by-hash family (byHashFamily), else 0.
+func byHashBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) int64 {
 	if resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx) {
-		return 0, ""
+		return 0
 	}
 	jrq, err := req.JsonRpcRequest(ctx)
 	if err != nil || jrq == nil {
-		return 0, ""
+		return 0
 	}
 	jrq.RLock()
-	paths, ok := byHashFamily[jrq.Method]
+	path, ok := byHashFamily[jrq.Method]
 	if ok && jrq.Method == "eth_getLogs" {
 		var f map[string]interface{}
 		if len(jrq.Params) > 0 {
@@ -1308,20 +1413,19 @@ func byHashBlock(ctx context.Context, req *common.NormalizedRequest, resp *commo
 	}
 	jrq.RUnlock()
 	if !ok {
-		return 0, ""
+		return 0
 	}
 	jrr, err := resp.JsonRpcResponse(ctx)
 	if err != nil || jrr == nil {
-		return 0, ""
+		return 0
 	}
-	s, err := jrr.PeekStringByPath(ctx, paths.number...)
+	s, err := jrr.PeekStringByPath(ctx, path...)
 	if err != nil {
-		return 0, ""
+		return 0
 	}
 	bn, err := common.HexToInt64(s)
 	if err != nil {
-		return 0, ""
+		return 0
 	}
-	bh, _ := jrr.PeekStringByPath(ctx, paths.hash...)
-	return bn, bh
+	return bn
 }

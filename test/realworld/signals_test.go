@@ -35,7 +35,7 @@ const (
 	x8ReportWait = 10 * time.Second
 )
 
-// X7: pod-1 runs the old image (origin/main), pod-2 the branch's, on one
+// X7: pod-1 runs the old image (oldImageRef), pod-2 the branch's, on one
 // redis (§18 rollout stage 2: a canary beside control). Clients that read
 // eth_blockNumber from both, as behind a load balancer, never see it
 // regress by more than x7Regress; both pods' per-upstream latest counters
@@ -219,8 +219,8 @@ func x8() spec {
 			switch d := s.dispatches(n, false, from, time.Now()); {
 			case d == 0:
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d) answered %s with no dispatch, below the ceiling the canary's head raised", pod+1, n, got)
-			case d > refusalDispatches:
-				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d)", pod+1, n, d, refusalDispatches)
+			case d > s.refusalDispatches():
+				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), in the band, reached upstreams %d times (at most %d)", pod+1, n, d, s.refusalDispatches())
 			}
 			if got != "null" {
 				s.violate(s.name, "pod-%d: eth_getBlockByNumber(%d), a block no vendor has, answered %s", pod+1, n, got)

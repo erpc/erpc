@@ -44,11 +44,23 @@ func HeadRefusalOf(ctx context.Context, rq *common.NormalizedRequest) *common.He
 	if d := rq.Directives(); d != nil {
 		sel = d.UseUpstream
 	}
-	return rq.TakeHeadRefusal(DecideHeadRefusal(ctx, nw, common.EvmHeadOf(nw, ctx, rq), sel, bn, !ShortCircuitsFuture(rq)))
+	return rq.TakeHeadRefusal(DecideHeadRefusal(ctx, nw, common.EvmHeadOf(nw, ctx, rq), sel, bn, !AnswersAtOnce(rq)))
+}
+
+// AnswersAtOnce reports whether rq is a numbered eth_getBlockByNumber,
+// which never waits for a block above Latest (spec §6.4): not for the
+// ceiling (near future), not for a band miss's holder after its sweep; a
+// thin block, which Latest announced, still waits. It answers what the
+// upstreams answer, as every node and the old image do: held toward W for
+// a block nobody served yet, tip reads on 2 s chains took 1.2-1.4 s at p99
+// on 3614c258, and 36 s on a 12 s chain timed clients out.
+func AnswersAtOnce(rq *common.NormalizedRequest) bool {
+	method, _ := rq.Method()
+	return strings.EqualFold(method, "eth_getBlockByNumber")
 }
 
 // ShortCircuitsFuture reports whether a future block on rq gets null with
-// no dispatch and no wait: a numbered eth_getBlockByNumber on a network
+// no dispatch: a numbered eth_getBlockByNumber (AnswersAtOnce) on a network
 // with shortCircuitFutureBlocks (spec §6.4, #1238).
 func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 	nw := rq.Network()
@@ -58,8 +70,7 @@ func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 	if cfg := nw.Config(); cfg == nil || !cfg.Evm.ShortCircuitFutureBlocksEnabled() {
 		return false
 	}
-	method, _ := rq.Method()
-	return strings.EqualFold(method, "eth_getBlockByNumber")
+	return AnswersAtOnce(rq)
 }
 
 // RefusalMiss reports whether result, method's answer for a block above
@@ -162,8 +173,9 @@ func nearFuture(h common.EvmHead, bt time.Duration, n int64, now time.Time) bool
 
 // EmptyResultBeyondConfidence reports whether an empty answer for rq is its answer rather
 // than missing data, so it is neither retried nor marked: a block the
-// refusal rule calls future, or a band block after its one miss (spec
-// §6.4). With emptyResultConfidence finalizedBlock, also any block above
+// refusal rule calls future, or a band block after its first miss, whose
+// sweep the network's loop runs (spec §6.4 band sweep). With
+// emptyResultConfidence finalizedBlock, also any block above
 // Head.Finalized. false for requests naming no concrete block, and while
 // the head is unknown.
 func EmptyResultBeyondConfidence(ctx context.Context, rq *common.NormalizedRequest) bool {
