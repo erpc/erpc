@@ -31,7 +31,10 @@ type waiverBlockProof struct {
 // per group. When the answer's claimed number cannot prove outside retention
 // for any opted-in quota (head depth and availability bounds), the confirmer
 // probe is skipped — the common just-mined / inside-retention hash dispute
-// must not pay for eth_getBlockByNumber.
+// must not pay for eth_getBlockByNumber. That skip also skips the
+// blockEvidenceFields fallback: the gate reads RespRefs, and a divergent
+// evidence path must not waive an older number without a confirmer (which
+// previously could still contradict and block the fallback).
 func (e *executor) waiverBlock(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) waiverBlockProof {
 	if b := requestBlock(ctx, analysis); b != nil {
 		return waiverBlockProof{block: b}
@@ -47,10 +50,10 @@ func (e *executor) waiverBlock(ctx context.Context, analysis *consensusAnalysis,
 		p = waiverBlockProof{reason: waiverUnprovenReasonBlockInsideRetention}
 	} else {
 		p = e.confirmAnswerBlock(ctx, analysis, g)
-	}
-	if p.block == nil && p.reason != waiverUnprovenReasonBlockContradicted {
-		if b := e.winnerBlockEvidence(analysis, g); b != nil {
-			p = waiverBlockProof{block: b}
+		if p.block == nil && p.reason != waiverUnprovenReasonBlockContradicted {
+			if b := e.winnerBlockEvidence(analysis, g); b != nil {
+				p = waiverBlockProof{block: b}
+			}
 		}
 	}
 	if analysis.waiverBlocks == nil {

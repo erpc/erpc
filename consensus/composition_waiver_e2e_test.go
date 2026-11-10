@@ -540,6 +540,12 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 			{"inside-retention hash lookup skips the confirmer probe", "eth_getTransactionByHash", txHash,
 				map[string]interface{}{"hash": txHash, "blockNumber": "0x1312cff0", "blockHash": block16}, // 19_999_920
 				held(txHash), held(txHash), false, nil, nil},
+			// RespRefs is recent (skip probe) but a divergent blockEvidenceFields
+			// path names an ancient number. Without the skip→no-BEF rule that
+			// path would waive; it must not.
+			{"inside-retention skip does not trust divergent evidence", "eth_getTransactionByHash", txHash,
+				map[string]interface{}{"hash": txHash, "blockNumber": "0x1312cff0", "blockHash": block16, "ancientBlock": "0x10"},
+				nil, nil, false, nil, map[string][]string{"eth_getTransactionByHash": {"ancientBlock"}}},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
