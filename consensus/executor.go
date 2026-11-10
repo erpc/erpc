@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"runtime/debug"
@@ -91,6 +94,21 @@ type executor struct {
 // executor (or directly by *Consensus.Run).
 type inner = func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 
+// sitoutEntry identifies one punishment sit-out. The id lets a recovery clear
+// only the sit-out its snapshot saw (a newer punishment has a new id), and the
+// timer expiry CompareAndDeletes its own entry so a stale callback cannot tear
+// down a reset or newer punishment.
+type sitoutEntry struct {
+	id    string
+	timer *time.Timer
+}
+
+var sitoutCounter atomic.Uint64
+
+func newSitoutId() string {
+	return strconv.FormatUint(sitoutCounter.Add(1), 36)
+}
+
 // execResult holds the result from a single upstream execution with cached analysis.
 type execResult struct {
 	Result   *common.NormalizedResponse
@@ -140,6 +158,19 @@ func (e *executor) Run(
 		if reordered := reorderForParticipantQuota(originalReq.Upstreams(), e.config.requiredParticipants); len(reordered) > 0 {
 			originalReq.SetUpstreams(reordered)
 		}
+	}
+
+	// Gate hedge empty-as-slot-vote on the selected policy's empty-waiver
+	// opt-in AND a concrete block number in THIS request. The waiver can only
+	// prove outside-retention when the request names a block; keeping empty
+	// hedge winners for every other request would change prior recovery
+	// behavior when the waiver can never fire.
+	if st := originalReq.ExecState(); st != nil {
+		keep := false
+		if anyEmptyOutsideRetentionOptIn(e.config.requiredParticipants) {
+			_, keep = common.EvmRequestedBlockNumber(ctx, originalReq)
+		}
+		st.SetKeepEmptyConsensusSlot(keep)
 	}
 
 	labels := e.extractMetricsLabels(ctx, originalReq)
@@ -261,6 +292,10 @@ func (e *executor) executeConsensus(
 	// abandon-path drain goroutine waits on this before releasing the winner
 	// to avoid racing trackAndPunishMisbehavingUpstreams on winner.Result.
 	analyzerDone := make(chan struct{})
+	// Count before the goroutine starts. Counting inside runAnalyzer lets
+	// CloseAll observe zero, close exporters, then the analyzer exports into
+	// a closed file.
+	inflightAnalyzers.add()
 	go e.runAnalyzer(
 		ctx, lg, originalReq, labels,
 		responseChan, attemptCancels, maxToSpawn, cancelRemaining,
@@ -369,6 +404,8 @@ func (e *executor) runAnalyzer(
 	analyzerDone chan<- struct{},
 	collectionSpan trace.Span,
 ) {
+	defer inflightAnalyzers.done()
+
 	outcomeSent := false
 	sendOutcomeOnce := func(o consensusOutcome) {
 		if outcomeSent {
@@ -405,6 +442,9 @@ func (e *executor) runAnalyzer(
 	responses := make([]*execResult, 0, maxToSpawn)
 	var winner *slotResult
 	var analysis *consensusAnalysis
+	// analysisResponses is how many responses the last analysis covered; the
+	// post-loop recompute skips a rebuild when the bag did not grow.
+	analysisResponses := -1
 	var shortCircuitReason string
 	shortCircuited := false
 	waitCapped := false
@@ -542,8 +582,12 @@ func (e *executor) runAnalyzer(
 		responses = append(responses, resp)
 		considerWaitCap(resp)
 
+		// Track how many responses the last analysis covered so the post-loop
+		// recompute can skip rebuilding when the bag did not grow (review
+		// finding — re-running determineWinner double-counts waiver metrics).
 		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
-		winner = e.determineWinner(lg, analysis)
+		analysisResponses = len(responses)
+		winner = e.determineWinner(ctx, lg, analysis)
 		if reason, ok := e.shouldShortCircuit(winner, analysis); ok {
 			shortCircuited = true
 			shortCircuitReason = reason
@@ -572,15 +616,25 @@ func (e *executor) runAnalyzer(
 		waitTimer.Stop()
 	}
 
-	// All participants accounted for. If no short-circuit fired, compute the
-	// final analysis and send the winner now.
-	if analysis == nil {
-		analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
-		winner = e.determineWinner(lg, analysis)
-	}
+	// All participants accounted for, or wait-cap returned early with a
+	// partial bag. If no short-circuit already released the caller,
+	// compute/recompute the final winner now.
+	//
+	// Waivers stay fail-closed on wait-cap: cancelling remaining contexts
+	// is not a round-completion barrier (a result may already be buffered,
+	// or the upstream call may ignore cancel — wait-cap tests intentionally
+	// use such calls). Sealing a partial bag could waive MissingData /
+	// empty-outside-retention while an omitted tagged response still holds
+	// non-empty data. Only a fully collected bag (every slot wrote) makes
+	// hasRemaining false without an explicit seal.
 	if !shortCircuited {
-		// Short-circuit branch already marked winners; mark here only
-		// for the wait-all path.
+		// Rebuild only when the bag grew since the last in-loop analysis; a
+		// fully-collected final response already produced the final winner,
+		// and re-running determineWinner would fire waiver metrics twice.
+		if analysis == nil || analysisResponses != len(responses) {
+			analysis = newConsensusAnalysis(e.logger, ctx, e.config, responses)
+			winner = e.determineWinner(ctx, lg, analysis)
+		}
 		markWinningParticipants(originalReq, winner, analysis)
 	}
 	sendOutcomeOnce(consensusOutcome{winner: winner, analysis: analysis, shortCircuited: shortCircuited})
@@ -883,7 +937,7 @@ func markWinningParticipants(req *common.NormalizedRequest, winner *slotResult, 
 	}
 }
 
-func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalysis) *slotResult {
+func (e *executor) determineWinner(ctx context.Context, lg *zerolog.Logger, analysis *consensusAnalysis) *slotResult {
 	// Since we know R is *common.NormalizedResponse at runtime, we can safely work with it
 	// Evaluate rules in priority order
 	for _, rule := range consensusRules {
@@ -893,7 +947,7 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 			lg.Debug().
 				Str("rule", rule.Description).
 				Msg("consensus rule matched")
-			return e.enforceWinnerComposition(lg, analysis, rule.Action(analysis))
+			return e.enforceWinnerComposition(ctx, lg, analysis, rule.Action(analysis))
 		}
 	}
 
@@ -921,7 +975,7 @@ func (e *executor) determineWinner(lg *zerolog.Logger, analysis *consensusAnalys
 //     responses are still outstanding the dispute is provisional — see the
 //     guard in shouldShortCircuit — because a later response can still
 //     complete the quota.
-func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consensusAnalysis, winner *slotResult) *slotResult {
+func (e *executor) enforceWinnerComposition(ctx context.Context, lg *zerolog.Logger, analysis *consensusAnalysis, winner *slotResult) *slotResult {
 	if winner == nil || !anyAgreementQuota(e.config.requiredParticipants) {
 		return winner
 	}
@@ -930,10 +984,44 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 	}
 	g := analysis.groupOf(winner)
 	if g == nil || g.ResponseType == ResponseTypeInfrastructureError {
+		// A synthesized winner (dispute/low-participants error) normally passes
+		// through untouched. But the rules engine synthesizes ErrConsensusDispute
+		// for the default mixed-node tie — a lone non-empty group tying an
+		// equally-sized empty group at agreementThreshold (e.g. 2 empty internals
+		// vs 2 agreeing archives) — and that dispute never reaches the waiver
+		// machinery below because it has no backing group. When the empty side is
+		// a unanimous, proven-outside-retention abstention, the lone non-empty
+		// group is the real winner; rescue it here. Every waiver guard still
+		// applies, so this cannot mask a genuine non-empty disagreement.
+		if winner.Error != nil {
+			if promoted := e.promoteAbstentionWinner(ctx, lg, analysis); promoted != nil {
+				return promoted
+			}
+		}
 		return winner
 	}
-	if resultsSatisfyAgreementQuotas(e.agreeingResults(analysis, g), e.config.requiredParticipants) {
+	agreeing := e.agreeingResults(analysis, g)
+	if resultsSatisfyAgreementQuotas(agreeing, e.config.requiredParticipants) {
 		return winner
+	}
+	// Round-complete waivers (safety net). A quota entry can opt into releasing
+	// its minAgreement for THIS round under one of two abstention signals:
+	// missing-data (≥ minAgreement tag-matching participants returned
+	// ErrEndpointMissingData) or empty-outside-retention (≥ minAgreement
+	// tag-matching participants returned empty AND the requested block is
+	// older than the entry's retained range, proving those abstainers
+	// legitimately pruned it). Both are round-complete by design and only
+	// change the outcome when releasing them makes the winner decisive, so
+	// neither can mask a real disagreement.
+	if reasons := e.waivedQuotas(ctx, analysis, g); len(reasons) > 0 {
+		waived := make(map[*common.ConsensusRequiredParticipant]struct{}, len(reasons))
+		for req := range reasons {
+			waived[req] = struct{}{}
+		}
+		if resultsSatisfyAgreementQuotasExcept(agreeing, e.config.requiredParticipants, waived) {
+			e.recordCompositionWaivers(lg, analysis, agreeing, reasons)
+			return winner
+		}
 	}
 	// A quota tag matching zero participants in the ENTIRE round (not just
 	// the winning group) means the config is structurally unable to ever
@@ -967,6 +1055,14 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 				Msg("minAgreement quota tag matched ZERO participants this round — check for a typo'd tag or unavailable tagged upstreams; consensus cannot succeed while this persists")
 		}
 	}
+	// When the empty-outside-retention waiver is opted in but did NOT fire, the
+	// two silent fail-closed branches are a zero chain head (network tip and
+	// participant pollers both unknown) or a request that names no concrete
+	// block — both leave the waiver without proof.
+	// Surface them so a dispute on a supposedly-pruned block is diagnosable
+	// without code changes, rather than looking like an unexplained composition
+	// failure.
+	e.logEmptyWaiverUnproven(ctx, lg, analysis, g)
 	lg.Debug().
 		Str("hash", g.Hash).
 		Int("count", g.Count).
@@ -978,6 +1074,612 @@ func (e *executor) enforceWinnerComposition(lg *zerolog.Logger, analysis *consen
 			nil,
 		),
 	}
+}
+
+// promoteAbstentionWinner rescues a synthesized dispute (no backing group)
+// when opted-in abstainers are the sole reason no winner emerged. The rules
+// engine synthesizes ErrConsensusDispute when a non-empty group ties with an
+// equally-sized empty or ConsensusError (MissingData) group at
+// agreementThreshold — the default mixed-node shape (e.g. 2 empty/MissingData
+// internals tying 2 agreeing archives). That dispute never reaches
+// enforceWinnerComposition's waiver machinery because groupOf(winner) is nil,
+// so the waivers could never fire on the exact case they were built for.
+//
+// It returns a promoted winner only when EVERY guard passes:
+//   - opt-in present (empty-outside-retention and/or MissingData), so configs
+//     without either waiver are completely unaffected;
+//   - exactly ONE non-empty group meets agreementThreshold — two disagreeing
+//     non-empty groups at threshold is a real dispute, so keep it;
+//   - the waiver fires for that candidate (waivedQuotas), which reuses the same
+//     round-complete + block-proof + minAgreement-empty/MissingData guards, so
+//     mid-round or without proof this returns nil and the dispute stays
+//     provisional;
+//   - releasing the waived quotas makes the candidate satisfy composition.
+//
+// On success the candidate's own quotas are recorded as waived and its largest
+// result becomes the winner. Otherwise it returns nil and the caller keeps the
+// provisional dispute unchanged.
+func (e *executor) promoteAbstentionWinner(ctx context.Context, lg *zerolog.Logger, analysis *consensusAnalysis) *slotResult {
+	if !anyEmptyOutsideRetentionOptIn(e.config.requiredParticipants) &&
+		!anyMissingDataWaiverOptIn(e.config.requiredParticipants) {
+		return nil
+	}
+	var cand *responseGroup
+	for _, g := range analysis.groups {
+		if g == nil || g.ResponseType != ResponseTypeNonEmpty || g.Count < e.config.agreementThreshold {
+			continue
+		}
+		if cand != nil {
+			// More than one non-empty group meets threshold: a genuine
+			// disagreement between data answers, not an abstention standoff.
+			return nil
+		}
+		cand = g
+	}
+	if cand == nil {
+		return nil
+	}
+	reasons := e.waivedQuotas(ctx, analysis, cand)
+	if len(reasons) == 0 {
+		e.logEmptyWaiverUnproven(ctx, lg, analysis, cand)
+		return nil
+	}
+	// A waiver that fires for an unrelated abstention must not promote past a
+	// competing at-threshold group that is not itself a covered abstention
+	// (e.g. MissingData on a fifth upstream must not mask a tied execution
+	// revert vs NonEmpty standoff).
+	if !competingAtThresholdGroupsCoveredByWaiver(analysis, cand, e.config.agreementThreshold, reasons) {
+		return nil
+	}
+	waived := make(map[*common.ConsensusRequiredParticipant]struct{}, len(reasons))
+	for req := range reasons {
+		waived[req] = struct{}{}
+	}
+	agreeing := e.agreeingResults(analysis, cand)
+	if !resultsSatisfyAgreementQuotasExcept(agreeing, e.config.requiredParticipants, waived) {
+		return nil
+	}
+	e.recordCompositionWaivers(lg, analysis, agreeing, reasons)
+	lg.Debug().
+		Str("hash", cand.Hash).
+		Int("count", cand.Count).
+		Msg("promoted lone non-empty group over proven-outside-retention empty abstention")
+	return &slotResult{Result: cand.LargestResult}
+}
+
+// competingAtThresholdGroupsCoveredByWaiver reports whether every response
+// group other than cand that meets agreementThreshold is an abstention the
+// fired waiver covers: Empty under empty-outside-retention, or ConsensusError
+// whose every result is ErrEndpointMissingData under the MissingData waiver.
+// An at-threshold execution-revert ConsensusError (or any other shape) blocks
+// promotion so an unrelated MissingData waiver cannot mask it.
+func competingAtThresholdGroupsCoveredByWaiver(
+	analysis *consensusAnalysis,
+	cand *responseGroup,
+	threshold int,
+	reasons map[*common.ConsensusRequiredParticipant]string,
+) bool {
+	hasMissingData := false
+	hasEmpty := false
+	for _, reason := range reasons {
+		switch reason {
+		case waiverReasonMissingData:
+			hasMissingData = true
+		case waiverReasonEmptyOutsideRetention:
+			hasEmpty = true
+		}
+	}
+	for _, g := range analysis.groups {
+		if g == nil || g == cand || g.Count < threshold {
+			continue
+		}
+		switch g.ResponseType {
+		case ResponseTypeEmpty:
+			if !hasEmpty {
+				return false
+			}
+		case ResponseTypeConsensusError:
+			if !hasMissingData || !groupIsMissingDataAbstention(g) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func groupIsMissingDataAbstention(g *responseGroup) bool {
+	if g == nil || len(g.Results) == 0 {
+		return false
+	}
+	for _, r := range g.Results {
+		if r == nil || r.Err == nil || !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) {
+			return false
+		}
+	}
+	return true
+}
+
+// missingDataWaivedQuotas returns the requiredParticipants entries whose
+// minAgreement quota is waived for THIS round under the MissingData waiver.
+// An entry qualifies when it opts in (waiveAgreementOnMissingData), carries a
+// real quota (minAgreement > 0), at least minAgreement distinct
+// tag-matching participants this round returned ErrEndpointMissingData, and
+// no matching participant returned non-empty data. Sibling errors (transport, …)
+// and empty successes do not block the count; a matching non-empty value vote
+// does — that is disagreement, not abstention, and waiving would mask it.
+//
+// The waiver is round-complete by design: while any response can still arrive
+// (analysis.hasRemaining) a slower tagged upstream could still return data, so
+// this reports no waivers and the caller keeps the quota strict. Wait-cap
+// cancel alone does not clear hasRemaining — only a fully collected bag or an
+// explicit seal after every slot acknowledged does. It scans all groups (the
+// entire round), not just the winning group.
+func missingDataWaivedQuotas(analysis *consensusAnalysis, reqs []*common.ConsensusRequiredParticipant) map[*common.ConsensusRequiredParticipant]struct{} {
+	if analysis == nil || analysis.hasRemaining() {
+		return nil
+	}
+	var waived map[*common.ConsensusRequiredParticipant]struct{}
+	for _, req := range reqs {
+		if req == nil || !req.WaiveAgreementOnMissingData || req.MinAgreement <= 0 {
+			continue
+		}
+		missing := 0
+		var seen map[string]struct{}
+		dataMatch := false
+		for _, g := range analysis.groups {
+			for _, r := range g.Results {
+				if r == nil || r.Upstream == nil || !upstreamMatchesTag(r.Upstream, req.Tag) {
+					continue
+				}
+				id := r.Upstream.Id()
+				if seen == nil {
+					seen = make(map[string]struct{}, req.MinAgreement)
+				}
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				// Only a non-empty value vote holds the quota (feature §7.1).
+				// Empty successes are a separate abstention shape handled by
+				// waiveAgreementOnEmptyOutsideRetention — they must not block
+				// MissingData waiver when ≥ minAgreement MissingData replies exist.
+				if r.Err == nil && r.CachedResponseType == ResponseTypeNonEmpty {
+					dataMatch = true
+					continue
+				}
+				if r.Err == nil {
+					continue
+				}
+				if !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) {
+					continue
+				}
+				missing++
+			}
+		}
+		if dataMatch || missing < req.MinAgreement {
+			continue
+		}
+		if waived == nil {
+			waived = make(map[*common.ConsensusRequiredParticipant]struct{}, len(reqs))
+		}
+		waived[req] = struct{}{}
+	}
+	return waived
+}
+
+// recordCompositionWaivers logs and counts each waiver that actually fired —
+// i.e. an entry that was waived AND would have failed its quota strictly, so
+// releasing it is what made the winner decisive. Entries that were satisfied
+// anyway are skipped so the metric reflects real waiver events only.
+func (e *executor) recordCompositionWaivers(
+	lg *zerolog.Logger,
+	analysis *consensusAnalysis,
+	agreeing []*execResult,
+	waived map[*common.ConsensusRequiredParticipant]string,
+) {
+	projectId, networkId := "", ""
+	if analysis != nil && analysis.originalRequest != nil {
+		networkId = analysis.originalRequest.NetworkLabel()
+		if net := analysis.originalRequest.Network(); net != nil {
+			projectId = net.ProjectId()
+		}
+	}
+	for req, reason := range waived {
+		if resultsSatisfyAgreementQuotas(agreeing, []*common.ConsensusRequiredParticipant{req}) {
+			continue // quota was met on its own; the waiver was not needed for it
+		}
+		lg.Info().
+			Str("tag", req.Tag).
+			Int("minAgreement", req.MinAgreement).
+			Str("reason", reason).
+			Msg("waived requiredParticipants minAgreement quota")
+		telemetry.MetricConsensusCompositionWaived.WithLabelValues(projectId, networkId, req.Tag, reason).Inc()
+	}
+}
+
+// waiverReason* are the reason labels reported on
+// consensus_composition_waived_total{reason} and the waiver log line.
+const (
+	waiverReasonMissingData           = "missing_data"
+	waiverReasonEmptyOutsideRetention = "empty_outside_retention"
+)
+
+// waivedQuotas resolves the set of requiredParticipants entries whose
+// minAgreement quota is waived for THIS round, mapping each to the reason it
+// was released. It merges the two round-complete waivers; a missing-data
+// waiver takes precedence in the (mutually-exclusive in practice) case an
+// entry qualifies for both, since it is the stronger explicit abstention signal.
+func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) map[*common.ConsensusRequiredParticipant]string {
+	reasons := make(map[*common.ConsensusRequiredParticipant]string)
+	for req := range emptyOutsideRetentionWaivedQuotas(analysis, e.config.requiredParticipants, requestBlock(ctx, analysis), e.chainHead(ctx, analysis, g)) {
+		reasons[req] = waiverReasonEmptyOutsideRetention
+	}
+	for req := range missingDataWaivedQuotas(analysis, e.config.requiredParticipants) {
+		reasons[req] = waiverReasonMissingData
+	}
+	return reasons
+}
+
+// chainHead returns the observed EVM "latest" block for the round, or 0 when
+// unknown. The request's Head.Latest is used only when servedTip.quorum is
+// "majority" — that value is majority-corroborated across the request's
+// voters, including ones that did not participate in this round. Default
+// quorum (2) can still be a single voter's report on small pools, so one
+// inflator can raise it; trusting that for this proof would reopen the
+// fabrication hole the poller fallback closes. When majority quorum is off,
+// or the Head is still unknown, fall back to the MIN poller latest among
+// this round's own EVM participants (at least two distinct upstreams with a
+// positive latest, at least one outside the winning group). A zero head from
+// both sources means the empty-outside-retention waiver cannot prove a block
+// is outside range, so it holds the quota — fail closed.
+func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis, winner *responseGroup) int64 {
+	if analysis == nil {
+		return 0
+	}
+	if req := analysis.originalRequest; req != nil {
+		if net := req.Network(); net != nil && majorityServedLatestEnabled(net) {
+			if head := common.EvmHeadOf(net, ctx, req).Latest; head > 0 {
+				return head
+			}
+		}
+	}
+	var agreeing []*execResult
+	if winner != nil {
+		agreeing = e.agreeingResults(analysis, winner)
+	}
+	return participantLatestBlock(analysis, agreeing)
+}
+
+// majorityServedLatestEnabled reports whether this network's served tip uses
+// quorum "majority". Nil config / default quorum returns false.
+func majorityServedLatestEnabled(net common.Network) bool {
+	if net == nil {
+		return false
+	}
+	cfg := net.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.ServedTip == nil {
+		return false
+	}
+	return cfg.Evm.ServedTip.Quorum == common.ServedTipQuorumMajority
+}
+
+// logEmptyWaiverUnproven emits the fail-closed diagnostic when the
+// empty-outside-retention waiver is opted in but could not be evaluated
+// (unknown head, no finite abstainer availability lower bound, or a request
+// that names no concrete block). Shared by the backed-group composition-dispute
+// path and the synthesized-tie path so a silent hold is diagnosable on both.
+func (e *executor) logEmptyWaiverUnproven(ctx context.Context, lg *zerolog.Logger, analysis *consensusAnalysis, g *responseGroup) {
+	if !anyEmptyOutsideRetentionOptIn(e.config.requiredParticipants) {
+		return
+	}
+	method := ""
+	projectId, networkId := "", ""
+	if analysis != nil {
+		method = analysis.method
+		if analysis.originalRequest != nil {
+			networkId = analysis.originalRequest.NetworkLabel()
+			if net := analysis.originalRequest.Network(); net != nil {
+				projectId = net.ProjectId()
+			}
+		}
+	}
+	// Mid-round hold: proof inputs may look ready, but waivers deliberately
+	// defer while a slower slot could still return data. Debug only — this
+	// fires once per collected response, so Info/metrics would drown real
+	// fail-closed (no proof) events.
+	if analysis != nil && analysis.hasRemaining() {
+		lg.Debug().
+			Str("method", method).
+			Str("reason", waiverUnprovenReasonRoundIncomplete).
+			Msg("empty-outside-retention waiver deferred — responses still outstanding")
+		return
+	}
+	head := e.chainHead(ctx, analysis, g)
+	reqBlock := requestBlock(ctx, analysis)
+	finiteBounds, matchingEmpties := countFiniteAvailLowerBounds(analysis, e.config.requiredParticipants)
+	// Proven evaluation paths: requested block + (finite avail bounds for every
+	// matching empty OR a known chain head). Inside-retention holds are not
+	// "unproven" — only missing proof inputs are.
+	availProofReady := reqBlock != nil && matchingEmpties > 0 && finiteBounds == matchingEmpties
+	headProofReady := reqBlock != nil && head > 0
+	if availProofReady || headProofReady {
+		return
+	}
+	reason := waiverUnprovenReasonNoHead
+	switch {
+	case reqBlock == nil:
+		reason = waiverUnprovenReasonNoRequestBlock
+	case matchingEmpties == 0 || finiteBounds < matchingEmpties:
+		reason = waiverUnprovenReasonNoAvailBound
+	case head <= 0:
+		reason = waiverUnprovenReasonNoHead
+	}
+	lg.Info().
+		Str("method", method).
+		Int64("chainHead", head).
+		Bool("requestBlockKnown", reqBlock != nil).
+		Int("availBoundFiniteCount", finiteBounds).
+		Int("matchingEmpties", matchingEmpties).
+		Str("reason", reason).
+		Msg("empty-outside-retention waiver could not be evaluated — waiver holds the quota, fail closed")
+	telemetry.MetricConsensusCompositionWaiverUnproven.WithLabelValues(projectId, networkId, reason).Inc()
+}
+
+// countFiniteAvailLowerBounds returns how many empty tag-matching participants
+// (across any empty-outside-retention opted-in quota) expose a finite
+// availability lower bound, and the total number of such matching empties.
+func countFiniteAvailLowerBounds(analysis *consensusAnalysis, reqs []*common.ConsensusRequiredParticipant) (finite int, matchingEmpties int) {
+	if analysis == nil {
+		return 0, 0
+	}
+	seen := make(map[string]struct{})
+	for _, req := range reqs {
+		if req == nil || !req.WaiveAgreementOnEmptyOutsideRetention {
+			continue
+		}
+		for _, g := range analysis.groups {
+			if g == nil {
+				continue
+			}
+			for _, r := range g.Results {
+				if r == nil || r.Upstream == nil || !upstreamMatchesTag(r.Upstream, req.Tag) {
+					continue
+				}
+				if r.Err != nil || r.CachedResponseType != ResponseTypeEmpty {
+					continue
+				}
+				id := r.Upstream.Id()
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				matchingEmpties++
+				eu, ok := r.Upstream.(common.EvmUpstream)
+				if !ok {
+					continue
+				}
+				lower, _ := eu.EvmBlockAvailabilityBounds()
+				if lower != math.MinInt64 {
+					finite++
+				}
+			}
+		}
+	}
+	return finite, matchingEmpties
+}
+
+const (
+	waiverUnprovenReasonNoRequestBlock  = "no_request_block"
+	waiverUnprovenReasonNoAvailBound    = "no_avail_bound"
+	waiverUnprovenReasonNoHead          = "no_head"
+	waiverUnprovenReasonRoundIncomplete = "round_incomplete"
+)
+
+// participantLatestBlock is the chain-head fallback when the network served
+// tip is 0. It requires at least two distinct EVM participants to have reported
+// a positive latest, at least one of them outside the winning group, then takes
+// the MIN. Neither a single inflator nor the winning group alone can raise the
+// head the winner's own block is judged against. Returns 0 (fail closed)
+// otherwise, e.g. when the only non-winners are pruned internals without a
+// poller; operators then need servedTip quorum "majority" or a finite
+// blockAvailability lower bound on those internals.
+func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult) int64 {
+	if analysis == nil {
+		return 0
+	}
+	winners := make(map[string]struct{}, len(agreeing))
+	for _, r := range agreeing {
+		if r != nil && r.Upstream != nil {
+			winners[r.Upstream.Id()] = struct{}{}
+		}
+	}
+	var min int64
+	pollers := 0
+	outside := false
+	seen := make(map[string]struct{})
+	for _, g := range analysis.groups {
+		if g == nil {
+			continue
+		}
+		for _, r := range g.Results {
+			if r == nil || r.Upstream == nil {
+				continue
+			}
+			id := r.Upstream.Id()
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			eu, ok := r.Upstream.(common.EvmUpstream)
+			if !ok {
+				continue
+			}
+			b := eu.EvmEffectiveLatestBlock()
+			if b <= 0 {
+				continue
+			}
+			if _, in := winners[id]; !in {
+				outside = true
+			}
+			if pollers == 0 || b < min {
+				min = b
+			}
+			pollers++
+		}
+	}
+	if pollers < 2 || !outside {
+		return 0
+	}
+	return min
+}
+
+// requestBlock is the block number the client's own request names, the proof
+// the empty-outside-retention waiver judges retention against. It never reads
+// a participant's answer: upstreams that agree on a fabricated block number
+// could otherwise prove the data is old. It returns nil when the request names
+// no concrete block (a hash lookup, a tag, an omitted range bound), which
+// leaves the waiver without proof (dispute).
+func requestBlock(ctx context.Context, analysis *consensusAnalysis) *big.Int {
+	if analysis == nil || analysis.originalRequest == nil {
+		return nil
+	}
+	bn, ok := common.EvmRequestedBlockNumber(ctx, analysis.originalRequest)
+	if !ok {
+		return nil
+	}
+	return big.NewInt(bn)
+}
+
+// emptyOutsideRetentionWaivedQuotas returns the requiredParticipants entries
+// whose minAgreement quota is waived for THIS round under the empty-waiver
+// (v1.1). An entry qualifies when it opts in
+// (waiveAgreementOnEmptyOutsideRetention), carries a real quota
+// (minAgreement > 0), at least minAgreement distinct tag-matching participants
+// this round returned an EMPTY result, no matching participant returned a
+// non-empty result, and the requested block is proven outside retention.
+// Sibling errors do not block the empty count; a matching non-empty result
+// does — that is a real vote, not a prune, and waiving would mask it.
+//
+// Proof (prefer first that succeeds), evaluated over the empty matches only:
+//  1. Availability lower bound — every counted empty upstream exposes a finite
+//     EvmBlockAvailabilityBounds lower bound and reqBlock < that bound
+//     (typically poller.latest − latestBlockMinus). No network served tip needed.
+//  2. Chain head — head - reqBlock > retentionBlocks, with head from
+//     majority served tip / corroborated participant pollers.
+//
+// The block proof is the anti-fabrication guard: a null on a recent block
+// (inside retention / bounds) fails the proof and holds the quota, so
+// correlated externals cannot outvote an internal on data the internal should
+// still have. The block comes from the client's request, so the externals
+// cannot move it.
+//
+// Round-complete by design (mirrors missingDataWaivedQuotas): while any
+// response can still arrive, a slower tagged upstream could still return data,
+// so this reports no waivers. Wait-cap cancel alone does not clear
+// hasRemaining. Without a requested block and neither proof source, it reports
+// none — fail closed.
+func emptyOutsideRetentionWaivedQuotas(analysis *consensusAnalysis, reqs []*common.ConsensusRequiredParticipant, reqBlock *big.Int, head int64) map[*common.ConsensusRequiredParticipant]struct{} {
+	if analysis == nil || analysis.hasRemaining() {
+		return nil
+	}
+	if reqBlock == nil {
+		return nil
+	}
+	var waived map[*common.ConsensusRequiredParticipant]struct{}
+	for _, req := range reqs {
+		if req == nil || !req.WaiveAgreementOnEmptyOutsideRetention || req.MinAgreement <= 0 || req.RetentionBlocks <= 0 {
+			continue
+		}
+		var empties []*execResult
+		var seen map[string]struct{}
+		nonEmptyMatch := false
+		for _, g := range analysis.groups {
+			for _, r := range g.Results {
+				if r == nil || r.Upstream == nil || !upstreamMatchesTag(r.Upstream, req.Tag) {
+					continue
+				}
+				id := r.Upstream.Id()
+				if seen == nil {
+					seen = make(map[string]struct{}, req.MinAgreement)
+				}
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				if r.Err == nil && r.CachedResponseType == ResponseTypeNonEmpty {
+					nonEmptyMatch = true
+					continue
+				}
+				if r.Err != nil || r.CachedResponseType != ResponseTypeEmpty {
+					continue
+				}
+				empties = append(empties, r)
+			}
+		}
+		if nonEmptyMatch || len(empties) < req.MinAgreement {
+			continue
+		}
+		// Feature §7.1: prefer finite availability lower bounds; only fall
+		// back to chain-head depth when that preferred evidence is unavailable.
+		// A finite bound that places the requested block inside the served range
+		// is positive contradictory evidence — never override it with head depth.
+		proves, contradicts := availabilityBoundProofState(empties, reqBlock)
+		if proves || (!contradicts && chainHeadProvesOutsideRetention(reqBlock, head, req.RetentionBlocks)) {
+			if waived == nil {
+				waived = make(map[*common.ConsensusRequiredParticipant]struct{}, len(reqs))
+			}
+			waived[req] = struct{}{}
+		}
+	}
+	return waived
+}
+
+// availabilityBoundProofState classifies preferred empty-waiver proof from
+// abstainers' blockAvailability lower bounds (feature §7.1):
+//   - proves: every matching empty has a finite lower and reqBlock < lower
+//   - contradicts: at least one finite lower has reqBlock >= lower (in range)
+//
+// When neither (bounds unavailable), the caller may fall back to chain-head depth.
+func availabilityBoundProofState(matching []*execResult, reqBlock *big.Int) (proves, contradicts bool) {
+	if reqBlock == nil || len(matching) == 0 {
+		return false, false
+	}
+	allFiniteProve := true
+	anyFinite := false
+	for _, r := range matching {
+		if r == nil || r.Upstream == nil {
+			return false, false
+		}
+		eu, ok := r.Upstream.(common.EvmUpstream)
+		if !ok {
+			return false, false
+		}
+		lower, _ := eu.EvmBlockAvailabilityBounds()
+		if lower == math.MinInt64 {
+			allFiniteProve = false
+			continue
+		}
+		anyFinite = true
+		if reqBlock.Cmp(big.NewInt(lower)) >= 0 {
+			return false, true
+		}
+	}
+	if allFiniteProve && anyFinite {
+		return true, false
+	}
+	return false, false
+}
+
+// chainHeadProvesOutsideRetention is the original v1.1 head-depth proof:
+// outside iff head - reqBlock > retentionBlocks.
+func chainHeadProvesOutsideRetention(reqBlock *big.Int, head int64, retentionBlocks int64) bool {
+	if reqBlock == nil || head <= 0 || retentionBlocks <= 0 {
+		return false
+	}
+	depth := new(big.Int).Sub(big.NewInt(head), reqBlock)
+	return depth.Cmp(big.NewInt(retentionBlocks)) > 0
 }
 
 // agreeingResults returns every result that agrees with the winning group.
@@ -1461,17 +2163,29 @@ func (e *executor) handleMisbehavingUpstream(logger *zerolog.Logger, upstream co
 	// Record punishment metric
 	telemetry.MetricConsensusUpstreamPunished.WithLabelValues(labels.projectId, labels.networkId, upstreamId, labels.userId, labels.agentName).Inc()
 
-	// Cordon the upstream first
-	upstream.Cordon("*", "misbehaving in consensus")
+	// Cordon the upstream first. Consensus misbehavior is a PUNISHMENT cordon:
+	// the selector reads this typed class (never the reason string) and pins the
+	// network to the strictest policy while any upstream is punished.
+	common.CordonClassed(upstream, "*", "misbehaving in consensus", common.CordonClassPunishment)
 
-	// Create the timer
-	timer := time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
-		upstream.Uncordon("*", "end of consensus penalty")
-		e.misbehavingUpstreamsSitoutTimer.Delete(upstreamId)
+	// Create the timer. The entry identifies this exact sit-out, so expiry only
+	// clears the cordon and deletes the entry when this exact sit-out is still
+	// the one stored — an admin-uncordon reset or a newer punishment that
+	// replaced the entry cannot be torn down by this stale callback (Copilot
+	// finding: Timer.Stop does not wait for an expiry callback already running).
+	// The id lets a recovery clear only the sit-out its snapshot saw.
+	entry := &sitoutEntry{id: newSitoutId()}
+	var timer *time.Timer
+	timer = time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
+		if !e.misbehavingUpstreamsSitoutTimer.CompareAndDelete(upstreamId, entry) {
+			return
+		}
+		common.UncordonClassed(upstream, "*", "end of consensus penalty", common.CordonClassPunishment)
 	})
+	entry.timer = timer
 
-	// Replace the placeholder with the actual timer
-	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, timer)
+	// Replace the placeholder with the actual entry
+	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, entry)
 }
 
 func (e *executor) createRateLimiter(logger *zerolog.Logger, upstreamId string) *rate.Limiter {

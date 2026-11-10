@@ -127,9 +127,15 @@ The `keep` predicate decides whether a result ends the race. It returns `false` 
 `ErrNoUpstreamsLeftToSelect` (leg exhausted its upstreams — siblings may still win), `false`
 for an empty `ErrUpstreamsExhausted`, and `false` for null/empty responses on methods that
 are not in the `emptyResultAccept` set (preventing a fast `{"result": null}` from cancelling
-siblings with real data). Non-retryable errors — execution reverts, client errors — are kept
-immediately as definitive. Any non-null success is kept and `MetricNetworkHedgeWinnerTotal`
-fires.
+siblings with real data). **Consensus slots keep that empty only when the selected policy
+opts into `waiveAgreementOnEmptyOutsideRetention`:** `tryOneUpstream` already picked one
+upstream, and the empty-outside-retention waiver keys on that node's empty vote — otherwise
+the recovery leg replaces it with `n/a` `ErrUpstreamsExhausted` and tagged empties never
+reach consensus analysis. Waiver-free consensus+hedge configs keep prior empty-reject
+recovery (fast null may lose to a hedge). Skip-consensus and non-consensus paths still
+reject those empties. Non-retryable errors — execution reverts, client errors — are kept
+immediately as definitive. Any non-null success is kept and
+`MetricNetworkHedgeWinnerTotal` fires.
 
 **Delay modes.** Static mode: set `delay` to a plain duration string (`"200ms"`); the hedge
 fires exactly that long after the primary starts, and `min`/`max` are ignored when
@@ -397,7 +403,7 @@ samples exist the delay falls back to `base + min` (<SourceLink file="common/ada
 1. **Static `base` ignores `min`/`max`.** When `quantile==0`, `Resolve` returns `base` unchanged regardless of `min`/`max`. A `delay: 5ms` WILL fire at 5ms even if `min=100ms` is set. Source: <SourceLink file="common/adaptive_duration.go" lines="88-89" />
 2. **Cold start falls to `min`, not `base`.** When `quantile>0` and no latency data exists, `Resolve` returns `Min` (not `Base`). If `min==0`, hedges fire immediately. `SetDefaults` auto-sets `min=100ms` but a manually-zero `min` bypasses this guard. Source: <SourceLink file="common/adaptive_duration.go" lines="96-98" />
 3. **`maxCount: 0` disables hedging silently.** `HasHedge()` returns `false`. A config with only `delay` and no `maxCount` gets `maxCount=1` from `SetDefaults` (enabled). Explicit `maxCount: 0` disables it. Source: <SourceLink file="erpc/network_executor.go" lines="126-131" />
-4. **Null responses do not win for most methods.** `{"result": null}` from one leg does NOT cancel siblings for `eth_getBlockByNumber`, `eth_getTransactionByHash`, `eth_getTransactionReceipt` (not in `emptyResultAccept`). For `eth_getLogs`, `eth_call`, empty IS kept. Source: <SourceLink file="erpc/network_executor.go" lines="591-622" />
+4. **Null responses do not win for most methods — except a consensus slot under empty-waiver opt-in.** `{"result": null}` from one leg does NOT cancel siblings for `eth_getBlockByNumber`, `eth_getTransactionByHash`, `eth_getTransactionReceipt` (not in `emptyResultAccept`) on the non-consensus / skip-consensus path, and also not for waiver-free consensus+hedge. For `eth_getLogs`, `eth_call`, empty IS kept. Inside `consensus(retry(hedge(tryOneUpstream)))` **only when** the selected policy sets `waiveAgreementOnEmptyOutsideRetention`, empty **is** kept: that slot already selected one upstream, and discarding the null lets the hedge recovery leg vote `n/a` exhausted instead, so tagged internals never appear in `analysis.groups`. Source: <SourceLink file="erpc/network_executor.go" lines="716-724" />
 5. **Non-retryable errors win immediately.** An execution-revert from any leg is `keep=true` and cancels siblings. This mirrors upstream-sweep short-circuit behavior.
 6. **Hedge fires continue after primary error.** The timer schedule is independent of primary success/failure. A fast-failing primary does not suppress subsequent hedge attempts. Source: <SourceLink file="failsafe/hedge.go" lines="216" />
 7. **Channel overflow protection.** Result channel is sized `maxCount+1`; the `default` branch in the goroutine's send handles the theoretically-impossible overflow by releasing the result. Source: <SourceLink file="failsafe/hedge.go" lines="127-136" />

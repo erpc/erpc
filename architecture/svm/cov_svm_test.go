@@ -96,7 +96,7 @@ func TestCovSvm_UnparseableRequest_EveryEntryPoint(t *testing.T) {
 	require.False(t, handled)
 
 	// Slot helpers fail open / report "no bound".
-	end, ok := RequestRangeEndSlot(ctx, covSvmBadReq(), 7, 100)
+	end, _, ok := RequestRangeEndSlot(ctx, covSvmBadReq(), 7, 100)
 	require.True(t, ok)
 	require.EqualValues(t, 7, end, "unknown method resolves to start itself")
 	_, ok = RequestLowerBoundSlot(ctx, covSvmBadReq())
@@ -388,13 +388,13 @@ func TestCovSvm_RequestRangeEndSlot_GetBlocksWithLimitMalformed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	for _, params := range []string{`[50]`, `[50,-1]`, `[50,1.5]`} {
-		end, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", params), 50, 80)
+		end, _, ok := RequestRangeEndSlot(ctx, reqOf(t, "getBlocksWithLimit", params), 50, 80)
 		require.False(t, ok, "params %s must fail open", params)
 		require.Zero(t, end)
 	}
 	// Native int / int64 limits are accepted and resolve to the tip.
 	for _, limit := range []interface{}{int(10), int64(10)} {
-		end, ok := RequestRangeEndSlot(ctx, covSvmReqFromParams("getBlocksWithLimit", []interface{}{int64(50), limit}), 50, 80)
+		end, _, ok := RequestRangeEndSlot(ctx, covSvmReqFromParams("getBlocksWithLimit", []interface{}{int64(50), limit}), 50, 80)
 		require.True(t, ok)
 		require.EqualValues(t, 80, end)
 	}
@@ -426,7 +426,6 @@ func TestCovSvm_SlotLagFilters_NonSvmAndPollerless(t *testing.T) {
 	require.Equal(t, []common.Upstream{nonSvm, noPoller, nullPoller, fresh}, got,
 		"upstreams that cannot be judged stay; only the stale one is dropped")
 
-	require.EqualValues(t, 1000, HighestFinalizedSlot([]common.Upstream{nonSvm, noPoller, nullPoller, stale, fresh}))
 	require.EqualValues(t, 1000, ReferenceFinalizedSlot([]common.Upstream{nonSvm, noPoller, fresh, stale}, 0))
 
 	got = FilterByMinContextSlot([]common.Upstream{nonSvm, nullPoller, stale}, 500, true)
@@ -730,7 +729,6 @@ func (u *covSvmFuncUpstream) Forward(ctx context.Context, req *common.Normalized
 
 func covSvmHealthyAnswer(req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
 	raw := map[string]string{
-		"getHealth":             `"ok"`,
 		"getSlot:processed":     `1000`,
 		"getSlot:finalized":     `990`,
 		"getMaxShredInsertSlot": `1001`,
@@ -746,7 +744,6 @@ func covSvmHealthyAnswer(req *common.NormalizedRequest, key string) (*common.Nor
 func TestCovSvmPoller_MalformedSlotAnswersAreIgnored(t *testing.T) {
 	t.Parallel()
 	up := newScriptedUpstream()
-	up.script("getHealth", []byte(`"ok"`))
 	up.script("getSlot:processed", []byte(`null`))
 	up.scriptError("getSlot:finalized", -32005, "Node is behind by 42 slots")
 	up.script("getMaxShredInsertSlot", []byte(`"abc"`))
@@ -759,18 +756,21 @@ func TestCovSvmPoller_MalformedSlotAnswersAreIgnored(t *testing.T) {
 	require.True(t, p.IsHealthy(), "a bad slot sample is not a health verdict")
 }
 
-func TestCovSvmPoller_NilHealthResponseIsUnhealthy(t *testing.T) {
+// A nil response object is transport-level silence, not an answer: one dead
+// poll is tolerated (a vendor 429 against the poller is the common case), the
+// second consecutive one flips the verdict.
+func TestCovSvmPoller_NilResponsesAreDeadAfterTwoPolls(t *testing.T) {
 	t.Parallel()
-	up := &covSvmFuncUpstream{id: "covsvm-nilhealth", fwd: func(_ context.Context, req *common.NormalizedRequest, key string) (*common.NormalizedResponse, error) {
-		if key == "getHealth" {
-			return nil, nil
-		}
-		return covSvmHealthyAnswer(req, key)
+	up := &covSvmFuncUpstream{id: "covsvm-nilresp", fwd: func(_ context.Context, _ *common.NormalizedRequest, _ string) (*common.NormalizedResponse, error) {
+		return nil, nil
 	}}
 	p := newPollerWithUpstream(t, up)
+
 	require.NoError(t, p.Poll(context.Background()))
-	require.False(t, p.IsHealthy())
-	require.EqualValues(t, 1000, p.LatestSlot())
+	require.True(t, p.IsHealthy(), "one all-silent poll is not a verdict")
+
+	require.NoError(t, p.Poll(context.Background()))
+	require.False(t, p.IsHealthy(), "two consecutive all-silent polls must flip the verdict")
 }
 
 func TestCovSvmPoller_PanickingUpstreamIsRecovered(t *testing.T) {
@@ -810,7 +810,7 @@ func TestCovSvmPoller_FloorProbeFailuresLeaveFloorUnknown(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			up := newScriptedUpstream()
-			scriptAllFour(up)
+			scriptAllProbes(up)
 			tc.script(up)
 			p := newPollerWithUpstream(t, up)
 			require.NoError(t, p.Poll(context.Background()))
@@ -860,12 +860,15 @@ func TestCovSvmPoller_LargeRollbackIsRecorded(t *testing.T) {
 	p := newPollerWithUpstream(t, up)
 
 	p.SuggestLatestSlot(5000)
-	p.SuggestLatestSlot(1000) // 4000 back: beyond DefaultToleratedSlotRollback
-	require.EqualValues(t, 1000, p.LatestSlot(), "a large rollback is applied, not ignored")
+	p.SuggestLatestSlot(999) // 4001 back: beyond DefaultToleratedSlotRollback, held until it moves
+	require.EqualValues(t, 5000, p.LatestSlot(), "a first large rollback is held")
+	p.SuggestLatestSlot(1000) // moved on from its new height
+	require.EqualValues(t, 1000, p.LatestSlot(), "a large rollback that moved is applied, not ignored")
 	require.Equal(t, 4000.0, promUtil.ToFloat64(
 		telemetry.MetricUpstreamBlockHeadLargeRollback.WithLabelValues("test", "", "", id, "latest")))
 
 	p.SuggestFinalizedSlot(3000)
+	p.SuggestFinalizedSlot(99)
 	p.SuggestFinalizedSlot(100)
 	require.EqualValues(t, 100, p.FinalizedSlot())
 	require.Equal(t, 2900.0, promUtil.ToFloat64(

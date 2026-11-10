@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// segmentHistory is a History that also exposes a verified contiguous segment.
+// segmentHistory is a History that also exposes the tracker's held headers.
 type segmentHistory struct {
 	from, to int64
 	headers  map[int64]*Header
@@ -32,6 +32,14 @@ func (s *segmentHistory) FollowedRange() (int64, int64, bool) {
 func (s *segmentHistory) HeaderAt(n int64) (*Header, bool) {
 	h, ok := s.headers[n]
 	return h, ok
+}
+func (s *segmentHistory) HeaderByHash(hash string) (*Header, bool) {
+	for _, h := range s.headers {
+		if h.Hash == hash {
+			return h, true
+		}
+	}
+	return nil, false
 }
 
 // plainHistory has NO segment — the shape when the follower is disabled.
@@ -122,8 +130,11 @@ func TestBaseFeeDerivation(t *testing.T) {
 		assert.Equal(t, "skip", outcomeOf(res, "baseFeeDerivation"))
 	})
 
-	t.Run("skips when the block sits outside the verified segment", func(t *testing.T) {
-		outside := &segmentHistory{from: 500, to: 600, headers: map[int64]*Header{100: parentOnTarget}}
+	// The parent is the header the child's parentHash names; a block held
+	// at number-1 on another fork does not stand in for it.
+	t.Run("skips when the parent the parentHash names is not held", func(t *testing.T) {
+		otherFork := &Header{Number: "0x64", Hash: "0xotherfork", BaseFeePerGas: "0x1", GasLimit: "0x1c9c380", GasUsed: "0x0"}
+		outside := &segmentHistory{from: 100, to: 101, headers: map[int64]*Header{100: otherFork}}
 		res := runConsecutive(t, "baseFeeDerivation",
 			consecutiveBody(101, "0x4a817c800", "0x1c9c380", "0x0", "0x100"), outside)
 		require.NoError(t, res.Err)

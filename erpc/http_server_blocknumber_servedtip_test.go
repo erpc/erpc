@@ -2,7 +2,9 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -26,14 +28,62 @@ import (
 // on-chain block.number read via eth_call comes back BELOW eth_blockNumber,
 // even when the same upstream serves both calls).
 //
-// Topology (shared bni* helpers): rpc1 head 0x800, rpc2 head 0x1000. With two
-// upstreams the default quorum (2) serves the LOWER head, so the served head is
-// 0x800 while rpc2 answers 0x1000.
+// Topology: every head poll (the hash votes the served head is learned from)
+// reports 0x800, while rpc2's own eth_blockNumber answer runs ahead at 0x1000,
+// as a node's answer does once a block arrived after the last head fetch. The
+// served head is 0x800 while rpc2 answers 0x1000.
 
-// bniServedTipBoot mirrors bniBoot with a caller-chosen upstream order and a
-// wait condition for the two-upstream topology: every head known with
-// max==0x1000, and the served head 0x800, so the head is deterministic before
-// any assertion runs.
+// stpHeads registers, ahead of setupBniPollerMocks' static heads, every
+// upstream's latest header at head(), and each block below it by number:
+// hash and parentHash derived from the number, so each poll is a hash vote
+// of one chain, and a tracker that walks a jump finds the blocks it skipped.
+func stpHeads(head func() int64) {
+	header := func(n int64) string {
+		return fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, n, n, n-1)
+	}
+	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost", "http://rpc3.localhost"} {
+		gock.New(host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				b := util.SafeReadBody(r)
+				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				res.Body = io.NopCloser(strings.NewReader(header(head())))
+				return res
+			})
+		gock.New(host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				n, ok := stpByNumber(util.SafeReadBody(r))
+				return ok && n <= head()
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				n, _ := stpByNumber(util.SafeReadBody(res.Request))
+				res.Body = io.NopCloser(strings.NewReader(header(n)))
+				return res
+			})
+	}
+}
+
+// stpByNumber reads the block number of an eth_getBlockByNumber request
+// for a numbered block.
+func stpByNumber(body string) (int64, bool) {
+	var req struct {
+		Method string        `json:"method"`
+		Params []interface{} `json:"params"`
+	}
+	if json.Unmarshal([]byte(body), &req) != nil || req.Method != "eth_getBlockByNumber" || len(req.Params) == 0 {
+		return 0, false
+	}
+	ref, _ := req.Params[0].(string)
+	n, err := common.HexToInt64(ref)
+	return n, err == nil && strings.HasPrefix(ref, "0x")
+}
+
+// bniServedTipBoot mirrors bniBoot with a caller-chosen upstream order and
+// waits for the served head 0x800, so it is deterministic before any
+// assertion runs.
 func bniServedTipBoot(t *testing.T, cfg *common.Config, order ...string) (
 	func(body string, headers map[string]string, queryParams map[string]string) (int, map[string]string, string),
 	*Network,
@@ -50,23 +100,21 @@ func bniServedTipBoot(t *testing.T, cfg *common.Config, order ...string) (
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		ctx := context.Background()
-		ceiling, known := ntw.futureBlockCeiling(ctx)
-		return known && ceiling == bniHealthyHead &&
-			ntw.EvmHighestLatestBlockNumber(ctx) == bniLaggingHead
+		return servedHead(ntw, context.Background()).Latest == bniLaggingHead
 	}, 5*time.Second, 50*time.Millisecond,
-		"pollers must learn both heads (served=0x800, max=0x1000) before the scenario starts")
+		"pollers must learn the served head (0x800) before the scenario starts")
 
 	return sendRequest, ntw, shutdown
 }
 
 func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	t.Run("Bug_FreshResponseAboveTipMustBePinnedToServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		stpHeads(func() int64 { return bniLaggingHead })
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -80,11 +128,19 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 			bniLaggingHead, bniHealthyHead)
 		assert.Empty(t, hdrs["X-Erpc-Upstream"],
 			"the pin discards any upstream answer, so the served tip must be answered without dispatching")
+
+		// erigon_blockNumber is the same question (spec §7 family 1).
+		status, ehdrs, body := send(`{"jsonrpc":"2.0","id":1,"method":"erigon_blockNumber","params":[]}`, nil, nil)
+		require.Equal(t, http.StatusOK, status, body)
+		assert.Contains(t, body, fmt.Sprintf(`"result":"0x%x"`, bniLaggingHead),
+			"erigon_blockNumber must answer the served tip, not an upstream's head")
+		assert.Empty(t, ehdrs["X-Erpc-Upstream"], "erigon_blockNumber is answered without dispatching")
 	})
 
 	t.Run("Bug_CacheHitAboveTipMustBePinnedToServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		stpHeads(func() int64 { return bniLaggingHead })
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -104,7 +160,8 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("Baseline_ResponseAtServedTipPassesThrough", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		stpHeads(func() int64 { return bniLaggingHead })
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -118,7 +175,8 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 
 	t.Run("Baseline_PerRequestOverrideServesRawValue", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		stpHeads(func() int64 { return bniLaggingHead })
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -131,31 +189,23 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 		assert.Equal(t, bniHealthyHead, got)
 	})
 
-	t.Run("LocalAnswerRefreshesBallotPollers", func(t *testing.T) {
+	t.Run("LatestReadsMoveTheServedHead", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
-		// Heads move up 5 blocks once `moved` flips. Registered before the
-		// static bootstrap mocks so gock matches them first; until the flip
-		// they decline and the static heads (0x800/0x1000) answer.
+		// Heads move up 5 blocks once `moved` flips.
 		var moved atomic.Bool
-		for host, head := range map[string]string{
-			"http://rpc1.localhost": "0x805",
-			"http://rpc2.localhost": "0x1005",
-		} {
-			gock.New(host).Post("").Persist().
-				Filter(func(r *http.Request) bool {
-					b := util.SafeReadBody(r)
-					return moved.Load() && strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
-				}).
-				Reply(200).
-				JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, head)))
-		}
+		stpHeads(func() int64 {
+			if moved.Load() {
+				return bniLaggingHead + 5
+			}
+			return bniLaggingHead
+		})
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
-		// A 30s ticker cannot poll during the test; a 100ms debounce lets each
-		// eth_blockNumber answer kick a refresh almost at once.
+		// A 30s ticker cannot poll during the test: the reads are the block
+		// clock's demand, and a 100ms debounce paces its early retries.
 		cfg := bniConfig(false, nil)
 		for _, u := range cfg.Projects[0].Upstreams {
 			u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
@@ -179,7 +229,7 @@ func TestHttpServer_EthBlockNumberServedTipPin(t *testing.T) {
 			got, _ := bniSend(t, send, nil, nil)
 			return got == bniLaggingHead+5
 		}, 3*time.Second, 50*time.Millisecond,
-			"eth_blockNumber must refresh the ballot's pollers and reach the moved served head (0x%x) without waiting for the 30s poll interval",
+			"latest reads must move the served head to 0x%x without waiting for the 30s poll interval",
 			bniLaggingHead+5)
 	})
 }

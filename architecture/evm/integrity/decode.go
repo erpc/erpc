@@ -1,6 +1,13 @@
 package integrity
 
-import "github.com/erpc/erpc/common"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+
+	"github.com/erpc/erpc/architecture/evm/logfilter"
+	"github.com/erpc/erpc/common"
+)
 
 // Lowercased method names this package understands. Checks reference these and
 // the engine matches the request method (lowercased) against them.
@@ -104,7 +111,7 @@ type Decoded struct {
 	receipts []Receipt
 	logs     []Log
 
-	filter     *LogsFilter
+	filter     *logfilter.LogsFilter
 	filterDone bool
 
 	blockTraces   []TraceEntry
@@ -121,9 +128,9 @@ func newDecoded(method string, raw []byte) *Decoded {
 
 // LogsFilter returns the parsed eth_getLogs request filter, or nil when the
 // request params are unavailable/unparseable (callers must skip, not reject).
-func (d *Decoded) LogsFilter() *LogsFilter {
+func (d *Decoded) LogsFilter() *logfilter.LogsFilter {
 	if !d.filterDone {
-		d.filter = parseLogsFilter(d.reqParams)
+		d.filter = logfilter.Parse(d.reqParams)
 		d.filterDone = true
 	}
 	return d.filter
@@ -187,12 +194,49 @@ func (d *Decoded) Header() *Header {
 	d.headerDone = true
 	switch d.method {
 	case MethodGetBlockByNumber, MethodGetBlockByHash:
-		var h Header
-		if err := common.SonicCfg.Unmarshal(d.raw, &h); err == nil {
-			d.header = &h
-		}
+		d.header, _ = DecodeHeader(d.raw)
 	}
 	return d.header
+}
+
+// DecodeHeader decodes a block header. Its timestamp is set as hex when
+// JSONTimestamp reads it, so checks judge a header whose node sends it as
+// an integer; another string stays as sent, for the checks to skip.
+func DecodeHeader(raw []byte) (*Header, error) {
+	var j struct {
+		Header
+		Timestamp json.RawMessage `json:"timestamp"`
+	}
+	if err := common.SonicCfg.Unmarshal(raw, &j); err != nil {
+		return nil, err
+	}
+	h := &j.Header
+	if ts, ok := JSONTimestamp(j.Timestamp); ok {
+		h.Timestamp = "0x" + strconv.FormatInt(ts, 16)
+	} else if len(j.Timestamp) > 0 && j.Timestamp[0] == '"' {
+		_ = common.SonicCfg.Unmarshal(j.Timestamp, &h.Timestamp)
+	}
+	return h, nil
+}
+
+// JSONTimestamp reads a JSON block timestamp as eRPC has always read it: a
+// hex or decimal string, or a JSON integer; ok is false for anything else
+// or a negative value.
+func JSONTimestamp(raw json.RawMessage) (int64, bool) {
+	s := string(raw)
+	if n := len(raw); n >= 2 && raw[0] == '"' && raw[n-1] == '"' {
+		s = s[1 : n-1]
+	}
+	ts, err := ParseTimestamp(s)
+	return ts, err == nil && ts >= 0
+}
+
+// ParseTimestamp parses a block timestamp string: hex (0x...) or decimal.
+func ParseTimestamp(s string) (int64, error) {
+	if strings.HasPrefix(s, "0x") {
+		return common.HexToInt64(s)
+	}
+	return strconv.ParseInt(s, 10, 64)
 }
 
 // Receipts returns the receipts carried by the response: the array for

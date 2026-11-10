@@ -39,6 +39,11 @@ type SharedStateRegistry interface {
 	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 	GetLockTtl() time.Duration
 	GetFallbackTimeout() time.Duration
+	GetUpdateMaxWait() time.Duration
+	// Wait waits, once appCtx ended, until no counter refresh runs (each
+	// runs its caller's fetch, at most its fallback timeout); none starts
+	// after.
+	Wait()
 }
 
 type sharedStateRegistry struct {
@@ -53,6 +58,11 @@ type sharedStateRegistry struct {
 	lockMaxWait     time.Duration
 	updateMaxWait   time.Duration
 	initializer     *util.Initializer
+	refreshes       util.Goroutines
+}
+
+func (r *sharedStateRegistry) Wait() {
+	r.refreshes.Wait()
 }
 
 func NewSharedStateRegistry(
@@ -166,9 +176,8 @@ func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *util
 				return err
 			}
 
-			var st CounterInt64State
-			if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
-				// No backward compatibility: treat parse errors as missing
+			st, ok := parseCounterState(counter.key, raw)
+			if !ok {
 				r.logger.Debug().Str("key", counter.key).Msg("initial counter value is not a valid JSON state; treating as missing")
 				return nil
 			}
@@ -271,4 +280,10 @@ func (r *sharedStateRegistry) GetLockTtl() time.Duration {
 
 func (r *sharedStateRegistry) GetFallbackTimeout() time.Duration {
 	return r.fallbackTimeout
+}
+
+// GetUpdateMaxWait is how long a foreground caller waits for a refresh
+// before it goes on with the value it has.
+func (r *sharedStateRegistry) GetUpdateMaxWait() time.Duration {
+	return r.updateMaxWait
 }

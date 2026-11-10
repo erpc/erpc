@@ -28,6 +28,14 @@ func (f *followedHeaders) HeaderAt(n int64) (*Header, bool) {
 	h, ok := f.headers[n]
 	return h, ok
 }
+func (f *followedHeaders) HeaderByHash(hash string) (*Header, bool) {
+	for _, h := range f.headers {
+		if h.Hash == hash {
+			return h, true
+		}
+	}
+	return nil, false
+}
 
 // segmentAt builds a followed segment whose block at `number` used `gasUsed`
 // gas across `ntx` transactions.

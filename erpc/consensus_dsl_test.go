@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 )
 
@@ -339,15 +338,15 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 	expResult, expError := parseExpectedOutcomeFromSpec(t, rhs, upstreamSpecs)
 
 	// Setup function for leader/block heights if needed
-	var setupFn func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry)
+	var setupFn func(t *testing.T, ctx context.Context, n *Network)
 	if leaderIndex > 0 || len(blockHeights) > 0 {
-		setupFn = func(t *testing.T, ctx context.Context, reg *upstream.UpstreamsRegistry) {
-			ups := reg.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		setupFn = func(t *testing.T, ctx context.Context, n *Network) {
+			ups := n.upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 
 			// Set block heights
 			for idx, height := range blockHeights {
 				if idx > 0 && idx <= len(ups) {
-					ups[idx-1].EvmStatePoller().SuggestLatestBlock(int64(height))
+					ups[idx-1].EvmStatePoller().SuggestLatestBlock(int64(height), time.Now())
 					time.Sleep(50 * time.Millisecond)
 				}
 			}
@@ -373,7 +372,7 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 						if bh, ok := blockHeights[i+1]; ok {
 							h = bh
 						}
-						u.EvmStatePoller().SuggestLatestBlock(int64(h))
+						u.EvmStatePoller().SuggestLatestBlock(int64(h), time.Now())
 						time.Sleep(50 * time.Millisecond)
 						if h > maxHeight {
 							maxHeight = h
@@ -385,7 +384,7 @@ func buildConsensusTestCaseFromDSL(t *testing.T, spec string) consensusTestCase 
 				if bh, ok := blockHeights[leaderIndex]; ok && bh > maxHeight {
 					leaderHeight = bh
 				}
-				ups[leaderIndex-1].EvmStatePoller().SuggestLatestBlock(int64(leaderHeight))
+				ups[leaderIndex-1].EvmStatePoller().SuggestLatestBlock(int64(leaderHeight), time.Now())
 				time.Sleep(50 * time.Millisecond)
 			}
 		}

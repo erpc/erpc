@@ -655,3 +655,5 @@ func TestUpstreamForward_AutoTunerShrinksBudgetUnderRemoteThrottling(t *testing.
 		})
 	}
 }
+
+func (*syncingPoller) HeadBackingOff() bool { return false }

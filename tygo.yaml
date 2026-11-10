@@ -45,3 +45,7 @@ packages:
       - "vendors.go"
       - "tracing_core.go"
       - "tracing_util.go"
+      # common/user.go is server-internal: the auth strategy name lives on the
+      # request's ExecState, not on User, so the generated TS type must not
+      # advertise it.
+      - "user.go"

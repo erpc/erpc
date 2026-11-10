@@ -79,14 +79,14 @@ func TestCovMiscTracing_StartSpanRecordsAndDetailGate(t *testing.T) {
 	assert.True(t, s.IsRecording())
 	s.End()
 	_, d := StartDetailSpan(ctx, "Detail.Op")
-	assert.False(t, d.IsRecording(), "detail spans require IsTracingDetailed")
+	assert.False(t, d.IsRecording(), "detail spans require IsTracingDetailed()")
 	d.End()
 
 	sp := covMiscOnlySpan(t, sr)
 	assert.Equal(t, "Cache.Get", sp.Name())
 	assert.Equal(t, "v", covMiscAttrs(sp.Attributes())["k"].AsString())
 
-	IsTracingDetailed = true
+	SetTracingDetailed(true)
 	_, d = StartDetailSpan(ctx, "Detail.Op")
 	d.End()
 	require.Len(t, sr.Ended(), 2)
@@ -425,7 +425,7 @@ func TestCovMiscTracing_ExportersWithTLSAndHeaders(t *testing.T) {
 // restores every global it may touch.
 func covMiscResetTracingInit(t *testing.T) {
 	t.Helper()
-	prevEnabled, prevDetailed := IsTracingEnabled, IsTracingDetailed
+	prevEnabled, prevDetailed := IsTracingEnabled(), IsTracingDetailed()
 	prevTracer, prevProvider, prevMatchers := tracer, tracerProvider, forceTraceMatchers
 	prevGlobalTP := otel.GetTracerProvider()
 	prevProp := otel.GetTextMapPropagator()
@@ -435,7 +435,8 @@ func covMiscResetTracingInit(t *testing.T) {
 		if tracerProvider != nil && tracerProvider != prevProvider {
 			_ = tracerProvider.Shutdown(context.Background())
 		}
-		IsTracingEnabled, IsTracingDetailed = prevEnabled, prevDetailed
+		SetTracingEnabled(prevEnabled)
+		SetTracingDetailed(prevDetailed)
 		tracer, tracerProvider, forceTraceMatchers = prevTracer, prevProvider, prevMatchers
 		otel.SetTracerProvider(prevGlobalTP)
 		otel.SetTextMapPropagator(prevProp)
@@ -446,36 +447,37 @@ func covMiscResetTracingInit(t *testing.T) {
 
 func TestCovMiscTracing_InitializeDisabled(t *testing.T) {
 	covMiscResetTracingInit(t)
-	IsTracingEnabled, IsTracingDetailed = true, true
+	SetTracingEnabled(true)
+	SetTracingDetailed(true)
 	logger := zerolog.Nop()
 
 	require.NoError(t, InitializeTracing(context.Background(), &logger, nil))
-	assert.False(t, IsTracingEnabled)
-	assert.False(t, IsTracingDetailed)
+	assert.False(t, IsTracingEnabled())
+	assert.False(t, IsTracingDetailed())
 	_, span := StartSpan(context.Background(), "after-disabled-init")
 	assert.False(t, span.IsRecording())
 
 	// second call is a no-op thanks to sync.Once, even with an enabled config
 	require.NoError(t, InitializeTracing(context.Background(), &logger, &TracingConfig{Enabled: true, Protocol: "bogus"}))
-	assert.False(t, IsTracingEnabled)
+	assert.False(t, IsTracingEnabled())
 }
 
 func TestCovMiscTracing_InitializeUnsupportedProtocol(t *testing.T) {
 	covMiscResetTracingInit(t)
-	IsTracingEnabled = false
+	SetTracingEnabled(false)
 	logger := zerolog.Nop()
 	err := InitializeTracing(context.Background(), &logger, &TracingConfig{Enabled: true, Protocol: "carrier-pigeon"})
 	require.ErrorContains(t, err, "unsupported tracing protocol: carrier-pigeon")
-	assert.False(t, IsTracingEnabled)
+	assert.False(t, IsTracingEnabled())
 }
 
 func TestCovMiscTracing_InitializeExporterError(t *testing.T) {
 	covMiscResetTracingInit(t)
-	IsTracingEnabled = false
+	SetTracingEnabled(false)
 	logger := zerolog.Nop()
 	err := InitializeTracing(context.Background(), &logger, &TracingConfig{Enabled: true, Protocol: TracingProtocolHttp, Endpoint: "ftp://x:1"})
 	require.ErrorContains(t, err, "invalid tracing endpoint")
-	assert.False(t, IsTracingEnabled)
+	assert.False(t, IsTracingEnabled())
 }
 
 func TestCovMiscTracing_InitializeHTTPExportsSpans(t *testing.T) {
@@ -509,8 +511,8 @@ func TestCovMiscTracing_InitializeHTTPExportsSpans(t *testing.T) {
 		ForceTraceMatchers: []*ForceTraceMatcher{{Network: "evm:1", Method: "eth_call"}},
 	}
 	require.NoError(t, InitializeTracing(context.Background(), &logger, cfg))
-	assert.True(t, IsTracingEnabled)
-	assert.True(t, IsTracingDetailed)
+	assert.True(t, IsTracingEnabled())
+	assert.True(t, IsTracingDetailed())
 	forced, reason := ShouldForceTrace("evm:1", "eth_call")
 	assert.True(t, forced)
 	assert.Equal(t, "network:evm:1,method:eth_call", reason)
@@ -547,8 +549,8 @@ func TestCovMiscTracing_InitializeGRPC(t *testing.T) {
 	require.NoError(t, InitializeTracing(context.Background(), &logger, &TracingConfig{
 		Enabled: true, Protocol: TracingProtocolGrpc, Endpoint: "127.0.0.1:1", SampleRate: 0.25,
 	}))
-	assert.True(t, IsTracingEnabled)
-	assert.False(t, IsTracingDetailed)
+	assert.True(t, IsTracingEnabled())
+	assert.False(t, IsTracingDetailed())
 	// Fractional rates are parent-based: a remote parent's decision wins.
 	sampledParent := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{9}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled, Remote: true})
 	droppedParent := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{9}, SpanID: trace.SpanID{2}, Remote: true})

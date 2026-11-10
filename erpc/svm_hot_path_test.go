@@ -27,7 +27,7 @@ func svmUpstreamCfg(id, host string) *common.UpstreamConfig {
 // it is never enforced, so every slot-named read — point or range — reaches the upstream.
 func TestSvm_ObservedFloor_NeverSkipsWithoutDeclaredBound(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("v1.localhost", 600000000, 599999900, 600000001, 509000000)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("v2.localhost", 600000000, 599999900, 600000001, 550000000)
@@ -69,7 +69,7 @@ func TestSvm_ObservedFloor_NeverSkipsWithoutDeclaredBound(t *testing.T) {
 // upstream declaring exactSlot: 0 overrides the vendor's higher reported floor.
 func TestSvm_FirstAvailableSlotPlus_OptInUsesObservedFloor(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("validator.localhost", 300000, 299900, 300001, 200000)
 	util.SetupMocksForSvmStatePollerWithFirstAvailable("archive.localhost", 300000, 299900, 300001, 200000)

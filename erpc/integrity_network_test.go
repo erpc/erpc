@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -46,8 +48,10 @@ func mockReceipt(url, body string, times int) {
 // buildIntegrityNetwork wires a real two-upstream network (rpc1, rpc2) with a
 // retry failsafe — only the HTTP transport is mocked (via gock). Every other
 // object (registries, upstreams, clients, network, the post-forward hook and
-// the integrity engine) is real.
-func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
+// the integrity engine) is real. A nil integrity enables the intrinsic
+// logIndex magnitude check; the config is final before the network is built,
+// since its trackers read it from their start.
+func buildIntegrityNetwork(t *testing.T, ctx context.Context, integrity *common.IntegrityConfig) *Network {
 	t.Helper()
 	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
@@ -82,21 +86,25 @@ func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
 	}
 
 	fsCfg := &common.FailsafeConfig{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}}
-	tru := true
-	ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
-		Architecture: common.ArchitectureEvm,
-		Evm:          &common.EvmNetworkConfig{ChainId: 123},
-		Failsafe:     []*common.FailsafeConfig{fsCfg},
-		// Enable the intrinsic logIndex magnitude check (the corrupt-receipt
-		// tests rely on it). Integrity is opt-in, so it must be configured.
-		Integrity: &common.IntegrityConfig{
+	if integrity == nil {
+		tru := true
+		// The corrupt-receipt tests rely on the intrinsic logIndex magnitude
+		// check. Integrity is opt-in, so it must be configured.
+		integrity = &common.IntegrityConfig{
 			IntegritySettings: common.IntegritySettings{
 				Checks: map[string]*common.IntegrityCheckConfig{
 					"indexMagnitude": {Enabled: &tru},
 				},
 			},
-		},
+		}
+	}
+	ntw, err := NewNetwork(ctx, &log.Logger, "prjA", &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe:     []*common.FailsafeConfig{fsCfg},
+		Integrity:    integrity,
 	}, rlr, upr, mt, nil)
+	stopAtEnd(t, ntw)
 	require.NoError(t, err)
 	ntw.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
@@ -106,7 +114,7 @@ func buildIntegrityNetwork(t *testing.T, ctx context.Context) *Network {
 	// intrinsic-check tests, which don't consult finality.
 	for _, ups := range upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123)) {
 		if sp := ups.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			sp.SuggestFinalizedBlock(0x11117FFF)
+			sp.SuggestFinalizedBlock(0x11117FFF, time.Now())
 		}
 	}
 	return ntw
@@ -129,7 +137,7 @@ var underflowedIdx = []string{"0xfffffff7", "0xfffffff8", "0xfffffff9", "0xfffff
 // fails over to the second upstream and the canonical receipt is served.
 func TestIntegrity_Network_CorruptReceiptFailsOver(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,7 +146,7 @@ func TestIntegrity_Network_CorruptReceiptFailsOver(t *testing.T) {
 	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1) // corrupt → rejected
 	mockReceipt("http://rpc2.localhost", receiptBody(canonicalIdx...), 1)   // canonical → served
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	resp, err := forwardReceipt(t, ctx, ntw)
 	require.NoError(t, err, "must fail over to the healthy upstream")
 	require.NotNil(t, resp)
@@ -154,7 +162,7 @@ func TestIntegrity_Network_CorruptReceiptFailsOver(t *testing.T) {
 // untouched (the engine does not over-reject real data).
 func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -162,7 +170,7 @@ func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 
 	mockReceipt("http://rpc1.localhost", receiptBody(canonicalIdx...), 1)
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	resp, err := forwardReceipt(t, ctx, ntw)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
@@ -179,7 +187,7 @@ func TestIntegrity_Network_CleanReceiptPasses(t *testing.T) {
 // integrity_saved_total (a wrong response was prevented).
 func TestIntegrity_Network_SavedRequestFlagged(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -188,7 +196,7 @@ func TestIntegrity_Network_SavedRequestFlagged(t *testing.T) {
 	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1) // corrupt → rejected
 	mockReceipt("http://rpc2.localhost", receiptBody(canonicalIdx...), 1)   // canonical → served
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
 	req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 
@@ -214,8 +222,14 @@ func receiptOneLog(logIndex string) string {
 	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}}`, logIndex)
 }
 
+// blockReceiptsOneLog is the block's receipts as a node serves them, with
+// the logsBloom of the one log: integrity checks the tracker's corroboration
+// fetch too.
 func blockReceiptsOneLog(logIndex string) string {
-	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}]}`, logIndex)
+	bloom := make([]byte, logfilter.BloomLen)
+	addr, _ := hex.DecodeString("27b26e88f007ec9109648c6da522fcaba06c74d7")
+	logfilter.BloomAdd(bloom, addr)
+	return fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":[{"blockHash":"0x5a28cc00c288af5a055bba9ea5b202b8406e86138ec94ddfc8e96978c752c28a","blockNumber":"0xe57e13","transactionHash":"0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e","transactionIndex":"0x0","logsBloom":"0x%s","logs":[{"address":"0x27b26e88f007ec9109648c6da522fcaba06c74d7","data":"0x","logIndex":"%s"}]}]}`, hex.EncodeToString(bloom), logIndex)
 }
 
 func mockMethod(url, method, body string) {
@@ -230,7 +244,7 @@ func mockMethod(url, method, body string) {
 // but-wrong receipt is force-fetched, rejected, and failed over.
 func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -245,11 +259,10 @@ func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
 	mockMethod("http://rpc1.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
 	mockMethod("http://rpc2.localhost", "eth_getBlockReceipts", blockReceiptsOneLog("0x0"))
 
-	ntw := buildIntegrityNetwork(t, ctx)
 	// Enable the authoritative tier via CONFIG, not a per-request directive.
-	ntw.Config().Integrity = &common.IntegrityConfig{
+	ntw := buildIntegrityNetwork(t, ctx, &common.IntegrityConfig{
 		IntegritySettings: common.IntegritySettings{Level: "authoritative"},
-	}
+	})
 
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
 	resp, err := ntw.Forward(ctx, req)
@@ -267,7 +280,7 @@ func TestIntegrity_Network_ConfigLevelDrivesCorroboration(t *testing.T) {
 // returns corrupt data the request fails (rather than serving garbage).
 func TestIntegrity_Network_AllUpstreamsCorrupt(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -276,7 +289,7 @@ func TestIntegrity_Network_AllUpstreamsCorrupt(t *testing.T) {
 	mockReceipt("http://rpc1.localhost", receiptBody(underflowedIdx...), 1)
 	mockReceipt("http://rpc2.localhost", receiptBody(underflowedIdx...), 1)
 
-	ntw := buildIntegrityNetwork(t, ctx)
+	ntw := buildIntegrityNetwork(t, ctx, nil)
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabf61f02a6c77b28a9465a2256e26d2fe25714b60bb8edabb7d0ce794fba932e"],"id":1}`))
 	req.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 

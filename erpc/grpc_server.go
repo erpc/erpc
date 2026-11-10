@@ -229,11 +229,7 @@ func (gs *GrpcServer) GetBlockByNumber(ctx context.Context, req *evm.GetBlockByN
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, grpcStatusOf(err)
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, grpcStatusOf(err)
 	}
@@ -261,11 +257,7 @@ func (gs *GrpcServer) GetBlockByHash(ctx context.Context, req *evm.GetBlockByHas
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, grpcStatusOf(err)
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, grpcStatusOf(err)
 	}
@@ -459,16 +451,6 @@ func serveQuery[Res any](gs *GrpcServer, req proto.Message, stream grpc.ServerSt
 	}
 	return queryGrpcError(gs.processor.ProcessQueryStream(stream.Context(), input, req, func(page proto.Message) error {
 		return stream.Send(any(page).(*Res))
-	}))
-}
-
-func (gs *GrpcServer) StreamBlocks(req *evm.StreamBlocksRequest, stream evm.StreamService_StreamBlocksServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_getBlockByNumber")
-	if err != nil {
-		return err
-	}
-	return grpcStatusOf(gs.processor.ProcessBlockStream(stream.Context(), input, func(header *evm.BlockHeader) error {
-		return stream.Send(&evm.StreamBlocksResponse{Header: header})
 	}))
 }
 

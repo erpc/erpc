@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -300,4 +301,92 @@ func TestIsNoAttemptError(t *testing.T) {
 	t.Run("nil result is not an attempt", func(t *testing.T) {
 		assert.True(t, isNoAttemptResult(nil))
 	})
+}
+
+// TestWaitCap_DoesNotSealWaivers pins fail-closed waivers on wait-cap: cancel
+// alone is not a round-completion barrier (calls may ignore ctx), so a
+// MissingData waiver must not fire on the partial bag.
+func TestWaitCap_DoesNotSealWaivers(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
+	ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"))
+	ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"))
+
+	pol := newBuilder().
+		WithLogger(&logger).
+		WithMaxParticipants(4).
+		WithAgreementThreshold(2).
+		WithMaxWaitOnEmpty(common.NewStaticDuration(80 * time.Millisecond)).
+		WithRequiredParticipants([]*common.ConsensusRequiredParticipant{
+			{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnMissingData: true},
+			{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+		}).
+		Build()
+
+	req := newTestRequest()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var slot atomic.Int32
+	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		idx := slot.Add(1)
+		switch idx {
+		case 1:
+			return nil, common.NewErrEndpointMissingData(fmt.Errorf("missing trie node"), internal)
+		case 2:
+			return validResponseWithValue("0xaa").SetUpstream(ext1), nil
+		case 3:
+			return validResponseWithValue("0xaa").SetUpstream(ext2), nil
+		default:
+			time.Sleep(2 * time.Second)
+			return validResponseWithValue("0xstill-in-flight").SetUpstream(internal), nil
+		}
+	})
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusCompositionDispute),
+		"wait-cap must not seal the bag and waive a partial round, got: %v", err)
+}
+
+// TestWaitCap_FireAndForgetDoesNotSealWaivers pins the same fail-closed bag
+// for fire-and-forget (which also skips cancelRemaining on wait-cap).
+func TestWaitCap_FireAndForgetDoesNotSealWaivers(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	internal := common.NewFakeUpstream("internal-1", common.WithTags("type:internal"))
+	ext1 := common.NewFakeUpstream("external-1", common.WithTags("type:external"))
+	ext2 := common.NewFakeUpstream("external-2", common.WithTags("type:external"))
+
+	pol := newBuilder().
+		WithLogger(&logger).
+		WithMaxParticipants(4).
+		WithAgreementThreshold(2).
+		WithFireAndForget(true).
+		WithMaxWaitOnEmpty(common.NewStaticDuration(80 * time.Millisecond)).
+		WithRequiredParticipants([]*common.ConsensusRequiredParticipant{
+			{Tag: "type:internal", MinParticipants: 1, MinAgreement: 1, WaiveAgreementOnMissingData: true},
+			{Tag: "type:external", MinParticipants: 1, MinAgreement: 1},
+		}).
+		Build()
+
+	req := newTestRequest()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var slot atomic.Int32
+	_, err := pol.Run(ctx, req, func(_ context.Context, _ *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+		idx := slot.Add(1)
+		switch idx {
+		case 1:
+			return nil, common.NewErrEndpointMissingData(fmt.Errorf("missing trie node"), internal)
+		case 2:
+			return validResponseWithValue("0xaa").SetUpstream(ext1), nil
+		case 3:
+			return validResponseWithValue("0xaa").SetUpstream(ext2), nil
+		default:
+			time.Sleep(2 * time.Second)
+			return validResponseWithValue("0xstill-in-flight").SetUpstream(internal), nil
+		}
+	})
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeConsensusCompositionDispute),
+		"fire-and-forget wait-cap must not seal the bag and waive a still-running round, got: %v", err)
 }

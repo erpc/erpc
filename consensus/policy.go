@@ -57,6 +57,8 @@ type config struct {
 	maxWaitOnResult         *common.AdaptiveDuration
 	maxWaitOnEmpty          *common.AdaptiveDuration
 	requiredParticipants    []*common.ConsensusRequiredParticipant
+	policyName              string
+	cacheableResponses      *bool
 }
 
 // builder is the internal builder used by NewConsensus.
@@ -135,6 +137,19 @@ func (b *builder) WithRequiredParticipants(v []*common.ConsensusRequiredParticip
 	b.cfg.requiredParticipants = v
 	return b
 }
+func (b *builder) WithPolicyName(name string) *builder {
+	b.cfg.policyName = name
+	return b
+}
+func (b *builder) WithCacheableResponses(v *bool) *builder {
+	if v == nil {
+		b.cfg.cacheableResponses = nil
+		return b
+	}
+	cp := *v
+	b.cfg.cacheableResponses = &cp
+	return b
+}
 
 // build snapshots the config and constructs the runtime consensus policy.
 func (b *builder) build() *consensusPolicy {
@@ -148,7 +163,7 @@ func (b *builder) build() *consensusPolicy {
 
 	var exp misbehaviorExporter
 	if hCopy.misbehaviorsDestination != nil {
-		exp = createMisbehaviorExporter(hCopy.misbehaviorsDestination, &log)
+		exp = createMisbehaviorExporter(hCopy.misbehaviorsDestination, &log, hCopy.policyName)
 	}
 
 	return &consensusPolicy{
@@ -177,7 +192,7 @@ type consensusPolicy struct {
 // createMisbehaviorExporter selects the configured exporter
 // implementation. Errors are logged and the exporter is disabled —
 // misbehavior export is best-effort.
-func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) misbehaviorExporter {
+func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger, policyName string) misbehaviorExporter {
 	if cfg == nil || cfg.Path == "" {
 		return nil
 	}
@@ -195,7 +210,7 @@ func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *z
 
 	switch cfg.Type {
 	case common.MisbehaviorsDestinationTypeS3:
-		exp, err := newS3MisbehaviorExporter(cfg, log)
+		exp, err := newS3MisbehaviorExporter(cfg, log, policyName)
 		if err != nil {
 			log.Error().
 				Str("path", cfg.Path).
@@ -208,7 +223,7 @@ func createMisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *z
 	case common.MisbehaviorsDestinationTypeFile:
 		fallthrough
 	default:
-		exp, err := newFileMisbehaviorExporter(cfg, log)
+		exp, err := newFileMisbehaviorExporter(cfg, log, policyName)
 		if err != nil {
 			log.Warn().
 				Str("path", cfg.Path).

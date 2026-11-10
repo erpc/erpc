@@ -189,14 +189,29 @@ type Initializer struct {
 	attempts atomic.Int32
 	tasks    sync.Map
 	tasksMu  sync.Mutex
+	// runs runs every task attempt; Wait waits for them.
+	runs Goroutines
 
 	autoRetryActive atomic.Bool
 	cancelAutoRetry atomic.Value // context.CancelFunc
 	autoRetryWg     sync.WaitGroup
+	stopMu          sync.Mutex
+	stopped         atomic.Bool
 
 	conf *InitializerConfig
 
 	StateUpdates chan InitializationState
+}
+
+// Wait waits, once appCtx ended, until no task attempt or auto-retry loop
+// runs; none starts after.
+func (i *Initializer) Wait() {
+	// Marked under stopMu, as Stop does, so no loop is added once Wait runs.
+	i.stopMu.Lock()
+	i.stopped.Store(true)
+	i.stopMu.Unlock()
+	i.autoRetryWg.Wait()
+	i.runs.Wait()
 }
 
 func NewInitializer(appCtx context.Context, logger *zerolog.Logger, conf *InitializerConfig) *Initializer {
@@ -224,8 +239,15 @@ func (i *Initializer) ExecuteTasks(ctx context.Context, tasks ...*BootstrapTask)
 	if len(tasks) == 0 {
 		return nil
 	}
+	if i.stopped.Load() {
+		return fmt.Errorf("initializer stopped")
+	}
 
 	i.tasksMu.Lock()
+	if i.stopped.Load() {
+		i.tasksMu.Unlock()
+		return fmt.Errorf("initializer stopped")
+	}
 	tasksToWait := make([]*BootstrapTask, 0, len(tasks))
 	for _, task := range tasks {
 		actual, existed := i.tasks.LoadOrStore(task.Name, task)
@@ -354,6 +376,9 @@ func (i *Initializer) taskReadyForRetry(t *BootstrapTask) bool {
 func (i *Initializer) attemptRemainingTasks(respectBackoff bool) {
 	i.tasksMu.Lock()
 	defer i.tasksMu.Unlock()
+	if i.stopped.Load() {
+		return
+	}
 
 	var tasksToRun []*BootstrapTask
 
@@ -383,66 +408,11 @@ func (i *Initializer) attemptRemainingTasks(respectBackoff bool) {
 				doneCh := t.createNewDoneChannel()
 				tasksToRun = append(tasksToRun, t)
 
-				go func(bt *BootstrapTask, doneCh chan struct{}, attemptID int32) {
-					// Close the channel when the function finishes
-					defer close(doneCh)
-
-					if i.appCtx.Err() != nil {
-						if bt.finishAttempt(attemptID, TaskFailed, i.appCtx.Err()) {
-							i.logger.Warn().Str("task", bt.Name).Err(i.appCtx.Err()).Msg("initialization task context error")
-						}
-						wg.Done()
-						return
-					}
-
-					tctx, cancel := context.WithTimeout(i.appCtx, i.conf.TaskTimeout)
-					bt.ctxCancel.Store(cancel)
+				if !i.runs.Go(func() { i.runAttempt(t, doneCh, attemptID, &wg) }) {
+					t.finishAttempt(attemptID, TaskFailed, errInitializerStopped)
 					wg.Done()
-					err := bt.Fn(tctx)
-					if err == nil {
-						// If the function returns nil but context says we're canceled, treat it as an error
-						err = tctx.Err()
-					}
-
-					if err != nil {
-						// Detect fatal control errors without importing the common package to avoid cycles
-						var fatal interface{ IsTaskFatal() bool }
-						if errors.As(err, &fatal) {
-							// Fatal errors should stop retries
-							// Unwrap underlying error if available
-							underlying := err
-							if uw, ok := err.(interface{ Unwrap() error }); ok && uw.Unwrap() != nil {
-								underlying = uw.Unwrap()
-							}
-							if bt.finishAttempt(attemptID, TaskFatal, underlying) {
-								i.logger.Error().Str("task", bt.Name).Err(underlying).Msg("initialization task fatal error")
-							}
-							return
-						}
-						if !errors.Is(err, context.Canceled) {
-							if cause := context.Cause(tctx); cause != nil {
-								err = cause
-							}
-						} else {
-							// Preserve a reason already set (e.g. by reap) when canceled.
-							if wr, ok := bt.lastErr.Load().(wrappedError); ok && wr.err != nil {
-								err = wr.err
-							}
-						}
-						terminal := TaskFailed
-						if errors.Is(err, context.DeadlineExceeded) {
-							terminal = TaskTimedOut
-						}
-						if bt.finishAttempt(attemptID, terminal, err) {
-							i.logger.Warn().Str("task", bt.Name).Err(err).Str("state", terminal.String()).Msg("initialization task failed")
-						}
-					} else {
-						if bt.finishAttempt(attemptID, TaskSucceeded, nil) {
-							lastAttempt, _ := bt.lastAttempt.Load().(time.Time)
-							i.logger.Info().Str("task", bt.Name).Dur("durationMs", time.Since(lastAttempt)).Msg("initialization task succeeded")
-						}
-					}
-				}(t, doneCh, attemptID)
+					close(doneCh)
+				}
 			} else {
 				wg.Done()
 			}
@@ -454,6 +424,72 @@ func (i *Initializer) attemptRemainingTasks(respectBackoff bool) {
 
 	// Wait for tasks to "start" running. To wait for them to finish, use WaitForTasks()
 	wg.Wait()
+}
+
+// errInitializerStopped fails an attempt the initializer can no longer
+// start: Wait began.
+var errInitializerStopped = errors.New("initializer stopped")
+
+// runAttempt runs attempt attemptID of bt and closes doneCh when it ends;
+// started is done once the attempt runs or failed to.
+func (i *Initializer) runAttempt(bt *BootstrapTask, doneCh chan struct{}, attemptID int32, started *sync.WaitGroup) {
+	defer close(doneCh)
+
+	if i.appCtx.Err() != nil {
+		if bt.finishAttempt(attemptID, TaskFailed, i.appCtx.Err()) {
+			i.logger.Warn().Str("task", bt.Name).Err(i.appCtx.Err()).Msg("initialization task context error")
+		}
+		started.Done()
+		return
+	}
+
+	tctx, cancel := context.WithTimeout(i.appCtx, i.conf.TaskTimeout)
+	bt.ctxCancel.Store(cancel)
+	started.Done()
+	err := bt.Fn(tctx)
+	if err == nil {
+		// If the function returns nil but context says we're canceled, treat it as an error
+		err = tctx.Err()
+	}
+
+	if err == nil {
+		if bt.finishAttempt(attemptID, TaskSucceeded, nil) {
+			lastAttempt, _ := bt.lastAttempt.Load().(time.Time)
+			i.logger.Info().Str("task", bt.Name).Dur("durationMs", time.Since(lastAttempt)).Msg("initialization task succeeded")
+		}
+		return
+	}
+	// Detect fatal control errors without importing the common package to avoid cycles
+	var fatal interface{ IsTaskFatal() bool }
+	if errors.As(err, &fatal) {
+		// Fatal errors should stop retries
+		// Unwrap underlying error if available
+		underlying := err
+		if uw, ok := err.(interface{ Unwrap() error }); ok && uw.Unwrap() != nil {
+			underlying = uw.Unwrap()
+		}
+		if bt.finishAttempt(attemptID, TaskFatal, underlying) {
+			i.logger.Error().Str("task", bt.Name).Err(underlying).Msg("initialization task fatal error")
+		}
+		return
+	}
+	if !errors.Is(err, context.Canceled) {
+		if cause := context.Cause(tctx); cause != nil {
+			err = cause
+		}
+	} else {
+		// Preserve a reason already set (e.g. by reap) when canceled.
+		if wr, ok := bt.lastErr.Load().(wrappedError); ok && wr.err != nil {
+			err = wr.err
+		}
+	}
+	terminal := TaskFailed
+	if errors.Is(err, context.DeadlineExceeded) {
+		terminal = TaskTimedOut
+	}
+	if bt.finishAttempt(attemptID, terminal, err) {
+		i.logger.Warn().Str("task", bt.Name).Err(err).Str("state", terminal.String()).Msg("initialization task failed")
+	}
 }
 
 func (i *Initializer) State() InitializationState {
@@ -598,9 +634,16 @@ func (i *Initializer) MarkTaskAsFailed(name string, err error) {
 func (i *Initializer) Stop(destroyFn func() error) error {
 	i.logger.Debug().Msg("stopping initializer")
 
-	// Stop the auto-retry loop before taking tasksMu, which the loop also
-	// acquires.
-	if cancel := i.cancelAutoRetry.Load(); cancel != nil {
+	// Mark stopped under stopMu before cancelling so ensureAutoRetryIfEnabled
+	// cannot Add a new loop after Wait returns (or while Wait sees a zero
+	// count). ExecuteTasks / attemptRemainingTasks also refuse work once
+	// stopped so they cannot start tasks against destroyFn'd resources.
+	i.stopMu.Lock()
+	i.stopped.Store(true)
+	cancel := i.cancelAutoRetry.Load()
+	i.stopMu.Unlock()
+
+	if cancel != nil {
 		cancel.(context.CancelFunc)()
 	}
 	i.autoRetryWg.Wait()
@@ -699,6 +742,11 @@ func (i *Initializer) ensureAutoRetryIfEnabled() {
 	if !i.conf.AutoRetry {
 		return
 	}
+	i.stopMu.Lock()
+	defer i.stopMu.Unlock()
+	if i.stopped.Load() {
+		return
+	}
 	if i.autoRetryActive.Load() {
 		return
 	}
@@ -707,7 +755,7 @@ func (i *Initializer) ensureAutoRetryIfEnabled() {
 	rctx, cancel := context.WithCancel(i.appCtx)
 	i.cancelAutoRetry.Store(cancel)
 
-	// Add to wait group
+	// Add to wait group under stopMu so Stop cannot Wait between Add and go.
 	i.autoRetryWg.Add(1)
 	go func() {
 		defer i.autoRetryWg.Done()
@@ -755,8 +803,15 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 	}
 
 	delay := i.conf.RetryMinDelay
-	// Wait for the first delay before doing the first retry
-	<-time.After(delay)
+	// Wait for the first delay before doing the first retry, but stay
+	// interruptible so Stop() is not blocked for RetryMinDelay.
+	select {
+	case <-ctx.Done():
+		i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry interrupted")
+		i.autoRetryActive.Store(false)
+		return
+	case <-time.After(delay):
+	}
 	for {
 		if ctx.Err() != nil {
 			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry interrupted")
