@@ -558,6 +558,11 @@ Layers that make those grades work:
    latest`), otherwise the min of ≥ 2 corroborated participant poller
    latests. Default max-mode tip is **not** trusted. A tag request, or a hash
    lookup whose block no non-winner confirms → no proof → dispute.
+   **Unsafe opt-in:** a policy that lists the method in
+   `blockEvidenceFields` (per-method answer paths, e.g. `blockNumber`) trusts
+   the agreeing answer's block when no non-winner confirms it. Two colluding
+   upstreams can then get a fabricated old tx served. A non-winner that
+   contradicts the block still fails closed.
 
  The synthesized default mixed-node tie (a lone non-empty archive group tying
  an equally-sized empty internal group at `agreementThreshold`) produces an

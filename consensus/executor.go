@@ -161,14 +161,15 @@ func (e *executor) Run(
 	}
 
 	// Gate hedge empty-as-slot-vote on the selected policy's empty-waiver
-	// opt-in AND a block the waiver can judge: one the request names, or one
-	// a hash lookup's answer names for a non-winner to confirm. Keeping empty
-	// hedge winners for every other request would change prior recovery
-	// behavior when the waiver can never fire.
+	// opt-in AND a block the waiver can judge: one the request names, one a
+	// hash lookup's answer names for a non-winner to confirm, or one the
+	// method's blockEvidenceFields read. Keeping empty hedge winners for every
+	// other request would change prior recovery behavior when the waiver can
+	// never fire.
 	if st := originalReq.ExecState(); st != nil {
 		keep := false
 		if anyEmptyOutsideRetentionOptIn(e.config.requiredParticipants) {
-			keep = emptyWaiverHasBlock(ctx, originalReq)
+			keep = e.emptyWaiverHasBlock(ctx, originalReq)
 		}
 		st.SetKeepEmptyConsensusSlot(keep)
 	}

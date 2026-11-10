@@ -24,9 +24,11 @@ type waiverBlockProof struct {
 // (eth_getTransactionByHash, eth_getTransactionReceipt, eth_getBlockByHash)
 // names none. g's answer names one, but the agreeing upstreams cannot vouch
 // for their own claim (#1363), so it counts only once an upstream outside the
-// agreeing set confirms it (confirmAnswerBlock). That is network I/O, so it
-// runs only on a complete round where an opted-in quota has abstainers to
-// release, and once per group.
+// agreeing set confirms it (confirmAnswerBlock). A policy that opts into
+// blockEvidenceFields trusts g's own block when no upstream confirms it, but
+// never when one contradicts it. That is network I/O, so it runs only on a
+// complete round where an opted-in quota has abstainers to release, and once
+// per group.
 func (e *executor) waiverBlock(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) waiverBlockProof {
 	if b := requestBlock(ctx, analysis); b != nil {
 		return waiverBlockProof{block: b}
@@ -38,6 +40,11 @@ func (e *executor) waiverBlock(ctx context.Context, analysis *consensusAnalysis,
 		return p
 	}
 	p := e.confirmAnswerBlock(ctx, analysis, g)
+	if p.block == nil && p.reason != waiverUnprovenReasonBlockContradicted {
+		if b := e.winnerBlockEvidence(analysis, g); b != nil {
+			p = waiverBlockProof{block: b}
+		}
+	}
 	if analysis.waiverBlocks == nil {
 		analysis.waiverBlocks = make(map[*responseGroup]waiverBlockProof, 1)
 	}
@@ -73,21 +80,50 @@ func (e *executor) confirmAnswerBlock(ctx context.Context, analysis *consensusAn
 }
 
 // emptyWaiverHasBlock reports whether the empty-outside-retention waiver can
-// get a block for req: the request names one, or it names a hash and the
-// method's answer names a block (respRefs) that confirmAnswerBlock can check.
-func emptyWaiverHasBlock(ctx context.Context, req *common.NormalizedRequest) bool {
+// get a block for req: the request names one, the policy opts the method into
+// blockEvidenceFields, or it names a hash and the method's answer names a
+// block (respRefs) that confirmAnswerBlock can check.
+func (e *executor) emptyWaiverHasBlock(ctx context.Context, req *common.NormalizedRequest) bool {
 	if _, ok := common.EvmRequestedBlockNumber(ctx, req); ok {
 		return true
-	}
-	if requestHash(ctx, req) == "" {
-		return false
 	}
 	method, err := req.Method()
 	if err != nil {
 		return false
 	}
+	if fields, ok := methodFields(e.config.blockEvidenceFields, method); ok && len(fields) > 0 {
+		return true
+	}
+	if requestHash(ctx, req) == "" {
+		return false
+	}
 	mc := common.ResolveMethodConfig(method, req.Network())
 	return mc != nil && len(mc.RespRefs) > 0
+}
+
+// winnerBlockEvidence is the block g's answer names at the policy's
+// blockEvidenceFields paths for the round's method, the first that resolves.
+// It is the winners' own claim, trusted only by that opt-in. A negative value
+// fails closed rather than falling through to a later path.
+func (e *executor) winnerBlockEvidence(analysis *consensusAnalysis, g *responseGroup) *big.Int {
+	if analysis == nil || g == nil || g.LargestResult == nil {
+		return nil
+	}
+	fields, ok := methodFields(e.config.blockEvidenceFields, analysis.method)
+	if !ok {
+		return nil
+	}
+	for _, field := range fields {
+		values := extractFieldValues(g.LargestResult, []string{field})
+		if len(values) == 0 || values[0] == nil {
+			continue
+		}
+		if values[0].Sign() < 0 {
+			return nil
+		}
+		return values[0]
+	}
+	return nil
 }
 
 // requestHash is the 32-byte hash (a tx or block hash) a request names as its

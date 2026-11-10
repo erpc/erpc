@@ -501,7 +501,9 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 	// waiver may judge that block only once an upstream outside the winners
 	// holds it at that number, under that hash, with the requested tx in it.
 	// The first upstream that returns the block decides; a disagreeing one
-	// fails closed rather than letting the waiver ask the next.
+	// fails closed rather than letting the waiver ask the next. The
+	// blockEvidenceFields opt-in trusts an unconfirmed block, never a
+	// contradicted one.
 	t.Run("hash lookup block needs a confirmer outside the winners", func(t *testing.T) {
 		txHash := "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060"
 		block16 := "0x" + strings.Repeat("ab", 32)
@@ -511,6 +513,7 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 		}
 		tx := map[string]interface{}{"hash": txHash, "blockNumber": "0x10", "blockHash": block16}
 		receipt := map[string]interface{}{"transactionHash": txHash, "blockNumber": "0x10", "blockHash": block16}
+		evidence := map[string][]string{"eth_getTransactionByHash": {"blockNumber"}, "eth_getTransactionReceipt": {"blockNumber"}}
 
 		cases := []struct {
 			name     string
@@ -521,14 +524,17 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 			int2     map[string]interface{}
 			fires    bool
 			probesTo []string
+			evidence map[string][]string
 		}{
-			{"tx confirmed by the first abstainer", "eth_getTransactionByHash", txHash, tx, held(txHash), held(txHash), true, []string{"internal-1"}},
-			{"receipt confirmed past a pruned abstainer", "eth_getTransactionReceipt", txHash, receipt, nil, held(txHash), true, []string{"internal-1", "internal-2"}},
-			{"block by hash confirmed", "eth_getBlockByHash", block16, map[string]interface{}{"number": "0x10", "hash": block16}, held(), nil, true, []string{"internal-1"}},
-			{"fabricated tx is not in the block", "eth_getTransactionByHash", txHash, tx, held(), held(txHash), false, []string{"internal-1"}},
-			{"fabricated block hash", "eth_getTransactionByHash", txHash, map[string]interface{}{"hash": txHash, "blockNumber": "0x10", "blockHash": otherHash}, held(txHash), held(txHash), false, []string{"internal-1"}},
-			{"no upstream outside the winners holds the block", "eth_getTransactionByHash", txHash, tx, nil, nil, false, []string{"internal-1", "internal-2"}},
-			{"answer names no block", "eth_getTransactionByHash", txHash, map[string]interface{}{"hash": txHash}, held(txHash), held(txHash), false, nil},
+			{"tx confirmed by the first abstainer", "eth_getTransactionByHash", txHash, tx, held(txHash), held(txHash), true, []string{"internal-1"}, nil},
+			{"receipt confirmed past a pruned abstainer", "eth_getTransactionReceipt", txHash, receipt, nil, held(txHash), true, []string{"internal-1", "internal-2"}, nil},
+			{"block by hash confirmed", "eth_getBlockByHash", block16, map[string]interface{}{"number": "0x10", "hash": block16}, held(), nil, true, []string{"internal-1"}, nil},
+			{"fabricated tx is not in the block", "eth_getTransactionByHash", txHash, tx, held(), held(txHash), false, []string{"internal-1"}, nil},
+			{"fabricated block hash", "eth_getTransactionByHash", txHash, map[string]interface{}{"hash": txHash, "blockNumber": "0x10", "blockHash": otherHash}, held(txHash), held(txHash), false, []string{"internal-1"}, nil},
+			{"no upstream outside the winners holds the block", "eth_getTransactionByHash", txHash, tx, nil, nil, false, []string{"internal-1", "internal-2"}, nil},
+			{"answer names no block", "eth_getTransactionByHash", txHash, map[string]interface{}{"hash": txHash}, held(txHash), held(txHash), false, nil, nil},
+			{"opt-in trusts a block no one else holds", "eth_getTransactionReceipt", txHash, receipt, nil, nil, true, []string{"internal-1", "internal-2"}, evidence},
+			{"opt-in still refuses a contradicted block", "eth_getTransactionByHash", txHash, tx, held(), held(txHash), false, []string{"internal-1"}, evidence},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -551,8 +557,10 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 						}))
 				}
 				before := waivedMetricValue()
+				cfg := newCfg()
+				cfg.blockEvidenceFields = tc.evidence
 
-				winner := winnerForRequest(t, newCfg(), &common.JsonRpcRequest{Method: tc.method, Params: []interface{}{tc.subject}}, &headNetwork{latest: head}, []*execResult{
+				winner := winnerForRequest(t, cfg, &common.JsonRpcRequest{Method: tc.method, Params: []interface{}{tc.subject}}, &headNetwork{latest: head}, []*execResult{
 					emptyResultFrom(t, holder("internal-1", tc.int1), 0),
 					emptyResultFrom(t, holder("internal-2", tc.int2), 1),
 					objResultFrom(t, ext1, tc.answer, 2),
@@ -562,7 +570,7 @@ func TestEmptyOutsideRetentionWaiver_PromotesLoneNonEmpty(t *testing.T) {
 				require.NotNil(t, winner)
 				assert.Equal(t, tc.probesTo, probes, "probes must go to non-winners in order and stop at the first block returned")
 				if tc.fires {
-					require.Nil(t, winner.Error, "a confirmed block outside retention must release the internal quota")
+					require.Nil(t, winner.Error, "a block outside retention must release the internal quota")
 					assert.Equal(t, 1.0, waivedMetricValue()-before)
 					return
 				}
