@@ -53,9 +53,9 @@ func (v *TenderlyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 		return false, err
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultTenderlyRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultTenderlyRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 
 	networks, ok := v.resolveNetworks(logger, recheckInterval)
@@ -103,9 +103,9 @@ func (v *TenderlyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Lo
 			return nil, fmt.Errorf("tenderly vendor requires upstream.evm.chainId to be defined")
 		}
 
-		recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-		if !ok {
-			recheckInterval = DefaultTenderlyRecheckInterval
+		recheckInterval, err := settings.RecheckInterval(DefaultTenderlyRecheckInterval)
+		if err != nil {
+			return nil, err
 		}
 
 		networks, ok := v.resolveNetworks(logger, recheckInterval)

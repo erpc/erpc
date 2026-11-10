@@ -60,9 +60,9 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		networksUrl = DefaultConduitNetworksUrl
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultConduitRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultConduitRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 
 	networks, ok := v.resolveNetworks(logger, networksUrl, recheckInterval)
@@ -128,9 +128,9 @@ func (v *ConduitVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Log
 		networksUrl = DefaultConduitNetworksUrl
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultConduitRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultConduitRecheckInterval)
+	if err != nil {
+		return nil, err
 	}
 
 	networks, ok := v.resolveNetworks(logger, networksUrl, recheckInterval)

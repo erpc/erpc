@@ -129,9 +129,9 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		return false, fmt.Errorf("failed to parse superchain registry URL from source '%s': %w", registryURL, err)
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultSuperchainRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultSuperchainRecheckInterval)
+	if err != nil {
+		return false, err
 	}
 
 	networks, ok := v.resolveNetworks(logger, finalRegistryURL, recheckInterval)
@@ -202,9 +202,9 @@ func (v *SuperchainVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 		return nil, fmt.Errorf("failed to parse superchain registry URL from source '%s': %w", registryURL, err)
 	}
 
-	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
-	if !ok {
-		recheckInterval = DefaultSuperchainRecheckInterval
+	recheckInterval, err := settings.RecheckInterval(DefaultSuperchainRecheckInterval)
+	if err != nil {
+		return nil, err
 	}
 
 	networks, ok := v.resolveNetworks(logger, finalRegistryURL, recheckInterval)
