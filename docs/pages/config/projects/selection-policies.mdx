@@ -353,7 +353,7 @@ const live = upstreams.excludeIf(creditRemainingBelow(4e9), { probe: false });
 return live.filter(creditPaceBelow(1.0)).union(live);
 ```
 
-Size the `creditRemainingBelow` margin above the credits the account bills during the vendor's usage-reporting lag (QuickNode: 2-3 h of hourly buckets) plus the stale window.
+Size the `creditRemainingBelow` margin above the credits the account bills during the vendor's usage-reporting lag (QuickNode: 2-3 h of hourly buckets; Alchemy: about 1 minute) plus the 5-minute refresh and the stale window.
 
 Note: `samplesAbove`/`samplesBelow` predicates are marked `isGuard=true` so they do not appear as primary exclusion reasons when they do NOT trip; they only appear when they are the leaf that fires.
 
