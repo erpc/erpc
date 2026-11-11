@@ -413,13 +413,17 @@ func p23Body(s *scenario, sh p23Shape) {
 			r.byClass = newP23Reads()
 		}
 	}
+	// With the gate's bars, each block's logs are read by its blockHash
+	// too, as the first vendor's tag names it: a hash no tracker holds yet.
+	hashCalls0, hashGates0 := s.p23LogsCalls(), s.p23Gates()
 	_, byHash, _, _, _ := s.liveRun(sh.hash, heads, func(ctx context.Context, _ *faultWindows) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
-			wg.Go(func() { s.p23ByHash(ctx, p.idx, hashReads[p.idx], vl) })
+			wg.Go(func() { s.p23ByHash(ctx, p.idx, hashReads[p.idx], vl, sh.gate != nil) })
 		}
 		wg.Wait()
 	})
+	hashCalls1, hashGates1 := s.p23LogsCalls(), s.p23Gates()
 	ask2 := s.p23Asks()
 	s.judgeFetches(&b, "by-hash reads", byHash, 0)
 
@@ -432,7 +436,7 @@ func p23Body(s *scenario, sh p23Shape) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
 			wg.Go(func() { s.p23ByNumber(ctx, p.idx, reads[p.idx], sh) })
-			wg.Go(func() { s.p23ByHash(ctx, p.idx, reads[p.idx], vl) })
+			wg.Go(func() { s.p23ByHash(ctx, p.idx, reads[p.idx], vl, false) })
 		}
 		wg.Wait()
 	})
@@ -484,13 +488,26 @@ func p23Body(s *scenario, sh p23Shape) {
 		for _, v := range p23Verdicts {
 			gate = append(gate, fmt.Sprintf("%s %.0f", v, gates1[p.idx][v]))
 		}
-		fmt.Fprintf(&b, "pod-%d (%s image) eth_getLogs answered [] for a block with matching logs (wrongEmpty): %d; logs gate verdicts: %s\n",
-			p.idx+1, s.image(p.idx), reads[p.idx].wrongEmpty, strings.Join(gate, ", "))
-		if !p.old && reads[p.idx].wrongEmpty > 0 {
-			s.violate(s.name, "pod-%d: %d eth_getLogs answered [] for a block with matching logs", p.idx+1, reads[p.idx].wrongEmpty)
+		for _, ph := range []struct {
+			name string
+			r    *p23Reads
+		}{{"by-hash reads", hashReads[p.idx]}, {"read-ahead", reads[p.idx]}} {
+			fmt.Fprintf(&b, "pod-%d (%s image) %s: eth_getLogs answered [] for a block with matching logs (wrongEmpty): %d\n",
+				p.idx+1, s.image(p.idx), ph.name, ph.r.wrongEmpty)
+			if !p.old && ph.r.wrongEmpty > 0 {
+				s.violate(s.name, "pod-%d %s: %d eth_getLogs answered [] for a block with matching logs", p.idx+1, ph.name, ph.r.wrongEmpty)
+			}
 		}
+		fmt.Fprintf(&b, "pod-%d (%s image) logs gate verdicts: %s\n", p.idx+1, s.image(p.idx), strings.Join(gate, ", "))
 		if !p.old {
 			s.judgeView(&b, taps[p.idx], vl, viewRules{bound: liveViewBound, numbers: true})
+		}
+	}
+	if sh.gate != nil {
+		s.p23Cost(&b, "by-hash reads", hashCalls0, hashCalls1, hashGates0, hashGates1, hashReads, 1, true)
+		for _, p := range s.h.pods {
+			fmt.Fprintf(&b, "pod-%d (%s image) by-hash reads: logs gate header lookups found %.0f, found none %.0f (checked at the block after the head)\n",
+				p.idx+1, s.image(p.idx), hashGates1[p.idx][p23LookupFound]-hashGates0[p.idx][p23LookupFound], hashGates1[p.idx][p23LookupNone]-hashGates0[p.idx][p23LookupNone])
 		}
 	}
 	s.p23Cost(&b, "read-ahead", calls0, calls1, gates0, gates1, reads, 1, sh.gate != nil)
@@ -715,7 +732,17 @@ func (s *scenario) p23LogsCalls() []p23Calls {
 	return out
 }
 
-// p23Gates is, per pod, its logs gate verdicts (p23Verdicts).
+// p23LookupFound and p23LookupNone key p23Gates' counts of the gate's
+// header lookups of a blockHash the tracker does not hold
+// (erpc_chain_tracker_fetch_total{kind="logs_hash"}) that found the
+// header, and that found none.
+const (
+	p23LookupFound = "lookup found"
+	p23LookupNone  = "lookup none"
+)
+
+// p23Gates is, per pod, its logs gate verdicts (p23Verdicts) and header
+// lookups (p23LookupFound, p23LookupNone).
 func (s *scenario) p23Gates() []map[string]float64 {
 	out := make([]map[string]float64, len(s.h.pods))
 	for _, p := range s.h.pods {
@@ -723,6 +750,8 @@ func (s *scenario) p23Gates() []map[string]float64 {
 		for _, v := range p23Verdicts {
 			out[p.idx][v], _ = s.metric(p.idx, "erpc_logs_empty_gate_total", map[string]string{"verdict": v})
 		}
+		out[p.idx][p23LookupFound], _ = s.metric(p.idx, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "logs_hash", "outcome": "ok"})
+		out[p.idx][p23LookupNone], _ = s.metric(p.idx, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "logs_hash", "outcome": "error"})
 	}
 	return out
 }
@@ -1033,13 +1062,20 @@ func (s *scenario) p23FirstServe(b *chainsim.Block, method string) time.Time {
 
 // p23ByHash reads on pod, as each block is minted, its eth_getBlockByHash
 // and its first transaction's receipt, logged in vl for the one-view
-// checks, and the same reads of the block p23Back below as control.
-func (s *scenario) p23ByHash(ctx context.Context, pod int, r *p23Reads, vl *viewLog) {
+// checks, and the same reads of the block p23Back below as control. With
+// logs, also each new block's logs by its blockHash as the first vendor's
+// tag names the block (p23Filtered), as a client fed by that vendor's
+// heads asks, before the pod's tracker holds that hash: its empty
+// answer's check must ask one other holder, not every routed upstream.
+func (s *scenario) p23ByHash(ctx context.Context, pod int, r *p23Reads, vl *viewLog, logs bool) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	last := s.chain.Tip().Number
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
+	call := func(result interface{}, method string, args ...interface{}) error {
+		return s.call(pod, result, method, args...)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1055,6 +1091,12 @@ func (s *scenario) p23ByHash(ctx context.Context, pod int, r *p23Reads, vl *view
 			wg.Add(2)
 			go func() { defer wg.Done(); s.p23HashReads(pod, r, vl, b, "") }()
 			go func() { defer wg.Done(); s.p23HashReads(pod, r, nil, back, " control") }()
+			if logs {
+				wg.Go(func() {
+					time.Sleep(time.Until(s.p23FirstServe(b, "eth_blockNumber")))
+					s.p23Filtered(call, r, b.Number, true)
+				})
+			}
 		}
 		last = tip.Number
 	}
