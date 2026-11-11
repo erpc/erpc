@@ -102,6 +102,11 @@ type consensusAnalysis struct {
 	cachedBestByCount  *responseGroup
 	cachedBestBySize   *responseGroup
 	cachedValidGroups  []*responseGroup
+
+	// waiverBlocks memoizes waiverBlock per winning group: confirming a hash
+	// lookup's block is a network probe, and one determineWinner can ask
+	// for the same group more than once.
+	waiverBlocks map[*responseGroup]waiverBlockProof
 }
 
 func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *config, responses []*execResult) *consensusAnalysis {
