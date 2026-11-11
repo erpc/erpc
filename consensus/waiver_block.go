@@ -28,7 +28,13 @@ type waiverBlockProof struct {
 // blockEvidenceFields trusts g's own block when no upstream confirms it, but
 // never when one contradicts it. That is network I/O, so it runs only on a
 // complete round where an opted-in quota has abstainers to release, and once
-// per group.
+// per group. When the answer's claimed number cannot prove outside retention
+// for any opted-in quota (head depth and availability bounds), the confirmer
+// probe is skipped — the common just-mined / inside-retention hash dispute
+// must not pay for eth_getBlockByNumber. That skip also skips the
+// blockEvidenceFields fallback: the gate reads RespRefs, and a divergent
+// evidence path must not waive an older number without a confirmer (which
+// previously could still contradict and block the fallback).
 func (e *executor) waiverBlock(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) waiverBlockProof {
 	if b := requestBlock(ctx, analysis); b != nil {
 		return waiverBlockProof{block: b}
@@ -39,10 +45,15 @@ func (e *executor) waiverBlock(ctx context.Context, analysis *consensusAnalysis,
 	if p, ok := analysis.waiverBlocks[g]; ok {
 		return p
 	}
-	p := e.confirmAnswerBlock(ctx, analysis, g)
-	if p.block == nil && p.reason != waiverUnprovenReasonBlockContradicted {
-		if b := e.winnerBlockEvidence(analysis, g); b != nil {
-			p = waiverBlockProof{block: b}
+	var p waiverBlockProof
+	if e.answerCannotProveOutsideRetention(ctx, analysis, g) {
+		p = waiverBlockProof{reason: waiverUnprovenReasonBlockInsideRetention}
+	} else {
+		p = e.confirmAnswerBlock(ctx, analysis, g)
+		if p.block == nil && p.reason != waiverUnprovenReasonBlockContradicted {
+			if b := e.winnerBlockEvidence(analysis, g); b != nil {
+				p = waiverBlockProof{block: b}
+			}
 		}
 	}
 	if analysis.waiverBlocks == nil {
@@ -50,6 +61,39 @@ func (e *executor) waiverBlock(ctx context.Context, analysis *consensusAnalysis,
 	}
 	analysis.waiverBlocks[g] = p
 	return p
+}
+
+// answerCannotProveOutsideRetention reports whether g's answer names a block
+// number that, even if trusted, cannot release any empty-outside-retention
+// quota this round — every opted-in abstaining quota fails both the
+// availability-bound proof and the chain-head depth proof. Used only to skip
+// the confirmer probe; it never feeds the claimed number into the waiver.
+func (e *executor) answerCannotProveOutsideRetention(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) bool {
+	if analysis == nil || g == nil || analysis.originalRequest == nil {
+		return false
+	}
+	number, _ := answerBlock(ctx, analysis.originalRequest, g.LargestResult)
+	if number <= 0 {
+		return false
+	}
+	claimed := big.NewInt(number)
+	head := e.chainHead(ctx, analysis, g)
+	any := false
+	for _, req := range e.config.requiredParticipants {
+		empties := abstainingEmpties(analysis, req)
+		if empties == nil {
+			continue
+		}
+		any = true
+		proves, contradicts := availabilityBoundProofState(empties, claimed)
+		if proves {
+			return false
+		}
+		if !contradicts && chainHeadProvesOutsideRetention(claimed, head, req.RetentionBlocks) {
+			return false
+		}
+	}
+	return any
 }
 
 // confirmAnswerBlock checks the block g's answer names against an upstream
