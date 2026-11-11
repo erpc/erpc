@@ -117,6 +117,13 @@ type EvalContext struct {
 	// cordons, including nodes already dropped from dispatch by selection.
 	// anyPunished / anyOperatorCordon scan this list. Empty when unset.
 	PunishedOrOperator []Upstream
+	// Selected is the post-selection candidate list for this request (who
+	// will actually enter the round). noneSelected() intersects this with
+	// the filtered Upstreams view. HasSelected distinguishes "unset"
+	// (unit tests / legacy callers → noneSelected stays false) from an
+	// explicitly empty candidate list (every matching peer was excluded).
+	Selected    []Upstream
+	HasSelected bool
 }
 
 // toJS renders the context as plain values sobek exposes as native JS objects
@@ -133,12 +140,18 @@ func (c EvalContext) toJS() map[string]any {
 		user = map[string]any{"auth": c.User.Auth}
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"request":            req,
 		"user":               user,
 		"upstreams":          upsToJS(c.Upstreams),
 		"punishedOrOperator": upsToJS(c.PunishedOrOperator),
 	}
+	// Omit `selected` when unset so noneSelected() can fail closed to false
+	// rather than treating a missing wire-up as "everyone was excluded".
+	if c.HasSelected {
+		out["selected"] = upsToJS(c.Selected)
+	}
+	return out
 }
 
 func upsToJS(ups []Upstream) []any {

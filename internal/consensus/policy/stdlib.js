@@ -10,6 +10,11 @@
 // punishment ∪ operator cordons), not the candidate items — selection may
 // already have dropped those nodes via removeCordoned.
 //
+// noneSelected intersects the filtered network view with the optional
+// `selected` list (post-selection candidates) by upstream id — so a
+// tag-scoped noneSelected() asks whether that tag still has anyone in this
+// round after lag / diversity / ensureMin exclusion.
+//
 // Grow this surface only when an observed operator config forces it.
 (function () {
   "use strict";
@@ -52,16 +57,20 @@
     return true;
   }
 
-  // items = post-selection candidates (or a filtered view of them);
-  // punishedOrOperator = fail-closed scan list. Chained filters (withTag /
-  // healthy / canServeBlock) narrow BOTH lists so anyPunished /
-  // anyOperatorCordon on a filtered collection only see matching nodes —
-  // feature §7.2: internals.anyPunished() must not pin when only an
-  // external is punished. The unfiltered ctx.upstreams.anyPunished() still
-  // scans the full network pin list.
-  function makeUpstreams(items, punishedOrOperator) {
+  // items = network snapshot (or a filtered view) for health helpers;
+  // punishedOrOperator = fail-closed scan list (narrowed by withTag/…).
+  // selectedAll = full post-selection candidate list — never narrowed by
+  // chain filters; noneSelected() intersects by upstream id against `arr`.
+  // selectedKnown is false when the bridge omitted `selected` — noneSelected
+  // must stay false rather than treat missing wire-up as an empty round.
+  //
+  // Chained filters (withTag / healthy / canServeBlock) narrow items + pin
+  // so tag-scoped helpers only see matching nodes — feature §7.2:
+  // primaries.anyPunished() must not pin when only a secondary is punished.
+  function makeUpstreams(items, punishedOrOperator, selectedAll, selectedKnown) {
     var arr = items || [];
     var pin = punishedOrOperator || [];
+    var sel = selectedAll || [];
     return {
       items: arr,
       get length() {
@@ -71,13 +80,13 @@
         function hasTag(u) {
           return u.tags && u.tags.indexOf(t) !== -1;
         }
-        return makeUpstreams(arr.filter(hasTag), pin.filter(hasTag));
+        return makeUpstreams(arr.filter(hasTag), pin.filter(hasTag), sel, selectedKnown);
       },
       healthy: function () {
         function isHealthy(u) {
           return u.health && u.health.state === "healthy";
         }
-        return makeUpstreams(arr.filter(isHealthy), pin.filter(isHealthy));
+        return makeUpstreams(arr.filter(isHealthy), pin.filter(isHealthy), sel, selectedKnown);
       },
       anyPunished: function () {
         return pin.some(function (u) {
@@ -93,11 +102,39 @@
         if (arr.length === 0) return false;
         return arr.every(availabilityUnavailable);
       },
+      // True when the set is non-empty and every member holds an operator
+      // (admin) cordon. Scans candidate items (network snapshot when wired),
+      // so selection-dropped operator cordons remain visible via withTag —
+      // unlike anyOperatorCordon (pin list, "any"), this is the deliberate
+      // full-tag drain signal for an opt-in looser named policy. False on an
+      // empty set (same as allUnavailable).
+      allOperatorCordoned: function () {
+        if (arr.length === 0) return false;
+        return arr.every(function (u) {
+          return hasClass(u, "operator");
+        });
+      },
+      // True when the filtered network set is non-empty and none of those
+      // members' ids appear in the post-selection candidate list (lag /
+      // diversity / ensureMin exclusion). False on an empty network set
+      // (config error) and false when the bridge never stamped `selected`.
+      noneSelected: function () {
+        if (!selectedKnown) return false;
+        if (arr.length === 0) return false;
+        var ids = {};
+        for (var i = 0; i < sel.length; i++) {
+          if (sel[i] && sel[i].id) ids[sel[i].id] = true;
+        }
+        for (var j = 0; j < arr.length; j++) {
+          if (arr[j] && ids[arr[j].id]) return false;
+        }
+        return true;
+      },
       canServeBlock: function (n) {
         function serves(u) {
           return canServe(u, n);
         }
-        return makeUpstreams(arr.filter(serves), pin.filter(serves));
+        return makeUpstreams(arr.filter(serves), pin.filter(serves), sel, selectedKnown);
       },
     };
   }
@@ -109,12 +146,18 @@
 
   globalThis.__erpcWrapConsensusCtx = function (raw) {
     raw = raw || {};
+    var selectedKnown = Object.prototype.hasOwnProperty.call(raw, "selected");
     return {
       request: raw.request || {},
       user: makeUser(raw.user),
-      // punishedOrOperator is NOT exposed on ctx — only consumed by the
-      // anyPunished / anyOperatorCordon helpers on ctx.upstreams.
-      upstreams: makeUpstreams(raw.upstreams, raw.punishedOrOperator),
+      // punishedOrOperator / selected are NOT exposed on ctx — only consumed
+      // by helpers on ctx.upstreams.
+      upstreams: makeUpstreams(
+        raw.upstreams,
+        raw.punishedOrOperator,
+        raw.selected,
+        selectedKnown
+      ),
     };
   };
 })();
