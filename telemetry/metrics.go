@@ -1016,20 +1016,20 @@ var (
 
 	// MetricLogsEmptyGateTotal counts the logs gate's verdicts on empty
 	// eth_getLogs answers the refusal rule would serve (spec §6.4 logs
-	// gate, §17): no (the pinned headers prove the range has no matching
-	// log: served at once), or, for a range that may hold one,
-	// maybe_alone (the request may select no other upstream, by its
+	// gate, §17): old (the block reached the view head W or more ago:
+	// served at once, unjudged), no (the pinned headers prove the range
+	// has no matching log: served at once), or, for a range that may hold
+	// one, maybe_alone (the request may select no other upstream, by its
 	// routing or its use-upstream selector, a split piece's pin included:
-	// served at once),
-	// maybe_agreed (another holder answered it empty too), maybe_found
-	// (another holder answered logs) and maybe_reasked (no holder
-	// answered within W: the first upstream's second answer). maybe_agreed,
-	// maybe_found and maybe_reasked are the reads that probed the other
-	// holders.
+	// served at once), maybe_agreed (another holder answered it empty
+	// too), maybe_found (another holder answered logs) and maybe_reasked
+	// (no holder answered within W: the first upstream's second answer).
+	// maybe_agreed, maybe_found and maybe_reasked are the reads that asked
+	// other holders, one at a time.
 	MetricLogsEmptyGateTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "logs_empty_gate_total",
-		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: no (headers prove no matching log; served), maybe_alone (the request may select no other upstream, by routing or use-upstream selector, split pieces included; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_reasked (no holder answered within W; the first upstream asked again and its answer served). maybe_agreed, maybe_found and maybe_reasked probed the other holders.",
+		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: old (the block reached the view head W or more ago; served unjudged), no (headers prove no matching log; served), maybe_alone (the request may select no other upstream, by routing or use-upstream selector, split pieces included; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_reasked (no holder answered within W; the first upstream asked again and its answer served). maybe_agreed, maybe_found and maybe_reasked asked other holders one at a time, the next on an error, a null or the hedge delay.",
 	}, []string{"project", "network", "verdict"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its
