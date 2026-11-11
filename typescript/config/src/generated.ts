@@ -1440,6 +1440,17 @@ export interface ConsensusPolicyConfig {
    */
   preferHighestValueFor?: { [key: string]: string[]};
   /**
+   * BlockEvidenceFields is an opt-in that weakens the empty-outside-retention
+   * waiver. It names, per method, the response field paths that carry the
+   * winning answer's own block number ("result", a flat field such as
+   * "blockNumber", or "*.field" for array results). When neither the request
+   * nor a non-winner gives the waiver a block, it trusts this one. The
+   * agreeing upstreams then vouch for their own claim: two that collude can
+   * get a fabricated hash lookup served. A non-winner that contradicts the
+   * block still fails the waiver closed.
+   */
+  blockEvidenceFields?: { [key: string]: string[]};
+  /**
    * FireAndForget when true, allows consensus to return a response to the client immediately
    * upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
    * This is useful for write operations like eth_sendRawTransaction where you want to
@@ -1571,16 +1582,18 @@ export interface ConsensusRequiredParticipant {
    * WaiveAgreementOnEmptyOutsideRetention, when true, waives this entry's
    * MinAgreement quota for a round in which at least MinAgreement distinct
    * tag-matching participants returned an EMPTY result, no matching
-   * participant returned a non-empty result, AND the block number the
-   * client's request names is older than RetentionBlocks behind the observed
-   * chain head. It lets an abstainer that legitimately pruned old history
-   * (e.g. post-EIP-4444) fall out of the quota without weakening the quota
-   * for recent data — a null on a recent block still holds the quota and
-   * disputes. The block comes from the request, never from an answer, so
-   * agreeing upstreams cannot fabricate the proof. Requests that name no
-   * concrete block (hash lookups, tags) never waive. A matching sibling that
-   * returned data also holds the quota (that is a real vote, not a prune).
-   * Sibling errors do not block the empty count. Requires RetentionBlocks > 0.
+   * participant returned a non-empty result, AND the block is older than
+   * RetentionBlocks behind the observed chain head. It lets an abstainer that
+   * legitimately pruned old history (e.g. post-EIP-4444) fall out of the
+   * quota without weakening the quota for recent data — a null on a recent
+   * block still holds the quota and disputes. The block is the one the
+   * client's request names. A hash lookup names none, so its answer's block
+   * counts only once an upstream outside the agreeing set confirms it;
+   * agreeing upstreams cannot fabricate the proof unless the policy opts
+   * into BlockEvidenceFields. Tag requests never waive.
+   * A matching sibling that returned data also holds the quota (that is a
+   * real vote, not a prune). Sibling errors do not block the empty count.
+   * Requires RetentionBlocks > 0.
    * Default false = the quota is never waived on empty (strict).
    */
   waiveAgreementOnEmptyOutsideRetention?: boolean;

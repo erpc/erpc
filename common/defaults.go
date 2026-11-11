@@ -3327,6 +3327,12 @@ func overlayConsensusPolicy(base, child *ConsensusPolicyConfig) {
 			base.PreferHighestValueFor[method] = append([]string(nil), fields...)
 		}
 	}
+	if child.BlockEvidenceFields != nil {
+		base.BlockEvidenceFields = make(map[string][]string, len(child.BlockEvidenceFields))
+		for method, fields := range child.BlockEvidenceFields {
+			base.BlockEvidenceFields[method] = append([]string(nil), fields...)
+		}
+	}
 	if child.fireAndForgetSet {
 		base.FireAndForget = child.FireAndForget
 		base.fireAndForgetSet = true
