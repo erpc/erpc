@@ -1081,10 +1081,10 @@ func networkBlockTime(req *common.NormalizedRequest) time.Duration {
 // own finality makes an entry permanent (#90).
 func cacheFinalities(ctx context.Context, req *common.NormalizedRequest, fin common.DataFinalityState, get bool) finalities {
 	fs := finalities{f: [2]common.DataFinalityState{fin}, n: 1}
-	if fin != common.DataFinalityStateRealtime || requestBlockTag(ctx, req) != "latest" {
+	if fin != common.DataFinalityStateRealtime || RequestBlockTag(ctx, req) != "latest" {
 		return fs
 	}
-	n := TagBlockNumber(ctx, req, "latest")
+	n := TagBlockNumber(ctx, req)
 	switch {
 	case n <= 0:
 		return fs
