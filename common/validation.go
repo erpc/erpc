@@ -1529,10 +1529,11 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	}
 	// extractFieldValues reads only "result", a flat field of a result object,
 	// or "*.field" over an array result. A nested path resolves to nothing at
-	// runtime and would silently never waive.
+	// runtime and would silently never waive — including "*.receipt.blockNumber",
+	// which looks up el["receipt.blockNumber"] literally after the wildcard.
 	for method, paths := range c.BlockEvidenceFields {
 		for _, ep := range paths {
-			if ep == "result" || strings.HasPrefix(ep, "*.") {
+			if ep == "result" || (strings.HasPrefix(ep, "*.") && len(ep) > 2 && !strings.Contains(strings.TrimPrefix(ep, "*."), ".")) {
 				continue
 			}
 			if strings.Contains(ep, ".") {
