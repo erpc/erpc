@@ -61,7 +61,7 @@ func decide(t *testing.T, parts ...*execResult) *slotResult {
 	lg := zerolog.Nop()
 	analysis := newConsensusAnalysis(&lg, context.Background(), cfg, parts)
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(context.Background(), &lg, analysis)
 	require.NotNil(t, winner)
 	return winner
 }

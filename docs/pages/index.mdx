@@ -121,7 +121,7 @@ eRPC is a fault-tolerant EVM RPC proxy and permanent caching layer. The bootstra
 
 **TypeScript configs** are compiled in-process via esbuild (IIFE bundle) and evaluated with the sobek JS runtime, so closures and module-level helpers in selection-policy `evalFunc` functions are preserved natively — no function serialisation.
 
-**No-config mode**: when `projects` is empty, a synthetic `main` project with public repository + Envio providers is injected, and `/evm/<chainId>` resolves without a project prefix.
+**No-config mode**: when `projects` is empty, a synthetic `main` project with public repository provider is injected, and `/evm/<chainId>` resolves without a project prefix.
 
 ### Config schema
 

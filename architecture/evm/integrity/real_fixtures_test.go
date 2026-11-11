@@ -162,25 +162,27 @@ func TestRealArbitrumFixturesAreNeverRejected(t *testing.T) {
 }
 
 // Arbitrum headers carry l1BlockNumber (both eras) plus sendCount and sendRoot
-// (Nitro), none of them fields the reference encoder knows — so the block-hash
-// recompute cannot run on this chain at all. That must be visible as a SKIP.
-// Reporting it as a pass would tell an operator the strongest check in the
-// catalog is green on a chain where it has never verified a single block.
-func TestRealArbitrumBlockHashRecomputeHonestlySkips(t *testing.T) {
+// (Nitro), none of them fields the reference encoder knows. The registered
+// arbitrum-nitro header format (header_formats.go) encodes Nitro headers, so
+// the block-hash recompute verifies them; a header no format encodes still
+// skips, and no honest header fails.
+func TestRealArbitrumBlockHashRecomputeVerifies(t *testing.T) {
 	fixtures := loadRealFixtures(t, "arbitrum")
-	seen := 0
+	passed := 0
 	for name, fx := range fixtures {
 		if !strings.HasPrefix(name, "block-") && !strings.HasPrefix(name, "blockbyhash-") {
 			continue
 		}
 		res := validateFixture(t, 42161, LevelCorroborated, fx)
-		if oc := outcomeOf(res, "blockHashRecompute"); oc != "" {
-			seen++
-			assert.Equal(t, "skip", oc,
-				"%s: blockHashRecompute cannot verify an Arbitrum header, so it must not report a pass", name)
+		switch oc := outcomeOf(res, "blockHashRecompute"); oc {
+		case "pass":
+			passed++
+		case "", "skip":
+		default:
+			t.Errorf("%s: blockHashRecompute %s on an honest Arbitrum header", name, oc)
 		}
 	}
-	assert.NotZero(t, seen, "no block fixtures exercised blockHashRecompute")
+	assert.NotZero(t, passed, "the arbitrum-nitro format verified no real Arbitrum block")
 }
 
 // The recompute family is disabled for this architecture because ArbOS commits

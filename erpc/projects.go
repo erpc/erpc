@@ -148,7 +148,15 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 	// Ensure project label is available for budget decision metrics by setting network on request early
 	nq.SetNetwork(network)
+	evm.ClientRequested(network)
 	if err := p.AcquireRateLimitPermit(ctx, nq); err != nil {
+		common.SetTraceSpanError(span, err)
+		return nil, err
+	}
+	// The safe-block source picks the request's lane, so it routes before
+	// the first Head read (finality, the pre-forward hooks): a request takes
+	// its lane's Head once (spec §7).
+	if err := evm.ApplySafeBlockSource(ctx, network, nq); err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
@@ -179,31 +187,30 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		telemetry.ObserverHandle(telemetry.MetricIntegrityOverhead, p.Config.Id, network.Label(), method).Observe(oh.Seconds())
 	}
 
-	shadowUpstreams := network.ShadowUpstreams()
-	if len(shadowUpstreams) > 0 {
-		if resp != nil {
-			jrr, jerr := resp.JsonRpcResponse(ctx)
-			if jerr != nil || jrr == nil {
-				if jerr != nil {
-					lg.Error().Err(jerr).Msgf("failed to parse response for shadow requests")
-				} else {
-					lg.Error().Msgf("failed to parse response for shadow requests: nil jsonRpcResponse")
-				}
+	// Pick the shadow targets before any work for them: the response is
+	// parsed and cloned only when one takes this request.
+	if shadows := p.shadowTargets(method, network.ShadowUpstreams()); len(shadows) > 0 && resp != nil {
+		jrr, jerr := resp.JsonRpcResponse(ctx)
+		if jerr != nil || jrr == nil {
+			if jerr != nil {
+				lg.Error().Err(jerr).Msgf("failed to parse response for shadow requests")
 			} else {
-				jrc, cerr := jrr.Clone()
-				if cerr != nil {
-					lg.Error().Err(cerr).Msgf("failed to clone json-rpc response for shadow requests")
-				} else {
-					cloneResp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrc)
-					cloneResp.SetUpstream(resp.Upstream())
-					cloneResp.SetFromCache(resp.FromCache())
-					cloneResp.SetAttempts(resp.Attempts())
-					cloneResp.SetRetries(resp.Retries())
-					cloneResp.SetHedges(resp.Hedges())
-					cloneResp.SetEvmBlockRef(resp.EvmBlockRef())
-					cloneResp.SetEvmBlockNumber(resp.EvmBlockNumber())
-					go p.executeShadowRequests(ctx, network, shadowUpstreams, cloneResp)
-				}
+				lg.Error().Msgf("failed to parse response for shadow requests: nil jsonRpcResponse")
+			}
+		} else {
+			jrc, cerr := jrr.Clone()
+			if cerr != nil {
+				lg.Error().Err(cerr).Msgf("failed to clone json-rpc response for shadow requests")
+			} else {
+				cloneResp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrc)
+				cloneResp.SetUpstream(resp.Upstream())
+				cloneResp.SetFromCache(resp.FromCache())
+				cloneResp.SetAttempts(resp.Attempts())
+				cloneResp.SetRetries(resp.Retries())
+				cloneResp.SetHedges(resp.Hedges())
+				cloneResp.SetEvmBlockRef(resp.EvmBlockRef())
+				cloneResp.SetEvmBlockNumber(resp.EvmBlockNumber())
+				go p.executeShadowRequests(ctx, network, shadows, cloneResp)
 			}
 		}
 	}
@@ -229,7 +236,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			// Reliable here (IntegrityCaught is set, the outcome is known) unlike the
 			// racy hedged pass. The IsTracingDetailed gate short-circuits before any
 			// body copy, so it's zero-cost when tracing is off.
-			if common.IsTracingDetailed {
+			if common.IsTracingDetailed() {
 				if jrr, jerr := resp.JsonRpcResponse(ctx); jerr == nil && jrr != nil {
 					body := jrr.GetResultBytes()
 					if len(body) > maxIntegrityTraceResponseBytes {

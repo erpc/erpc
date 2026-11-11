@@ -190,24 +190,38 @@ func init() {
 		ID: "logIndexContiguity", Family: FamilyStructural, Class: Deterministic,
 		Methods: []string{MethodGetBlockReceipts},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
-			var expected uint64
-			for i := range d.Logs() {
-				lix := d.logs[i].LogIndex
-				if lix == "" {
-					return failf("missing logIndex at log %d", i)
-				}
-				v, err := common.HexToUint64(lix)
-				if err != nil {
-					return failf("invalid logIndex hex at log %d: %v", i, err)
-				}
-				if v != expected {
-					return failf("logIndex not contiguous at log %d: expected %d got %d", i, expected, v)
-				}
-				expected++
-			}
-			return nil
+			logs := d.Logs()
+			return logIndexGap(len(logs), func(i int) string { return logs[i].LogIndex })
 		},
 	})
+}
+
+// LogIndexesContiguous is logIndexContiguity over one block's n logs in
+// order, logIndex(i) giving each log's logIndex: nil when they run 0..n-1.
+func LogIndexesContiguous(n int, logIndex func(i int) string) error {
+	if v := logIndexGap(n, logIndex); v != nil {
+		return fmt.Errorf("integrity check %q failed: %s", "logIndexContiguity", v.Reason)
+	}
+	return nil
+}
+
+func logIndexGap(n int, logIndex func(i int) string) *Violation {
+	var expected uint64
+	for i := range n {
+		lix := logIndex(i)
+		if lix == "" {
+			return failf("missing logIndex at log %d", i)
+		}
+		v, err := common.HexToUint64(lix)
+		if err != nil {
+			return failf("invalid logIndex hex at log %d: %v", i, err)
+		}
+		if v != expected {
+			return failf("logIndex not contiguous at log %d: expected %d got %d", i, expected, v)
+		}
+		expected++
+	}
+	return nil
 }
 
 // eqInt compares two hex-quantity strings by value, tolerating width

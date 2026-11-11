@@ -77,6 +77,7 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 	require.NoError(t, networkConfig.SelectionPolicy.SetDefaults())
 
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, nil, upr, tracker, engine)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	require.NoError(t, network.Bootstrap(ctx))
@@ -89,7 +90,7 @@ func createTestNetworkWithSelectionPolicy(t *testing.T, ctx context.Context) *Ne
 // networks mode instead of an empty list.
 func TestHealthCheckSvmNetworkScope(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-hc-rpc1.localhost", 1000, 990)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -15,6 +15,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 )
 
 type HealthCheckResponse struct {
@@ -133,6 +134,16 @@ func (s *HttpServer) handleHealthCheck(
 		projects = []*PreparedProject{project}
 	}
 
+	// The requested network by its canonical id: /evm/01 must prepare evm:1,
+	// never a second evm:01 that provider network lists do not name.
+	var targetNetworkId string
+	if architecture != "" && chainId != "" {
+		targetNetworkId = architecture + ":" + chainId
+		if id, ok := util.CanonicalNetworkId(targetNetworkId); ok {
+			targetNetworkId = id
+		}
+	}
+
 	// Collect all health data in a unified structure
 	projectsHealth := make([]*ProjectHealthData, 0, len(projects))
 	allHealthy := true
@@ -172,11 +183,10 @@ func (s *HttpServer) handleHealthCheck(
 		}
 
 		// When healthcheck for a specific network is requested, we need to ensure that the upstreams are initialized for that network.
-		if architecture != "" && chainId != "" {
-			networkId := fmt.Sprintf("%s:%s", architecture, chainId)
-			if len(project.upstreamsRegistry.GetNetworkUpstreams(ctx, networkId)) == 0 {
+		if targetNetworkId != "" {
+			if len(project.upstreamsRegistry.GetNetworkUpstreams(ctx, targetNetworkId)) == 0 {
 				// Ignore the error because healthcheck eval might only care about 1 upstream
-				_ = project.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
+				_ = project.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, targetNetworkId)
 			}
 		}
 
@@ -201,8 +211,7 @@ func (s *HttpServer) handleHealthCheck(
 
 		// Filter upstreams by network if architecture and chainId are specified
 		var filteredUpstreams []*upstream.Upstream
-		if architecture != "" && chainId != "" {
-			targetNetworkId := fmt.Sprintf("%s:%s", architecture, chainId)
+		if targetNetworkId != "" {
 			for _, ups := range projHealthInfo.Upstreams {
 				upsConfig := ups.Config()
 				switch common.NetworkArchitecture(architecture) {
@@ -299,9 +308,8 @@ func (s *HttpServer) handleHealthCheck(
 		}
 
 		// Now determine the overall project health based on the scope
-		if architecture != "" && chainId != "" {
+		if targetNetworkId != "" {
 			// Specific network requested - use that network's health as project health
-			targetNetworkId := fmt.Sprintf("%s:%s", architecture, chainId)
 			if networkHealth, exists := projectHealth.Networks[targetNetworkId]; exists {
 				projectHealth.Healthy = networkHealth.Healthy
 				projectHealth.Status = networkHealth.Status

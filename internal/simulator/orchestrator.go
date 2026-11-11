@@ -936,7 +936,7 @@ func (o *Orchestrator) snapshotUpstreamRows(last bucketTotals) map[string]Upstre
 					}
 					row.RequestsTotal = m.RequestsTotal.Load()
 					row.ErrorsTotal = m.ErrorsTotal.Load()
-					if m.Cordoned.Load() {
+					if m.CordonMask.Load() != 0 {
 						row.Cordoned = true
 						if r, ok := m.LastCordonedReason.Load().(string); ok {
 							row.CordonedReason = r

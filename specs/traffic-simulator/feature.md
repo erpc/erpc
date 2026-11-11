@@ -9,11 +9,9 @@ selection policies in real time**. Ships as a single Go binary
 local HTTP listener. Zero build step, zero external services.
 
 > **Where this came from.** The simulator's UI was designed in Claude
-> Design (see `claude-design-prompt.md` for the original brief; the
-> chat transcripts and prototype source live in the design-handoff
-> bundle the user pasted). The implementation in `cmd/erpc-simulator/`
-> wraps that prototype in an `embed.FS` Go server so it can be built
-> and shipped alongside the rest of the eRPC tree.
+> Design. The implementation in `cmd/erpc-simulator/` wraps that
+> prototype in an `embed.FS` Go server so it can be built and shipped
+> alongside the rest of the eRPC tree.
 
 ## What it does
 

@@ -772,6 +772,22 @@ func clientWireCode(t *testing.T, err error) JsonRpcErrorNumber {
 	return jre.NormalizedCode()
 }
 
+// A method eRPC declines to serve — stateful filter methods under a
+// multi-upstream pool, eth_accounts/eth_sign, or a subscription over HTTP —
+// must reach the client as -32601 "method not supported", not the generic
+// -32603. ethers only downgrades eth_getFilterChanges to polling when the error
+// classifies as UNSUPPORTED_OPERATION (code -32601 / a "not found|supported"
+// message); a -32603 leaves it re-arming the same call on every block forever.
+func TestTranslateToJsonRpcException_NotImplementedIsMethodNotFound(t *testing.T) {
+	err := NewErrNotImplemented("method eth_newFilter is not supported by any configured upstream")
+	translated := TranslateToJsonRpcException(err)
+
+	assert.EqualValues(t, JsonRpcErrorUnsupportedException, clientWireCode(t, translated),
+		"ErrNotImplemented must map to -32601 so clients detect an unsupported method")
+	assert.Contains(t, translated.Error(), "not supported",
+		"the descriptive reason must survive translation for message-matching clients")
+}
+
 func newExhausted(t *testing.T, order []string, causes map[string]error) error {
 	t.Helper()
 	m := &sync.Map{}
@@ -1146,4 +1162,13 @@ func TestJsonRpcRequest_CacheHash_EvmHexCaseInsensitive(t *testing.T) {
 		`["0xabc0000000000000000000000000000000000001", "latest"]`)
 	require.Equal(t, hashUpper, hashLower,
 		"EVM hex params are case-insensitive and must share a CacheHash")
+}
+
+func TestTranslateToJsonRpcException_SubscriptionLimitIsCapacityNotInternal(t *testing.T) {
+	err := NewErrSubscriptionLimitExceeded(10)
+
+	assert.Equal(t, SeverityInfo, ClassifySeverity(err),
+		"subscription limit is a client condition and must never grade critical")
+	assert.EqualValues(t, JsonRpcErrorCapacityExceeded, clientWireCode(t, TranslateToJsonRpcException(err)),
+		"subscription limit must map to -32005, not -32603")
 }

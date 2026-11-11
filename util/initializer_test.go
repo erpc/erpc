@@ -436,6 +436,15 @@ func TestInitializer_StopWithDestroyFn(t *testing.T) {
 	err := init.Stop(destroyFn)
 	require.NoError(t, err)
 	assert.True(t, destroyed, "destroyFn should have been called")
+
+	// Post-Stop ExecuteTasks must refuse — otherwise a raced caller can
+	// register work against destroyFn'd resources.
+	err = init.ExecuteTasks(appCtx, NewBootstrapTask("after-stop", func(ctx context.Context) error {
+		t.Fatal("task must not run after Stop")
+		return nil
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stopped")
 }
 
 func TestInitializer_MultipleRapidFailures(t *testing.T) {

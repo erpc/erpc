@@ -9,19 +9,21 @@ import { LLMsTxtLink, AISection, ConfigTabs, SourceLink, PromptExample } from ".
 
 # Block tracking & served tip
 
-Every upstream sees the chain at a slightly different block. Without coordination, routing a request to the one node that is a block behind causes silent "block not found" failures. eRPC eliminates this by polling every upstream continuously, computing a cluster-consensus **served tip** — the highest block that all eligible nodes actually have — and routing only within that confirmed window.
+Every upstream sees the chain at a slightly different block. Without coordination, routing a request to the one node that is a block behind causes silent "block not found" failures. eRPC polls every upstream continuously and advertises one **served tip** per axis (`latest`, `finalized`): the highest block at least `servedTip.quorum` (default 2) eligible upstreams already have.
 
 **What you get**
 
 - Chain head and finality tracked per upstream, refreshed automatically at the right cadence for each chain's block time
-- Consensus-cluster served tip that only advances when the majority of upstreams agree — no phantom future blocks, no stale tips
+- One rule for every config: a block is served only once a quorum of upstreams has it — a lone far-ahead or wrong-chain node never defines `latest`
+- Stalled heads benched automatically, so one frozen node cannot hold `latest` back
+- `finalized` never steps back while an upstream still reports the block already served, even when a lagging group of upstreams becomes the quorum; replicas sharing state serve the highest one any of them served
 - Optional per-group guarantee so the advertised tip stays servable by the upstreams your consensus policy requires
 - Per-upstream lag gauges that feed selection policies so slow nodes are deprioritized before requests reach them
 - Redis-backed counters share heads across replicas; each replica samples latest-block timestamps on its own debounce schedule.
 
 ## Quick taste
 
-Illustrative, not a tuned production config — enable cluster-min served tip for latest and finalized:
+Illustrative, not a tuned production config — require a strict majority of upstreams instead of the default 2:
 
 <ConfigTabs
   path="projects[].networks[].evm.servedTip"
@@ -34,8 +36,8 @@ Illustrative, not a tuned production config — enable cluster-min served tip fo
         evm:
           chainId: 1
           servedTip:
-            # only advance the served tip when the majority cluster agrees
-            enabledFor: ["latest", "finalized"]`}
+            # serve the highest block a strict majority of upstreams has
+            quorum: majority`}
   ts={`projects: [{
   id: "main",
   networks: [{
@@ -43,8 +45,8 @@ Illustrative, not a tuned production config — enable cluster-min served tip fo
     evm: {
       chainId: 1,
       servedTip: {
-        // only advance the served tip when the majority cluster agrees
-        enabledFor: ["latest", "finalized"],
+        // serve the highest block a strict majority of upstreams has
+        quorum: "majority",
       },
     },
   }],
@@ -61,9 +63,9 @@ points the agent at this page's machine-readable reference so it can do the work
 	title="eliminate block-not-found errors across my upstream fleet"
 	defaultOpen
 	prompt={`My app gets occasional "block not found" errors right after a new block is produced
-because some upstreams lag behind. Enable cluster-min served tip in my eRPC config so eRPC
-only advertises a block number that the majority of upstreams actually have, and explain
-the clusterDelta auto-derive so I understand when an upstream will be excluded. Read the
+because some upstreams lag behind. Set servedTip.quorum in my eRPC config so eRPC only
+advertises a block number enough upstreams actually have, and explain when a stalled
+upstream gets benched out of the ballot. Read the
 full reference first:
 https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 />
@@ -71,8 +73,8 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 <PromptExample
 	n={2}
 	title="tune block polling for a fast chain like Arbitrum"
-	prompt={`I'm running eRPC against Arbitrum (250ms block time) and the default 5s
-fallbackStatePollerDebounce causes stale served-tip data on startup. Adjust the polling
+	prompt={`I'm running eRPC against Arbitrum (250ms block time) and want block tracking
+tight from the first second after startup. Adjust the polling
 and debounce settings in my eRPC config so the EMA warms up quickly and block tracking
 stays tight. Reference:
 https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
@@ -84,7 +86,7 @@ https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 	prompt={`My eRPC pool mixes trace-capable archive nodes with cheaper non-archive upstreams.
 Without a floor, the served tip can advance to a block that only the non-archive nodes
 have, causing trace_block requests to hit "block not found". Configure guaranteedMethods
-in my eRPC config and explain how partition limits interact with the method floor. Reference:
+in my eRPC config and explain how the method floor interacts with the quorum. Reference:
 https://docs.erpc.cloud/reference/evm/block-tracking.llms.txt`}
 />
 
@@ -117,42 +119,135 @@ eRPC keeps the `safe` tag verbatim and routes standard block-tagged JSON-RPC req
 
 **Debounce resolution.** To avoid redundant RPC calls, each fetch is gated by `resolveDebounce()`, which picks the first applicable value from:
 1. `upstream.evm.statePollerDebounce` — hard per-upstream override; short-circuits all other steps.
-2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — EMA-derived; active after ≥3 samples.
-3. `network.evm.fallbackStatePollerDebounce` (default 5 s) — used while EMA warms up.
-4. Hard 1 s floor — applies only if both step 2 and 3 yield zero.
+2. `tracker.GetNetworkBlockTime × dynamicBlockTimeDebounceMultiplier` (default 0.7) — set by the first block-time sample, which needs 2 timestamp changes after the first observed header.
+3. `network.evm.fallbackStatePollerDebounce` (no default) — when set, used until step 2 applies.
+4. The 1 s cold block time × the multiplier (0.7 s) — until step 2 applies.
 
 On a 12 s Ethereum Mainnet chain this yields ~8.4 s debounce — fresh enough to catch every block, conservative enough that concurrent pollers share one actual RPC call per window. In Redis-backed multi-pod deployments, the shared counter coalesces fetches across replicas too.
 
-**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever the corroborated network-level latest block advances, using the on-chain timestamp of the upstream report that holds that head (each upstream's latest timestamp is stored beside its head, so the sample comes from whichever poller reported the block). All head publication for a network is serialized under one per-network lock, so a slow re-derivation can never overwrite a newer one. On fast chains where consecutive blocks share the same integer second, block gaps accumulate and samples are normalized. The EMA is not published until ≥3 samples are collected (requiring 4 total advances, because the first stores the baseline without incrementing the sample counter). Values outside `[10 ms, 120 s]` are rejected and reset to the last valid value to prevent runaway spikes after a chain halt. Consumers receive 0 until warm-up completes.
+**Finalized debounce.** The finalized fetch widens that debounce to `(latest − finalized) × EMA block time × finalizedDebounceDepthMultiplier` (default 0.05) when this is longer, using the upstream's own latest and finalized blocks. Finalized advances once per finality window, so polling it at the latest-block cadence mostly returns the number already held. With the default the finalized block trails by at most about 5% of the window: ~43 s on Ethereum Mainnet (~72 blocks × 12 s), ~45 s on an Arbitrum-style L2 with a 15 min window. An upstream behind the network's corroborated finalized block (second-highest across upstreams) keeps the regular debounce until it catches up: once a peer sees the next finalized block, the others sample it at the regular cadence. This also covers vendors whose load balancer mixes stale and fresh backends. Chains with near-instant finality (depth of a few blocks) keep the regular debounce. Unknown finalized, latest at or below finalized, or a cold EMA also keep it. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="449-471" />
 
-**Per-upstream block counters.** Both `latestBlockShared` and `finalizedBlockShared` are forward-only shared counters: `TryUpdate` rejects values ≤ the current value. A value that would regress more than 1024 blocks fires an `OnLargeRollback` callback and records `erpc_upstream_block_head_large_rollback`.
+**Dynamic block-time EMA.** The EMA (`alpha = 0.1`, ~19-sample effective window) lives in `health.Tracker` and updates whenever the corroborated network-level latest block advances, using the on-chain timestamp of the upstream report that holds that head (each upstream's latest timestamp is stored beside its head, so the sample comes from whichever poller reported the block). All head publication for a network is serialized under one per-network lock, so a slow re-derivation can never overwrite a newer one. Source headers (pushes and poll-source polls) sample it too, once the network's confirmed head reaches them, so a lagging or bogus header is no sample. A sample spans two observations whose timestamps differ: seconds elapsed over blocks elapsed; blocks that share a timestamp extend the span. Spans start at the first timestamp change after the first observation, so the first sample needs 2 timestamp changes after it, and seeds the EMA. A sample above 3× the EMA counts as 3× the EMA, so one span across a chain halt never sets W to its 60 s cap; values outside `[10 ms, 120 s]` are rejected. `GetNetworkBlockTime` returns 0 until the first sample; the chain tracker's W and the poll cadence use the 1 s cold block time meanwhile (poll cadence 0.7 s).
 
-**Network head and `blockHeadLag` / `finalizationLag`.** The tracker's network-level latest and finalized heads are *corroborated*: the second-highest head across the reporting upstreams, or the only head while a single upstream has reported (the same order statistic `PickServedTip` uses for its lag reference). One upstream can therefore never move the reference every other upstream is measured against — a lone far-ahead report (an endpoint answering for another chain, a corrupted response) is not corroborated, and one stale upstream cannot hold the head back either. With exactly two reporters the head is the lower one, so a lone high report and a lone stale report are indistinguishable there; per-upstream block-availability checks still gate block-specific requests. The reporting set is the upstream that polled plus every upstream in the network's request-metrics index (an upstream that has never served a request is not in it). `blockHeadLag = max(0, network_latest − upstream_latest)`; `finalizationLag = max(0, network_finalized − upstream_finalized)`. Both are recomputed on every `SetLatestBlockNumber` / `SetFinalizedBlockNumber` call and exposed as Prometheus gauges; the raw per-upstream `erpc_upstream_latest_block_number` still shows an outlier's own report. These drive selection-policy predicates such as `blockNumberLagAbove`.
+**Per-upstream block counters.** Both `latestBlockShared` and `finalizedBlockShared` are forward-only shared counters: `TryUpdate` rejects values ≤ the current value. A value more than 1024 blocks lower applies only once the lower side moves: a later reading above the first lower one, with no reading near the counter in between. Applied, it fires an `OnLargeRollback` callback and records `erpc_upstream_block_head_large_rollback`. A provider that sometimes answers from a node stuck far behind repeats one value, so its drops never reach `latest` or `finalized`; a real deep reorg or a chain restarted lower applies one reading later, and lower readings alone for 5 minutes apply too.
 
-**Served tip: default mode vs. majority mode.** By default, `EvmHighestLatestBlockNumber` returns the corroborated head across all non-syncing, policy-eligible upstreams: the second-highest effective head, or the only one (`PickServedTip(...).Freshest`, the same statistic the tracker's `blockHeadLag` uses). One upstream can never define it. It can still advertise a block only two upstreams have seen.
+**Network head and `blockHeadLag` / `finalizationLag`.** The tracker's network-level latest and finalized heads are *corroborated*: the second-highest head across the non-benched reporting upstreams, or the only head while a single one has reported (the same order statistic as the served tip's default quorum). When every reporter is benched it falls back to all of them. One upstream can therefore never move the reference every other upstream is measured against — a lone far-ahead report (an endpoint answering for another chain, a corrupted response) is not corroborated, and a benched (stalled) upstream cannot hold the head back. With exactly two reporters the head is the lower one, so a lone high report and a lone stale report are indistinguishable there; per-upstream block-availability checks still gate block-specific requests. The reporting set is every upstream that has reported a latest or finalized head to the tracker. `blockHeadLag = max(0, network_latest − presumed_latest)`; `finalizationLag = max(0, network_finalized − presumed_finalized)`. An upstream's presumed head is its last reported head plus what the network head made since that report, counted for at most one poll period (`max(statePollerInterval, statePollerDebounce or the block time)`): within the period its lag stays what it was at the report, because a stored head ages between polls by design. Without this, an upstream polled every 10s on a 0.4s chain read up to 25 blocks behind late in each poll window, and a selection policy ticking at the same period read the same phase on every tick, excluding a healthy upstream for good on some processes. Past the period the credit freezes, so a missing report counts as lag again; a benched head gets no credit. Both are recomputed on every `SetLatestBlockNumber` / `SetFinalizedBlockNumber` call and exposed as Prometheus gauges; the raw per-upstream `erpc_upstream_latest_block_number` still shows an outlier's own report. These drive selection-policy predicates such as `blockNumberLagAbove`. Source: <SourceLink file="health/tracker.go" lines="1468-1519" />
 
-When `servedTip.enabledFor` includes `"latest"` or `"finalized"`, the pure function `ComputeServedTipCandidate` runs instead:
-1. Drop inputs with `BlockNumber ≤ 0`.
-2. **Velocity gate** (requires a prior served anchor AND a known block time): compute `expectedMax = lastServedBlock + ceil(elapsedBlocks × VelocitySlack) + VelocityBufferBlocks` (defaults: `VelocitySlack = 2.0`, `VelocityBufferBlocks = 5`); discard any upstream reporting a block above `expectedMax`. `MaxEligible` is set to the maximum of the remaining (post-gate) inputs, so velocity-dropped upstreams never inflate the lag gauge.
-3. Sort remaining inputs ascending.
-4. **Greedy clustering**: split into clusters when adjacent inputs differ by more than `clusterDelta` blocks (auto-derived from block time; 2 for Ethereum, up to 10 for sub-100 ms chains).
-5. Pick the **dominant cluster** (largest by member count; ties go to the chain-forward cluster).
-6. Return the **minimum** of the dominant cluster as the candidate.
+#### One view (latest)
 
-The result is monotonically clamped via a cross-pod shared counter so the served tip never regresses, even across pods.
+`latest` is one view per lane, `{Head, Firm}`, published by the lane's chain tracker as one pointer. HTTP reads (`eth_blockNumber`, an interpolated `latest`, cache keys) and every stream (ws `newHeads`, ws `logs`, gRPC `StreamBlocks`) read that one state, so they never show two heads.
 
-**Guarantee subsets (`guaranteedMethods`, `guaranteedFor`).** After the pick, the advertised tip is clamped down to the lowest majority of every configured guarantee subset, so it is never a block a required subset cannot serve. `guaranteedMethods` names a subset by method support; `guaranteedFor` names one by upstream id/tag selector — the same vocabulary as `use-upstream` and `consensus.requiredParticipants`. Both run through the same ballot and the same min-across-subsets fold in `guaranteedFloor`; only the membership predicate differs. Each subset is clamped to its OWN MAJORITY, never its minimum, so a single frozen member is outvoted inside its group. An empty or unmatched subset constrains nothing (the tip is never pinned to 0), and the clamp can only lower the tip — a group ahead of the network majority never raises it. Source: [`erpc/networks.go:L1505-L1600`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1505-L1600)
+- **Head:** the highest pinned block (parent-hash linked) that at least one counted hash vote holds, undisputed, at most each guarantee subset's floor. It only moves back when the pins move (a reorg), which streams replay as a proper reorg.
+- **Undisputed:** no hash voter votes another branch at that height, unless `servedTip.quorum` voters on the pinned branch outnumber it: one upstream on a minority fork never holds the view back.
+- **Firm:** the highest block at or below `Head` that `servedTip.quorum` voters hold. It decides routing: a block above `Firm` goes to its holders first.
+- **Held:** a block above `Firm` that the view pins exists, so a request for it asks no upstream for its head, even where a method only some upstreams serve keeps that method's `latest` below it. Its first attempt and its one retry go to the upstream that most likely holds it soonest, by the block's first sight plus that upstream's measured hold time, and wait for it, at most W. Each answer is a new measurement, and no head fetch is sent for it.
+- **Block clock:** while a stream needs heads, or a `latest` read came within 2 W, the tracker spends the voters' poll turns at the times each block may arrive. A voter's `statePollerInterval` is its read budget: it takes at most one turn per block and per interval, and its full poll skips the latest fetch the turn made. The turns form a ladder across the block's arrival spread; the first sight stops it, and the turns not sent fetch at once as hash votes. With no turn due, the fastest voter fetches once per block. Budget: at most max(1, Σ min(1, block time / interval)) + 0.05 head fetches per new block. A wss `newHeads` push skips the ladder.
+- **Idle edge:** the first `latest` read after that fetches `servedTip.quorum` voters at once; tag reads wait until the view reaches the fetched head (at most W); `eth_blockNumber` waits only while the view has stood for W.
 
-**Selector-scoped served tip.** When a `use-upstream` selector is present, `tipCandidateUpstreams` narrows to the matching upstreams. A "simple group selector" is a single glob pattern (optionally negated with `!` at position 0), containing no whitespace or `()|&,` characters, of length ≤128, that matches 2–(N−1) upstreams. For such selectors, a per-group `servedTipPartition` is lazily materialized: `partitionKeyFor` resolves the matched upstream ID set, sorts it, SHA-256 hashes the sorted `\0`-joined IDs, truncates to 8 bytes, and encodes as hex (key = `"grp:" + hex`). Equivalent selectors (same matched set) share one partition. Up to 16 partitions are allowed per network; beyond this, extra selectors fall back to stateless cluster-min. Boolean-expression selectors (containing `|`, `&`, `(`, `)`) always use the stateless path. Source: [`erpc/networks.go:L466-L506`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L466-L506)
+#### Served tip
 
-**Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter to 1. The non-standard `{Ok: bool}` response shape is supported: `Ok=false` is treated as still-syncing. After 10 consecutive failures with no prior success, `skipSyncingCheck` is set permanently and the state is fixed at `Unknown` for the process lifetime. If `upstreams[*].evm.skipSyncingCheck: true` is set in config, `eth_syncing` is never called at all and the state is immediately fixed at `NotSyncing` — use this for nodes that always return a syncing object regardless of actual sync status.
+Both axes but `latest`'s number, every config. `Network.EvmHead` returns one `Head` per request: `Latest` and `LatestHash` from the view above; `Finalized`, `Leader` and the ceiling from `computeHead`, when an upstream head, a bench or the eligible set changes, and every 1s. Each of these runs one pipeline:
 
-**Skip-on-failure semantics.** Both `skipLatestBlockCheck` and `skipFinalizedCheck` follow the same pattern: 10 consecutive failures with no prior successful poll sets the skip flag permanently and the poller stops calling that method. Once the upstream has had at least one success (`*SuccessfulOnce = true`), failures are only logged and never trigger the skip. This prevents false-positive disablement during transient degradations. Source: [`architecture/evm/evm_state_poller.go:L420-L445`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L420-L445)
+1. **Candidates** (`tipCandidates`): the selection policy's eligible upstreams in routing order (all registered upstreams until the policy's first decision), narrowed to the request's `use-upstream` selector when present and to the upstreams that serve the request's method (`ignoreMethods`/`allowMethods`, the filter routing applies; all of them when none does). An upstream that does not serve the method never raises the block a request is pinned to. `eth_blockNumber` keeps every voter: it reports the view's `Head`.
+2. **Voter rank** (`tipVoterRank`): each candidate with a head on the axis ranks live 0, benched 1, static cap 2, benched static cap 3. A static cap is a `blockAvailability.upper.exactBlock` the chain has passed: a serving range, not a head observation (`latestBlockMinus` upstreams are live). A candidate that is syncing per `eth_syncing`, has no state poller, has no head yet or is on a minority fork casts no number vote.
+3. **Ballot** (`evmTipBallot`): only the heads of the best voter rank present vote. A benched head votes only when no non-benched live head exists; a static cap only when no live head exists. One voter set (`voterSet`) applies these rules for the ballots, `Leader`, the refresh, catch-up and band Asks, the hash voters and topic admission; a hash vote keeps a voter on a minority fork, and topic admission also keeps a poller with no head yet.
+4. **Pick** (`PickServedTip`): the highest block at least `servedTip.quorum` voters already have — the q-th highest head, or the lowest when fewer than q vote.
+5. The [regression guard](#regression-guard), then the [guarantee floors](#guarantee-subsets), then the [finalized floor](#finalized-floor) (`finalized` only).
 
-**`IsBlockFinalized` decision tree:**
+The result is the value served, recorded on the request's [lane](#selector-scoped-served-tip) and [exported as gauges](/reference/metrics#area-3-block-number-and-tip-tracking). The network-wide lane is also evaluated every second, both axes, so its gauges, advance age and guard memory stay current on a network with little traffic; use-upstream lanes are evaluated only by their requests. Only the network-wide [finalized floor](#finalized-floor) is shared; nothing is predicted. Source: <SourceLink file="erpc/networks.go" lines="870-942" />, <SourceLink file="erpc/networks.go" lines="430-506" />, <SourceLink file="common/served_tip.go" lines="112-157" />, <SourceLink file="erpc/networks_served_tip_refresh.go" lines="9-42" />
+
+**Quorum.** `servedTip.quorum` is an integer ≥ 1 or `"majority"` (`floor(N/2)+1` of N voters), capped at N ([config](/config/projects/networks#config-schema)). Which head is served (heads sorted descending):
+
+| Voters N | `quorum: 2` (default) | `quorum: majority` | `quorum: 1` |
+|---|---|---|---|
+| 1 | 1st | 1st | 1st |
+| 2 | 2nd | 2nd | 1st |
+| 3 | 2nd | 2nd | 1st |
+| 4 | 2nd | 3rd | 1st |
+| 5 | 2nd | 3rd | 1st |
+
+`quorum: 1` serves the highest head, so a single upstream defines `latest`. A higher quorum trades freshness for servability: more upstreams already have the advertised block. Source: <SourceLink file="common/served_tip.go" lines="36-56" />
+
+#### Benching
+
+The health tracker re-evaluates every reporter on each latest-head report (`evaluateHeadBench`). An upstream is *behind* while a non-benched peer proves the chain went on without it (`headIsBehind`):
+
+- **By height:** a peer that moved after the upstream last moved is higher by no more than a plausible lead: 1024 blocks plus twice the blocks the chain produced since the upstream's head was current (by its last change and its head timestamp). Chain progress uses the network block time, else the peer's own, so a process that starts mid-stall still sees the stall. One such peer is enough. Each move of the upstream resets this rule.
+- **By staleness:** a peer that moved within its own or the upstream's stall window is higher within the plausible lead, and its newest block (never counted as newer than now) is at least the stall window younger than the upstream's head block. This holds while the upstream moves, so it catches a node replaying far behind the tip: after a restore, a restart or a deep rollback. One such peer is enough. Only the upstream's own head timestamp proves it stale: a head stored without one (a peer pod's poll through shared state) keeps the last verdict only while a live peer stays a stall window of blocks ahead. A node at the tip has a head block as young as any honest peer's, so a node that trails by less than the stall window of chain time is never benched.
+- **By block age:** a peer that moved after the upstream last moved has a newest block at least the stall window younger than the upstream's head block, whatever the heights. This catches a head frozen above a chain that restarted lower (a dead fork), a static far-ahead head, and an endpoint that serves another, slower chain under the same chain id. It takes two such peers while two exist.
+
+Behind without a break for its stall window (`headStallAfter`), `max(30s, 3 × max(statePollerInterval, statePollerDebounce or the block time))`, it is benched: its voter rank drops to benched and it leaves the lag reference. Its `blockHeadLag` keeps growing so `blockNumberLagAbove` routes around it: while its head has not moved since the bench (`movedSinceBench`), the head counts as no higher than the network head at the bench (a head frozen above a dead fork lags by what the network made since, even after the network passes its height); once it moves again, it lags by its real distance. It rejoins once it has moved since being benched (a move in the evaluation that benched it does not count), no rule above still proves it behind, and its head reached the corroborated non-benched head (second-highest, or the only one); or when no non-benched peer has a head. A voter at or above that head never lowers `latest`, and a lone far-ahead head cannot keep it out. A bench or rejoin also re-derives the finalized lag reference. Stall windows run on the monotonic clock, so a wall-clock step benches nobody. Each bench increments `erpc_upstream_head_benched_total` and logs a WARN. Bench state is per process. Source: <SourceLink file="health/tracker.go" lines="1463-1653" />
+
+- **Nobody is benched** for a chain halt itself (no peer moves; a node already a stall window behind when the chain halted is benched like any trailing node), by a moving wrong-chain head above (its lead is implausible), or by one wrong-chain peer whose blocks are younger (the block-age rule needs two).
+- **Boundary:** a node that trails by less than the stall window of chain time (for example, 1-3 blocks on a 2s chain) is never benched. It votes with its lower head, which holds the pick back only when it is needed for the quorum (N=2 with the default quorum). `quorum: 1` serves the highest head instead.
+- **Boundary:** eRPC compares heights and block times, never block hashes, so it cannot tell a live fork from the canonical chain. During a halt, a node that moves within the plausible lead benches the halted ones after their stall window, and then defines `latest` alone. A benched dead-fork node that starts producing blocks again rejoins once its head reaches the corroborated head.
+- **Boundary:** the block-age rule cannot tell two heads frozen above one moving peer (a dead fork the minority left) from two halted honest nodes and one wrong-chain peer. It keeps the frozen pair, so a dead fork that most upstreams stayed on still defines `latest`.
+- **Boundary:** two chains under one chain id (an endpoint pointed at the wrong chain) differ by far more than any plausible lead, so only block age tells them apart. Until the slower chain goes twice its stall window without a block, quorum 2 over the pair serves the lower head; then the slower chain is benched, right or wrong. A wrong chain that makes blocks more often than that is never benched. Exclude such an endpoint in config.
+- **Boundary:** benching a voter that sat between the pick and a slower voter lowers `latest` to that slower voter's head, as any upstream leaving the ballot does. The regression guard holds only drops beyond `maxRegressionBlocks`; `finalized` holds at the [finalized floor](#finalized-floor).
+- **Boundary:** a `latestBlockMinus: N` upstream rejoins on its raw head but votes N below it, so its rejoin can lower `latest` by up to N.
+- **Boundary:** rejoin needs the benched head to reach the bar at one report. A node that always trails the second-highest head by a block or two rejoins late; until then it serves traffic while its lag stays under the policy threshold, but does not vote.
+- **Boundary:** a bench changes the ballots at once, but routing leaves the benched upstream at the selection policy's next evaluation (`evalInterval`, 15s by default). Until then a request for the new `latest` can reach it; without a configured availability bound nothing gates it, so its missing-data error is retried on another upstream.
+
+#### Regression guard
+
+`finalized` axis only. When a pick falls more than `maxRegressionBlocks` (0 = 1024) below the corroborated evidence — the second-highest live head, or the last live-corroborated pick — the lane serves its last corroborated pick instead, never above the highest live head (`guardServedTipRegression`). It holds for at most 1 minute, then fails open and serves the pick as computed. In-process only; selectors without a lane get no guard; `-1` disables it. Each transition increments `erpc_network_served_tip_regression_total`. `latest` needs no guard: its view moves back only when the pins move.
+
+#### Subscriber delivery
+
+ws `newHeads`, ws `logs` and gRPC `StreamBlocks` send up to the lane's view `Head`, read from the same state HTTP reads: a block streams the instant `eth_blockNumber` shows it, and never before. A block a reorg removes is replayed as removed (ws `removed: true`, gRPC resend) before the new branch. A subscription on a `use-upstream` connection reads the network-wide pins cut at its lane's `Head`. A request whose method only some upstreams serve reads its lane's view capped at the block `servedTip.quorum` of those upstreams hold or most likely hold (the block's first sight plus each upstream's measured hold time passed, at most its head plus the blocks the chain made since its last report), so it may be pinned below a block subscribers already got. An upstream that still lacks that block answers missing data, and the request's retry goes to one that holds it; `Firm` counts proven holders only. Model, reorgs and wait bounds: [WebSocket](/operation/websocket#how-heads-reach-subscribers). Source: <SourceLink file="architecture/evm/chain_tracker.go" />
+
+#### eth_blockNumber
+
+With `enforceHighestBlock` on (the default) and the view known, eRPC answers `eth_blockNumber` from the view's `Head` without dispatching, scoped to the request's `use-upstream` selector; `erigon_blockNumber` likewise with no param or `"latest"`, `"finalized"` answers `Head.Finalized`, and any other param is forwarded as is, unpinned. It never waits, except at the idle edge while the view has stood for W (`max(3 × block time, 2s)`), so a rare poller reads a block no older than W. An interpolated `"latest"` tag of `eth_getBlockByNumber` and its family reads the same view; at the idle edge it waits until the view reaches the fetched head, at most W. A `"finalized"` request takes `Head.Finalized` at once and waits for its finalized refresh only at its idle edge (item 15 below). The head is taken before the cache, so a cache hit is pinned to the same head. With no view yet (cold start) the request is forwarded. Every response that reaches the post-forward hook — an upstream answer or a cache hit — is pinned exactly to the head when it is known: higher values are lowered, lower values are raised (an upstream answer below it increments `erpc_upstream_stale_latest_block_total`). `enforce-highest-block=false` forwards and returns the upstream's answer unchanged. Source: <SourceLink file="architecture/evm/eth_blockNumber.go" />, <SourceLink file="erpc/networks.go" />
+
+An `eth_getBlockByNumber("latest")` that the cache misses, or that no cache holds, goes to its upstream as the `"latest"` tag, as before the chain tracker: each such read is that upstream's poll of its head, at no extra request. Upstreams whose evidence shows them behind the head (a head counter below it after the ordering credit, a newest report that found them behind the network head, and no measured hold wait passed since the head's first sight) go last; the rest go fastest first. Its header goes through the same checks as a poll's and votes, so a block a client read sights first moves the view at once. The answer is served only once the view pins it at or above the request's head, waiting at most 50 ms for the tracker to take the vote; otherwise (a lagging upstream, another branch, a header the tracker cannot verify) the request serves the view's head block, from the cache or by number from a holder, the upstream that answered included: its answer counts as no result, so it stays available to the read and its retries. A `use-upstream` directive, a consensus policy or `servedTip.followCacheHead` keeps the number. `erpc_chain_tracker_latest_read_total{outcome}` counts them: `served`, `head`, `failed`. Source: <SourceLink file="erpc/network_latest_read.go" />
+
+#### Cache head
+
+A network whose cache has a head-aware realtime policy (the source the anchor below reads) polls that connector's head while the network-wide lane has a reader: every eighth of a block or of the TTL, whichever is sooner (50ms–1s), each fetch allowed up to the TTL, with or without `followCacheHead`. Without a reader it fetches nothing; the connector's own head poll runs once a minute. Each new head young enough for the TTL is used once:
+
+- **The cache's own voter's poll:** when a lane voter's endpoint host:port is the connector's server (Prism's upstream), the head is that voter's poll of `latest`: the same request to the same server. It passes intake's checks and votes as the voter's own poll would, so the view moves when the cache holds a block, at most an eighth of a block after it. The block clock takes it as a push: it hedges a block only a slot after its predicted sight, since earlier the poll brings it first. Each other voter whose turn falls in that block votes once it most likely holds the block (its measured hold time, as for a held block), at most a block later, not at the poll's sight, when vendors still lack it: so a method only the vendors serve (`eth_call`) gets its `latest` quorum on the new block.
+- **A sighting:** with no such voter, the head tells the network-wide block clock that its block exists, and the clock fetches it at once as the block's one probe, to a voter whose turn falls in that block once that voter most likely holds it, else to the clock's fastest voter. A by-hash answer above `Latest` is the same proof, and a cache answer prefers the cache's own upstream. A later proof of a block already probed fetches nothing.
+- **Methods:** a gRPC BDS upstream serves only the methods its client maps (blocks, receipts, logs, traces, balances). For any other method (`eth_call`) it is no server, so that method's `latest` stops at a block the upstreams that serve it hold.
+
+#### Cache-head anchor
+
+`servedTip.followCacheHead: true` lowers the `Latest` a network-wide read takes to the newest block the network's cache serves, and keeps its `Finalized` and `Firm` at or below it. The source is the first realtime cache policy, with a TTL, on a head-aware connector (the `grpc` driver) that serves `eth_getBlockByNumber("latest")` for the network. While that connector's newest block is young enough for the policy's TTL — the [realtime age guard](/config/database/evm-json-rpc-cache)'s own rule, in whole seconds — the read's `Latest` stops at it and takes the view's pinned hash there: `eth_blockNumber`, `eth_getBlockByNumber("latest")` and tag interpolation name a block the cache already holds, so a client's follow-up reads of it (receipts, logs, the block by number) hit the cache instead of upstreams. Older or unknown: reads take the view's `Head`. Source: <SourceLink file="architecture/evm/cache_head_anchor.go" />, `anchorHead` in <SourceLink file="erpc/network_head.go" />
+
+- **Only lowers:** `min(Head, cache head)`, so a cache ahead of the upstreams changes nothing.
+- **Never steps back:** a fresh cache head below the `Latest` reads last took holds `Latest` there, for at most one TTL. A cache that does not catch up within its bound (one reporting another chain, say) stops anchoring until it goes stale or reaches that value, so it cannot freeze `Latest`. A reorg or walk-back the view makes lowers `Latest` as it does without the anchor.
+- **Read Head only:** the view, its pins, intake, hash votes and the refusal ceiling stay on the tracker's own head, and ws `newHeads`, ws `logs`, gRPC `StreamBlocks` and taps keep sending up to the view's `Head`. So `eth_blockNumber` may sit below the newest block a subscriber got, never above it, and a glitching cache cannot delay, reorder or drop a stream's block.
+- **Network-wide only:** a read on a `use-upstream` selector, or of a method only some upstreams serve, takes its lane's Head as computed.
+- **One connector:** it assumes the connector that serves latest blocks also serves the follow-up reads.
+- **Poll:** the cache head's poll above.
+- **Signal:** `time() − erpc_cache_connector_latest_block_timestamp_seconds` is the cache head's age; an absent or stalled series means no fresh head.
+- **Side effect:** the age guard reads the same connector head for realtime responses without a block timestamp (`eth_getLogs`, `eth_blockNumber`), so it judges them by a freshly polled head.
+
+#### Guarantee subsets
+
+`guaranteedMethods` and `guaranteedFor` clamp the advertised tip down to the lowest majority pick of every configured guarantee subset, so it is never a block a required subset cannot serve. `guaranteedMethods` names a subset by method support; `guaranteedFor` names one by upstream id/tag selector — the same vocabulary as `use-upstream` and `consensus.requiredParticipants`. Each subset runs the same ballot (`guaranteedSubsetPick` → `evmTipBallot`, same voter ranks) at `quorum: majority` whatever the network quorum, folded to the minimum in `guaranteedFloor`; only the membership predicate differs. A majority, never a minimum, so a single frozen member is outvoted inside its group. A subset with no voters constrains nothing (the tip is never pinned to 0), and the clamp can only lower the tip — a group ahead of the network pick never raises it. A subset whose ballot holds only static caps floors the tip only when no REGISTERED member is live (`anyRegisteredLiveHead`): live members that are merely absent from the eligible set (lag-excluded, cordoned, mid-restart) must not hand back a frozen cap. Source: <SourceLink file="erpc/networks.go" lines="1411-1500" />
+
+#### Finalized floor
+
+On `finalized`, each lane serves the higher of the tip computed above and its floor: the highest `finalized` it served since an evaluation last found no voter reporting it (`holdFinalized`). Finality never reverts, so a lower tip while a voter still reports the floor means the voters changed — a leader left the ballot (excluded, benched, syncing), or a lagger rejoined a lone leader, and a lagging group became the quorum — not the chain. The floor holds only while a voter of the lane's ballot, and of every constraining guarantee subset, reports a finalized block at or above it, and only a drop of at most `maxRegressionBlocks` (0 = 1024, also when the guard is off): a deeper drop is the [regression guard](#regression-guard)'s, so a far-ahead voter once served alone cannot hold it up. The first evaluation outside those bounds drops it to the computed tip, and a voter that returns later does not restore it. A held value never exceeds the lane's served `latest` of the same evaluation: above it, `finalized` serves `latest`, never less than the computed tip, since every voter's finalized is at or below its own latest. A request interpolated to the floor block can go to any upstream whose head passed it: routing checks configured bounds only, and response finality is the serving upstream's own. Per lane, computed under the lane's lock with the ballot it compares; a selector without a lane gets no floor, and `latest` has none.
+
+On the network-wide lane the floor is also shared across instances through the counter `network/<project>/<network>/finalizedBlock` (`shareFinalized`, `publishFinalized`), so a client moved to another instance does not see `finalized` step back. A computed value above the shared one raises it (a held value never publishes): the in-process copy at once, the store in the background, so the head computation never waits on it. A computed value below the shared one is served as the shared one under the same rule: at most the tolerance above the computed value, and while the same backing reaches it. Any other shared value is ignored. Only raises are published: a value the chain left behind stays in the counter until the chain passes it, unserved by the tolerance bound. Another instance's raise reaches this one's `Head` at its next evaluation, within 1s. Source: <SourceLink file="erpc/networks.go" lines="186-245" />, <SourceLink file="erpc/network_head.go" lines="356-379" />
+
+#### Selector-scoped served tip
+
+With a `use-upstream` selector, `EvmRoutableUpstreams` narrows the candidates to the matching upstreams; the pick is the same rule over that subset. `laneFor` returns the selector's lane: the network-wide lane (`lane="all"`) without a selector, a group's own lane for a simple group selector, else none. A lane holds no pick state: only its gauge label, advance-age anchor, regression-guard memory and finalized floor. A selector without a lane gets the same pick with no guard, no finalized floor and no gauges. A request whose method only some of its selector's upstreams serve (`tipScope`) gets the same stateless pick over those upstreams: its selector lane's view capped at the block `servedTip.quorum` of them hold, `Finalized` and `Leader` from their ballot. Each method's voter set is built on its first request and rebuilt when the network's upstreams or an upstream's method filter (an auto-ignore included) change, so a request resolves it with one lookup; when every upstream filters methods alike, every method uses its selector's lane. Which selectors form a lane, naming and the 16-lane cap: [Lanes](/reference/lanes). Source: <SourceLink file="erpc/networks.go" lines="621-807" />
+
+#### Syncing, finality and earliest block
+
+**Syncing state machine.** `eth_syncing` is called with a 5 s sub-context on each tick. The upstream is declared fully synced only after 4 consecutive "not syncing" responses (`synced counter ≥ 4`); any syncing response resets the counter to 1. The non-standard `{Ok: bool}` response shape is supported: `Ok=false` is treated as still-syncing. After 10 consecutive failures with no prior success, the syncing check is given up (see below) and the state is `Unknown`. If `upstreams[*].evm.skipSyncingCheck: true` is set in config, `eth_syncing` is never called at all and the state is immediately fixed at `NotSyncing` — use this for nodes that always return a syncing object regardless of actual sync status.
+
+**Give-up semantics.** Latest, finalized and the syncing check share one give-up: 10 refusals in a row with no prior success give the method up for 10 minutes (`evm.PollerGiveUpExpiry`); then it is retried once, a refused retry gives it up again, and an answer ends the give-up for good. Once the method has answered at least once, refusals are only logged. Latest and finalized count empty answers, unsupported, ignored and client errors as refusals; finalized also counts missing-data errors once the upstream's latest holds a block, since a node without the finalized tag can answer so. A missing-data error before that, or on latest, is no refusal: an upstream that starts without blocks is polled at its cadence until it holds one. The syncing check counts every error. While finalized is given up, and through its retries, finality is derived from latest. Source: [`architecture/evm/evm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go) (`giveUp`)
+
+**`IsBlockFinalized` decision tree** (it compares against `FinalizedBlock()`, the upstream's vote for `Head.Finalized`):
 1. Both `finalizedBlock == 0` and `latestBlock == 0` → `ErrFinalizedBlockUnavailable`.
 2. `finalizedBlock > 0` → `blockNumber ≤ finalizedBlock`.
-3. `finalizedBlock == 0` and `latestBlock > 0` → infer `finalizedBlock = latestBlock − FallbackFinalityDepth` (default 1024) and compare.
+3. `finalizedBlock == 0`, the upstream not yet known to lack the finalized tag → nothing is finalized: the upstream reports 0 until its tag first answers.
+4. `finalizedBlock == 0`, the upstream known to lack the finalized tag (`skipFinalizedCheck`, item 14 below) and `latestBlock > 0` → infer `finalizedBlock = latestBlock − depth`, the deeper of `FallbackFinalityDepth` (default 1024) and 30 minutes of chain, and compare. The 30 minutes count at the block time floor: the shorter of the EMA and what the blocks seen since start, or since the last halt, allow, so an estimate running long at a cold start never shortens them; 1s while the block time is unknown.
 
 **Earliest block detection.** When `blockAvailability.lower.earliestBlockPlus` is configured, `binarySearchEarliest` finds the first block in `[0, latestBlock]` where a probe RPC call returns data. Probe types: `blockHeader` (`eth_getBlockByNumber`), `eventLogs` (`eth_getLogs`, requires ≥1 log entry), `callState` (`eth_getBalance`), `traceData` (tries `trace_block`, `debug_traceBlockByHash`, `trace_replayBlockTransactions` in order). Results are stored in cross-pod shared counters. If `blockAvailability.*.updateRate` is set, a scheduler goroutine re-runs the search at that interval.
 
@@ -171,18 +266,16 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 
 | Field | Type | Default | Behavior / footguns |
 |---|---|---|---|
-| `networks[*].evm.fallbackStatePollerDebounce` | Duration | `5s` | Debounce used when EMA is not yet available (step 3 of `resolveDebounce`). Setting to `0` causes the 1 s hard floor to apply during EMA warm-up. Source: <SourceLink file="common/defaults.go" lines="1975-1976" /> |
-| `networks[*].evm.fallbackFinalityDepth` | int64 | `1024` | Blocks subtracted from latest to infer finalized when the upstream does not support `eth_getBlockByNumber("finalized")`. Applied only when `finalizedBlock == 0` and `latestBlock > 0`. Source: <SourceLink file="common/defaults.go" lines="1975" /> |
+| `networks[*].evm.fallbackStatePollerDebounce` | Duration | unset | Debounce used while the block time is not yet known (step 3 of `resolveDebounce`). Unset, the 1 s cold block time × the multiplier (0.7 s) applies. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="505-530" /> |
+| `networks[*].evm.fallbackFinalityDepth` | int64 | `1024` | Blocks subtracted from latest to infer finalized when the upstream does not support `eth_getBlockByNumber("finalized")`. Applied only when `skipFinalizedCheck` is set, `finalizedBlock == 0` and `latestBlock > 0`. Source: <SourceLink file="common/defaults.go" lines="1975" /> |
 | `networks[*].evm.dynamicBlockTimeDebounceMultiplier` | \*float64 | `0.7` | Scales the EMA block time to compute the debounce. **`0` is silently treated as unset** — the default 0.7 is used. Valid useful range: `0.1`–`1.0`; values above `1.0` make the debounce longer than one block time, causing stale data between polls. To eliminate the EMA-derived debounce, use `statePollerDebounce` on the upstream instead. Source: <SourceLink file="architecture/evm/evm_state_poller.go" lines="368-372" /> |
-| `networks[*].evm.servedTip` | \*EvmServedTipConfig | `nil` (default mode) | When nil, `EvmHighestLatestBlockNumber` returns the corroborated head (second-highest). Set `enabledFor` to enable majority mode. Source: <SourceLink file="erpc/networks.go" lines="521" /> |
-| `networks[*].evm.servedTip.enabledFor` | []string | `[]` (default mode for all tags) | Tags for which majority mode is active. Valid: `"latest"`, `"finalized"`, `"safe"` (`"safe"` is an alias for `"finalized"`). Source: <SourceLink file="common/config.go" lines="2272" /> |
-| `networks[*].evm.servedTip.clusterDelta` | int64 | `0` (auto-derive) | Max block gap between adjacent sorted upstream tips that still groups them into one cluster. Auto-derive: `clamp(ceil(2.0 / blockTimeSec), 2, 10)`. Examples: Ethereum (12 s) → 2; Polygon (2 s) → 1, clamped to 2; Arbitrum (0.25 s) → 8; sub-100 ms → 10 (ceiling). When block time is unknown (EMA not warmed up) the fallback is 2. Source: <SourceLink file="architecture/evm/served_tip.go" lines="225-246" /> |
-| `networks[*].evm.servedTip.guaranteedMethods` | []string | `[]` | Glob patterns (e.g. `"trace_*"`). For each pattern the served tip is clamped down to the cluster-min of supporting upstreams only, ensuring `"latest"` is always servable for these methods. Source: <SourceLink file="erpc/networks.go" lines="705-747" /> |
-| `networks[*].evm.servedTip.guaranteedFor` | []string | `[]` | Upstream selectors (id or tag glob, e.g. `"type:internal"`, `"int*"`) whose group must be able to serve the advertised tip. For each selector the tip is clamped down to that group's own MAJORITY — not its minimum, so one frozen member cannot pin the network. Several selectors fold to the lowest. An unmatched selector constrains nothing. Source: <SourceLink file="common/config.go" lines="2608-2615" /> |
+| `networks[*].evm.finalizedDebounceDepthMultiplier` | \*float64 | `0.05` | Finalized polls wait until the upstream's finalized block is older than `(latest − finalized) × EMA block time × multiplier`, when that is longer than the regular debounce. `0` disables it: finalized uses the regular debounce, as before. Also throttles the forced finalized re-check of `blockAvailability` with finalized confidence. Source: <SourceLink file="common/defaults.go" lines="2446" /> |
+
+`networks[*].evm.servedTip.*` keys (`quorum`, `maxRegressionBlocks`, `guaranteedMethods`, `guaranteedFor`, `followCacheHead`) and the removed keys with their migration: [Networks config](/config/projects/networks#config-schema).
 
 ### Worked examples
 
-**1. Enable cluster-min served tip for a multi-provider Mainnet setup.** Cluster mode ensures every provider in the dominant group has the advertised block before eRPC routes to it — eliminates "block not found" on eth_getBlockByNumber after a new block:
+**1. Majority quorum for a five-provider Mainnet pool.** The default quorum serves the 2nd-highest head; `majority` serves the 3rd of 5, so three providers already have every advertised block and fewer interpolated requests land on a node without it:
 
 <ConfigTabs
   path="networks[].evm"
@@ -191,17 +284,17 @@ The result is monotonically clamped via a cross-pod shared counter so the served
     evm:
       chainId: 1
       servedTip:
-        enabledFor: ["latest", "finalized"]`}
+        quorum: majority`}
   ts={`networks: [{
   architecture: "evm",
   evm: {
     chainId: 1,
-    servedTip: { enabledFor: ["latest", "finalized"] },
+    servedTip: { quorum: "majority" },
   },
 }]`}
 />
 
-**2. Faster polling for a sub-second chain (Arbitrum).** The EMA auto-tunes the debounce to ~70% of block time, but `fallbackStatePollerDebounce` should be shortened so warm-up doesn't bottleneck fresh starts. Reduce polling interval to keep lag tight:
+**2. Faster polling for a sub-second chain (Arbitrum).** The block time auto-tunes the debounce to ~70% of block time from its first sample, 2 timestamp changes after the first header; before that the cold debounce is 0.7 s (the 1 s cold block time × 0.7). `fallbackStatePollerDebounce` shortens those first headers:
 
 <ConfigTabs
   path="networks[].evm"
@@ -209,15 +302,12 @@ The result is monotonically clamped via a cross-pod shared counter so the served
   - architecture: evm
     evm:
       chainId: 42161
-      fallbackStatePollerDebounce: 200ms
-      servedTip:
-        enabledFor: ["latest"]`}
+      fallbackStatePollerDebounce: 200ms`}
   ts={`networks: [{
   architecture: "evm",
   evm: {
     chainId: 42161,
     fallbackStatePollerDebounce: "200ms",
-    servedTip: { enabledFor: ["latest"] },
   },
 }]`}
 />
@@ -231,14 +321,12 @@ The result is monotonically clamped via a cross-pod shared counter so the served
     evm:
       chainId: 1
       servedTip:
-        enabledFor: ["latest"]
         guaranteedMethods: ["trace_*"]`}
   ts={`networks: [{
   architecture: "evm",
   evm: {
     chainId: 1,
     servedTip: {
-      enabledFor: ["latest"],
       guaranteedMethods: ["trace_*"],
     },
   },
@@ -249,14 +337,13 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 
 <ConfigTabs
   path="networks[].evm.servedTip"
-  focusYaml="8"
+  focusYaml="7"
   focusTs="7"
   yaml={`networks:
   - architecture: evm
     evm:
       chainId: 1
       servedTip:
-        enabledFor: ["latest"]
         # the same tag consensus.requiredParticipants names
         guaranteedFor: ["type:internal"]`}
   ts={`networks: [{
@@ -264,7 +351,6 @@ The result is monotonically clamped via a cross-pod shared counter so the served
   evm: {
     chainId: 1,
     servedTip: {
-      enabledFor: ["latest"],
       // the same tag consensus.requiredParticipants names
       guaranteedFor: ["type:internal"],
     },
@@ -288,65 +374,56 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 
 ### Request/response behavior
 
-- In cluster mode, eRPC gates routing so only upstreams at or above the served tip are eligible. A request for `"latest"` receives a block number ≤ the served tip, guaranteed to be present on the upstream that handles it.
+- A block-tagged request for `"latest"` / `"finalized"` is interpolated to the served tip, which at least `quorum` voters already have; `"finalized"` may instead be the [finalized floor](#finalized-floor), which a voter still reports finalized. Routing does not exclude upstreams below it; per-upstream block-availability checks and retries handle a node that lacks the block.
 - `ErrFinalizedBlockUnavailable` is retryable (N:yes). Requests are automatically retried on a different upstream. On the wire it maps to HTTP 200 with JSON-RPC error code `-32603`.
 - `ErrUpstreamBlockUnavailable` is produced by `CheckBlockRangeAvailability` (used for `eth_getLogs`, `trace_filter`, `arbtrace_filter`) when both block bounds are outside the upstream's availability window. Retryable at the network level.
-- `erpc_network_served_tip_block_number` and `erpc_network_served_tip_lag_blocks` are **only emitted in majority mode** — they are absent in default mode. Alerting rules referencing them will silently produce no data in default deployments. [<SourceLink file="erpc/networks.go" lines="521-527" />]
 - The `SuggestLatestBlock` fast path (called when a response is observed during request forwarding) is non-blocking and uses no debounce. `SuggestFinalizedBlock` uses `TryLock` and is async — suggestions may be dropped under high concurrency.
 
 ### Best practices
 
-- Enable cluster mode (`servedTip.enabledFor: ["latest", "finalized"]`) in any production deployment with multiple upstreams — it eliminates the class of "block not found" failures caused by routing to a lagging node.
-- Lower `fallbackStatePollerDebounce` to 200–500 ms on sub-second chains (Arbitrum, Base, Optimism) so warm-up doesn't stall on a 5 s default.
 - Use `guaranteedMethods: ["trace_*"]` when mixing archive and non-archive upstreams — prevents the served tip from advancing past what trace-capable nodes have.
+- Lower `fallbackStatePollerDebounce` to 200–500 ms on sub-second chains (Arbitrum, Base, Optimism) to poll faster than the 0.7 s cold cadence during warm-up.
 - Avoid setting `dynamicBlockTimeDebounceMultiplier: 0`; it is silently ignored and the default 0.7 is used. To impose a fixed debounce, use `statePollerDebounce` on the upstream instead.
-- Monitor `erpc_upstream_block_head_lag` per upstream. A node consistently lagging more than `clusterDelta` blocks will be excluded from the dominant cluster and effectively deprioritized.
-- Alert on `erpc_network_served_tip_lag_blocks` rising with a flat `erpc_network_served_tip_block_number` — this is the diagnostic signature of a monotonic clamp hold-down after fleet regression (all nodes temporarily reported lower blocks but the counter held the old high-water mark).
-- Don't alert on `erpc_network_served_tip_lag_blocks == 0` as a health signal in cluster mode — during a total outage all inputs are zero and `MaxEligible - served < 0` clamps to 0, masking the problem. Cross-alert with `erpc_upstream_latest_block_number` being flat instead.
+- Monitor `erpc_upstream_block_head_lag` per upstream, and alert on `erpc_network_served_tip_advance_age_seconds` (stuck tip), `erpc_network_served_tip_regression_total` and `erpc_upstream_head_benched_total` ([metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking)).
 
 ### Edge cases & gotchas
 
-1. **`statePollerInterval: 0` disables the poller silently.** All block numbers return 0, syncing state is `Unknown`, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately, and block availability checks fail-open. The upstream is not excluded from selection but contributes `BlockNumber=0`, which cluster mode drops at step 1.
-2. **Velocity gate is inactive on cold start.** If `lastServedBlock == 0` (cold start) or `BlockTimeSeconds == 0` (EMA not warmed up), all candidates pass to clustering. A misbehaving upstream reporting a far-future block during cold start can become the sole cluster and win.
-3. **Monotonic clamp survives fleet regression.** Per-upstream shared counters are forward-only. A reorg or mass node reboot causing all upstreams to report lower blocks is silently ignored — the counter holds the previous high-water mark. `erpc_network_served_tip_lag_blocks` grows unboundedly; a flat `served_tip_block_number` alongside rising lag is the diagnostic signature.
+1. **`statePollerInterval: 0` disables the poller silently.** All block numbers return 0, syncing state is `Unknown`, `IsBlockFinalized` returns `ErrFinalizedBlockUnavailable` immediately, and block availability checks fail-open. The upstream is not excluded from selection but its head is 0, so it never votes.
+2. **Two upstreams with the default quorum serve the lower head.** One stalled node holds `latest` until it is benched (its stall window: 90s at the default 30s `statePollerInterval`); then the other votes alone. A node that is catching up slowly is not benched and holds `latest` at its head until `eth_syncing` reports it syncing.
+3. **A rogue head needs `quorum − 1` accomplices.** One far-future or wrong-chain head never moves the pick at quorum ≥ 2.
 4. **`dynamicBlockTimeDebounceMultiplier: 0` is silently treated as unset.** The guard `> 0` causes the value to fall through to the default 0.7.
-5. **`"safe"` is an alias for `"finalized"` in `enabledFor`.** Listing `"safe"` enables cluster mode on the finalized axis only.
-6. **Selector-scoped tip is stateless for boolean-expression selectors.** Selectors containing `|`, `&`, `(`, `)`, or multiple `!` characters fail `isSimpleGroupSelector` and always use stateless cluster-min (no monotonic guarantee, no metrics).
-7. **Maximum 16 selector partitions per network.** Beyond the cap, additional selectors fall back to stateless cluster-min. Equivalent selectors (same matched upstream set) dedup to one partition.
-8. **`clusterDelta` auto-derive uses the EMA block time.** During warm-up (fewer than 3 EMA samples), `blockTimeSec = 0` and `clusterDelta` defaults to 2. A 2-block spread between an early and late upstream will erroneously split into two clusters until the EMA warms up (typically within the first 3 produced blocks).
-9. **`eventLogs` probe requires ≥1 log entry.** A block with no events returns an empty array, treated as "not available" — the binary search may incorrectly mark data-sparse blocks as unavailable.
-10. **`updateRate` goroutine is NOT restarted on config hot-reload.** Only a process restart picks up a changed `updateRate` for `earliestBlockPlus` bounds. Setting `updateRate` alongside `latestBlockMinus` produces a validation warning (not an error); the value is silently ignored at runtime.
-11. **`ErrFinalizedBlockUnavailable` is retryable.** It carries no explicit opt-out flag, so `IsRetryableTowardNetwork` returns true. On the wire it maps to HTTP 200 with JSON-RPC error code `-32603`.
-12. **`erpc_network_served_tip_lag_blocks` reports 0 during a total outage.** When all upstreams return 0 or blocks below the clamp, `MaxEligible = 0` and `lag = MaxEligible − served < 0` is clamped to 0. A lag of 0 with a flat `served_tip_block_number` indicates total outage, not healthy operation.
-13. **`OnValue` callback passes `blockTimestamp=0` for cross-pod replications.** Only the replica that actually fetches feeds the EMA with a real timestamp; replicas receiving shared-counter updates use `blockTimestamp=0`, so only one pod per network feeds the EMA per debounce window.
-14. **`ErrFinalizedBlockUnavailable` never fires if only `latestBlock == 0`.** The error requires BOTH counters to be 0. If the upstream supports `eth_getBlockByNumber("latest")` but not `"finalized"`, `IsBlockFinalized` falls back to `latestBlock − FallbackFinalityDepth` instead of returning the error.
-15. **`SuggestFinalizedBlock` may drop updates under load.** It uses `TryLock`; if an update is already in progress the suggestion is discarded. Finalized block updates may lag under high request volume.
-16. **`SuggestLatestBlock` monotonic within a process but not across pod restarts.** It calls `TryUpdate` which the shared counter rejects if the value is ≤ current. Across pod restarts the shared counter (Redis) retains the last value, so a restarted upstream reporting a lower block number after a reorg is silently ignored for up to 1024 blocks of rollback.
-17. **`eth_syncing` result `{Ok: false}` is interpreted as SYNCING.** The non-standard `{Ok: bool}` response shape is handled by `!Ok`: `Ok=false` means not-ok = still syncing. Source: [`architecture/evm/evm_state_poller.go:L1087-L1100`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L1087-L1100)
-18. **`erpc_network_served_tip_lag_blocks` uses `MaxEligible` (post-velocity-gate), not `MaxObserved`.** A far-future tip from a misbehaving upstream is velocity-dropped and does not inflate the lag gauge. The gauge accurately reflects deliberate lag vs. the highest plausible eligible upstream tip.
-19. **`guaranteedFor` on a ONE-member group lets that upstream set the tip.** The clamp is the group's majority, and a group of one has no majority to outvote a stall — a single frozen member holds the network tip at its head. Naming exactly one upstream is declaring it mandatory; name ≥3 for a group that tolerates one stall. Same property `guaranteedMethods` already has for a method only one upstream supports.
-20. **`guaranteedFor` constrains nothing when its group is absent from the eligible set.** If every matching upstream is lag-excluded, cordoned or mid-restart, the group ballot has no inputs and the clamp is skipped rather than pinning the tip to 0. A group whose members are all static serving-range caps floors the tip only when no REGISTERED member is live — the same transient-vs-permanent rule `guaranteedMethods` applies, so an eligibility collapse cannot hand back a frozen cap. Source: [`erpc/networks.go:L1654-L1675`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L1654-L1675)
-21. **`guaranteedFor` is subject to `enabledFor`.** The clamp lives in the served-tip pipeline, so it is a no-op on any axis not listed in `enabledFor` — setting `guaranteedFor` without `enabledFor` changes nothing.
-22. **Finalized block polling is permanently skipped on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` failures without any prior success, `skipFinalizedCheck = true`. `IsBlockFinalized` then falls back exclusively to `latestBlock − FallbackFinalityDepth`. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
+5. **`eventLogs` probe requires ≥1 log entry.** A block with no events returns an empty array, treated as "not available" — the binary search may incorrectly mark data-sparse blocks as unavailable.
+6. **`updateRate` goroutine is NOT restarted on config hot-reload.** Only a process restart picks up a changed `updateRate` for `earliestBlockPlus` bounds. Setting `updateRate` alongside `latestBlockMinus` produces a validation warning (not an error); the value is silently ignored at runtime.
+7. **`ErrFinalizedBlockUnavailable` is retryable.** It carries no explicit opt-out flag, so `IsRetryableTowardNetwork` returns true. On the wire it maps to HTTP 200 with JSON-RPC error code `-32603`.
+8. **`OnValue` callback passes `blockTimestamp=0` for cross-pod replications.** Only the replica that actually fetches feeds the EMA with a real timestamp; replicas receiving shared-counter updates use `blockTimestamp=0`, so only one pod per network feeds the EMA per debounce window.
+9. **`ErrFinalizedBlockUnavailable` never fires if only `latestBlock == 0`.** The error requires BOTH counters to be 0. An upstream with a latest block but no finalized block yet answers "not finalized"; only once it is known to lack the finalized tag (item 14) does `IsBlockFinalized` compare against `latestBlock −` the derived depth.
+10. **`SuggestFinalizedBlock` may drop updates under load.** It uses `TryLock`; if an update is already in progress the suggestion is discarded. Finalized block updates may lag under high request volume.
+11. **`SuggestLatestBlock` monotonic within a process but not across pod restarts.** It calls `TryUpdate` which the shared counter rejects if the value is ≤ current. Across pod restarts the shared counter (Redis) retains the last value, so a restarted upstream reporting a lower block number after a reorg is silently ignored for up to 1024 blocks of rollback.
+12. **`eth_syncing` result `{Ok: false}` is interpreted as SYNCING.** The non-standard `{Ok: bool}` response shape is handled by `!Ok`: `Ok=false` means not-ok = still syncing. Source: [`architecture/evm/evm_state_poller.go:L1087-L1100`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L1087-L1100)
+13. **`guaranteedFor` on a ONE-member group lets that upstream set the tip.** The clamp is the group's majority, and a group of one has no majority to outvote a stall — a single frozen member holds the network tip at its head. Naming exactly one upstream is declaring it mandatory; name ≥3 for a group that tolerates one stall. Same property `guaranteedMethods` already has for a method only one upstream supports.
+14. **Finalized block polling is given up on unsupported chains.** After 10 consecutive `eth_getBlockByNumber("finalized")` refusals without any prior success, finalized is given up and retried every 10 minutes. `IsBlockFinalized` then falls back exclusively to `latestBlock −` the derived depth, also during the retries. On PoW chains or chains without EIP-4895 finality, this is the only reachable path.
+15. **Finalized trails by up to `finalizedDebounceDepthMultiplier` of the finality window.** Reads and cache hits classify a block as finalized against the request's `Head.Finalized`; an upstream's answer needs that upstream's own finalized block too, and an upstream on a minority fork never makes one final. Only the full poll and a `finalized` tag request move `Head.Finalized`: a request that names the `finalized` tag (any method, any param) starts the lane's finalized refresh in the background and takes `Head.Finalized` at once. Only when fewer than the quorum's voters reported finalized within W does it wait for the refresh, at most W, before interpolation and the cache lookup. A numbered read above `Head.Finalized` polls nothing.
+16. **Instances agree on network-wide `finalized` once their own voters report it.** An instance serves another's value only while one of its voters reports it finalized, so during poll lag two instances behind one load balancer can still differ. Use-upstream lanes keep a separate floor per instance.
+17. **`finalized` steps back when every voter at the floor leaves at once, or by more than `maxRegressionBlocks`.** For example, one policy evaluation excludes the whole leading group: the floor drops to the pick of the voters left. A deeper drop is held by the regression guard for at most 1 minute instead.
+18. **A voter within `maxRegressionBlocks` above the honest ones can hold the floor while it stays.** The floor never passes the served `latest`, so such a voter can lift `finalized` only into blocks the honest upstreams already have.
 
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
-| `erpc_upstream_latest_block_number` | gauge | project, vendor, network, upstream | Updated on every `SetLatestBlockNumber` call; `upstream="*"` = network-wide max |
+| `erpc_upstream_latest_block_number` | gauge | project, vendor, network, upstream | Updated on every `SetLatestBlockNumber` call; `upstream="*"` = corroborated network head (second-highest non-benched) |
 | `erpc_upstream_finalized_block_number` | gauge | project, vendor, network, upstream | Updated on every `SetFinalizedBlockNumber` call |
-| `erpc_upstream_block_head_lag` | gauge | project, vendor, network, upstream | Recomputed on each `SetLatestBlockNumber`; value = `max_network_latest − upstream_latest` |
-| `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Recomputed on each `SetFinalizedBlockNumber`; value = `max_network_finalized − upstream_finalized` |
+| `erpc_upstream_block_head_lag` | gauge | project, vendor, network, upstream | Recomputed on each `SetLatestBlockNumber`; value = `network_latest − presumed_latest` (corroborated network head; presumed head = last report plus the network head's progress since, for at most one poll period); a benched head that has not moved since its bench counts as no higher than the network head at the bench |
+| `erpc_upstream_finalization_lag` | gauge | project, vendor, network, upstream | Recomputed on each `SetFinalizedBlockNumber`; value = `network_finalized − presumed_finalized` (corroborated network head, same presumed-head credit) |
 | `erpc_upstream_latest_block_polled_total` | counter | project, vendor, network, upstream | Incremented before each actual `eth_getBlockByNumber("latest")` call (debounce elapsed). Two paths increment this counter: (1) proactive timer-driven `Poll()` on the background goroutine, and (2) forced-fresh polls triggered by block-availability checks (`EvmAssertBlockAvailability` / `EvmIsBlockFinalized`) when a request arrives for a block above the current known latest. Both paths still respect the debounce window — if a pod already fetched within the window, `TryUpdateIfStale` returns the cached value without incrementing. |
 | `erpc_upstream_finalized_block_polled_total` | counter | project, vendor, network, upstream | Same dual-path semantics as `latest_block_polled_total` for the finalized axis |
 | `erpc_upstream_block_head_large_rollback` | gauge | project, vendor, network, upstream, finality | Fired when a new value would regress &gt;1024 blocks. `finality` is the head axis (`latest` or `finalized`) — the two pollers would otherwise share one series |
 | `erpc_network_dynamic_block_time_milliseconds` | gauge | project, network | Current EMA block-time estimate in ms; absent until ≥3 samples |
 | `erpc_network_latest_block_timestamp_distance_seconds` | gauge | project, network, origin | `(now_ms − block.timestamp × 1000) / 1000`; `origin="evm_state_poller"` |
-| `erpc_network_served_tip_block_number` | gauge | project, network, lane, axis | Post-clamp served tip; **cluster mode only** (`lane="all"` or named group) |
-| `erpc_network_served_tip_lag_blocks` | gauge | project, network, lane, axis | `MaxEligible − served`; **cluster mode only**; grows during monotonic clamp hold-down |
-| `erpc_network_served_tip_upstream_excluded_total` | counter | project, network, upstream, axis, reason | Upstream excluded from pick; `reason="velocity"` or `"outlier"`; **cluster mode only, network-wide pick only** |
 
-**OTel trace spans** (under detailed tracing): `EvmStatePoller.PollLatestBlockNumber`, `EvmStatePoller.PollFinalizedBlockNumber`, `Network.EvmHighestLatestBlockNumber`, `Network.EvmHighestFinalizedBlockNumber`, `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`. The network span includes attributes: `served_tip.axis`, `served_tip.candidate`, `served_tip.max_observed`, `served_tip.cluster_count`, `served_tip.dominant_size`, `served_tip.outliers_count`, `served_tip.velocity_dropped`, `served_tip.lag_vs_max`. Source: <SourceLink file="erpc/networks.go" lines="777-793" />
+Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_benched_total`): [metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking).
+
+**OTel trace spans** (under detailed tracing): `EvmStatePoller.Ask`, `EvmStatePoller.PollFinalizedBlockNumber`, `ChainTracker.Fetch`, `Tap.Read`, `Evm.ExtractBlockReferenceFromRequest`, `Evm.ExtractBlockReferenceFromResponse`.
 
 **Notable log messages:**
 
@@ -354,29 +431,38 @@ The result is monotonically clamped via a cross-pod shared counter so the served
 |---|---|---|
 | `INFO` | `"bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states"` | Successful `Bootstrap` |
 | `INFO` | `"node is marked as fully synced"` | `synced counter >= 4` consecutive not-syncing responses |
-| `WARN` | `"upstream does not support fetching syncing state ... after N consecutive failures, will give up"` | `skipSyncingCheck` flip (10 failures, no prior success) |
-| `WARN` | `"upstream does not support fetching latest block number ... after N consecutive failures, will give up"` | `skipLatestBlockCheck` flip |
-| `WARN` | `"upstream does not support fetching finalized block number ... after N consecutive failures, will give up"` | `skipFinalizedCheck` flip |
+| `WARN` | `"upstream refused eth_syncing in evm state poller N times with no success, giving it up"` | syncing check given up (10 refusals, no prior success) |
+| `WARN` | `"upstream refused latest in evm state poller N times with no success, giving it up"` | latest given up |
+| `WARN` | `"upstream refused finalized in evm state poller N times with no success, giving it up"` | finalized given up |
 | `WARN` | `"failed to poll evm state"` | `Poll()` returns a non-cancel error |
 | `INFO` | `"initial earliest block detection completed for this instance"` | Binary search for `earliestBlockPlus` bound completes |
 | `INFO` | `"started periodic scheduler for earliest block availability bound"` | `updateRate` configured and scheduler goroutine launched |
+| `WARN` | `"benched upstream head: it stayed behind peers that kept advancing; ..."` | Upstream benched |
+| `INFO` | `"upstream head rejoined: it caught up with its non-benched peers"` | Benched upstream rejoined |
+| `ERROR` | `"served tip regressed far below the corroborated live head; serving the last corroborated tip"` | Regression guard starts holding |
+| `ERROR` | `"served tip regression outlasted the guard window; failing open and serving the current pick"` | Hold exceeded 1 minute |
+| `WARN` | `"served tip recovered; the regression guard is no longer holding"` | Guard back to healthy |
 
 ### Source code entry points
 
-- [`architecture/evm/evm_state_poller.go:L145-L204`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L145-L204) — `Bootstrap`, `Poll`, `PollLatestBlockNumber`, `PollFinalizedBlockNumber`; debounce resolution; syncing state machine
-- [`architecture/evm/served_tip.go:L114-L246`](https://github.com/erpc/erpc/blob/main/architecture/evm/served_tip.go#L114-L246) — `ComputeServedTipCandidate`: velocity gate, greedy clustering, dominant cluster, `resolveAutoClusterDelta`
-- [`erpc/networks.go:L466-L851`](https://github.com/erpc/erpc/blob/main/erpc/networks.go#L466-L851) — `clusteredServedTip`, `gatherEvmTipInputsForMethod`, `tipCandidateUpstreams`, `servedTipPartitionFor`, `partitionKeyFor`, `isSimpleGroupSelector`, `guaranteedMethodFloor`, `observeServedTipMetrics`
-- [`health/tracker.go:L1306-L1463`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1306-L1463) — `SetLatestBlockNumber`, EMA update (`updateBlockTimeSample`), `GetNetworkBlockTime`, `BlockHeadLag` computation
-- [`health/tracker.go:L1504-L1550`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1504-L1550) — `SetFinalizedBlockNumber`, `FinalizationLag` computation
-- [`common/defaults.go:L1718-L1977`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1718-L1977) — `DefaultEvmFinalityDepth=1024`, `DefaultEvmStatePollerDebounce=5s`, `DefaultDynamicBlockTimeDebounceMultiplier=0.7`
-- [`architecture/evm/served_tip_test.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/served_tip_test.go) — unit tests for clustering, velocity gate, `clusterDelta` auto-derive
-- [`erpc/networks_served_tip_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_served_tip_test.go) — integration tests: cluster-min, monotonic clamp, selector scoping, partition dedup, guaranteed method floor
+- [`architecture/evm/evm_state_poller.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go) — `Bootstrap`, `Poll`, `Ask`, `PollLatestBlockNumber`, `PollFinalizedBlockNumber`; debounce resolution; syncing state machine
+- [`common/served_tip.go:L36-L157`](https://github.com/erpc/erpc/blob/main/common/served_tip.go#L36-L157) — `ServedTipQuorum`, `PickServedTip`
+- [`erpc/networks.go`](https://github.com/erpc/erpc/blob/main/erpc/networks.go) — `evmTipBallot`, `EvmRoutableUpstreams`, `requestSelector`, `laneFor`, `EvmAskHead`, `guardServedTipRegression`, `holdFinalized`, `guaranteedFloor`, `guaranteedSubsetPick`, `anyRegisteredLiveHead`, `bindLaneGauges`
+- [`erpc/network_intake.go`](https://github.com/erpc/erpc/blob/main/erpc/network_intake.go) — `voterSet`, `tipVoterRank`
+- [`erpc/network_head.go`](https://github.com/erpc/erpc/blob/main/erpc/network_head.go) — `EvmHead`, `EvmLaneHead`, `computeHead`, `markLanes`, `refreshDirtyHeads`
+- [`architecture/evm/eth_blockNumber.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go) — `eth_blockNumber` pre-forward answer and post-forward pin
+- [`health/tracker.go:L1428-L1664`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1428-L1664) — `corroboratedNetworkHead`, `headStallAfter`, `evaluateHeadBench`, `movedSinceBench`, `headIsBehind`, `benchPlausibleLead`, `IsHeadBenched`
+- [`health/tracker.go:L1666-L1918`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1666-L1918) — `SetLatestBlockNumber`, EMA update (`updateBlockTimeSample`, `sampleBlockTime`), `BlockHeadLag` computation
+- [`health/tracker.go:L1937-L2033`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1937-L2033) — `SetFinalizedBlockNumber`, `rederiveNetworkFinalized`, `FinalizationLag` computation
+- [`common/defaults.go:L1718-L1977`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1718-L1977) — `DefaultEvmFinalityDepth=1024`, `DefaultDynamicBlockTimeDebounceMultiplier=0.7`
+- [`common/served_tip_test.go`](https://github.com/erpc/erpc/blob/main/common/served_tip_test.go) — unit tests for `PickServedTip` and quorum parsing
+- [`erpc/networks_served_tip_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_served_tip_test.go) — integration tests: quorum, voter ranks, benching, static caps, selector scoping, guarantee floors, finalized floor
 
 ### Related pages
 
 - [Selection policies](/config/projects/selection-policies) — uses `blockNumberLagAbove` and `blockHeadLag` produced by this subsystem to deprioritize lagging upstreams.
 - [Upstream config](/config/projects) — where `evm.statePollerInterval`, `evm.statePollerDebounce`, and `evm.blockAvailability` are set.
-- [Network config](/config/projects) — where `evm.servedTip`, `evm.fallbackStatePollerDebounce`, and `evm.dynamicBlockTimeDebounceMultiplier` are set.
+- [Network config](/config/projects/networks) — where `evm.servedTip`, `evm.fallbackStatePollerDebounce`, and `evm.dynamicBlockTimeDebounceMultiplier` are set.
 - [Cache](/config/database) — uses `ExtractBlockReferenceFromRequest` / `ExtractBlockReferenceFromResponse` to build cache keys from block numbers and tags.
 - [eth\_getLogs splitting](/reference/evm/getlogs-splitting) — calls `CheckBlockRangeAvailability` from this subsystem to gate range queries.
 

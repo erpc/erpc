@@ -86,8 +86,26 @@ type Engine struct {
 	proberMu sync.RWMutex
 	probers  map[string]*Prober
 
+	// eligibleHooks are the networks' eligible-set callbacks
+	// (OnEligibleChanged).
+	eligibleHooks sync.Map // map[networkID]func()
+
 	appCtx context.Context
 	cancel context.CancelFunc
+}
+
+// OnEligibleChanged registers fn to run when a slot of networkID publishes
+// an eligible set whose members differ from its previous one. fn runs on
+// the slot's tick: it must not block. One per network; a later one
+// replaces it.
+func (e *Engine) OnEligibleChanged(networkID string, fn func()) {
+	e.eligibleHooks.Store(networkID, fn)
+}
+
+func (e *Engine) eligibleChanged(networkID string) {
+	if fn, ok := e.eligibleHooks.Load(networkID); ok {
+		fn.(func())()
+	}
 }
 
 // DefaultEngineIdleEvictionAfter is the conservative idle threshold the
@@ -254,8 +272,9 @@ func (e *Engine) sweepIdleSticky() {
 // are created lazily when GetOrdered is called with a specific method.
 //
 // The `upstreamsFn` callback is invoked at every tick so newly-bootstrapped
-// upstreams become visible to the engine without a re-register. For static
-// configurations a closure returning a frozen slice is fine.
+// upstreams become visible to the engine without a re-register;
+// `UpstreamsChanged` runs that tick at once. For static configurations a
+// closure returning a frozen slice is fine.
 //
 // If `cfg.EvalFunc` is the placeholder identity policy
 // (`common.DefaultSelectionPolicySource`), this method upgrades it to
@@ -334,6 +353,37 @@ func (e *Engine) UnregisterNetwork(networkID string) {
 	delete(e.networks, networkID)
 }
 
+// UpstreamsChanged re-runs every slot of the network now, so routing and
+// head voting see an upstream that joined or left without waiting for
+// EvalInterval. It returns once those evals have run; a burst of calls
+// shares one eval per slot. Frozen slots are left to manual ticks.
+func (e *Engine) UpstreamsChanged(networkID string) {
+	type pending struct {
+		slot *Slot
+		done <-chan struct{}
+	}
+	var waits []pending
+	// Kicked under the lock so a concurrent RegisterNetwork either runs
+	// first (its synchronous tick already sees the upstream) or after.
+	e.mu.RLock()
+	for k, s := range e.slots {
+		if k.network != networkID {
+			continue
+		}
+		if done := s.refresh(); done != nil {
+			waits = append(waits, pending{s, done})
+		}
+	}
+	e.mu.RUnlock()
+	for _, w := range waits {
+		select {
+		case <-w.done:
+		case <-w.slot.stopCh:
+		case <-e.appCtx.Done():
+		}
+	}
+}
+
 // GetOrdered returns the cached eligible upstreams for
 // `(networkID, method, finality)`, in policy-chosen order. The lookup
 // is wait-free in the common path.
@@ -378,13 +428,13 @@ func (e *Engine) getOrdered(networkID, method, finality string, laneIDs []string
 	if slot != nil {
 		slot.lastAccessedAtMs.Store(nowMs)
 		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
-			return *ordered
+			return slot.methodBlocks.Load().filter(*ordered, method)
 		}
 	}
 	if wildcard != nil {
 		wildcard.lastAccessedAtMs.Store(nowMs)
 		if ordered := wildcard.cache.Load(); ordered != nil {
-			return *ordered
+			return wildcard.methodBlocks.Load().filter(*ordered, method)
 		}
 	}
 	return nil
@@ -452,24 +502,46 @@ func (e *Engine) RecentDecisions(networkID, method, finality string, limit int) 
 // candidates."
 func (e *Engine) GetExcluded(networkID, method, finality string) []common.Upstream {
 	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality, nil)
-	if slot != nil {
-		// Honor the narrow slot whenever it has TICKED (non-nil pointer),
-		// even when its probe-candidate set is empty: with probe-blocking
-		// verdicts an empty set is a deliberate outcome ("everything
-		// excluded here is static"), not a cold start. Falling back to the
-		// wildcard on len==0 would resurrect probes the narrow eval
-		// suppressed. Pointer-nil (never ticked) is the only cold-start
-		// signal that defers to the wildcard slot.
-		if excluded := slot.excludedCache.Load(); excluded != nil {
-			return *excluded
+	// Honor the narrow slot whenever it has TICKED (non-nil pointer),
+	// even when its probe-candidate set is empty: with probe-blocking
+	// verdicts an empty set is a deliberate outcome ("everything
+	// excluded here is static"), not a cold start. Falling back to the
+	// wildcard on len==0 would resurrect probes the narrow eval
+	// suppressed. Pointer-nil (never ticked) is the only cold-start
+	// signal that defers to the wildcard slot.
+	for _, s := range []*Slot{slot, wildcard} {
+		if s == nil {
+			continue
 		}
-	}
-	if wildcard != nil {
-		if excluded := wildcard.excludedCache.Load(); excluded != nil {
-			return *excluded
+		if excluded := s.excludedCache.Load(); excluded != nil {
+			return withMethodBlocked(*excluded, s.methodBlocks.Load().probeCandidates(method))
 		}
 	}
 	return nil
+}
+
+// withMethodBlocked appends the upstreams blocked for one method to the
+// slot's excluded set, skipping duplicates. Returns `excluded` as-is when
+// nothing is added; never mutates it.
+func withMethodBlocked(excluded, blocked []common.Upstream) []common.Upstream {
+	if len(blocked) == 0 {
+		return excluded
+	}
+	out := make([]common.Upstream, 0, len(excluded)+len(blocked))
+	out = append(out, excluded...)
+	for _, b := range blocked {
+		dup := false
+		for _, x := range excluded {
+			if x.Id() == b.Id() {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // PublishRequest hands a freshly-served request to the network's

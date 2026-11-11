@@ -24,7 +24,7 @@ func TestConsensusSelectsLargestResponseWithinGroup(t *testing.T) {
 	// the largest response is selected (not just the first one)
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 

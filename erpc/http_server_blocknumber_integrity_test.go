@@ -65,16 +65,17 @@ const (
 // every upstream (chainId / syncing / latest / finalized), giving rpc1 a
 // lagging head and rpc2/rpc3 a healthy head. The state pollers fetch heads via
 // eth_getBlockByNumber, so these never collide with user eth_blockNumber
-// traffic.
+// traffic. A latest header carries hash and parentHash: the served head is a
+// hash-proven pin, and intake drops a header without them (spec §5.3 check 0).
 func setupBniPollerMocks() {
 	for _, h := range []struct {
 		host      string
-		latest    string
+		latest    int64
 		finalized string
 	}{
-		{"http://rpc1.localhost", "0x800", "0x700"},
-		{"http://rpc2.localhost", "0x1000", "0x900"},
-		{"http://rpc3.localhost", "0x1000", "0x900"},
+		{"http://rpc1.localhost", bniLaggingHead, "0x700"},
+		{"http://rpc2.localhost", bniHealthyHead, "0x900"},
+		{"http://rpc3.localhost", bniHealthyHead, "0x900"},
 	} {
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
@@ -94,7 +95,7 @@ func setupBniPollerMocks() {
 				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(fmt.Sprintf(`{"result":{"number":"%s","timestamp":"0x6702a8f0"}}`, h.latest)))
+			JSON([]byte(fmt.Sprintf(`{"result":{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a8f0"}}`, h.latest, h.latest, h.latest-1)))
 		gock.New(h.host).Post("").Persist().
 			Filter(func(r *http.Request) bool {
 				b := util.SafeReadBody(r)
@@ -226,7 +227,7 @@ func bniBoot(t *testing.T, cfg *common.Config) (
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return ntw.EvmHighestLatestBlockNumber(context.Background()) == bniHealthyHead
+		return servedHead(ntw, context.Background()).Latest == bniHealthyHead
 	}, 5*time.Second, 50*time.Millisecond,
 		"pollers must learn the healthy head (tip=0x1000) before the scenario starts")
 
@@ -313,7 +314,7 @@ func bniSeedCache(t *testing.T, ntw *Network, hexValue string) {
 
 func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	integrityOn := func() *common.EvmIntegrityConfig {
 		return &common.EvmIntegrityConfig{EnforceHighestBlock: util.BoolPtr(true)}
@@ -326,7 +327,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_FreshStaleResponseIsCorrectedForClient", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -340,7 +341,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_EnforcementExplicitlyDisabledServesRawValue", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -356,7 +357,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_CacheHitMustNotServeBlockBelowAlreadyServedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -389,34 +390,37 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_StaleUpstreamValueMustNotPoisonCache", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
 		send, ntw, shutdown := bniBoot(t, bniConfig(true, integrityOn()))
 		defer shutdown()
 
-		first, _ := bniSend(t, send, nil, nil)
-		require.Equal(t, bniHealthyHead, first, "precondition: fresh-path correction must work")
-
-		// The fix may either write the corrected value back (entry >= tip) or
-		// skip caching the stale original (no entry). Both satisfy the
-		// invariant; today the stale 0x800 lands in the cache (bug B1).
+		// With the head known, an enforced eth_blockNumber is answered from the
+		// served head before dispatch and writes nothing to the cache. The path
+		// that still dispatches AND persists is a request that opts out of
+		// enforcement: the lagging upstream answers first and its raw 0x800
+		// lands in the shared cache.
+		raw, _ := bniSend(t, send, nil, map[string]string{"enforce-highest-block": "false"})
+		require.Equal(t, bniLaggingHead, raw, "precondition: the opt-out request is answered by the lagging upstream")
 		v, ok := bniWaitForCachedValue(ntw, 2*time.Second)
-		if !ok {
-			t.Log("no eth_blockNumber cache entry written — acceptable (stale value skipped)")
-			return
-		}
-		assert.GreaterOrEqual(t, v, bniHealthyHead,
-			"cache poisoned: the forward path persisted the stale upstream value (0x%x) instead of the corrected value it served to the client (0x%x)",
-			v, first)
+		require.True(t, ok, "precondition: the dispatched opt-out response must reach the cache, or this test exercises nothing")
+		t.Logf("cache now holds eth_blockNumber=0x%x", v)
+
+		// Every enforced client reading that entry must still see the tip.
+		got, hdrs := bniSend(t, send, nil, nil)
+		assert.Equal(t, "HIT", hdrs["X-Erpc-Cache"], "the enforced read must come from the entry the opt-out request wrote")
+		assert.Equal(t, bniHealthyHead, got,
+			"cache poisoned: a stale upstream value persisted by the forward path (0x%x) reached an enforced client below the tip (0x%x)",
+			v, bniHealthyHead)
 	})
 
 	// ── B2 isolated: a stale entry already in the (possibly shared) cache ───
 
 	t.Run("Bug_StaleCacheEntryMustBeEnforcedOnRead", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -440,7 +444,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_UseUpstreamPinnedRequestMustUseSelectorScopedTip", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -449,7 +453,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 		// The request is explicitly pinned to the lagging upstream. Per the
 		// selector-scoped served-tip semantics (#912, honored by max-mode
-		// tipCandidateUpstreams when the ctx carries the request), "latest"
+		// EvmRoutableUpstreams when the ctx carries the request), "latest"
 		// must be decided AMONG the pinned subset — advertising the
 		// network-wide tip promises a block rpc1 cannot serve.
 		got, _ := bniSend(t, send, map[string]string{"X-ERPC-Use-Upstream": "rpc1"}, nil)
@@ -462,7 +466,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Baseline_EnforcementEnabledByDefaultOnModernConfig", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 
@@ -481,7 +485,7 @@ func TestHttpServer_EthBlockNumberIntegrity(t *testing.T) {
 
 	t.Run("Bug_PerRequestDirectiveOverrideMustBeHonored", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		setupBniPollerMocks()
 		setupBniBlockNumberMocks()
 

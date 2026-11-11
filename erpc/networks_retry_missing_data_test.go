@@ -26,7 +26,7 @@ func init() {
 func TestNetworkRetry_MissingDataError(t *testing.T) {
 	t.Run("WithinSameAttempt_FallsBackToSecondUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -92,7 +92,7 @@ func TestNetworkRetry_MissingDataError(t *testing.T) {
 
 	t.Run("AllUpstreamsMissingData_NetworkRetryHappens", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1CallCount := 0
@@ -177,7 +177,7 @@ func TestNetworkRetry_MissingDataError(t *testing.T) {
 // an explicit RetryEmpty=true directive.
 func TestNetworkRetry_AllUpstreamsMissingData_NilDirectives(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	rpc1CallCount := 0
@@ -234,7 +234,7 @@ func TestNetworkRetry_AllUpstreamsMissingData_NilDirectives(t *testing.T) {
 func TestNetworkRetry_ServerSideException(t *testing.T) {
 	t.Run("HTTP500_ShouldRetryWithOtherUpstreams", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -300,7 +300,7 @@ func TestNetworkRetry_ServerSideException(t *testing.T) {
 
 	t.Run("JSONRPCError_InternalError_ShouldRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -368,7 +368,7 @@ func TestNetworkRetry_ServerSideException(t *testing.T) {
 func TestNetworkRetry_ExecutionException_NoRetry(t *testing.T) {
 	t.Run("ExecutionReverted_ShouldNotRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should NOT be called
 
@@ -433,7 +433,7 @@ func TestNetworkRetry_ExecutionException_NoRetry(t *testing.T) {
 func TestNetworkRetry_RetryEmptyDirective(t *testing.T) {
 	t.Run("RetryEmpty_WithMissingDataError_ShouldRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -506,7 +506,7 @@ func TestNetworkRetry_RetryEmptyDirective(t *testing.T) {
 func TestNetworkRetry_ArchiveDataRequest(t *testing.T) {
 	t.Run("ArchiveRequest_OneArchiveNodeAvailable_ShouldSucceed", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -581,7 +581,7 @@ func TestNetworkRetry_ArchiveDataRequest(t *testing.T) {
 func TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound(t *testing.T) {
 	t.Run("ServerError_FallsBackToSecondUpstream_NoRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -644,7 +644,7 @@ func TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound(t *testing.T) {
 
 	t.Run("EmptyResult_FallsBackToSecondUpstream_NoRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -720,7 +720,7 @@ func TestNetworkForward_TryAllUpstreams_FallbackWithinSameRound(t *testing.T) {
 func TestNetworkForward_TryAllUpstreams_AllEmpty_DelayBetweenRounds(t *testing.T) {
 	t.Run("AllUpstreamsEmpty_ReturnsEmptyForRetryPolicyEvaluation", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -776,7 +776,7 @@ func TestNetworkForward_TryAllUpstreams_AllEmpty_DelayBetweenRounds(t *testing.T
 func TestNetworkForward_TryAllUpstreams_ExecutionReverted_StopsImmediately(t *testing.T) {
 	t.Run("ExecutionReverted_DoesNotTryNextUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should NOT be called
 
@@ -836,7 +836,7 @@ func TestNetworkForward_TryAllUpstreams_ExecutionReverted_StopsImmediately(t *te
 func TestNetworkForward_TryAllUpstreams_ValidationError_ContinuesToNextUpstream(t *testing.T) {
 	t.Run("ValidationError_TriesAllUpstreams_ReturnsValid", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -905,7 +905,7 @@ func TestNetworkForward_TryAllUpstreams_ValidationError_ContinuesToNextUpstream(
 func TestNetworkForward_TryAllUpstreams_AllServerErrors(t *testing.T) {
 	t.Run("AllUpstreamsError_ReturnsErrorForFailsafeRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -965,7 +965,7 @@ func TestNetworkForward_TryAllUpstreams_AllServerErrors(t *testing.T) {
 func TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty(t *testing.T) {
 	t.Run("ServerErrorThenEmpty_PrefersEmptyOverError", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1035,7 +1035,7 @@ func TestNetworkForward_TryAllUpstreams_MixedErrorAndEmpty(t *testing.T) {
 func TestNetworkForward_TryAllUpstreams_HappyPathFirstUpstream(t *testing.T) {
 	t.Run("FirstUpstreamSuccess_SecondNotCalled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 mock should NOT be consumed
 
@@ -1101,7 +1101,7 @@ func TestNetworkForward_TryAllUpstreams_HappyPathFirstUpstream(t *testing.T) {
 func TestNetworkForward_TryAllUpstreams_SingleUpstreamBackwardCompat(t *testing.T) {
 	t.Run("SingleUpstream_ErrorThenSuccess_FailsafeRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1184,7 +1184,7 @@ func TestNetworkForward_TryAllUpstreams_SingleUpstreamBackwardCompat(t *testing.
 func TestNetworkForward_EmptyResultDelayForMissingDataError(t *testing.T) {
 	t.Run("MissingDataError_UsesEmptyResultDelay", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Both upstreams persistently return "missing trie node"
@@ -1262,7 +1262,7 @@ func TestNetworkForward_EmptyResultDelayForMissingDataError(t *testing.T) {
 func TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry(t *testing.T) {
 	t.Run("BothUpstreamsMissingData_Round2_Rpc1Succeeds", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -1373,7 +1373,7 @@ func TestNetworkForward_UpstreamReselection_MissingDataSucceedsOnRetry(t *testin
 func TestNetworkForward_UpstreamReselection_WrongEmptyStillTracked(t *testing.T) {
 	t.Run("Rpc1Empty_Rpc2HasData_ErrorsByUpstreamTracksEmpty", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1460,7 +1460,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 
 	t.Run("BoundedUpstream_BlockOutOfRange_NoPunishment", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1561,7 +1561,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 
 	t.Run("BoundedUpstream_BlockInRange_MisbehaviorRecorded", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1652,7 +1652,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 
 	t.Run("UnboundedUpstream_MisbehaviorRecorded", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1693,8 +1693,10 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 					Type:     common.UpstreamTypeEvm,
 					Id:       "rpc1",
 					Endpoint: "http://rpc1.localhost",
+					// Polled, so the head at answer time (0x11118888) is known.
 					Evm: &common.EvmUpstreamConfig{
-						ChainId: 123,
+						ChainId:             123,
+						StatePollerInterval: common.Duration(time.Minute),
 					},
 				},
 				{
@@ -1719,7 +1721,8 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-		// rpc1 SHOULD be punished — no block availability config means unbounded
+		// rpc1 SHOULD be punished — no block availability bounds, and its head
+		// (0x11118888) was past block 200 when it answered empty
 		ups := network.upstreamsRegistry.GetAllUpstreams()
 		var rpc1 *upstream.Upstream
 		for _, u := range ups {
@@ -1729,11 +1732,204 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 			}
 		}
 		require.NotNil(t, rpc1)
+		require.Equal(t, int64(0x11118888), req.HeadAtError(rpc1), "rpc1's head must be known when it answered")
 		metrics := network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_getTransactionByHash", common.DataFinalityStateAll)
 		assert.True(t, metrics.MisbehaviorsTotal.Load() > 0,
 			"rpc1 SHOULD have misbehavior recorded — no block availability bounds configured")
 		assert.Equal(t, int64(0), metrics.ErrorsTotal.Load(),
 			"rpc1 should NOT have errors recorded — wrong-empty only records misbehavior, not failure")
+	})
+
+	findUpstream := func(t *testing.T, network *Network, id string) *upstream.Upstream {
+		t.Helper()
+		for _, u := range network.upstreamsRegistry.GetAllUpstreams() {
+			if u.Id() == id {
+				return u
+			}
+		}
+		t.Fatalf("upstream %s not found", id)
+		return nil
+	}
+	misbehaviors := func(t *testing.T, network *Network, id string) int64 {
+		t.Helper()
+		return network.metricsTracker.GetUpstreamMethodMetrics(findUpstream(t, network, id), "eth_getTransactionByHash", common.DataFinalityStateAll).MisbehaviorsTotal.Load()
+	}
+
+	t.Run("EmptyBelowItsHead_NoPunishment", func(t *testing.T) {
+		util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// The tx sits above rpc1's head (0x11118888) and below rpc2's (0x22228888):
+		// rpc1 was behind, not wrong. rpc3 (0x33338888) puts Latest, the
+		// 2nd-highest head, at 0x22228888, so rpc2's answer is inside Latest
+		// and reaches the client; with rpc1 and rpc2 alone, Latest would be
+		// rpc1's head and a by-hash answer above it is held, then null
+		// (chain-tracker spec §6.4).
+		aheadOfRpc1 := map[string]interface{}{}
+		for k, v := range txReceiptResult {
+			aheadOfRpc1[k] = v
+		}
+		aheadOfRpc1["blockNumber"] = "0x11119999"
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": aheadOfRpc1})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc3", Endpoint: "http://rpc3.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123, StatePollerInterval: common.Duration(time.Minute)}},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		network.PinUpstreamOrderForTest("rpc1", "rpc2", "rpc3")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`))
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, "rpc2", resp.UpstreamId())
+		require.Equal(t, int64(0x11118888), req.HeadAtError(findUpstream(t, network, "rpc1")), "rpc1's head must be known when it answered")
+
+		assert.Equal(t, int64(0), misbehaviors(t, network, "rpc1"),
+			"rpc1's head was below the winning block when it answered empty")
+	})
+
+	t.Run("SameUpstreamRetryWins_NoPunishment", func(t *testing.T) {
+		util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// rpc1 answers null, then returns the tx on the retry.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getTransactionByHash")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": txReceiptResult})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		network.PinUpstreamOrderForTest("rpc1")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByHash","params":["` + txHash + `"]}`))
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, "rpc1", resp.UpstreamId())
+		require.Equal(t, 2, resp.Attempts(), "rpc1 answers null once, then wins the retry")
+
+		assert.Equal(t, int64(0), misbehaviors(t, network, "rpc1"),
+			"the winning upstream is never counted for its own earlier empty answer")
+	})
+
+	t.Run("PrunedNodeCallByBlockHash_NoPunishment", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// rpc1 is a pruned full node with a declared lower bound. The call names
+		// its block by hash, so eRPC cannot place it inside rpc1's range: rpc1's
+		// "historical state ... is not available" must not count as misbehavior.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{
+				"code":    -32000,
+				"message": "historical state 4d0f6c8e2a0b7c3d1e5f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d is not available",
+			}})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_call")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x0000000000000000000000000000000000000000000000000000000000000001"})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkWithCustomUpstreams(t, ctx,
+			[]*common.UpstreamConfig{
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{
+					ChainId: 123,
+					BlockAvailability: &common.EvmBlockAvailabilityConfig{
+						Lower: &common.EvmAvailabilityBoundConfig{ExactBlock: int64Ptr(0x11110000)},
+					},
+				}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			},
+			&common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)},
+			&common.RetryPolicyConfig{MaxAttempts: 3, EmptyResultAccept: []string{}},
+		)
+		network.PinUpstreamOrderForTest("rpc1", "rpc2")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x2222222222222222222222222222222222222222","data":"0x70a08231"},{"blockHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`))
+		req.ApplyDirectiveDefaults(network.cfg.DirectiveDefaults)
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, "rpc2", resp.UpstreamId())
+
+		rpc1 := findUpstream(t, network, "rpc1")
+		missed := false
+		req.ErrorsByUpstream.Range(func(key, value interface{}) bool {
+			if key == rpc1 {
+				err, _ := value.(error)
+				missed = common.HasErrorCode(err, common.ErrCodeEndpointMissingData)
+			}
+			return true
+		})
+		require.True(t, missed, "rpc1's missing state must reach eRPC as missing data")
+		assert.Equal(t, int64(0), network.metricsTracker.GetUpstreamMethodMetrics(rpc1, "eth_call", common.DataFinalityStateAll).MisbehaviorsTotal.Load(),
+			"a bounded upstream is never punished for a call by block hash it cannot be shown to hold")
 	})
 }
 
@@ -1744,7 +1940,7 @@ func TestNetworkForward_WrongEmpty_SkipPunishment_BlockAvailabilityBounds(t *tes
 func TestNetworkForward_BlockUnavailableDelay_AppliedAfterFullRound(t *testing.T) {
 	t.Run("AllUpstreamsBlockUnavailable_DelayBeforeRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// rpc1 returns valid data when eventually called
@@ -1802,7 +1998,7 @@ func TestNetworkForward_BlockUnavailableDelay_AppliedAfterFullRound(t *testing.T
 func TestNetworkForward_RetryEmptyDisabled_BlocksMissingData(t *testing.T) {
 	t.Run("RetryEmptyFalse_MissingDataNotRetried", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -1880,7 +2076,7 @@ func TestNetworkForward_RetryEmptyDisabled_BlocksMissingData(t *testing.T) {
 func TestNetworkForward_PermanentErrorGated_RetryableRetried(t *testing.T) {
 	t.Run("MethodIgnored_StaysGated_RetryableSucceeds", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc2Calls := 0
@@ -1956,7 +2152,7 @@ func TestNetworkForward_PermanentErrorGated_RetryableRetried(t *testing.T) {
 func TestNetworkForward_ConsistentExhaustedWrapping(t *testing.T) {
 	t.Run("SingleUpstreamServerError_WrappedInExhausted", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Both upstreams return 503 — ensures HasErrorCode can traverse
@@ -2018,7 +2214,7 @@ func TestNetworkForward_ConsistentExhaustedWrapping(t *testing.T) {
 
 	t.Run("SingleUpstreamMissingData_WrappedInExhausted", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Both upstreams return MissingData — ensures consistent wrapping
@@ -2087,7 +2283,7 @@ func TestNetworkForward_ConsistentExhaustedWrapping(t *testing.T) {
 func TestNetworkForward_MixedMissingDataAndSuccess(t *testing.T) {
 	t.Run("OneMissingData_OtherSuccess_ReturnsSuccess", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -2162,7 +2358,7 @@ func TestNetworkForward_MixedMissingDataAndSuccess(t *testing.T) {
 func TestNetworkForward_EmptyResultAccept_StopsRetryForAcceptedMethod(t *testing.T) {
 	t.Run("EthGetLogs_EmptyArray_AcceptedNoRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -2224,7 +2420,7 @@ func TestNetworkForward_EmptyResultAccept_StopsRetryForAcceptedMethod(t *testing
 func TestNetworkForward_BlockUnavailableDelay_TimingVerified(t *testing.T) {
 	t.Run("AllUpstreamsMissing_DelayBeforeRetry_ThenSuccess", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -2326,7 +2522,7 @@ func TestNetworkForward_BlockUnavailableDelay_TimingVerified(t *testing.T) {
 func TestNetworkForward_EmptyResultAccept_EthCallDefault(t *testing.T) {
 	t.Run("EthCall_NullResult_AcceptedNoRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -2401,7 +2597,7 @@ func TestNetworkForward_EmptyResultAccept_EthCallDefault(t *testing.T) {
 func TestNetworkForward_RetryEmptyDisabled_UpstreamScope(t *testing.T) {
 	t.Run("RetryEmptyFalse_MissingDataNotRetriedAtUpstreamScope", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		totalCalls := 0
@@ -2481,7 +2677,7 @@ func TestNetworkForward_RetryEmptyDisabled_UpstreamScope(t *testing.T) {
 func TestNetworkForward_MethodIgnored_GatedWhileRetryableSucceeds(t *testing.T) {
 	t.Run("IgnoredUpstreamNeverRetried_RetryableSucceedsOnRound2", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc2Calls := 0
@@ -2556,7 +2752,7 @@ func TestNetworkForward_MethodIgnored_GatedWhileRetryableSucceeds(t *testing.T) 
 func TestNetworkForward_SingleUpstream_ConsistentWrapping(t *testing.T) {
 	t.Run("SingleUpstreamFails_WrappedInExhausted", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		// Only rpc1 configured, returns 503
@@ -2627,7 +2823,7 @@ func TestNetworkForward_SingleUpstream_ConsistentWrapping(t *testing.T) {
 func TestNetworkForward_BlockUnavailableVsEmptyDelay_Priority(t *testing.T) {
 	t.Run("MixedErrors_BlockUnavailableDelayWins", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		rpc1Calls := 0
@@ -2801,6 +2997,7 @@ func setupTestNetworkWithMethodIgnore(
 	time.Sleep(100 * time.Millisecond)
 
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -2881,6 +3078,7 @@ func setupTestNetworkWithCustomUpstreams(
 	time.Sleep(100 * time.Millisecond)
 
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())

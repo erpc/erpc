@@ -34,6 +34,9 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		// Hold the refresh slot so the cold path never dials the real API
+		// (an escaped goroutine would race gock-based tests).
+		vendor.(*ChainstackVendor).cache.inflight["test-api-key"] = struct{}{}
 
 		configs, err := vendor.GenerateConfigs(ctx, &logger, upstream, settings)
 
@@ -91,6 +94,7 @@ func TestChainstackVendor_GenerateConfigs(t *testing.T) {
 		settings := common.VendorSettings{
 			"apiKey": "test-api-key",
 		}
+		freshVendor.(*ChainstackVendor).cache.inflight["test-api-key"] = struct{}{}
 
 		supported, err := freshVendor.SupportsNetwork(ctx, &logger, settings, "evm:123")
 		assert.Error(t, err)

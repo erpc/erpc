@@ -2,15 +2,23 @@ package erpc
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/consensus"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/test/chainsim"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +47,7 @@ func mockGetBlockByNumberNonNull(ids ...string) {
 // dispatching + hedging across upstreams that all return empty.
 func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -50,6 +58,8 @@ func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 		{id: "fb2", chainID: 123, latestBlock: 99},
 		{id: "fb3", chainID: 123, latestBlock: 98},
 	})
+	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network)
 	mockGetBlockByNumberNonNull("fb1", "fb2", "fb3")
 
 	// max observed head = 100; block 105 (0x69) is beyond every upstream.
@@ -62,11 +72,112 @@ func TestForward_FutureBlock_ShortCircuitsToNull(t *testing.T) {
 		"block 105 > max head 100 must short-circuit to null without dispatch")
 }
 
+// A block far above the ceiling whose reports are older than 1 bt is
+// decided again after the stale ones are Asked (spec §6.4). A report that
+// was fresh when the Ask began, and so was not Asked, ages past 1 bt while
+// the Ask runs; the block is still future, null with no dispatch (row K7):
+// the Ask refreshed what was stale at its start.
+func TestForward_FutureBlock_ShortCircuitSurvivesSlowStaleAsk(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "fs1", chainID: 123, latestBlock: 100},
+		{id: "fs2", chainID: 123, latestBlock: 100},
+		{id: "fs3", chainID: 123, latestBlock: 100},
+	})
+	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network) // bt 1s
+	// fs2 and fs3 answer an Ask half a block time later.
+	for _, id := range []string{"fs2", "fs3"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Delay(500 * time.Millisecond).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x65","timestamp":"0x6702a8f0"}}`))
+	}
+	var dispatched atomic.Int64
+	mockGetBlockByNumberAt("0x44d", futureBlockSentinel, &dispatched, "fs1", "fs2", "fs3")
+
+	// fs2 and fs3 last reported at setup, more than 1 bt ago; fs1 reports
+	// now and is 0.7 bt old when the request arrives.
+	time.Sleep(1200 * time.Millisecond)
+	ups[0].EvmStatePoller().SuggestLatestBlock(101, time.Now())
+	time.Sleep(700 * time.Millisecond)
+
+	resp := forwardGetBlockByNumber(t, ctx, network, "0x44d") // 1101
+	assert.True(t, resp.IsResultEmptyish(ctx), "a block 1000 above the ceiling is null")
+	assert.Zero(t, dispatched.Load(), "and never dispatched")
+}
+
+// On a halted chain every report ages. A block far above where the
+// reports put the chain now, the blocks made since each counted (spec
+// §6.4 near future), is future at once: null with no dispatch on every
+// request, and no stale upstream is Asked for it.
+func TestForward_FutureBlock_HaltedChainFarBlockAsksNothing(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ids := []string{"hc1", "hc2", "hc3"}
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: ids[0], chainID: 123, latestBlock: 100},
+		{id: ids[1], chainID: 123, latestBlock: 100},
+		{id: ids[2], chainID: 123, latestBlock: 100},
+	})
+	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network)
+	// The fixture chain's header times feed the sample too: bt is near 1s.
+	bt := network.EvmBlockTime()
+	// As a registry's network does: every poll's header goes through intake.
+	network.sources.start(ctx)
+	var polls atomic.Int64
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"latest"`) {
+					return false
+				}
+				polls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + string(tipHead("a", 100)) + `}`))
+	}
+	var dispatched atomic.Int64
+	mockGetBlockByNumberAt("0x44d", futureBlockSentinel, &dispatched, ids...)
+
+	for round := 1; round <= 3; round++ {
+		// Every report is older than 1 bt: the request still Asks none.
+		time.Sleep(bt + 200*time.Millisecond)
+		before := polls.Load()
+		resp := forwardGetBlockByNumber(t, ctx, network, "0x44d") // 1101
+		assert.Zero(t, polls.Load()-before, "round %d: the request Asks no stale upstream", round)
+		assert.True(t, resp.IsResultEmptyish(ctx), "round %d: a block 1001 above a halted chain is null", round)
+		assert.Zero(t, dispatched.Load(), "round %d: and never dispatched", round)
+	}
+}
+
 // A request at (or below) the max observed head must dispatch normally — the
 // short-circuit must not over-fire and swallow blocks an upstream actually has.
 func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,7 +204,7 @@ func TestForward_FutureBlock_AtMaxHead_Dispatches(t *testing.T) {
 
 func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -115,11 +226,11 @@ func TestForward_FutureBlock_MixedStaticCapDispatchesWithinAvailableRange(t *tes
 	assert.Contains(t, jrr.GetResultString(), "0x270f")
 }
 
-// The short-circuit is gated on served-tip being enabled for the latest axis
-// (so the head is trustworthy). With served-tip disabled it must stay off.
+// The short-circuit is opt-in via evm.shortCircuitFutureBlocks; the default
+// config (here: nil servedTip, no flag) must dispatch.
 func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,7 +258,7 @@ func TestForward_FutureBlock_ServedTipDisabled_Dispatches(t *testing.T) {
 // the upstream has), so it must never be short-circuited.
 func TestForward_FutureBlock_LatestTag_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -181,6 +292,10 @@ func mockGetBlockByNumberAt(blockHex, result string, dispatched *atomic.Int64, i
 			Post("").
 			Persist().
 			Filter(func(r *http.Request) bool {
+				// gock runs every mock's filter on each request.
+				if r.URL.Host != id+".localhost" {
+					return false
+				}
 				body := util.SafeReadBody(r)
 				if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"`+blockHex+`"`) {
 					return false
@@ -209,7 +324,7 @@ func forwardGetBlockByNumber(t *testing.T, ctx context.Context, network *Network
 // block above every head returns null and reaches no upstream.
 func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x69", "null", &dispatched, "fb1", "fb2", "fb3")
@@ -223,6 +338,7 @@ func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testin
 		{id: "fb3", chainID: 123, latestBlock: 98},
 	}, nil)
 	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
+	sampleBlockTime(t, network)
 
 	// max head = 100; block 105 (0x69) is beyond every upstream.
 	resp := forwardGetBlockByNumber(t, ctx, network, "0x69")
@@ -234,18 +350,35 @@ func TestForward_FutureBlock_OptInWithoutServedTip_ShortCircuitsToNull(t *testin
 
 // Without served-tip "latest" is the corroborated (second-highest) head, but a
 // block only the most-ahead upstream has is still servable: with the opt-in it
-// must be dispatched, not nulled.
+// must be dispatched, not nulled. One failed poll of the most-ahead upstream,
+// a 429, is no failing poll (spec §6.1, §6.4 ceiling): its head stays in the
+// ceiling, so the block is still dispatched.
 func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x64", futureBlockSentinel, &dispatched, "fb1", "fb2", "fb3")
+	// Registered before the network starts, since building a gock mock
+	// while pollers match requests is a data race; armed only around the Ask.
+	var rateLimited atomic.Bool
+	gock.New("http://fb1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			if !rateLimited.Load() {
+				return false
+			}
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+		}).
+		Reply(429).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"rate limited"}}`))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	network, _ := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+	network, ups := setupServedTipNetworkWith(t, ctx, []servedTipFixture{
 		{id: "fb1", chainID: 123, latestBlock: 100},
 		{id: "fb2", chainID: 123, latestBlock: 99},
 		{id: "fb3", chainID: 123, latestBlock: 98},
@@ -258,13 +391,26 @@ func TestForward_FutureBlock_OptInWithoutServedTip_OnlyMostAheadHasBlock_Dispatc
 	require.NoError(t, err)
 	assert.Contains(t, jrr.GetResultString(), "0x270f",
 		"a block the most-ahead upstream has must be dispatched, not short-circuited")
+
+	sampleBlockTime(t, network)
+	rateLimited.Store(true)
+	a := ups[0].EvmStatePoller().Ask(ctx, common.HeadNeedFork, 0, time.Time{}, common.AskRefusal)
+	rateLimited.Store(false)
+	require.Error(t, a.Err, "fb1's latest poll answered 429")
+	network.refreshHeads()
+
+	resp = forwardGetBlockByNumber(t, ctx, network, "0x64")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f",
+		"one 429 keeps fb1 in the ceiling: a block at its head is dispatched, not nulled")
 }
 
 // Every upstream of the network counts toward the ceiling, syncing ones
 // included: a block at or below a syncing upstream's head must be dispatched.
 func TestForward_FutureBlock_OptIn_SyncingUpstreamAhead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &dispatched, "fb1", "fb2", "sync1")
@@ -291,7 +437,7 @@ func TestForward_FutureBlock_OptIn_SyncingUpstreamAhead_Dispatches(t *testing.T)
 // short-circuit fails open and the request is dispatched.
 func TestForward_FutureBlock_OptIn_UpstreamWithUnknownHead_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x65", futureBlockSentinel, &dispatched, "fb1", "fb2", "nohead")
@@ -321,7 +467,7 @@ func TestForward_FutureBlock_OptIn_UpstreamWithUnknownHead_Dispatches(t *testing
 // finalized and latest heads must still be dispatched.
 func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatches(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	var dispatched atomic.Int64
 	mockGetBlockByNumberAt("0x5f", futureBlockSentinel, &dispatched, "fb1", "fb2", "fb3")
@@ -337,7 +483,7 @@ func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatch
 	network.cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
 	network.cfg.Evm.EmptyResultConfidence = common.AvailbilityConfidenceFinalized
 	for _, u := range ups {
-		u.EvmStatePoller().SuggestFinalizedBlock(90)
+		u.EvmStatePoller().SuggestFinalizedBlock(90, time.Now())
 	}
 
 	// block 95 (0x5f) is above every finalized head (90) but below the latest ones.
@@ -354,7 +500,7 @@ func TestForward_FutureBlock_OptIn_FinalizedConfidence_UnfinalizedBlock_Dispatch
 func TestForward_FutureBlock_OptIn_CordonedFallbackAhead_Dispatches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	var dispatched atomic.Int64
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
@@ -381,7 +527,7 @@ func TestForward_FutureBlock_OptIn_CordonedFallbackAhead_Dispatches(t *testing.T
 func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	var dispatched atomic.Int64
 	network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
@@ -395,6 +541,7 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 			cfg.Evm.ShortCircuitFutureBlocks = util.BoolPtr(true)
 		},
 	})
+	sampleBlockTime(t, network)
 
 	for i := 0; i < 5; i++ {
 		resp := forwardGetBlockByNumber(t, ctx, network, "0x69")
@@ -404,4 +551,945 @@ func TestForward_FutureBlock_OptIn_ShortCircuitNotMirroredToExcluded(t *testing.
 	time.Sleep(500 * time.Millisecond)
 	assert.Zero(t, dispatched.Load(),
 		"a short-circuited request must reach no upstream, mirrored probes included")
+}
+
+// A band miss of eth_getBlockByNumber asks only the upstreams whose head
+// evidence reaches the block (spec §6.4 band sweep), and a miss in one leg
+// never stops another. Hedges: the first leg routes to the upstream whose
+// head reaches the block (slow); each hedge gets a null below it and asks
+// no upstream below the block again, and no hedge's null wins over the
+// block. Consensus slots, each pinned to one upstream: all three slots'
+// upstreams miss; the fourth's node holds the block but reports a head
+// below it, so the read answers null at once, asking it nothing and
+// waiting for no poller. Once its head evidence reaches the block, the
+// next read gets its block. A slot's retry picks only the upstreams the
+// request may still select: one whose answer was final (#1348) is not
+// asked again.
+func TestForward_BandBlock_AsksEvidenceHoldersOnly(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Consensus (1 of 3) over four upstreams: cs1 reports 101 but lacks it,
+	// cs2 and cs3 are at 100, cs4's node holds 101 while it reports 100
+	// until csHead moves; once csSlow is set, cs3 answers a head fetch
+	// only after W/2 (cold W 3s).
+	var csHead atomic.Int64
+	csHead.Store(100)
+	var csSlow atomic.Bool
+	heads := map[string]func() int64{
+		"cs1": func() int64 { return 101 },
+		"cs2": func() int64 { return 100 },
+		"cs3": func() int64 { return 100 },
+		"cs4": csHead.Load,
+	}
+	var csReported, csBelow, csHolder atomic.Int64
+	for _, id := range []string{"cs1", "cs2", "cs3", "cs4"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				if id == "cs3" && csSlow.Load() {
+					time.Sleep(1500 * time.Millisecond)
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, heads[id]())
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+		result, calls := "null", &csBelow
+		switch id {
+		case "cs1":
+			calls = &csReported
+		case "cs4":
+			result, calls = futureBlockSentinel, &csHolder
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				calls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`))
+	}
+	// Consensus (1 of 3) over three upstreams: cf1 reports 101 but lacks
+	// it, cf2 and cf3 do not support the method, a final answer.
+	var finalAnswers atomic.Int64
+	for _, id := range []string{"cf1", "cf2", "cf3"} {
+		head := int64(100)
+		if id == "cf1" {
+			head = 101
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, head)))
+		answer := `"result":null`
+		if id != "cf1" {
+			answer = `"error":{"code":-32601,"message":"the method eth_getBlockByNumber does not exist/is not available"}`
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				if id != "cf1" {
+					finalAnswers.Add(1)
+				}
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,` + answer + `}`))
+	}
+	network, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "bh1", chainID: 123, latestBlock: 100},
+		{id: "bh2", chainID: 123, latestBlock: 100},
+		{id: "bh3", chainID: 123, latestBlock: 100},
+		{id: "bh4", chainID: 123, latestBlock: 101},
+	})
+	ex, err := NewNetworkExecutor(&common.FailsafeConfig{
+		MatchMethod: "*",
+		Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(20 * time.Millisecond), MaxCount: 2},
+	}, network.logger, nil, nil)
+	require.NoError(t, err)
+	network.failsafeExecutors = []*networkExecutor{ex}
+
+	var below, holder atomic.Int64
+	// bh1 answers at once, so the first hedge takes the miss; its retry
+	// lands on bh2 or bh3 and runs past the second hedge's start, and bh4
+	// answers long after both.
+	for i, id := range []string{"bh1", "bh2", "bh3"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != id+".localhost" {
+					return false
+				}
+				body := util.SafeReadBody(r)
+				if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				below.Add(1)
+				return true
+			}).
+			Reply(200).
+			Delay(time.Duration(min(i, 1)) * 60 * time.Millisecond).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+	}
+	gock.New("http://bh4.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			if r.URL.Host != "bh4.localhost" {
+				return false
+			}
+			body := util.SafeReadBody(r)
+			if !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+				return false
+			}
+			holder.Add(1)
+			return true
+		}).
+		Reply(200).
+		// Slow, within aboveLatestFloor: a holder that answers.
+		Delay(150 * time.Millisecond).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + futureBlockSentinel + `}`))
+
+	resp := forwardGetBlockByNumber(t, ctx, network, "0x65")
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "the band block from the upstream whose head reaches it, not a hedge's null")
+	assert.Equal(t, int64(1), holder.Load(), "the upstream at the block, asked once")
+	assert.Equal(t, int64(2), below.Load(), "each hedge's own upstream: a miss asks no upstream below the block again")
+
+	// An eth_call's 0x is the block's answer, never a node's miss of it: a
+	// node lacking the block errors (arc-mainnet: 277 thin_missing, 2-5
+	// attempts each). It is served at once, with no retry.
+	var calls atomic.Int64
+	for _, id := range []string{"bh1", "bh2", "bh3", "bh4"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != id+".localhost" || !strings.Contains(util.SafeReadBody(r), "eth_call") {
+					return false
+				}
+				calls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x"}`))
+	}
+	callReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xcA11bde05977b3631167028862bE2a173976CA11","data":"0x42cbb15c"},"0x65"]}`))
+	resp, err = network.Forward(ctx, callReq)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, `"0x"`, string(jrr.GetResultBytes()), "the call's empty answer, as the upstream gave it")
+	assert.Equal(t, int64(1), calls.Load(), "an empty eth_call answer is no miss: no retry")
+
+	slots, csUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "cs1", chainID: 123, latestBlock: 101},
+		{id: "cs2", chainID: 123, latestBlock: 100},
+		{id: "cs3", chainID: 123, latestBlock: 100},
+		{id: "cs4", chainID: 123, latestBlock: 100},
+	})
+	// A tip log policy's shape: 1 of 3, non-empty preferred, the most
+	// common valid result on a dispute or too few participants.
+	consCfg := &common.ConsensusPolicyConfig{
+		MaxParticipants: 3, AgreementThreshold: 1, PreferNonEmpty: util.BoolPtr(true),
+		DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+		LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+	}
+	require.NoError(t, consCfg.SetDefaults())
+	cons, err := consensus.NewConsensus(consCfg, slots.logger, "test")
+	require.NoError(t, err)
+	ex, err = NewNetworkExecutor(&common.FailsafeConfig{MatchMethod: "*", Consensus: consCfg}, slots.logger, cons, nil)
+	require.NoError(t, err)
+	slots.failsafeExecutors = []*networkExecutor{ex}
+	require.Equal(t, int64(100), servedHead(slots, ctx).Latest)
+
+	csSlow.Store(true)
+	start := time.Now()
+	resp = forwardGetBlockByNumber(t, ctx, slots, "0x65")
+	took := time.Since(start)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "no upstream's head evidence reaches the block: the read answers null")
+	assert.Zero(t, csHolder.Load(), "an upstream whose head evidence is below the block is not asked")
+	assert.Equal(t, int64(2), csBelow.Load(), "cs2 and cs3 asked once each, by their own slots: no retry below the block")
+	assert.Positive(t, csReported.Load(), "cs1, whose report reaches the block, is asked")
+	assert.Less(t, took, 500*time.Millisecond, "the null comes at once, not after the slow poller's W/2")
+	csSlow.Store(false)
+
+	csHead.Store(101)
+	csUps[3].EvmStatePoller().SuggestLatestBlock(101, time.Now())
+	require.Eventually(t, func() bool { return csUps[3].EvmStatePoller().LatestBlock() == 101 }, time.Second, 10*time.Millisecond)
+	resp = forwardGetBlockByNumber(t, ctx, slots, "0x65")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "once its head evidence reaches the block, the holder serves it")
+	assert.Equal(t, int64(1), csHolder.Load(), "the holder, asked once")
+
+	final, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "cf1", chainID: 123, latestBlock: 101},
+		{id: "cf2", chainID: 123, latestBlock: 100},
+		{id: "cf3", chainID: 123, latestBlock: 100},
+	})
+	cons, err = consensus.NewConsensus(consCfg, final.logger, "test")
+	require.NoError(t, err)
+	ex, err = NewNetworkExecutor(&common.FailsafeConfig{MatchMethod: "*", Consensus: consCfg}, final.logger, cons, nil)
+	require.NoError(t, err)
+	final.failsafeExecutors = []*networkExecutor{ex}
+	require.Equal(t, int64(100), servedHead(final, ctx).Latest)
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x65",false]}`))
+	_, _ = final.Forward(ctx, req)
+	assert.Equal(t, int64(2), finalAnswers.Load(), "each upstream that gave a final answer, asked once")
+
+	// The one holder (hn2) holds the read until the block exists: its
+	// attempt ends at its bound (aboveLatestFloor, no round trip known), a
+	// miss with no holder left, so the null is the answer at once: no
+	// upstream below the block is asked, and no hedge (500 ms) waited for.
+	var heldNull, held atomic.Int64
+	for id, calls := range map[string]*atomic.Int64{"hn1": &heldNull, "hn2": &held} {
+		delay := time.Duration(0)
+		if id == "hn2" {
+			delay = 2 * time.Second
+		}
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x65"`) {
+					return false
+				}
+				calls.Add(1)
+				return true
+			}).
+			Reply(200).
+			Delay(delay).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":null}`))
+	}
+	hedged, _ := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hn1", chainID: 123, latestBlock: 100},
+		{id: "hn2", chainID: 123, latestBlock: 101},
+		{id: "hn3", chainID: 123, latestBlock: 100},
+	})
+	ex, err = NewNetworkExecutor(&common.FailsafeConfig{
+		MatchMethod: "*",
+		Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(500 * time.Millisecond), MaxCount: 1},
+	}, hedged.logger, nil, nil)
+	require.NoError(t, err)
+	hedged.failsafeExecutors = []*networkExecutor{ex}
+	require.Equal(t, int64(100), servedHead(hedged, ctx).Latest)
+
+	start = time.Now()
+	resp = forwardGetBlockByNumber(t, ctx, hedged, "0x65")
+	took = time.Since(start)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "no holder served the block: null")
+	assert.Less(t, took, 450*time.Millisecond, "the held attempt ends at its bound, and no hedge is waited for")
+	assert.Zero(t, heldNull.Load(), "no upstream below the block is asked")
+	assert.Equal(t, int64(1), held.Load(), "the holder, asked once")
+}
+
+// A future block dispatched (shortCircuitFutureBlocks off) takes one
+// retryable miss too (spec §6.4): the first null is never final, and the
+// answer after it goes to the client as the upstream gave it. A block in
+// the head region, Latest − reorgWindow < N ≤ Latest, every node answers
+// null breaks the head promise: served_missing, never retried_missing.
+// No other read at or below Latest is counted (§17): logs answered with an
+// empty array, a transaction index past a block's count answered null, a
+// block below the head region answered null. Once the block time is known,
+// a log range at most W / bt + 1 above the ceiling waits for it, at most
+// W, as the lane's read ahead (near future): it is served once the nodes
+// reach it, and a range still above the ceiling after W is refused,
+// counted future_after_wait. A numbered block read there never waits
+// (§6.4 band sweep): it answers what the nodes answer, null before they
+// hold it.
+func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The nodes' head: their latest answer, and the blocks they hold.
+	var head atomic.Int64
+	head.Store(100)
+	held := func(blockHex, result string) string {
+		var n int64
+		fmt.Sscanf(blockHex, "0x%x", &n)
+		if head.Load() < n {
+			return "null"
+		}
+		return result
+	}
+	ids := []string{"fm1", "fm2", "fm3"}
+	var first, second, nearCalls atomic.Int64
+	mockGetBlockByNumberAt("0x69", "null", &first, "fm1")
+	mockGetBlockByNumberAt("0x69", futureBlockSentinel, &second, "fm2", "fm3")
+	var belowCalls, noLogsCalls atomic.Int64
+	mockGetBlockByNumberAt("0x60", "null", &belowCalls, ids...)
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, `"eth_getLogs"`) || !strings.Contains(body, `"0x61"`) {
+					return false
+				}
+				noLogsCalls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[]}`))
+	}
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x%x","timestamp":"0x6702a8f0"}}`, head.Load())
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x66"`) {
+					return false
+				}
+				nearCalls.Add(1)
+				return true
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := `{"jsonrpc":"2.0","id":1,"result":` + held("0x66", futureBlockSentinel) + `}`
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return r.URL.Host == id+".localhost" && strings.Contains(util.SafeReadBody(r), `"eth_getLogs"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := `{"jsonrpc":"2.0","id":1,"result":` + held("0x67", `[{"blockNumber":"0x67","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000c7","logIndex":"0x0"}]`) + `}`
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+
+	network, ups := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "fm1", chainID: 123, latestBlock: 100},
+		{id: "fm2", chainID: 123, latestBlock: 100},
+		{id: "fm3", chainID: 123, latestBlock: 100},
+	})
+
+	resp := forwardGetBlockByNumber(t, ctx, network, "0x69")
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), "0x270f", "the answer after the future block's one miss")
+	assert.Positive(t, first.Load(), "the first upstream answered null")
+	assert.Equal(t, int64(1), second.Load(), "one retry")
+
+	refusals := func(rule string) float64 {
+		return promUtil.ToFloat64(telemetry.MetricHeadRefusalTotal.WithLabelValues("test", network.Label(), rule))
+	}
+	servedMissing, retriedMissing := refusals("served_missing"), refusals("retried_missing")
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x60",false]}`)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "a block 4 below Latest no node holds")
+	assert.GreaterOrEqual(t, belowCalls.Load(), int64(len(ids)), "every node asked")
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "the head promise broke")
+	assert.Equal(t, retriedMissing, refusals("retried_missing"), "no band read")
+
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x61","toBlock":"0x61"}]}`)))
+	require.NoError(t, err, "no logs at or below Latest")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "[]", jrr.GetResultString())
+	assert.Positive(t, noLogsCalls.Load())
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "an empty array is an answer")
+
+	var byIndexCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionByBlockNumberAndIndex", "null", &byIndexCalls, ids...)
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionByBlockNumberAndIndex","params":["0x64","0x5"]}`)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "no transaction at an index past Latest's count")
+	assert.Positive(t, byIndexCalls.Load())
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "an index past Latest's count can be null")
+
+	deep := fmt.Sprintf("0x%x", 100-int64(network.chainTracker.ReorgWindow())-5)
+	var deepCalls atomic.Int64
+	mockGetBlockByNumberAt(deep, "null", &deepCalls, ids...)
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["`+deep+`",false]}`)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "a block below the head region no node holds")
+	assert.Positive(t, deepCalls.Load())
+	assert.Equal(t, servedMissing+1, refusals("served_missing"), "below the head region is availability, not the promise")
+
+	// bt 1s: W 3s, so the near future is 4 blocks above the ceiling: W of
+	// chain, and the block the chain may have made since the report.
+	sampleBlockTime(t, network)
+	afterWait := func() float64 {
+		return promUtil.ToFloat64(telemetry.MetricHeadRefusalTotal.WithLabelValues("test", network.Label(), "future_after_wait"))
+	}
+	refused := afterWait()
+	reach := func(n int64, after time.Duration) {
+		time.AfterFunc(after, func() { head.Store(n) })
+	}
+
+	start := time.Now()
+	resp = forwardGetBlockByNumber(t, ctx, network, "0x66")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "a block 2 above the ceiling, as the nodes answer it")
+	assert.Less(t, time.Since(start), time.Second, "no wait for the chain")
+	assert.Positive(t, nearCalls.Load())
+
+	logs := func(toHex string) (*common.NormalizedResponse, error) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"` + toHex + `","toBlock":"` + toHex + `"}]}`))
+		return network.Forward(ctx, req)
+	}
+	reach(0x67, 300*time.Millisecond)
+	start = time.Now()
+	resp, err = logs("0x67")
+	require.NoError(t, err, "a log range 1 above the ceiling, served once the nodes reach it")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x67"`)
+	assert.Less(t, time.Since(start), 3*time.Second, "within W")
+	assert.Equal(t, refused, afterWait(), "no near-future request refused yet")
+
+	start = time.Now()
+	_, err = logs("0x6a")
+	require.Error(t, err, "a range 3 above a ceiling that stays")
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable), "got %v", err)
+	assert.GreaterOrEqual(t, time.Since(start), 2500*time.Millisecond, "refused once W ended")
+	assert.Equal(t, refused+1, afterWait(), "counted future_after_wait")
+
+	// A report taken just now can still trail the chain by a block: the
+	// nodes made 0x68 right after it. 0x6b is 4 above the ceiling, yet
+	// only 3 blocks, W of chain, above the nodes' head (§19 P12): a log
+	// range would wait; a numbered block read answers at once what the
+	// nodes answer, null before they hold it.
+	var farCalls atomic.Int64
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				if r.URL.Host != id+".localhost" || !strings.Contains(body, "eth_getBlockByNumber") || !strings.Contains(body, `"0x6b"`) {
+					return false
+				}
+				farCalls.Add(1)
+				return true
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := `{"jsonrpc":"2.0","id":1,"result":` + held("0x6b", futureBlockSentinel) + `}`
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	head.Store(0x68)
+	for _, u := range ups {
+		u.EvmStatePoller().SuggestLatestBlock(0x67, time.Now())
+	}
+	// Faster than the 1s block time sampled: the wait's Asks, one per bt,
+	// see 0x6b at the latest at 2s.
+	reach(0x69, 300*time.Millisecond)
+	reach(0x6a, 600*time.Millisecond)
+	reach(0x6b, 900*time.Millisecond)
+	start = time.Now()
+	resp = forwardGetBlockByNumber(t, ctx, network, "0x6b")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "a block W of chain above the nodes, null before they hold it")
+	assert.Less(t, time.Since(start), 850*time.Millisecond, "no wait for the chain")
+	assert.Equal(t, refused+1, afterWait(), "not refused")
+	time.Sleep(time.Second)
+
+	// On a 100ms chain, W 2s, a block that never comes waits all of W as
+	// the lane's read ahead (spec §6.4 near future, §6.8 shared early
+	// fetch): no Ask of its own, and the clock fetches one voter at a
+	// time, about once a bt, each fetch new evidence; Asking each voter
+	// every bt cost 3 voters 3 fetches a bt.
+	now := time.Now().Unix()
+	for i := int64(0); i <= 1000; i++ {
+		network.metricsTracker.SampleConfirmedHeaderTime(network.networkId, network.Label(), 5000+i, now+1000+i/10)
+	}
+	require.InDelta(t, float64(100*time.Millisecond), float64(network.EvmBlockTime()), float64(5*time.Millisecond))
+	voter := map[*evm.EvmStatePoller]string{}
+	for _, u := range ups {
+		voter[u.EvmStatePoller().(*evm.EvmStatePoller)] = u.Id()
+	}
+	var refusalAsks, clockFetches atomic.Int64
+	hook := func(e *evm.EvmStatePoller, m evm.AskMet) {
+		if _, ok := voter[e]; !ok {
+			return
+		}
+		switch {
+		case m.Reason == common.AskRefusal:
+			refusalAsks.Add(1)
+		case m.Reason == common.AskClock && m.Outcome == common.AskFetched:
+			clockFetches.Add(1)
+		}
+	}
+	evm.AskHook.Store(&hook)
+	t.Cleanup(func() { evm.AskHook.Store(nil) })
+	start = time.Now()
+	_, err = logs("0x70")
+	evm.AskHook.Store(nil)
+	waited := time.Since(start)
+	require.Error(t, err, "a range 5 above a ceiling that stays")
+	assert.GreaterOrEqual(t, waited, 1900*time.Millisecond, "refused once W ended")
+	assert.Equal(t, refused+2, afterWait(), "counted future_after_wait")
+	assert.Zero(t, refusalAsks.Load(), "the wait Asks no voter")
+	assert.Positive(t, clockFetches.Load(), "the read ahead fetched the head")
+	assert.LessOrEqual(t, clockFetches.Load(), int64(waited/(100*time.Millisecond))+2, "about one head fetch a bt, not one per voter")
+}
+
+// mockMethodAnswer makes every listed upstream answer method with result,
+// counting each dispatch.
+func mockMethodAnswer(method, result string, dispatched *atomic.Int64, ids ...string) {
+	for _, id := range ids {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != id+".localhost" {
+					return false
+				}
+				if !strings.Contains(util.SafeReadBody(r), `"`+method+`"`) {
+					return false
+				}
+				dispatched.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`))
+	}
+}
+
+// A by-hash answer that names a block above Latest is sent as it came, at
+// once, and never cached (spec §6.4 by-hash answer, §7 family 5): its hash
+// may be provisional, a flashblocks preconfirmation's. Two instances share
+// a cache, and instance 1, one block ahead, cached a receipt of its
+// Latest: instance 2, a block behind, serves it from the cache at once.
+// eth_getLogs by blockHash is of the family. On instance 3 an upstream
+// answers a preconfirmed receipt whose hash the sealed block does not
+// keep: it goes out as returned, uncached, and once the view pins the
+// sealed hash at that number the receipt read again is still the
+// upstream's. Each answer is the block clock's hint: on instance 3 it has
+// the view take the block; on instance 5 only the shared cache holds the
+// receipt, and the clock fetches a voter's head within a round trip; on
+// instance 6 that fetch goes to the cache's own voter.
+func TestForward_ByHash_AboveLatestServedAsReturned(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cacheCfg := &common.CacheConfig{
+		Connectors: []*common.ConnectorConfig{{
+			Id:     "mem",
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		}},
+		Policies: []*common.CachePolicyConfig{{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateUnfinalized,
+			TTL:       common.FixedDuration(time.Hour),
+			Connector: "mem",
+		}},
+	}
+	require.NoError(t, cacheCfg.SetDefaults())
+	cache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+	require.NoError(t, err)
+
+	ahead, aheadUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hc1", chainID: 123, latestBlock: 101},
+		{id: "hc2", chainID: 123, latestBlock: 101},
+	})
+	behind, behindUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hd1", chainID: 123, latestBlock: 100},
+		{id: "hd2", chainID: 123, latestBlock: 100},
+	})
+	// The voters give Head.Finalized: the receipt's block is above it, so
+	// finality is known and the unfinalized policy caches it.
+	for _, u := range append(aheadUps, behindUps...) {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Eventually(t, func() bool {
+		return servedHead(ahead, ctx).Finalized == 90 && servedHead(behind, ctx).Finalized == 90
+	}, 2*time.Second, 10*time.Millisecond, "both instances' Head.Finalized is their voters'")
+	ahead.cacheDal = cache.WithProjectId("test")
+	behind.cacheDal = cache.WithProjectId("test")
+	require.Equal(t, int64(101), servedHead(ahead, ctx).Latest)
+	require.Equal(t, int64(100), servedHead(behind, ctx).Latest)
+
+	// receiptIn is the receipt of transaction a1 in block 101 hash.
+	receiptIn := func(hash string) string {
+		return `{"blockNumber":"0x65","blockHash":"` + hash + `","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a1","status":"0x1"}`
+	}
+	receipt := receiptIn("0x00000000000000000000000000000000000000000000000000000000000000b1")
+	var aheadCalls, behindCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &aheadCalls, "hc1", "hc2")
+	mockMethodAnswer("eth_getTransactionReceipt", receipt, &behindCalls, "hd1", "hd2")
+	const receiptReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a1"]}`
+
+	req := common.NewNormalizedRequest([]byte(receiptReq))
+	resp, err := ahead.Forward(ctx, req)
+	require.NoError(t, err)
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	require.Contains(t, jrr.GetResultString(), `"0x65"`, "instance 1's Latest includes the block")
+	require.Eventually(t, func() bool {
+		probe := common.NewNormalizedRequest([]byte(receiptReq))
+		probe.SetNetwork(behind)
+		got, err := cache.WithProjectId("test").Get(ctx, probe)
+		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
+	}, 2*time.Second, 20*time.Millisecond, "instance 1 cached the receipt")
+
+	start := time.Now()
+	req = common.NewNormalizedRequest([]byte(receiptReq))
+	resp, err = behind.Forward(ctx, req)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cached receipt above instance 2's Latest, as cached")
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "at once: no wait for the view")
+	assert.Zero(t, behindCalls.Load(), "served from the cache")
+
+	var logsCalls atomic.Int64
+	mockMethodAnswer("eth_getLogs", `[{"blockNumber":"0x65","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1","logIndex":"0x0"}]`, &logsCalls, "hd1", "hd2")
+	const logsReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1"}]}`
+	start = time.Now()
+	resp, err = behind.Forward(ctx, common.NewNormalizedRequest([]byte(logsReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "logs by hash above Latest, as returned")
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "at once: no wait for the view")
+	assert.Positive(t, logsCalls.Load(), "dispatched to an upstream")
+	time.Sleep(100 * time.Millisecond)
+	probe := common.NewNormalizedRequest([]byte(logsReq))
+	probe.SetNetwork(behind)
+	got, err := cache.WithProjectId("test").Get(ctx, probe)
+	assert.True(t, err != nil || got == nil || got.IsResultEmptyish(ctx), "logs above Latest are not cached")
+
+	// Instance 3: its voters reported 100 with a cadence of an hour; an
+	// upstream answers a preconfirmed receipt of block 101 under a hash
+	// (b1) the sealed block, tipHash("a", 101), does not keep.
+	var head atomic.Int64
+	head.Store(100)
+	for _, id := range []string{"hf1", "hf2"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, tipHead("a", uint64(head.Load())))
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	fresh, freshUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hf1", chainID: 123, latestBlock: 100, debounce: time.Hour},
+		{id: "hf2", chainID: 123, latestBlock: 100, debounce: time.Hour},
+	})
+	fresh.sources.start(ctx)
+	for _, u := range freshUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Eventually(t, func() bool { return servedHead(fresh, ctx).Finalized == 90 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(100), servedHead(fresh, ctx).Latest)
+	fresh.cacheDal = cache.WithProjectId("test")
+	const preconfReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a3"]}`
+	preconf := `{"blockNumber":"0x65","blockHash":"0x00000000000000000000000000000000000000000000000000000000000000b1","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a3","status":"0x1"}`
+	var freshCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", preconf, &freshCalls, "hf1", "hf2")
+	head.Store(101)
+	start = time.Now()
+	resp, err = fresh.Forward(ctx, common.NewNormalizedRequest([]byte(preconfReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x00000000000000000000000000000000000000000000000000000000000000b1"`, "the preconfirmed receipt, as returned")
+	assert.Less(t, time.Since(start), 100*time.Millisecond, "within a round trip: no wait for the view")
+	require.Eventually(t, func() bool { return servedHead(fresh, ctx).Latest == 101 }, 2*time.Second, 10*time.Millisecond, "the answer's hint has the clock fetch a voter's head")
+	c, pinned := fresh.chainTracker.View().PinAt(101)
+	require.True(t, pinned)
+	require.NotEqual(t, "b1", fmt.Sprintf("%x", c.Hash[31:]), "the view pins the sealed hash at 101")
+	probe = common.NewNormalizedRequest([]byte(preconfReq))
+	probe.SetNetwork(fresh)
+	got, err = cache.WithProjectId("test").Get(ctx, probe)
+	assert.True(t, err != nil || got == nil || got.IsResultEmptyish(ctx), "a receipt above Latest is not cached")
+	resp, err = fresh.Forward(ctx, common.NewNormalizedRequest([]byte(preconfReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "never null once the view pins another hash there")
+	assert.Equal(t, int64(2), freshCalls.Load(), "each read asked an upstream: nothing was cached")
+
+	// Instance 5: its voters reported 100 at boot, poll once an hour and
+	// hold 101 by the time the request comes; only the cache holds the
+	// receipt of transaction a5 in block 101.
+	var proofHead atomic.Int64
+	proofHead.Store(100)
+	var armed atomic.Bool
+	var firstFetch atomic.Int64
+	for _, id := range []string{"hp1", "hp2"} {
+		gock.New("http://" + id + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == id+".localhost" && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				if armed.Load() {
+					firstFetch.CompareAndSwap(0, time.Now().UnixNano())
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, tipHead("a", uint64(proofHead.Load())))
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	proof, proofUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hp1", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour},
+		{id: "hp2", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour},
+	})
+	proof.sources.start(ctx)
+	for _, u := range proofUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Eventually(t, func() bool { return servedHead(proof, ctx).Finalized == 90 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(100), servedHead(proof, ctx).Latest)
+	proof.cacheDal = cache.WithProjectId("test")
+	const proofReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a5"]}`
+	cached := `{"blockNumber":"0x65","blockHash":"` + tipHash("a", 101) + `","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a5","status":"0x1"}`
+	creq := common.NewNormalizedRequest([]byte(proofReq))
+	creq.SetNetwork(proof)
+	cresp := common.NewNormalizedResponse().WithRequest(creq).WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(cached), nil))
+	require.NoError(t, cache.WithProjectId("test").Set(ctx, creq, cresp))
+	require.Eventually(t, func() bool {
+		probe := common.NewNormalizedRequest([]byte(proofReq))
+		probe.SetNetwork(proof)
+		got, err := cache.WithProjectId("test").Get(ctx, probe)
+		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
+	}, 2*time.Second, 20*time.Millisecond, "the cache holds the receipt")
+	var proofCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", cached, &proofCalls, "hp1", "hp2")
+	proofHead.Store(101)
+	armed.Store(true)
+	start = time.Now()
+	resp, err = proof.Forward(ctx, common.NewNormalizedRequest([]byte(proofReq)))
+	took := time.Since(start)
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt, as cached")
+	assert.Zero(t, proofCalls.Load(), "served from the cache")
+	assert.Less(t, took, 100*time.Millisecond, "at once: no wait for the view")
+	require.Eventually(t, func() bool { return firstFetch.Load() > 0 }, time.Second, 5*time.Millisecond, "the answer's hint had a voter's head fetched")
+	assert.Less(t, time.Unix(0, firstFetch.Load()).Sub(start), 100*time.Millisecond, "the voter's head is fetched within a round trip of the answer")
+
+	// Instance 6: as instance 5, but the receipt comes from a cache whose
+	// head-aware connector reads a BDS server that voter hq9 also names, the
+	// cache's own upstream, which holds the block; hq2, before it in id and
+	// selection order and so the clock's fastest at equal scores, lacks it.
+	// The proof's probe goes to hq9.
+	bdsChain := chainsim.NewChain(chainsim.Config{ChainID: 123, BlockTime: time.Second, Seed: 11, History: 20, First: 90, Halted: true})
+	t.Cleanup(bdsChain.Close)
+	bds, bdsAddr := startCacheHeadBds(t, bdsChain, false)
+	bds.set(100, 0)
+	bdsHost := strings.TrimPrefix(bdsAddr, "grpc://")
+	// hq9's JSON-RPC calls go to the mocks: loopback hosts otherwise reach
+	// the network (util.ResetGock), here the BDS's gRPC listener.
+	gock.NetworkingFilter(func(r *http.Request) bool { return r.URL.Host != bdsHost })
+	headCfg := cacheHeadCache("bds-proof", bdsAddr, 2*time.Second, false)
+	headCfg.Connectors = append(headCfg.Connectors, cacheCfg.Connectors...)
+	headCfg.Policies = append(headCfg.Policies, cacheCfg.Policies...)
+	require.NoError(t, headCfg.SetDefaults())
+	headCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, headCfg)
+	require.NoError(t, err)
+	var ownHead atomic.Int64
+	ownHead.Store(100)
+	var ownArmed atomic.Bool
+	var ownFetches, otherFetches atomic.Int64
+	var firstProbed atomic.Value
+	for _, m := range []struct {
+		host  string
+		head  func() int64
+		count *atomic.Int64
+	}{{bdsHost, ownHead.Load, &ownFetches}, {"hq2.localhost", func() int64 { return 100 }, &otherFetches}} {
+		gock.New("http://" + m.host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return r.URL.Host == m.host && strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			Map(func(res *http.Response) *http.Response {
+				if ownArmed.Load() {
+					m.count.Add(1)
+					firstProbed.CompareAndSwap(nil, m.host)
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, tipHead("a", uint64(m.head())))
+				res.Body = io.NopCloser(strings.NewReader(body))
+				res.ContentLength = int64(len(body))
+				return res
+			})
+	}
+	own, ownUps := setupServedTipNetwork(t, ctx, []servedTipFixture{
+		{id: "hq2", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour},
+		{id: "hq9", chainID: 123, latestBlock: 100, debounce: time.Hour, statePollerInterval: time.Hour, endpoint: "http://" + bdsHost},
+	})
+	own.sources.start(ctx)
+	for _, u := range ownUps {
+		setServedTipFinalized(t, u, 90)
+	}
+	require.Eventually(t, func() bool { return servedHead(own, ctx).Finalized == 90 }, 2*time.Second, 10*time.Millisecond)
+	require.Equal(t, int64(100), servedHead(own, ctx).Latest)
+	own.cacheDal = headCache.WithProjectId("test")
+	own.cacheHead = headCache.CacheHead(own.networkId, own.EvmBlockTime)
+	require.NotNil(t, own.cacheHead, "the BDS connector's realtime policy makes the cache head")
+	require.Eventually(t, func() bool { return own.cacheHead.Server() == bdsHost }, 5*time.Second, 20*time.Millisecond, "the connector reads the BDS server")
+	require.Equal(t, "hq9", own.cacheVoter(""), "hq9 names the cache's server")
+	const ownReq = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0x00000000000000000000000000000000000000000000000000000000000000a6"]}`
+	ownReceipt := `{"blockNumber":"0x65","blockHash":"` + tipHash("a", 101) + `","transactionHash":"0x00000000000000000000000000000000000000000000000000000000000000a6","status":"0x1"}`
+	oreq := common.NewNormalizedRequest([]byte(ownReq))
+	oreq.SetNetwork(own)
+	require.NoError(t, headCache.WithProjectId("test").Set(ctx, oreq, common.NewNormalizedResponse().WithRequest(oreq).WithJsonRpcResponse(common.MustNewJsonRpcResponseFromBytes([]byte("1"), []byte(ownReceipt), nil))))
+	require.Eventually(t, func() bool {
+		probe := common.NewNormalizedRequest([]byte(ownReq))
+		probe.SetNetwork(own)
+		got, err := headCache.WithProjectId("test").Get(ctx, probe)
+		return err == nil && got != nil && !got.IsResultEmptyish(ctx)
+	}, 2*time.Second, 20*time.Millisecond, "the cache holds the receipt")
+	var ownCalls atomic.Int64
+	mockMethodAnswer("eth_getTransactionReceipt", ownReceipt, &ownCalls, "hq2")
+	ownHead.Store(101)
+	ownArmed.Store(true)
+	resp, err = own.Forward(ctx, common.NewNormalizedRequest([]byte(ownReq)))
+	require.NoError(t, err)
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"0x65"`, "the cache's receipt, as cached")
+	assert.Zero(t, ownCalls.Load(), "served from the cache")
+	require.Eventually(t, func() bool { return ownFetches.Load() > 0 }, time.Second, 5*time.Millisecond, "the answer's hint probed the cache's own voter")
+	assert.Equal(t, bdsHost, firstProbed.Load(), "the proof's probe went to the cache's own voter, not the one lacking the block")
+}
+
+// sampleBlockTime gives network its first block time sample: before it,
+// every report counts as older than 1 bt, so no block is future (spec §6.4).
+func sampleBlockTime(t *testing.T, network *Network) {
+	t.Helper()
+	for i := int64(0); i < 3; i++ {
+		network.metricsTracker.SampleConfirmedHeaderTime(network.networkId, network.Label(), 1000+i, time.Now().Unix()+100+i)
+	}
+	require.Positive(t, network.EvmBlockTime())
 }

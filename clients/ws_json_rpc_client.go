@@ -22,6 +22,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -38,10 +39,14 @@ const (
 // Liveness windows: a connection with no pong or data frame for wsPongWait
 // is torn down and re-dialed, since a half-open connection would otherwise
 // block reads forever while pings keep "succeeding" into a buffer. Two
-// pings fit in the window. Vars so tests can shorten them.
+// pings fit in the window. A request that times out shortens the window
+// to wsProbeWait and pings: a live peer answers well within it, and a
+// half-open one fails its pending requests over seconds after the
+// timeout, not at the end of wsPongWait. Vars so tests can shorten them.
 var (
 	wsPingInterval = 30 * time.Second
 	wsPongWait     = 75 * time.Second
+	wsProbeWait    = 5 * time.Second
 )
 
 // WsJsonRpcClient implements ClientInterface for WebSocket-based JSON-RPC upstream connections.
@@ -56,6 +61,7 @@ type WsJsonRpcClient struct {
 
 	pingInterval time.Duration
 	pongWait     time.Duration
+	probeWait    time.Duration
 
 	// Connection state. Only readLoop replaces or tears down conn (besides
 	// the initial dial and shutdown); the dial itself runs without connMu so
@@ -67,6 +73,10 @@ type WsJsonRpcClient struct {
 	// written under connMu, epochs counts connections ever installed.
 	epoch  atomic.Uint64
 	epochs uint64
+	// probing is the connection whose liveness probe is armed; a frame or
+	// pong on it disarms it. Later timeouts on it never re-arm the probe,
+	// so a stream of them cannot push the probe's deadline back.
+	probing atomic.Pointer[websocket.Conn]
 
 	// Write synchronization (gorilla/websocket requires synchronized writes)
 	writeMu sync.Mutex
@@ -174,6 +184,7 @@ func NewWsJsonRpcClient(
 		headers:         headers,
 		pingInterval:    wsPingInterval,
 		pongWait:        wsPongWait,
+		probeWait:       wsProbeWait,
 		projectId:       projectId,
 		upstream:        upstream,
 		appCtx:          appCtx,
@@ -187,7 +198,7 @@ func NewWsJsonRpcClient(
 
 	if err := client.connect(); err != nil {
 		// readLoop keeps re-dialing in the background.
-		logger.Warn().Err(err).Str("url", parsedUrl.String()).Msg("initial websocket connection failed, will retry in background")
+		logger.Warn().Err(err).Str("url", util.RedactEndpoint(parsedUrl.String())).Msg("initial websocket connection failed, will retry in background")
 	}
 
 	go client.readLoop()
@@ -212,6 +223,21 @@ func (c *WsJsonRpcClient) IsConnected() bool {
 // changes on every reconnect.
 func (c *WsJsonRpcClient) Epoch() uint64 {
 	return c.epoch.Load()
+}
+
+// Done is closed once the client has shut down for good.
+func (c *WsJsonRpcClient) Done() <-chan struct{} { return c.appCtx.Done() }
+
+// Reconnect closes connection epoch, if still current; readLoop then tears
+// it down and re-dials, firing the disconnect and reconnect callbacks.
+func (c *WsJsonRpcClient) Reconnect(epoch uint64) {
+	c.connMu.Lock()
+	conn := c.conn
+	current := conn != nil && c.epoch.Load() == epoch
+	c.connMu.Unlock()
+	if current {
+		_ = conn.Close()
+	}
 }
 
 func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -246,7 +272,7 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 		"jsonrpc": jrReq.JSONRPC,
 		"id":      wireID,
 		"method":  method,
-		"params":  jrReq.Params,
+		"params":  common.WireParams(ctx, req, jrReq.Params),
 	})
 	jrReq.RUnlock()
 	if err != nil {
@@ -325,6 +351,9 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 			err := ctx.Err()
 			if errors.Is(err, context.DeadlineExceeded) {
 				err = common.NewErrEndpointRequestTimeout(time.Since(startedAt), err)
+				// The write may block on a full send buffer; the caller
+				// has waited long enough.
+				go c.probe(conn)
 			} else if errors.Is(err, context.Canceled) {
 				err = common.NewErrEndpointRequestCanceled(err)
 			}
@@ -383,7 +412,7 @@ func (c *WsJsonRpcClient) UnregisterSubscriptionHandler(upstreamSubID string, ep
 }
 
 // SetOnDisconnect sets the callback under id that runs when the connection
-// drops.
+// drops, shutdown included.
 func (c *WsJsonRpcClient) SetOnDisconnect(id string, callback func()) {
 	c.onDisconnectMu.Lock()
 	c.onDisconnectCbs[id] = callback
@@ -414,9 +443,10 @@ func (c *WsJsonRpcClient) connect() error {
 	}
 
 	// Every pong (here) and data frame (in readLoop) extends the liveness
-	// deadline.
+	// deadline and disarms a probe.
 	_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	conn.SetPongHandler(func(string) error {
+		c.probing.CompareAndSwap(conn, nil)
 		return conn.SetReadDeadline(time.Now().Add(c.pongWait))
 	})
 
@@ -434,7 +464,7 @@ func (c *WsJsonRpcClient) connect() error {
 	c.connMu.Unlock()
 	c.setConnectedMetric()
 
-	c.logger.Info().Str("url", c.Url.String()).Msg("websocket connection established")
+	c.logger.Info().Str("url", util.RedactEndpoint(c.Url.String())).Msg("websocket connection established")
 	return nil
 }
 
@@ -451,6 +481,7 @@ func (c *WsJsonRpcClient) teardownConn(conn *websocket.Conn, cause error) {
 	c.connMu.Unlock()
 
 	if conn != nil {
+		c.probing.CompareAndSwap(conn, nil)
 		_ = conn.Close()
 	}
 	c.subHandlersMu.Lock()
@@ -540,6 +571,7 @@ func (c *WsJsonRpcClient) readLoop() {
 			continue
 		}
 
+		c.probing.CompareAndSwap(conn, nil)
 		_ = conn.SetReadDeadline(time.Now().Add(c.pongWait))
 
 		c.handleMessage(message, epoch)
@@ -613,7 +645,7 @@ func (c *WsJsonRpcClient) handleMessage(message []byte, epoch uint64) {
 		var subID string
 		if p.sub != nil && common.SonicCfg.Unmarshal(msg.Result, &subID) == nil && subID != "" {
 			if abandoned {
-				go c.unsubscribeOrphan(subID, epoch)
+				go c.UnsubscribeOrphan(subID, epoch)
 				return
 			}
 			// The id outlives the frame it was decoded from.
@@ -655,7 +687,7 @@ func (c *WsJsonRpcClient) handleNotification(method string, params []byte, epoch
 		// Nothing owns it: cancel it, unless a subscribe in flight may be
 		// about to claim it. Each later notification retries the cancel.
 		if notifParams.Subscription != "" && !c.subscribeInFlight() {
-			go c.unsubscribeOrphan(strings.Clone(notifParams.Subscription), epoch)
+			go c.UnsubscribeOrphan(strings.Clone(notifParams.Subscription), epoch)
 		}
 		return
 	}
@@ -689,9 +721,23 @@ func (c *WsJsonRpcClient) writeToConn(conn *websocket.Conn, messageType int, dat
 	return conn.WriteMessage(messageType, data)
 }
 
-// unsubscribeOrphan cancels a subscription the upstream created after its
-// caller gave up. Fire-and-forget: the response is dropped as unknown.
-func (c *WsJsonRpcClient) unsubscribeOrphan(subID string, epoch uint64) {
+// probe pings conn and gives it probeWait to answer: a pong or any frame
+// restores the liveness deadline, and a half-open peer sends neither, so
+// readLoop tears the connection down and fails its pending requests. A
+// probe already armed on conn keeps its deadline.
+func (c *WsJsonRpcClient) probe(conn *websocket.Conn) {
+	if c.probing.Swap(conn) == conn {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(min(c.probeWait, c.pongWait)))
+	if err := c.writeToConn(conn, websocket.PingMessage, nil); err != nil {
+		_ = conn.Close()
+	}
+}
+
+// UnsubscribeOrphan cancels a subscription of connection epoch that nobody
+// owns any more. Fire-and-forget: the response is dropped as unknown.
+func (c *WsJsonRpcClient) UnsubscribeOrphan(subID string, epoch uint64) {
 	body, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      c.wireIDCounter.Add(1),
@@ -768,4 +814,9 @@ func (c *WsJsonRpcClient) shutdown() {
 		)
 	}
 	c.teardownConn(conn, common.NewErrEndpointRequestCanceled(fmt.Errorf("websocket client shutting down")))
+	// readLoop fires no callbacks once the app context is done, so the
+	// connection shutdown drops is reported here: its subscriptions died too.
+	if conn != nil {
+		c.fireCallbacks(&c.onDisconnectMu, c.onDisconnectCbs)
+	}
 }

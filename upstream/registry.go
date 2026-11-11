@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +62,37 @@ type UpstreamsRegistry struct {
 	pendingUpstreams sync.Map // upstreamId -> *Upstream
 
 	onUpstreamRegistered func(ups *Upstream) error
+
+	// networkUpstreamHooks are the networks' OnNetworkUpstream callbacks,
+	// guarded by upstreamsMu.
+	networkUpstreamHooks map[string]func(*Upstream)
+
+	// bg runs the registry's background registrations and their
+	// callbacks; Wait waits for them.
+	bg util.Goroutines
+}
+
+// Wait waits, once appCtx ended, until no goroutine of the registry, its
+// bootstrap tasks, its upstreams' state pollers or their shared counter
+// refreshes runs, so none sends an upstream request after.
+func (u *UpstreamsRegistry) Wait() {
+	u.bg.Wait()
+	u.initializer.Wait()
+	u.upstreamsMu.RLock()
+	all := slices.Clone(u.allUpstreams)
+	u.upstreamsMu.RUnlock()
+	u.pendingUpstreams.Range(func(_, v any) bool {
+		all = append(all, v.(*Upstream))
+		return true
+	})
+	for _, ups := range all {
+		if p := ups.EvmStatePoller(); p != nil {
+			p.Wait()
+		}
+	}
+	if u.sharedStateRegistry != nil {
+		u.sharedStateRegistry.Wait()
+	}
 }
 
 type UpstreamsHealth struct {
@@ -109,13 +140,13 @@ func NewUpstreamsRegistry(
 
 func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) {
 	// Fire-and-forget: register upstreams in background to avoid blocking service startup
-	go func() {
+	u.bg.Go(func() {
 		if err := u.registerUpstreams(u.appCtx, u.upsCfg...); err != nil {
 			u.logger.Error().Err(err).Msg("failed to register upstreams in background")
 		} else {
 			u.logger.Info().Msg("upstreams registration completed")
 		}
-	}()
+	})
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
@@ -196,7 +227,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			t := u.buildProviderBootstrapTask(p, networkId)
 			tasks = append(tasks, t)
 		}
-		go func() {
+		u.bg.Go(func() {
 			if err := u.initializer.ExecuteTasks(u.appCtx, tasks...); err != nil {
 				u.logger.Error().
 					Err(err).
@@ -209,7 +240,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 					Interface("status", u.initializer.Status()).
 					Msg("provider bootstrap tasks executed successfully")
 			}
-		}()
+		})
 	})
 
 	// Require only one ready upstream to start handling requests.
@@ -413,6 +444,7 @@ func (u *UpstreamsRegistry) OverrideOrderForTest(networkId string, ids ...string
 	cp := make([]*Upstream, len(reordered))
 	copy(cp, reordered)
 	u.networkUpstreamsAtomic.Store(networkId, cp)
+	methodFilterEpoch.Add(1)
 }
 
 func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId string) []*Upstream {
@@ -440,15 +472,17 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 	copy(cp, ups)
 	// Populate snapshot while still holding RLock to avoid stale overwrite after a writer runs
 	u.networkUpstreamsAtomic.Store(networkId, cp)
+	methodFilterEpoch.Add(1)
 	u.upstreamsMu.RUnlock()
 	return cp
 }
 
 // GetFallbackEscapeUpstreams returns the network's bootstrapped fallback-tier
-// upstreams that are not down for method and allow it. Selection-policy
-// cordons are deliberately ignored: the per-request escape exists to get past
-// them.
-func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, networkId, method string) []*Upstream {
+// upstreams that are not down for method at finality and allow it.
+// Selection-policy cordons are deliberately ignored: the per-request escape
+// exists to get past them. finality must be the request's so a breaker scoped
+// to finalized/realtime is not skipped.
+func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, networkId, method string, finality common.DataFinalityState) []*Upstream {
 	all := u.GetNetworkUpstreams(ctx, networkId)
 	out := make([]*Upstream, 0, len(all))
 	for _, up := range all {
@@ -456,7 +490,7 @@ func (u *UpstreamsRegistry) GetFallbackEscapeUpstreams(ctx context.Context, netw
 		if cfg == nil || !cfg.HasTag(common.TagTierFallback) {
 			continue
 		}
-		if up.IsDown(method) {
+		if up.IsDown(method, finality) {
 			continue
 		}
 		if allowed, err := up.ShouldHandleMethod(method); err != nil || !allowed {
@@ -472,17 +506,11 @@ func (u *UpstreamsRegistry) GetWsUpstreams(ctx context.Context, networkId string
 	all := u.GetNetworkUpstreams(ctx, networkId)
 	var ws []*Upstream
 	for _, up := range all {
-		if cfg := up.Config(); cfg != nil && IsWsEndpoint(cfg.Endpoint) {
+		if cfg := up.Config(); cfg != nil && util.IsWsEndpoint(cfg.Endpoint) {
 			ws = append(ws, up)
 		}
 	}
 	return ws
-}
-
-// IsWsEndpoint reports whether endpoint uses the ws:// or wss:// scheme.
-func IsWsEndpoint(endpoint string) bool {
-	parsed, err := url.Parse(endpoint)
-	return err == nil && (parsed.Scheme == "ws" || parsed.Scheme == "wss")
 }
 
 func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {
@@ -592,12 +620,11 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			if u.onUpstreamRegistered != nil {
 				// TODO Refactor the upstream<->network relationship to avoid circular dependency. Then we can remove this goroutine.
 				// We need this now at the moment so that lazy-loaded networks and lazy-loaded upstreams (from Providers) can work together.
-				go func() {
-					err = u.onUpstreamRegistered(ups)
-					if err != nil {
+				u.bg.Go(func() {
+					if err := u.onUpstreamRegistered(ups); err != nil {
 						u.logger.Error().Err(err).Str("upstreamId", cfg.Id).Msg("failed to call onUpstreamRegistered")
 					}
-				}()
+				})
 			}
 
 			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("upstream bootstrap completed")
@@ -698,7 +725,6 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	cfg := ups.Config()
 
 	u.upstreamsMu.Lock()
-	defer u.upstreamsMu.Unlock()
 
 	// A bootstrap task may be re-executed against an already-registered
 	// upstream; never register the same instance twice.
@@ -714,7 +740,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	}
 
 	// Add to network upstreams map
-	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
+	isShadow := ups.Config().IsShadow()
 	exists := false
 	if isShadow {
 		for _, existingUps := range u.networkShadowUpstreams[networkId] {
@@ -739,16 +765,41 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	}
 
 	// Refresh atomic snapshot for this network's upstreams
+	var hook func(*Upstream)
 	if !isShadow {
 		cp := make([]*Upstream, len(u.networkUpstreams[networkId]))
 		copy(cp, u.networkUpstreams[networkId])
 		u.networkUpstreamsAtomic.Store(networkId, cp)
+		if !exists {
+			hook = u.networkUpstreamHooks[networkId]
+		}
+		methodFilterEpoch.Add(1)
 	}
+	u.upstreamsMu.Unlock()
 
+	if hook != nil {
+		hook(ups)
+	}
 	u.logger.Debug().
 		Str("upstreamId", cfg.Id).
 		Str("networkId", networkId).
 		Msg("upstream registered and initialized in registry")
+}
+
+// OnNetworkUpstream runs fn for every upstream of networkId registered now
+// and for each one registered later, once per upstream, outside the
+// registry's lock. One per network; a later one replaces it.
+func (u *UpstreamsRegistry) OnNetworkUpstream(networkId string, fn func(*Upstream)) {
+	u.upstreamsMu.Lock()
+	if u.networkUpstreamHooks == nil {
+		u.networkUpstreamHooks = map[string]func(*Upstream){}
+	}
+	u.networkUpstreamHooks[networkId] = fn
+	existing := append([]*Upstream(nil), u.networkUpstreams[networkId]...)
+	u.upstreamsMu.Unlock()
+	for _, ups := range existing {
+		fn(ups)
+	}
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {

@@ -1,6 +1,6 @@
 # Data Integrity — Implementation Plan
 
-**Status**: Draft — for review
+**Status**: Superseded — this plan describes the abandoned directive-orchestration design; [feature.md](./feature.md) is the as-built record
 **Last revised**: 2026-06-18
 
 Companion to [feature.md](./feature.md). Phased so each step ships value independently and the cheap/safe tiers land first.

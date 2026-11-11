@@ -107,7 +107,7 @@ behavior (URL shape `/{projectId}/{architecture}/{chainId}`) is covered in
 | `projects[].id` | string | — (required) | Used as the `project` label on nearly every metric, in URL path routing, gRPC `x-erpc-project`, admin RPC params. Uniqueness enforced at registration: duplicate → `ErrProjectAlreadyExists`. |
 | `projects[].auth` | `*AuthConfig` | `nil` (no auth → all requests allowed; `AuthenticateConsumer` returns `(nil, nil)`) | When set, an auth registry is built at registration. Requires ≥1 strategy. |
 | `projects[].cors` | `*CORSConfig` | `nil` (no CORS handling at all; OPTIONS not short-circuited) | Checked after project resolution. |
-| `projects[].providers` | `[]*ProviderConfig` | If both `providers` and `upstreams` are empty: two default providers are injected: `{id: "public", vendor: "repository"}` and `{id: "envio", vendor: "envio"}`. | Unique ids required. Per-project providers registry. |
+| `projects[].providers` | `[]*ProviderConfig` | If both `providers` and `upstreams` are empty: one default provider is injected: `{id: "public", vendor: "repository"}`. | Unique ids required. Per-project providers registry. |
 | `projects[].upstreamDefaults` | `*UpstreamConfig` | `nil` | Applied to every upstream via `ApplyDefaults` before that upstream's own `SetDefaults`; also passed to the providers registry. |
 | `projects[].upstreams` | `[]*UpstreamConfig` | `nil` | Shorthand non-http(s)/grpc endpoints (e.g. `alchemy://KEY`) are converted into providers and removed from the list at `SetDefaults` time. Requires ≥1 of `upstreams`/`providers`. Unique ids required. |
 | `projects[].networkDefaults` | `*NetworkDefaults` | `nil` | Applied to statically defined networks at `SetDefaults` and to lazy-loaded networks at first request. Its own `rateLimitBudget` is network-level, distinct from project-level. |
@@ -213,7 +213,7 @@ All metrics use the `erpc_` namespace.
 | `erpc_rate_limits_total` | `project`, `network`, `vendor`, `upstream`, `category`, `finality`, `user`, `agent_name`, `budget`, `scope`, `auth`, `origin` | Unified deny counter. Project layer: `origin="project"`, `auth=""`. Auth layer: `origin="auth"`, `auth="<type>:<index>"`. |
 | `erpc_rate_limiter_budget_max_count` | `budget`, `method`, `scope` | Gauge. |
 | `erpc_rate_limiter_failopen_total` | `project`, `network`, `user`, `agent_name`, `budget`, `category`, `reason` | Reasons: `admission_full` / `limit_timeout`. Monitor this to detect hard-enforcement gaps. |
-| `erpc_auth_failed_total` | `project`, `network`, `strategy`, `reason`, `agent_name` | Incremented inside auth strategies. |
+| `erpc_auth_failed_total` | `project`, `network`, `strategy`, `reason`, `agent_name` | Incremented when `ErrAuthUnauthorized` is returned to the client. |
 | `erpc_shadow_response_identical_total` | — | Shadow traffic comparison outcomes. |
 | `erpc_shadow_response_mismatch_total` | — | Mismatches log at error level with both hashes. |
 | `erpc_shadow_response_error_total` | — | Shadow request error outcomes. |

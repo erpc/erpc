@@ -61,10 +61,11 @@ func TestHttpServer_H2C_WithoutSharedGrpc(t *testing.T) {
 	defer cancel()
 
 	erpcInstance, err := NewERPC(ctx, &logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 	require.Nil(t, httpServer.sharedGrpcServer, "precondition: shared gRPC must be disabled")
 
@@ -209,10 +210,11 @@ func TestHttpServer_H2C_ShutdownGoAwaysAndDrainsInFlightStream(t *testing.T) {
 	defer sigterm()
 
 	erpcInstance, err := NewERPC(appCtx, &logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, appCtx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(appCtx)
 
-	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -270,6 +272,9 @@ func TestHttpServer_H2C_ShutdownGoAwaysAndDrainsInFlightStream(t *testing.T) {
 	_, err = bodyW.Write([]byte(reqBody[:20]))
 	require.NoError(t, err)
 	time.Sleep(200 * time.Millisecond)
+	// CanTakeNewRequest is the GOAWAY signal below; it must hold before Shutdown
+	// so a full stream limit can't pass for a GOAWAY.
+	require.True(t, cc.CanTakeNewRequest(), "h2c connection refused new streams before Shutdown started")
 
 	sigterm()
 
@@ -289,7 +294,9 @@ func TestHttpServer_H2C_ShutdownGoAwaysAndDrainsInFlightStream(t *testing.T) {
 	default:
 	}
 
-	require.Eventually(t, func() bool { return cc.State().Closing }, 3*time.Second, 10*time.Millisecond,
+	// State().Closing misses a received GOAWAY in go1.27's x/net wrapper
+	// (golang/go#82365); CanTakeNewRequest reports it under both clients.
+	require.Eventually(t, func() bool { return !cc.CanTakeNewRequest() }, 3*time.Second, 10*time.Millisecond,
 		"h2c connection never received GOAWAY after Shutdown started")
 
 	newCtx, cancelNew := context.WithTimeout(context.Background(), 2*time.Second)
@@ -361,10 +368,11 @@ func TestHttpServer_SharedGrpc_ShutdownDrainsInFlightRPC(t *testing.T) {
 	defer sigterm()
 
 	erpcInstance, err := NewERPC(appCtx, &logger, nil, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, appCtx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(appCtx)
 
-	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(appCtx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

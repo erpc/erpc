@@ -119,7 +119,7 @@ Streaming methods (`QueryBlocks`, `QueryTransactions`, `QueryLogs`, `QueryTraces
 | `bdsPoolSize` | `3` | Number of independent connections per upstream |
 | `bdsStuckCallThreshold` | `3` | Hard-cap firings within window before watchdog replaces the connection |
 | `bdsStuckCallWindow` | `60s` | Rolling window for stuck-call counting |
-| `bdsReplacementDedupWindow` | `5s` | Minimum gap between replacements of the same pool slot |
+| `bdsReplacementDedupWindow` | `5s` | Minimum gap between replacements of the same pool slot, by the watchdog or the unservable re-dial |
 
 ### Worked examples
 
@@ -280,9 +280,10 @@ Streaming methods (`QueryBlocks`, `QueryTransactions`, `QueryLogs`, `QueryTraces
 17. **EIP-1898 `blockHash` param silently re-routes to `GetBlockByHash`.** If `eth_getBlockByNumber` receives an object with a `blockHash` field, `handleGetBlockByNumber` extracts the hash bytes and routes to `GetBlockByHash` instead. This is transparent to the caller. <SourceLink file="clients/grpc_bds_client.go" lines="341-407" />
 18. **Unsupported methods return `ErrEndpointUnsupported` before consuming a connection.** Any method not in the BDS dispatch switch returns this error immediately, permanently disqualifying the upstream for that method type via upstream scoring. <SourceLink file="clients/grpc_bds_client.go" lines="270-275" />
 19. **Nil upstream is nil-safe at BDS client construction.** `NewGrpcBdsClient` accepts a nil `upstream` (used in tests and early bootstrap). Header loading and error classification are nil-safe; `upstream.Id()` returns `"n/a"` in error and metric labels. <SourceLink file="clients/grpc_bds_client.go" lines="62-87" />
-20. **`healthCheckService` names a service the server must register.** With it set, an address reporting `SERVICE_UNKNOWN` or `NOT_SERVING` gets no requests; if every resolved address is in that state, `waitForReady` queues calls until `bdsHardCallTimeout`. Only set it for servers that publish that name (a reader behind a gateway that proxies health would expose one reader's state for the whole gateway). <SourceLink file="clients/grpc_bds_client.go" lines="1636-1663" />
+20. **`healthCheckService` names a service the server must register.** With it set, an address reporting `SERVICE_UNKNOWN` or `NOT_SERVING` gets no requests; while every resolved address is in that state, `waitForReady` queues calls on that connection. Only set it for servers that publish that name (a reader behind a gateway that proxies health would expose one reader's state for the whole gateway). <SourceLink file="clients/grpc_bds_client.go" lines="1636-1663" />
 21. **A URL path mounts every call, and was ignored before.** `grpc://host/boost` now calls `/boost/bds.evm.RPCQueryService/...`; earlier releases dropped the path and called the root. An endpoint that kept a stray path must drop it, or its server must serve under that path. <SourceLink file="clients/grpc_bds_resilience.go" lines="527-566" />
 22. **`healthCheckService` is refused on an endpoint with a URL path.** grpc-go opens the health `Watch` stream past every client interceptor, so it always calls the root `/grpc.health.v1.Health/Watch`, never the mount. Config validation rejects the pair instead of probing the wrong service. <SourceLink file="common/validation.go" lines="566-582" />
+23. **A connection with no servable address is re-dialed.** When a pooled connection's channel reaches `TRANSIENT_FAILURE` (every address refuses connections, or reports `NOT_SERVING` under `healthCheckService`), the pool dials a replacement into its slot, at most once per `bdsReplacementDedupWindow`. grpc-go re-resolves a name only after a connection breaks, and a health failure breaks none; the fresh dial resolves the name again, so a DNS name that now points at a replacement server is followed at once, and opens new connections, so a load balancer routes them to a backend still serving. Calls already queued on the old connection keep waiting there; it closes after `bdsAgeRecycleLinger`. <SourceLink file="clients/grpc_bds_resilience.go" lines="375-412" />
 
 ### Observability
 
@@ -307,6 +308,7 @@ OTel gRPC instrumentation (`otelgrpc.NewServerHandler()` / `otelgrpc.NewClientHa
 - `"BDS bounded-wait timeout fired"` — WARN; carries `err`, `network.id`, `upstream.id`, `method`, `request.id`, `our_hardcap` (<SourceLink file="clients/grpc_bds_client.go" lines="293-304" />)
 - `"BDS watchdog: replacing wedged connection"` — WARN; carries `target`, `upstream.id`, `slot` (<SourceLink file="clients/grpc_bds_resilience.go" lines="231-235" />)
 - `"BDS watchdog: failed to dial replacement; old conn left in place for grpc-go to reconnect"` — ERROR (<SourceLink file="clients/grpc_bds_resilience.go" lines="225-225" />)
+- `"BDS maintainer: recycled pool connection"` — INFO; carries `target`, `upstream.id`, `slot`, `reason` (`age`, `unservable`, `chainid_mismatch`, `closed`) (<SourceLink file="clients/grpc_bds_resilience.go" lines="310-345" />)
 - `"processing query stream request"` — INFO per streaming call; carries `component`, `projectId`, `networkId`, `method`, `clientIP` (<SourceLink file="erpc/request_processor.go" lines="102-102" />)
 - `"query stream completed with error"` / `"query stream completed successfully"` — INFO; carries `durationMs` (<SourceLink file="erpc/request_processor.go" lines="140-144" />)
 - `"invalid CIDR in trusted forwarders; ignoring"` / `"invalid IP in trusted forwarders; ignoring"` — WARN at server construction when a `trustedIPForwarders` entry cannot be parsed (<SourceLink file="erpc/grpc_server.go" lines="79-85" />)

@@ -26,3 +26,24 @@ func TestPhonyUpstream_Config_NoPanicInEvmExtractor(t *testing.T) {
 		t.Fatal("EVM extractor should classify -32602 for a phony (EVM) upstream")
 	}
 }
+
+// The phony upstream is a probe-only identity: it reports its id as both Id and
+// Name, always claims EVM, and carries no vendor or vendor settings.
+func TestPhonyUpstream_Identity(t *testing.T) {
+	u := &phonyUpstream{id: "temp-goldsky-8453"}
+	if u.Id() != "temp-goldsky-8453" || u.Name() != "temp-goldsky-8453" {
+		t.Fatalf("Id/Name must echo the probe id, got %q/%q", u.Id(), u.Name())
+	}
+	if u.Type() != common.UpstreamTypeEvm {
+		t.Fatalf("phony upstream must be EVM, got %q", u.Type())
+	}
+	if u.Config().Id != "temp-goldsky-8453" {
+		t.Fatalf("Config().Id must be the probe id, got %q", u.Config().Id)
+	}
+	if u.Vendor() != nil {
+		t.Fatal("phony upstream must not carry a vendor")
+	}
+	if u.VendorSettings() != nil {
+		t.Fatal("phony upstream must not carry vendor settings")
+	}
+}

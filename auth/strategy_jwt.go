@@ -86,18 +86,18 @@ func (s *JwtStrategy) Supports(ap *AuthPayload) bool {
 func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	token, _, err := s.parser.ParseUnverified(ap.Jwt.Token, jwt.MapClaims{})
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", "failed to parse JWT")
+		return nil, common.NewErrAuthUnauthorized("jwt", "parse_failed", "failed to parse JWT")
 	}
 
 	if len(s.cfg.AllowedAlgorithms) > 0 {
 		if !contains(s.cfg.AllowedAlgorithms, token.Method.Alg()) {
-			return nil, common.NewErrAuthUnauthorized("jwt", "unexpected signing method")
+			return nil, common.NewErrAuthUnauthorized("jwt", "unexpected_algorithm", "unexpected signing method")
 		}
 	}
 
 	key, err := s.findVerificationKey(ctx, token)
 	if err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", err.Error())
+		return nil, common.NewErrAuthUnauthorized("jwt", "no_verification_key", err.Error())
 	}
 
 	// Verify the signature (and standard claims such as exp via jwt.Parse).
@@ -108,16 +108,16 @@ func (s *JwtStrategy) Authenticate(ctx context.Context, req *common.NormalizedRe
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return nil, common.NewErrAuthUnauthorized("jwt", "invalid JWT claims")
+		return nil, common.NewErrAuthUnauthorized("jwt", "invalid_claims", "invalid JWT claims")
 	}
 
 	if err := s.validateClaims(claims); err != nil {
-		return nil, common.NewErrAuthUnauthorized("jwt", err.Error())
+		return nil, common.NewErrAuthUnauthorized("jwt", "claims_invalid", err.Error())
 	}
 
 	id, ok := claims["sub"].(string)
 	if !ok {
-		return nil, common.NewErrAuthUnauthorized("jwt", "missing 'sub' claim to be used as user id")
+		return nil, common.NewErrAuthUnauthorized("jwt", "missing_sub", "missing 'sub' claim to be used as user id")
 	}
 
 	user := &common.User{Id: id}
@@ -190,7 +190,7 @@ func errAuthUnauthorizedFromJwtParse(err error) error {
 			return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonTokenExpired)
 		}
 		// Other ValidationError flags (nbf, iat, malformed, …) keep jwt's text.
-		return common.NewErrAuthUnauthorized("jwt", err.Error())
+		return common.NewErrAuthUnauthorized("jwt", "invalid_token", err.Error())
 	}
 	return common.NewErrAuthUnauthorizedReason("jwt", common.AuthUnauthorizedReasonInvalidSignature)
 }

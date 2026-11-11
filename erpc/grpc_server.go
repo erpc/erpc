@@ -229,11 +229,7 @@ func (gs *GrpcServer) GetBlockByNumber(ctx context.Context, req *evm.GetBlockByN
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, grpcStatusOf(err)
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, grpcStatusOf(err)
 	}
@@ -261,11 +257,7 @@ func (gs *GrpcServer) GetBlockByHash(ctx context.Context, req *evm.GetBlockByHas
 	if string(result) == "null" {
 		return &evm.GetBlockResponse{}, nil
 	}
-	var block evm.JsonRpcBlock
-	if err := sonic.Unmarshal(result, &block); err != nil {
-		return nil, grpcStatusOf(err)
-	}
-	protoBlock, err := block.ToProto()
+	protoBlock, err := evm.ParseJsonRpcBlock(result, sonic.Unmarshal)
 	if err != nil {
 		return nil, grpcStatusOf(err)
 	}
@@ -462,16 +454,6 @@ func serveQuery[Res any](gs *GrpcServer, req proto.Message, stream grpc.ServerSt
 	}))
 }
 
-func (gs *GrpcServer) StreamBlocks(req *evm.StreamBlocksRequest, stream evm.StreamService_StreamBlocksServer) error {
-	input, err := gs.extractRequestInput(stream.Context(), "eth_getBlockByNumber")
-	if err != nil {
-		return err
-	}
-	return grpcStatusOf(gs.processor.ProcessBlockStream(stream.Context(), input, func(header *evm.BlockHeader) error {
-		return stream.Send(&evm.StreamBlocksResponse{Header: header})
-	}))
-}
-
 func (gs *GrpcServer) panicRecoveryUnary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
 		defer func() {
@@ -504,7 +486,10 @@ func grpcStatusOf(err error) error {
 	switch {
 	case common.HasErrorCode(err, common.ErrCodeEndpointUnsupported):
 		return status.Error(codes.Unimplemented, err.Error())
-	case common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized, common.ErrCodeAuthUnauthorized):
+	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized):
+		auth.RecordAuthFailed(nil, err)
+		return status.Error(codes.Unauthenticated, err.Error())
+	case common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized):
 		return status.Error(codes.Unauthenticated, err.Error())
 	case common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout, common.ErrCodeNetworkRequestTimeout, common.ErrCodeFailsafeTimeoutExceeded) || errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())

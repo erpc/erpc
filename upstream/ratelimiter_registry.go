@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coocood/freecache"
 	gostats "github.com/lyft/gostats"
 	"github.com/rs/zerolog"
 
@@ -23,6 +24,10 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 )
+
+// overLimitCacheBytes sizes the per-replica over-limit key cache; freecache's
+// floor is 512 KiB and a key is ~100 bytes.
+const overLimitCacheBytes = 4 << 20
 
 type RateLimitersRegistry struct {
 	appCtx          context.Context
@@ -128,8 +133,11 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 			"single",
 			url,
 			poolSize,
-			5*time.Millisecond,
-			32,
+			// No implicit pipelining: each check is already one explicit
+			// pipeline, and radix's window would only delay it (5ms window
+			// measured +23ms per 4-command check).
+			0,
+			0,
 			nil,
 			false,
 			nil,
@@ -140,9 +148,12 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 		client,
 		nil,
 		utils.NewTimeSourceImpl(),
-		rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404
+		// Locked: concurrent DoLimit calls draw expiry jitter from it.
+		rand.New(utils.NewLockedSource(time.Now().UnixNano())), // #nosec G404
 		5,
-		nil,
+		// Remembers keys over their limit until the window ends, so denials
+		// skip Redis. Eviction only costs a Redis call.
+		freecache.NewCache(overLimitCacheBytes),
 		defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
 		defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
 		mgr,
@@ -187,6 +198,20 @@ func (r *RateLimitersRegistry) initializeBudgets() {
 		}
 		if admissionCap > 0 {
 			budget.admission = make(chan struct{}, admissionCap)
+		}
+		if r.cfg.Store != nil && r.cfg.Store.Driver == "redis" {
+			budget.onFailure = r.cfg.Store.OnFailure
+			if budget.onFailure == common.RateLimitStoreFailureLocal {
+				budget.localFactor = r.cfg.Store.LocalLimitFactor
+				budget.local = NewMemoryRateLimitCache(
+					utils.NewTimeSourceImpl(),
+					rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404
+					0,
+					defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
+					defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
+					r.statsManager,
+				)
+			}
 		}
 		// Pre-resolve metric handles for the hot path.
 		budget.inflightGauge = telemetry.MetricRateLimiterRemoteInflight.WithLabelValues(budgetCfg.Id)
@@ -280,20 +305,13 @@ func defaultCacheKeyPrefix(val string) string {
 // remoteAdmissionCap derives the per-budget concurrent in-flight cap from the
 // Redis connection pool size.
 //
-// Sizing rationale (envoyproxy/ratelimit + radix.v3):
-//   - Each rate-limit check sends a small pipeline (typically INCRBY+EXPIRE).
-//   - radix collects these via implicit pipelining (window=5ms, limit=32) so a
-//     single pool connection can have up to 32 commands "in flight" at once,
-//     i.e. effectively connPoolSize × 16 concurrent rate-limit checks per
-//     budget when Redis is healthy.
-//   - We multiply pool size by 32 to leave generous headroom in healthy state.
-//     Beyond that we'd rather load-shed (fail-open) than queue more goroutines:
-//     queueing here was the root cause of the 2026-05-07 cronos receipts
-//     death-spiral.
-//   - Per-budget cap (not global) so a single hot budget can't starve others.
-//
-// A floor of 256 ensures a small/misconfigured pool doesn't accidentally pin
-// every request into the load-shed path on bursty traffic.
+// This is a goroutine ceiling, not Redis capacity: each check is one explicit
+// pipeline holding one pool connection for one round trip, so pool checkout is
+// the real backpressure. ×32 leaves headroom so healthy traffic never sheds;
+// beyond it we would rather let onFailure decide than queue goroutines, the
+// root cause of the 2026-05-07 cronos receipts death spiral. Per budget, so
+// one hot budget cannot starve others. The 256 floor keeps a small pool from
+// shedding bursty traffic.
 func remoteAdmissionCap(connPoolSize int) int {
 	const minCap = 256
 	if connPoolSize <= 0 {

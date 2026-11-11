@@ -363,6 +363,29 @@ func TestClassifySeverity_NetworkNotSupported(t *testing.T) {
 	})
 }
 
+func TestClassifySeverity_NotImplemented(t *testing.T) {
+	// ErrNotImplemented is a deterministic pre-forward rejection — a stateful
+	// method under multiple upstreams, or eth_accounts/eth_sign. No upstream
+	// will ever accept it and no retry or operator action can fix it, so it must
+	// not page: not retryable, warning severity (not the critical fall-through).
+	err := NewErrNotImplemented("stateful method requires a single targeted upstream")
+	assert.False(t, IsRetryableTowardsUpstream(err),
+		"not-implemented is a deterministic rejection — retrying is pointless")
+	assert.Equal(t, SeverityWarning, ClassifySeverity(err),
+		"not-implemented must be warning, not the critical fall-through")
+}
+
+func TestClassifySeverity_SubscriptionNotFound(t *testing.T) {
+	// eth_unsubscribe for an already-gone / unknown subscription is a benign
+	// client condition (JSON-RPC convention is to return false, not fault). It
+	// must classify as a client error → info severity, not the critical
+	// fall-through that would page on routine WS unsubscribe churn.
+	err := NewErrSubscriptionNotFound("0xdeadbeef")
+	assert.True(t, IsClientError(err), "subscription-not-found is a client condition")
+	assert.Equal(t, SeverityInfo, ClassifySeverity(err),
+		"subscription-not-found must be info, not the critical fall-through")
+}
+
 func BenchmarkIsRetryableTowardNetwork(b *testing.B) {
 	missingDataErr := NewErrEndpointMissingData(
 		NewErrJsonRpcExceptionInternal(-32000, -32014, "missing trie node", nil, nil),

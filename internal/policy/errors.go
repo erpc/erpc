@@ -11,10 +11,6 @@ import "errors"
 // no upstreams, or because no eval has succeeded yet.
 var ErrNoEligibleUpstream = errors.New("no eligible upstream returned by selection policy")
 
-// ErrEvalTimeout is logged (but not returned to callers) when an eval
-// exceeds `selectionPolicy.evalTimeout`. The prior cache is retained.
-var ErrEvalTimeout = errors.New("selection policy eval timed out")
-
 // ErrInvalidReturn is logged when the eval returns a non-array or an entry
 // that does not correspond to a known upstream id.
 var ErrInvalidReturn = errors.New("selection policy eval returned an invalid value")
