@@ -268,7 +268,7 @@ var (
 	MetricChainTrackerFetchTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_fetch_total",
-		Help:      "Chain tracker fetches by kind, scheduler class and outcome (ok, error, capacity: every upstream tried refused for capacity).",
+		Help:      "Chain tracker fetches by kind (header, receipts, logs, logs_hash: the logs gate's one header lookup by blockHash), scheduler class and outcome (ok, error, capacity: every upstream tried refused for capacity).",
 	}, []string{"project", "network", "kind", "class", "outcome"})
 
 	MetricChainTrackerFetchSlots = DefineGauge(prometheus.GaugeOpts{

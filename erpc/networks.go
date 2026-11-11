@@ -1526,16 +1526,16 @@ func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 // trails its own head lags it by less; when the held headers prove no
 // matching log (counted no): of every pinned block of a concrete range
 // (ChainTracker.LogsMayExist), or of a blockHash filter's block
-// (ChainTracker.LogsMayExistAt); or when req may select no other upstream
-// (counted maybe_alone): one routed upstream, or a UseUpstream pin, a
-// client's or an eth_getLogs split piece's, that matches only u. A split's
-// merged answer is judged at its parent, which has no pin. Else it may
-// hold one, and the other upstreams settle it (logsProbe): those whose
-// evidence holds block, the range's toBlock or the hash's held number,
-// or, for a hash whose header no tracker holds (block 0), every other
-// routed one. A range below the pins, a non-concrete one, and a network
-// without a tracker pass as before, unjudged.
-func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (block int64, maybe bool) {
+// (ChainTracker.LogsMayExistAt, which looks a hash no tracker holds up
+// once, from u); or when req may select no other upstream (counted
+// maybe_alone): one routed upstream, or a UseUpstream pin, a client's or
+// an eth_getLogs split piece's, that matches only u. A split's merged
+// answer is judged at its parent, which has no pin. Else it may hold one,
+// and the other upstreams whose evidence holds block, the range's toBlock,
+// the hash's number or, when that lookup found none, the block after the
+// head, settle it (logsProbe). A range below the pins, a non-concrete one,
+// and a network without a tracker or pins pass as before, unjudged.
+func (n *Network) logsGate(ctx context.Context, req *common.NormalizedRequest, u common.Upstream) (block int64, maybe bool) {
 	t := n.laneTracker(selectorOf(req))
 	if t == nil {
 		return 0, false
@@ -1553,11 +1553,7 @@ func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (bl
 	w := health.FreshnessWindow(n.EvmBlockTime())
 	var verdict evm.LogsVerdict
 	if f.BlockHash != "" {
-		if block, verdict = t.LogsMayExistAt(f, f.BlockHash, w); verdict == evm.LogsUnheld {
-			// A node lacking the block answers an error or [], never
-			// logs: every other routed upstream may hold it.
-			verdict = evm.LogsMaybe
-		}
+		block, verdict = t.LogsMayExistAt(ctx, f, f.BlockHash, u.Id(), w)
 	} else {
 		from, to, ok := f.ConcreteRange()
 		if !ok {
@@ -1595,16 +1591,11 @@ func (n *Network) logsGate(req *common.NormalizedRequest, u common.Upstream) (bl
 // u's answer. An upstream below block is never asked: its empty answer
 // proves nothing. Nobody within W: u is asked once more and its answer
 // served (maybe_reasked), since a log index that trailed u's head catches
-// up within W. With block 0, a hash no tracker holds, every other routed
-// upstream is asked at once, and since a node lacking the block answers
-// [] too, an empty answer agrees only once every one of them answered;
-// with none agreeing, u's re-ask still waits for W (asked at once, a
-// lagging log index answered [] again: P23-band, 1 wrongEmpty a run). A
-// leg that ends first, a hedge another leg won, counts nothing. Asked in
-// parallel, every holder paid for each probe (production: about 5 calls
-// a probe on 6 upstreams); swept through range checks that Asked a
-// lagging vendor's head, gated reads waited up to 2 s (P23-band:
-// eth_getLogs p99 1.68-1.90 s).
+// up within W. A leg that ends first, a hedge another leg won, counts
+// nothing. Asked in parallel, every holder paid for each probe
+// (production: about 5 calls a probe on 6 upstreams); swept through range
+// checks that Asked a lagging vendor's head, gated reads waited up to 2 s
+// (P23-band: eth_getLogs p99 1.68-1.90 s).
 func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, block int64, send func(context.Context, common.Upstream) (*common.NormalizedResponse, error)) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Network.logsProbe", trace.WithAttributes(attribute.Int64("block", block)))
 	defer span.End()
@@ -1619,15 +1610,15 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 	answers := make(chan answer, len(ups))
 	asked := map[string]bool{u.Id(): true}
 	out := 0
-	var agreed *common.NormalizedResponse
 	w := health.FreshnessWindow(n.EvmBlockTime())
 	wait := time.NewTimer(w)
 	defer wait.Stop()
 	hedge := time.NewTimer(w)
 	hedge.Stop()
 	defer hedge.Stop()
-	// next: ask the next holder now, though one is in flight.
-	late, expired, next := false, false, false
+	// late: W passed; next: ask the next holder now, though one is in
+	// flight.
+	late, next := false, false
 	t := n.laneTracker(selectorOf(req))
 	done := func(verdict string, r *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
 		n.countLogsGate(verdict)
@@ -1645,10 +1636,10 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 			moved = t.Changed()
 		}
 		for _, v := range ups {
-			if late || block > 0 && out > 0 && !next {
+			if late || out > 0 && !next {
 				break
 			}
-			if asked[v.Id()] || block > 0 && !n.holdsBlock(v, block) || !req.ReserveUpstream(v) {
+			if asked[v.Id()] || !n.holdsBlock(v, block) || !req.ReserveUpstream(v) {
 				continue
 			}
 			asked[v.Id()] = true
@@ -1657,26 +1648,10 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 				r, err := send(ctx, v)
 				answers <- answer{r, err}
 			}()
-			if block > 0 {
-				next = false
-				hedge.Reset(n.logsHedgeDelay(v, w))
-			}
-		}
-		if block == 0 {
-			// The candidates are every routed upstream, all asked now.
-			late = true
+			next = false
+			hedge.Reset(n.logsHedgeDelay(v, w))
 		}
 		if late && out == 0 {
-			if agreed != nil {
-				return done("maybe_agreed", agreed, nil)
-			}
-			if !expired {
-				select {
-				case <-wait.C:
-				case <-parent.Done():
-					return canceled()
-				}
-			}
 			r, err := send(ctx, u)
 			if parent.Err() != nil {
 				return canceled()
@@ -1694,17 +1669,15 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 				next = true
 			case !isEmptyNetworkResult("eth_getLogs", a.r):
 				return done("maybe_found", a.r, nil)
-			case block > 0:
-				return done("maybe_agreed", a.r, nil)
 			default:
-				agreed = a.r
+				return done("maybe_agreed", a.r, nil)
 			}
 		case <-hedge.C:
 			next = true
 		case <-computed:
 		case <-moved:
 		case <-wait.C:
-			late, expired = true, true
+			late = true
 		case <-parent.Done():
 			return canceled()
 		}
@@ -3359,7 +3332,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						(!failsafeExecutor.HasConsensus() && (refusal.AboveFirm() && !emptyAnswer ||
 							!refusal.AboveFirm() && failsafeExecutor.acceptsEmptyResult(method, r)))
 					if acceptEmpty && emptyish && method == "eth_getLogs" {
-						if toBlock, maybe := n.logsGate(effectiveReq, u); maybe {
+						if toBlock, maybe := n.logsGate(loopCtx, effectiveReq, u); maybe {
 							effectiveReq.ClearLastValidResponseIf(r)
 							if refusal.AboveFirm() {
 								refusal.Miss(leg)

@@ -3664,7 +3664,7 @@ func (t *ChainTracker) HeaderAt(number int64) (*integrity.Header, bool) {
 type LogsVerdict uint8
 
 const (
-	LogsUnheld LogsVerdict = iota // the range is below the pins, or none is held: no header judges it
+	LogsUnheld LogsVerdict = iota // the range is below the pins, or none is held, or no header has the hash: none judges it
 	LogsNone                      // every pinned block of the range proves no log matches
 	LogsMaybe                     // a block of the range may hold a matching log
 	LogsOld                       // its block reached the view head w or more ago: not judged
@@ -3696,25 +3696,44 @@ func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64, w t
 	return LogsNone
 }
 
-// LogsMayExistAt is LogsMayExist for an empty eth_getLogs answer of f by
-// block hash: the held header's number (pinned or not, HeaderByHash), with
-// LogsOld when that header settled, LogsNone when it proves no log
-// matches, else LogsMaybe; LogsUnheld when no header with that hash is
-// held.
-func (t *ChainTracker) LogsMayExistAt(f *logfilter.LogsFilter, hash string, w time.Duration) (int64, LogsVerdict) {
+// LogsMayExistAt is LogsMayExist for upstream's empty eth_getLogs answer
+// of f by block hash: the header's number, with LogsOld when it reached
+// the view head w or more ago, LogsNone when its bloom proves no log
+// matches, else LogsMaybe. A held header (pinned or not, HeaderByHash) is
+// judged in memory. Any other is looked up once by hash, cache first, from
+// upstream alone, since its empty answer claims the block: then it is old
+// when the pin at its height, or the lowest pin above it, reached the view
+// head w or more ago. A lookup that finds none (a load balancer's block
+// readers can trail the tag its log reads follow) gives LogsMaybe at the
+// block after the head: a hash no tracker holds yet is most likely the
+// newest block. LogsUnheld only with no pin at all.
+func (t *ChainTracker) LogsMayExistAt(ctx context.Context, f *logfilter.LogsFilter, hash, upstream string, w time.Duration) (int64, LogsVerdict) {
 	key, ok := hashKey(hash)
 	if !ok {
 		return 0, LogsUnheld
 	}
-	h, ok := t.held.Load(key)
-	if !ok {
-		return 0, LogsUnheld
+	var ch *chainHeader
+	if h, ok := t.held.Load(key); ok {
+		ch = h.(*chainHeader)
+		if settled(ch, w) {
+			return int64(ch.number), LogsOld
+		}
+	} else {
+		spec := t.headerSpec(classHead, "eth_getBlockByHash", key, upstream, true)
+		spec.kind = "logs_hash"
+		res := t.fetch.fetch(ctx, t, spec)
+		s := t.state.Load()
+		if ch, _ = res.val.(*chainHeader); ch == nil {
+			if len(s.pins) == 0 {
+				return 0, LogsUnheld
+			}
+			return int64(s.head().number) + 1, LogsMaybe
+		}
+		if len(s.pins) > 0 && ch.number <= s.head().number && settled(s.pinAt(max(ch.number, s.base)), w) {
+			return int64(ch.number), LogsOld
+		}
 	}
-	ch := h.(*chainHeader)
-	switch {
-	case settled(ch, w):
-		return int64(ch.number), LogsOld
-	case t.fetch.bloom.provesNoLogs(ch, f.MayMatch):
+	if t.fetch.bloom.provesNoLogs(ch, f.MayMatch) {
 		return int64(ch.number), LogsNone
 	}
 	return int64(ch.number), LogsMaybe
