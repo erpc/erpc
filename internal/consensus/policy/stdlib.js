@@ -121,12 +121,14 @@
       noneSelected: function () {
         if (!selectedKnown) return false;
         if (arr.length === 0) return false;
-        var ids = {};
+        // Prototype-free map: an upstream id like "toString" must not hit
+        // Object.prototype and falsely look selected.
+        var ids = Object.create(null);
         for (var i = 0; i < sel.length; i++) {
           if (sel[i] && sel[i].id) ids[sel[i].id] = true;
         }
         for (var j = 0; j < arr.length; j++) {
-          if (arr[j] && ids[arr[j].id]) return false;
+          if (arr[j] && arr[j].id && ids[arr[j].id]) return false;
         }
         return true;
       },

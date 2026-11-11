@@ -275,6 +275,21 @@ func TestStdlib_NoneSelected(t *testing.T) {
 	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:primary").noneSelected() ? "y" : "n"`, emptySel); got != "y" {
 		t.Fatalf("explicit empty Selected: got %q, want y", got)
 	}
+
+	// Upstream id that collides with Object.prototype must not look selected
+	// when absent from Selected (plain {} would inherit toString).
+	protoId := EvalContext{
+		Upstreams: []Upstream{
+			up("toString", []string{"tier:primary"}, StateHealthy, nil, nil),
+		},
+		Selected: []Upstream{
+			up("provider-b", []string{"tier:secondary"}, StateHealthy, nil, nil),
+		},
+		HasSelected: true,
+	}
+	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:primary").noneSelected() ? "y" : "n"`, protoId); got != "y" {
+		t.Fatalf("prototype-colliding id excluded: got %q, want y", got)
+	}
 }
 
 // AllUnavailable must be order-independent: punish, then availability-cordon
