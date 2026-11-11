@@ -54,13 +54,18 @@ func deepCopyValue(val interface{}) interface{} {
 	}
 }
 
-// TagBlockNumber is the block number tag interpolates to for nrq (spec §7):
-// the request Head's Latest for "latest", its Finalized for "finalized". 0
-// when the tag reaches upstreams as is: another tag, the method's
-// translateLatestTag/translateFinalizedTag is off, the request skips
-// interpolation, or the Head is unknown. "safe" and "pending" are never
+// TagBlockNumber is the block number nrq's own block tag interpolates to
+// (spec §7): the request Head's Latest for "latest", its Finalized for
+// "finalized". 0 when the tag reaches upstreams as is: any other tag, the
+// method's translateLatestTag/translateFinalizedTag is off, the request
+// skips interpolation, or the Head is unknown; and 0 for a number, a hash
+// or a request that names both tags. "safe" and "pending" are never
 // translated: eRPC tracks neither state.
-func TagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest, tag string) int64 {
+func TagBlockNumber(ctx context.Context, nrq *common.NormalizedRequest) int64 {
+	tag := RequestBlockTag(ctx, nrq)
+	if tag == "" {
+		return 0
+	}
 	method, _ := nrq.Method()
 	return tagBlockNumber(ctx, nrq, common.ResolveMethodConfig(method, nrq.Network()), tag)
 }
@@ -117,7 +122,7 @@ func ReadsLatest(ctx context.Context, network common.Network, nrq *common.Normal
 		finalized, ok := headNumberAxis(ctx, nrq)
 		return ok && !finalized && d != nil && d.EnforceHighestBlock, true
 	}
-	return !(d != nil && d.SkipInterpolation) && requestBlockTag(ctx, nrq) == "latest" && !keepsLatestTag(common.ResolveMethodConfig(method, network)), false
+	return !(d != nil && d.SkipInterpolation) && RequestBlockTag(ctx, nrq) == "latest" && !keepsLatestTag(common.ResolveMethodConfig(method, network)), false
 }
 
 func namesFinalized(v interface{}) bool {

@@ -91,7 +91,7 @@ func LatestBlockRead(ctx context.Context, req *common.NormalizedRequest) (read, 
 		return false, false
 	}
 	head := req.EvmHead()
-	if head == nil || head.Latest <= 0 || head.LatestHash == ([32]byte{}) || TagBlockNumber(ctx, req, "latest") != head.Latest {
+	if head == nil || head.Latest <= 0 || head.LatestHash == ([32]byte{}) || TagBlockNumber(ctx, req) != head.Latest {
 		return false, false
 	}
 	jrq, err := req.JsonRpcRequest(ctx)
@@ -137,7 +137,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 	}
 
 	// Track timestamp distance for "latest" blocks and add lag metrics to detailed spans
-	if nr != nil && requestBlockTag(ctx, nq) == "latest" {
+	if nr != nil && RequestBlockTag(ctx, nq) == "latest" {
 		_, respBlockNumber, bnErr := ExtractBlockReferenceFromResponse(ctx, nr)
 		blockTimestamp, tsErr := ExtractBlockTimestampFromResponse(ctx, nr)
 
@@ -181,7 +181,7 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 // never announced it (spec §6.4 band sweep). That null is its answer
 // (Refuse), never cached.
 func unservedNull(ctx context.Context, nq *common.NormalizedRequest, re error) (*common.NormalizedResponse, bool) {
-	if requestBlockTag(ctx, nq) != "" || !common.HasErrorCode(re, common.ErrCodeEndpointMissingData, common.ErrCodeUpstreamBlockUnavailable) {
+	if RequestBlockTag(ctx, nq) != "" || !common.HasErrorCode(re, common.ErrCodeEndpointMissingData, common.ErrCodeUpstreamBlockUnavailable) {
 		return nil, false
 	}
 	v := HeadRefusalOf(ctx, nq)
@@ -223,7 +223,7 @@ func enforceNonNullBlock(ctx context.Context, nq *common.NormalizedRequest, nr *
 		}
 		rqj.RUnlock()
 	}
-	isTag := requestBlockTag(ctx, nq) != ""
+	isTag := RequestBlockTag(ctx, nq) != ""
 
 	// For tagged blocks, check directive
 	if isTag {
