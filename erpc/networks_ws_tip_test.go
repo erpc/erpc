@@ -841,7 +841,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	bVendor, bURL := newMockWsVendor(t, chain, nil)
 	httpVendor, srv := newMockHttpVendor(t, chain)
 	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil,
-		sourceUpstream("a-ws", aURL, ""), sourceUpstream("b-ws", bURL, ""), pollerUpstream("z-http", srv.URL)))
+		sourceUpstream("a-ws", aURL, common.SubscriptionSourceAlways), sourceUpstream("b-ws", bURL, common.SubscriptionSourceAlways), pollerUpstream("z-http", srv.URL)))
 	require.Eventually(t, func() bool {
 		return httpVendor.latestPolls.Load() > 0 && aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0
 	}, 5*time.Second, 10*time.Millisecond, "the poller reads its first head and both sources subscribe")
@@ -901,7 +901,7 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 	chain := newMockChain(1000, false)
 	aVendor, aURL := newMockWsVendor(t, chain, nil)
 	bVendor, bURL := newMockWsVendor(t, chain, nil)
-	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil, sourceUpstream("a-ws", aURL, ""), sourceUpstream("b-ws", bURL, "")))
+	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil, sourceUpstream("a-ws", aURL, common.SubscriptionSourceAlways), sourceUpstream("b-ws", bURL, common.SubscriptionSourceAlways)))
 	require.Eventually(t, func() bool { return aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0 },
 		5*time.Second, 10*time.Millisecond, "both sources subscribe")
 	chain.advance()

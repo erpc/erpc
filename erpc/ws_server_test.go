@@ -1406,7 +1406,8 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		}
 		a, urlA := newMockWsVendor(t, chain, busyOnce)
 		b, urlB := newMockWsVendor(t, chain, busyOnce)
-		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, ""), sourceUpstream("rpc-b", urlB, "")))
+		always := common.SubscriptionSourceAlways
+		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, always), sourceUpstream("rpc-b", urlB, always)))
 		defer cleanup()
 		conn := dialWs(t, addr)
 		defer conn.Close()
@@ -3359,11 +3360,11 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 }
 
 // With the WebSocket server off, each project's network subscribes newHeads
-// on its wss upstream at init, and HTTP eth_blockNumber follows the pushes.
-// A wss upstream that registers after its network started votes from its
-// first head: the selection policy takes it in at once, not at its next
-// evalInterval.
-func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
+// at init on its wss upstream with subscriptionSource always, and HTTP
+// eth_blockNumber follows the pushes. A wss upstream that registers after
+// its network started votes from its first head: the selection policy
+// takes it in at once, not at its next evalInterval.
+func TestWebSocket_AlwaysSourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	setupGock()
 	t.Cleanup(util.ResetGock)
 
@@ -3376,11 +3377,12 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	vendorLate, urlLate := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.staleRPC, v.chainIdHeld = true, held })
 	t.Cleanup(release)
 
-	cfg := sourcesConfig(nil, sourceUpstream("ws-a", urlA, ""), sourceUpstream("ws-joins-late", urlLate, ""))
+	always := common.SubscriptionSourceAlways
+	cfg := sourcesConfig(nil, sourceUpstream("ws-a", urlA, always), sourceUpstream("ws-joins-late", urlLate, always))
 	second := *cfg.Projects[0]
 	second.Id = "test_ws2"
 	second.Networks = []*common.NetworkConfig{{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}}
-	second.Upstreams = []*common.UpstreamConfig{sourceUpstream("ws-b", urlB, "")}
+	second.Upstreams = []*common.UpstreamConfig{sourceUpstream("ws-b", urlB, always)}
 	cfg.Projects = append(cfg.Projects, &second)
 	cfg.Server.WebSocket = &common.WebSocketServerConfig{Enabled: util.BoolPtr(false)}
 	addr, cleanup := setupTestERPCServer(t, cfg)
