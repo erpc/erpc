@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -29,104 +31,22 @@ func init() {
 // vendor. Asked just before a block reaches the vendors, the Head is not
 // settled and the hedge finds the receipt the block brought; a vendor
 // still in flight, or one that failed transiently, when the hedge leg's
-// null comes keeps the race, and its receipt is the answer (spec §6.4
-// settled head). Full HTTP server, the
-// real chain tracker and block clock on a running simulated chain whose
-// three vendors serve each block 500 ms after its mint.
+// null comes keeps the race, and its receipt is the answer; on a lane with
+// a vendor that answers receipts before the block, the head never settles
+// and the hedge finds its receipt (spec §6.4 settled head). Full HTTP
+// server, the real chain tracker and block clock on a running simulated
+// chain whose vendors serve each block 500 ms after its mint.
 func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 	const (
 		bt         = 2 * time.Second
 		headDelay  = 500 * time.Millisecond
 		hedgeDelay = 300 * time.Millisecond
 	)
-	chain := chainsim.NewChain(chainsim.Config{ChainID: 123, BlockTime: bt, Seed: 13, History: 20})
-	t.Cleanup(chain.Close)
-	var vendors []*chainsim.Vendor
-	var ups []*common.UpstreamConfig
-	for _, id := range []string{"http-a", "http-b", "http-c"} {
-		v, err := chain.AddVendor(id, "vendor-"+id, false)
-		require.NoError(t, err)
-		v.SetFaults(chainsim.Faults{HeadDelay: headDelay})
-		vendors = append(vendors, v)
-		ups = append(ups, sourceUpstream(v.ID, v.URL(), util.BoolPtr(true)))
-	}
-	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
-		nw.Failsafe = []*common.FailsafeConfig{{
-			MatchMethod: "eth_getTransactionReceipt",
-			Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(hedgeDelay), MaxCount: 1},
-		}}
-	}, ups...)
-	cfg.Server.WaitBeforeShutdown = common.Duration(0).Ptr()
-	srv, addr, cancel := startTestERPCServer(t, cfg)
-	var nw *Network
-	t.Cleanup(func() {
-		_ = srv.Shutdown(&zerolog.Logger{})
-		cancel()
-		if nw != nil {
-			nw.wait()
-		}
+	node := newSettledNode(t, bt, hedgeDelay, map[string]chainsim.Faults{
+		"http-a": {HeadDelay: headDelay}, "http-b": {HeadDelay: headDelay}, "http-c": {HeadDelay: headDelay},
 	})
-	require.Eventually(t, func() bool {
-		n, err := srv.erpc.GetNetwork(context.Background(), "test_ws", "evm:123")
-		if err != nil || n == nil || n.chainTracker == nil {
-			return false
-		}
-		nw = n
-		return true
-	}, 15*time.Second, 20*time.Millisecond, "network initializes")
-
-	post := func(body string) []byte {
-		resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json", bytes.NewReader([]byte(body)))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		raw, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
-		return raw
-	}
-	receipt := func(tx string) (json.RawMessage, time.Duration) {
-		began := time.Now()
-		raw := post(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":[%q]}`, tx))
-		took := time.Since(began)
-		var r struct {
-			Result json.RawMessage `json:"result"`
-			Error  json.RawMessage `json:"error"`
-		}
-		require.NoError(t, json.Unmarshal(raw, &r), "body: %s", raw)
-		require.Empty(t, r.Error, "body: %s", raw)
-		return r.Result, took
-	}
-	receiptCalls := func() []int64 {
-		out := make([]int64, len(vendors))
-		for i, v := range vendors {
-			out[i] = v.MethodCalls("eth_getTransactionReceipt")
-		}
-		return out
-	}
-
-	// Reads of latest keep the block clock running (its demand, 2 W).
-	reads, stopReads := sync.WaitGroup{}, make(chan struct{})
-	reads.Add(1)
-	go func() {
-		defer reads.Done()
-		for {
-			select {
-			case <-stopReads:
-				return
-			case <-time.After(200 * time.Millisecond):
-			}
-			resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json",
-				bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`)))
-			if err == nil {
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
-			}
-		}
-	}()
-	t.Cleanup(func() { close(stopReads); reads.Wait() })
-	chain.Start()
-	// The clock's fit warms over regular blocks.
-	chain.WaitTicks(8)
+	chain, vendors, nw := node.chain, node.vendors, node.nw
+	receipt, receiptCalls := node.receipt, node.receiptCalls
 
 	t.Run("settled head answers a null receipt from the first sweep", func(t *testing.T) {
 		// Mid-block: the view stood a hedge delay ago and the next block is
@@ -241,4 +161,151 @@ func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 		assert.Equal(t, b.TxHash(0).Hex(), got.TransactionHash, "result: %s", res)
 		assert.GreaterOrEqual(t, vendors[2].MethodCalls("eth_getTransactionReceipt")-before, int64(2), "the hedge asked http-c again")
 	})
+
+	t.Run("a preconfirming upstream keeps the hedge", func(t *testing.T) {
+		// Every vendor serves each block 500 ms after mint; http-p answers
+		// its receipts at mint, as a flashblocks node answers a preconfirmed
+		// receipt, so no head, poll or by-number fetch sights the block
+		// sooner than the others serve it.
+		const pDelay = 200 * time.Millisecond
+		p := newSettledNode(t, bt, pDelay, map[string]chainsim.Faults{
+			"http-a": {HeadDelay: headDelay}, "http-b": {HeadDelay: headDelay}, "http-c": {HeadDelay: headDelay},
+			"http-p": {HeadDelay: headDelay, ReceiptsLead: headDelay},
+		})
+		pv := p.vendors[slices.IndexFunc(p.vendors, func(v *chainsim.Vendor) bool { return v.ID == "http-p" })]
+		txOf := func() *chainsim.Block {
+			p.chain.Plan(chainsim.KindQuiet)
+			p.chain.WaitTicks(1)
+			b := p.chain.Tip()
+			require.Positive(t, b.TxCount(), "block %d holds a transaction", b.Number)
+			return b
+		}
+		// Warm-up: each new block's receipt, asked at its mint, comes from
+		// http-p above Latest: the clock's proof, and its lead.
+		for range 4 {
+			b := txOf()
+			res, _ := p.receipt(b.TxHash(0).Hex())
+			require.Contains(t, string(res), b.TxHash(0).Hex(), "http-p answers block %d's receipt at its mint", b.Number)
+		}
+		// The next block's receipts reach http-p 150 ms after mint: asked at
+		// mint, the first sweep gets null everywhere on a Head that stood
+		// 1.5 s, and a next block predicted about 450 ms away.
+		pv.Update(func(f *chainsim.Faults) { f.ReceiptsLead = headDelay - 150*time.Millisecond })
+		b := txOf()
+		h, now := p.nw.EvmLaneHead("", ""), time.Now()
+		require.True(t, now.Before(b.MintedAt.Add(100*time.Millisecond)), "asked at block %d's mint", b.Number)
+		require.GreaterOrEqual(t, now.Sub(h.LatestAt), pDelay, "the view stood a hedge delay")
+		t.Logf("NextAt %v after now", h.NextAt.Sub(now))
+		res, _ := p.receipt(b.TxHash(0).Hex())
+		var got struct {
+			TransactionHash string `json:"transactionHash"`
+		}
+		require.NoError(t, json.Unmarshal(res, &got), "result: %s", res)
+		assert.Equal(t, b.TxHash(0).Hex(), got.TransactionHash, "the hedge found http-p's receipt; result: %s", res)
+	})
+}
+
+// settledNode is one eRPC instance on a running simulated chain whose HTTP
+// vendors have the given faults, a hedge of delay on receipts, and reads
+// of latest that keep its block clock running; its clock's fit is warm.
+type settledNode struct {
+	t       *testing.T
+	chain   *chainsim.Chain
+	vendors []*chainsim.Vendor
+	nw      *Network
+	addr    string
+}
+
+func newSettledNode(t *testing.T, bt, hedgeDelay time.Duration, faults map[string]chainsim.Faults) *settledNode {
+	chain := chainsim.NewChain(chainsim.Config{ChainID: 123, BlockTime: bt, Seed: 13, History: 20})
+	t.Cleanup(chain.Close)
+	ids := slices.Sorted(maps.Keys(faults))
+	n := &settledNode{t: t, chain: chain}
+	var ups []*common.UpstreamConfig
+	for _, id := range ids {
+		v, err := chain.AddVendor(id, "vendor-"+id, false)
+		require.NoError(t, err)
+		v.SetFaults(faults[id])
+		n.vendors = append(n.vendors, v)
+		ups = append(ups, sourceUpstream(v.ID, v.URL(), util.BoolPtr(true)))
+	}
+	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Failsafe = []*common.FailsafeConfig{{
+			MatchMethod: "eth_getTransactionReceipt",
+			Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(hedgeDelay), MaxCount: 1},
+		}}
+	}, ups...)
+	cfg.Server.WaitBeforeShutdown = common.Duration(0).Ptr()
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	n.addr = addr
+	t.Cleanup(func() {
+		_ = srv.Shutdown(&zerolog.Logger{})
+		cancel()
+		if n.nw != nil {
+			n.nw.wait()
+		}
+	})
+	require.Eventually(t, func() bool {
+		nw, err := srv.erpc.GetNetwork(context.Background(), "test_ws", "evm:123")
+		if err != nil || nw == nil || nw.chainTracker == nil {
+			return false
+		}
+		n.nw = nw
+		return true
+	}, 15*time.Second, 20*time.Millisecond, "network initializes")
+
+	// Reads of latest keep the block clock running (its demand, 2 W).
+	reads, stopReads := sync.WaitGroup{}, make(chan struct{})
+	reads.Add(1)
+	go func() {
+		defer reads.Done()
+		for {
+			select {
+			case <-stopReads:
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+			resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json",
+				bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`)))
+			if err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+		}
+	}()
+	t.Cleanup(func() { close(stopReads); reads.Wait() })
+	chain.Start()
+	// The clock's fit warms over regular blocks.
+	chain.WaitTicks(8)
+	return n
+}
+
+// receipt asks eth_getTransactionReceipt of tx over HTTP: its result and
+// how long the answer took.
+func (n *settledNode) receipt(tx string) (json.RawMessage, time.Duration) {
+	began := time.Now()
+	resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", n.addr), "application/json",
+		bytes.NewReader([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":[%q]}`, tx))))
+	require.NoError(n.t, err)
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(n.t, err)
+	took := time.Since(began)
+	require.Equal(n.t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+	var r struct {
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	require.NoError(n.t, json.Unmarshal(raw, &r), "body: %s", raw)
+	require.Empty(n.t, r.Error, "body: %s", raw)
+	return r.Result, took
+}
+
+// receiptCalls are the eth_getTransactionReceipt calls each vendor got.
+func (n *settledNode) receiptCalls() []int64 {
+	out := make([]int64, len(n.vendors))
+	for i, v := range n.vendors {
+		out[i] = v.MethodCalls("eth_getTransactionReceipt")
+	}
+	return out
 }

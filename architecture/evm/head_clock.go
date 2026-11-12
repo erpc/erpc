@@ -132,6 +132,12 @@ type headClock struct {
 	ahead, aheadFor, aheadOn uint64
 	aheadAt                  time.Time
 	aheadNull                *clockFire
+	// earliest is the target's earliest likely sight as plan laid it; leads
+	// the last clockFit proofs' leads on it (prove): how long before the
+	// clock's own sight upstreams showed data above Latest (preconfirmed
+	// receipts, block readers ahead of the tag, an early block).
+	earliest time.Time
+	leads    []time.Duration
 	// seq names the clock's generation: a reset moves it on, so an answer
 	// from before the reset is dropped.
 	seq uint64
@@ -930,8 +936,8 @@ func (t *ChainTracker) runClock() {
 // the fit's earliest residual to S_k over k, each sent its voter's round
 // trip before. With no rung due, the fastest voter fetches at S_k: the
 // block's one fetch. Every plan publishes the target's earliest likely
-// sight, P plus the fit's earliest residual (NextSight), which a request's
-// Head carries (common.EvmHead.NextAt).
+// sight, P plus the fit's earliest residual less the largest recent proof
+// lead (NextSight), which a request's Head carries (common.EvmHead.NextAt).
 func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	c := &t.clock
 	if !c.offSet {
@@ -944,9 +950,9 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	sk := p.Add(time.Duration(c.off * float64(bt)))
 	c.sk = sk
 	_, phase := c.phase(bt)
-	earliest := p.Add(phase[0] - phase[len(phase)/2])
-	t.nextSight.Store(&clockSight{number: c.target, at: earliest})
-	c.delta = max(sk.Sub(earliest), 0)
+	c.earliest = p.Add(phase[0] - phase[len(phase)/2])
+	t.publishNextSight()
+	c.delta = max(sk.Sub(c.earliest), 0)
 	at := sk.Add(-c.bestRTT(cands))
 	cached := c.pushFed() && c.pushCached
 	if c.pushFed() && !cached {
@@ -1630,10 +1636,33 @@ func (t *ChainTracker) prove(n uint64, held bool, by string, at time.Time) {
 		at = time.Now()
 	}
 	t.mb.put(trackerMsg{kind: msgCall, fn: func() {
-		if c := &t.clock; n > c.top() && n > c.proven {
+		c := &t.clock
+		if n > c.top() && n > c.proven {
 			c.proven, c.provenBy, c.provenHeld, c.provenAt = n, by, held, at
 		}
+		// Data of the target or above shown before its earliest sight is
+		// how early upstreams answer ahead of the block: NextSight moves
+		// back by the largest recent lead, so a preconfirming lane settles
+		// no null receipt (spec §6.4 settled head).
+		if bt := t.BlockTime(); c.planned && !c.earliest.IsZero() && n >= c.target && bt > 0 {
+			lead := max(c.earliest.Add(time.Duration(n-c.target)*bt).Sub(at), 0)
+			if c.leads = append(c.leads, lead); len(c.leads) > clockFit {
+				c.leads = c.leads[len(c.leads)-clockFit:]
+			}
+			t.publishNextSight()
+		}
 	}})
+}
+
+// publishNextSight publishes the target's earliest likely sight less the
+// largest recent proof lead (NextSight).
+func (t *ChainTracker) publishNextSight() {
+	c := &t.clock
+	var lead time.Duration
+	if len(c.leads) > 0 {
+		lead = slices.Max(c.leads)
+	}
+	t.nextSight.Store(&clockSight{number: c.target, at: c.earliest.Add(-lead)})
 }
 
 // proveTarget plans the target's one probe once a proof shows it or a

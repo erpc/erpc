@@ -533,6 +533,7 @@ func (t *ChainTracker) clear() {
 	t.voteAt = make(map[string]time.Time)
 	t.pendingAt = make(map[string]time.Time)
 	t.clock.reset()
+	t.nextSight.Store(nil)
 	t.readAhead.Store(0)
 	t.readAheadAt.Store(0)
 	t.settle = nil
@@ -3563,7 +3564,8 @@ func (t *ChainTracker) ReachedAt(n uint64) time.Time {
 }
 
 // NextSight is the earliest likely first sight of block n, as the block
-// clock last planned it (plan); zero when its target is not n.
+// clock last planned it (plan) less the largest lead of its recent proofs
+// (prove); zero when its target is not n.
 func (t *ChainTracker) NextSight(n uint64) time.Time {
 	if s := t.nextSight.Load(); s != nil && s.number == n {
 		return s.at
