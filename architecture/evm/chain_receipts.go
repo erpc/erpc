@@ -221,15 +221,15 @@ func (g *bloomGate) provesNoLogs(h *chainHeader, may func([]byte) bool) (no, byT
 }
 
 // dueTrust reports whether a trust check may start now, and claims it:
-// none runs and the last ended bloomTrustCheck or more ago. The caller
-// runs it and ends it with endTrust.
+// none runs and the time the last one set passed. The caller runs it and
+// ends it with endTrust.
 func (g *bloomGate) dueTrust() bool {
 	return time.Now().UnixNano() >= g.trustAt.Load() && g.trustBusy.CompareAndSwap(false, true)
 }
 
-// endTrust ends the trust check in flight.
-func (g *bloomGate) endTrust() {
-	g.trustAt.Store(time.Now().Add(bloomTrustCheck).UnixNano())
+// endTrust ends the trust check in flight; the next may start after.
+func (g *bloomGate) endTrust(after time.Duration) {
+	g.trustAt.Store(time.Now().Add(after).UnixNano())
 	g.trustBusy.Store(false)
 }
 
@@ -1150,12 +1150,23 @@ func (t *ChainTracker) wantTrust() {
 // checkTrust is one step of a trust check (spec §11 bloom trust): the
 // receipts of trustBlock through the receipts fetch path, held and noted
 // for trust as any receipts. Untrusted, a match goes on to the next block
-// until trust is earned; trusted, one block keeps it fresh. A mismatch, a
-// failed fetch, or no block left ends the check.
+// until trust is earned; trusted, one block keeps it fresh. A mismatch or
+// a failed fetch ends the check. Untrusted with no block left, as on a
+// tracker that has pinned fewer than bloomTrustRun such blocks yet, the
+// next demand goes on a block time later, with the next block.
 func (t *ChainTracker) checkTrust() {
+	g := t.fetch.bloom
+	if len(t.methodUpstreams("eth_getBlockReceipts")) == 0 {
+		g.endTrust(bloomTrustCheck)
+		return
+	}
 	h := t.trustBlock()
-	if h == nil || len(t.methodUpstreams("eth_getBlockReceipts")) == 0 {
-		t.fetch.bloom.endTrust()
+	if h == nil {
+		after := bloomTrustCheck
+		if !g.trusted.Load() {
+			after = t.BlockTime()
+		}
+		g.endTrust(after)
 		return
 	}
 	spec := t.receiptsSpec(classTipReceipts, h.hash, h, false)
@@ -1165,7 +1176,7 @@ func (t *ChainTracker) checkTrust() {
 		res := w.wait(t.ctx)
 		t.mb.put(trackerMsg{kind: msgCall, fn: func() { t.trustResult(h, res) }})
 	}) {
-		t.fetch.bloom.endTrust()
+		g.endTrust(bloomTrustCheck)
 	}
 }
 
@@ -1185,7 +1196,7 @@ func (t *ChainTracker) trustResult(h *chainHeader, res fetchResult) {
 	case errors.Is(res.err, errBloomMismatch):
 		g.noted(h, bloomMismatch)
 	}
-	g.endTrust()
+	g.endTrust(bloomTrustCheck)
 }
 
 // trustBlock is the newest pin within reorgWindow of the head with
