@@ -63,6 +63,11 @@ type Config struct {
 	// Kaia): no header hashes to its hash, and an empty block carries
 	// keccak("") as its transactionsRoot and receiptsRoot, gasUsed 0.
 	Foreign bool
+	// ThinBloom: every header's logsBloom leaves out the logs of
+	// Addrs[0], as a chain whose header bloom omits logs its receipts
+	// hold: bloomMatch fails on every block with such a log, and a filter
+	// on Addrs[0] misses the header's bloom of a block that holds its logs.
+	ThinBloom bool
 }
 
 // Chain is one simulated chain: its canonical branch, every block ever
@@ -282,7 +287,7 @@ func (c *Chain) mintLocked(parent *Block, number uint64, at time.Time, minority 
 	if c.cfg.BadBaseFee {
 		baseFee = 1000 + int64(number)
 	}
-	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee, c.headerBloomOff, c.cfg.Foreign)
+	hash, raw := header(c.cfg.ChainID, parent, number, ts, tag, txs, c.cfg.HeaderPad, baseFee, c.headerBloomOff, c.cfg.ThinBloom, c.cfg.Foreign)
 	b := &Block{Number: number, Hash: hash, Parent: parent, Time: ts, MintedAt: time.Now(), minority: minority, kind: k, tag: tag, txs: txs, raw: raw}
 	c.byHash[hash] = b
 	for i := range txs {

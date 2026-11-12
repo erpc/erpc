@@ -3721,8 +3721,9 @@ const (
 // reached the view head w or more ago (settled); else LogsMaybe when the
 // range reaches above the pins (no header shows that block yet) or a
 // pinned header there does not prove that none of its logs match
-// (bloomGate.provesNoLogs); LogsNone when every pinned block of the range
-// proves it. Held data only: it fetches nothing and locks nothing.
+// (provesNoLogs); LogsNone when every pinned block of the range proves
+// it. Held data only: it fetches nothing and locks nothing; a verdict
+// bloom trust decides makes a trust check due, off the caller's path.
 func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64, w time.Duration) LogsVerdict {
 	s := t.state.Load()
 	if len(s.pins) == 0 || to < int64(s.base) {
@@ -3735,7 +3736,7 @@ func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64, w t
 		return LogsOld
 	}
 	for n := to; n >= max(from, int64(s.base)); n-- {
-		if !t.fetch.bloom.provesNoLogs(s.pinAt(uint64(n)), f.MayMatch) {
+		if !t.provesNoLogs(s.pinAt(uint64(n)), f.MayMatch) {
 			return LogsMaybe
 		}
 	}
@@ -3779,7 +3780,7 @@ func (t *ChainTracker) LogsMayExistAt(ctx context.Context, f *logfilter.LogsFilt
 			return int64(ch.number), LogsOld
 		}
 	}
-	if t.fetch.bloom.provesNoLogs(ch, f.MayMatch) {
+	if t.provesNoLogs(ch, f.MayMatch) {
 		return int64(ch.number), LogsNone
 	}
 	return int64(ch.number), LogsMaybe

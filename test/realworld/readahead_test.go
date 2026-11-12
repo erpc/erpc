@@ -51,6 +51,29 @@ const (
 	p23ExtraAsks = 1.3
 	// p23OldRun: the old split reads' run (p23OldReads).
 	p23OldRun = 20 * time.Second
+	// p23BusyRate: busy reads a second per pod (p23BusyReads).
+	p23BusyRate = 10.0
+	// p23AbsentKind tallies the busy reads filtered by p23AbsentAddr.
+	p23AbsentKind = "eth_getLogs absent"
+	// p23AbsentAddr: no log of any simulated chain names it (chainsim
+	// Addrs), so its filter misses every header's bloom but by chance.
+	p23AbsentAddr = "0x00000000000000000000000000000000000000b1"
+	// p23BusyNo: on a chain whose header blooms hold every log, at least
+	// this share of the absent reads' new-block verdicts are no. Before
+	// bloom trust, only empty blocks' were (1 in 8 of chainsim's), and a
+	// checked read, held toward W, shares its verdict with the identical
+	// reads that join it: 0.553-0.596 on main 4e30a0a2, 0.990 here.
+	p23BusyNo = 0.9
+	// p23ThinNo: on a chain whose header blooms omit logs, at most this
+	// share: trust is never earned, so only empty blocks' are no (0.460 on
+	// main, 0.603 with trust on demand); an earned trust rules out 0.97.
+	p23ThinNo = 0.8
+	// p23TrustRun and p23TrustEvery are bloomTrustRun and
+	// bloomTrustCheck (spec §11 bloom trust): a trust run fetches at
+	// most p23TrustRun blocks' receipts, and one starts at most every
+	// p23TrustEvery.
+	p23TrustRun   = 8
+	p23TrustEvery = time.Minute
 )
 
 // p23Verdicts are the logs gate's verdicts (erpc_logs_empty_gate_total);
@@ -73,12 +96,13 @@ var (
 // than the old's at most. With future, both images set
 // evm.shortCircuitFutureBlocks (shortCircuited). With pre, the checks
 // that failed the same way before this change are judged against it
-// (p23Pre). With gate, the logs gate's own costs are judged against it
 // (p23Gate). With split, every vendor splits an eth_getLogs range longer
 // than split blocks into pieces pinned to it
 // (getLogsAutoSplittingRangeThreshold), and the body is the tip logs reads
 // alone (p23SplitBody). With lone, the body is those reads unsplit, on
-// vendors no other of which holds the tip within W.
+// vendors no other of which holds the tip within W. With busy, the body is
+// the busy reads alone (p23BusyBody); with thin, on a chain whose header
+// blooms omit logs (chainsim Config.ThinBloom).
 type p23Shape struct {
 	name              string
 	ups               []freshUp
@@ -92,6 +116,7 @@ type p23Shape struct {
 	slack             int
 	split             int64
 	lone              bool
+	busy, thin        bool
 	pre               *p23Pre
 	gate              *p23Gate
 }
@@ -250,6 +275,30 @@ var p23BandAhead = p23Shape{name: "P23-band-ahead", bt: 2 * time.Second, jitter:
 	blockLag: 300 * time.Millisecond, budget: 1.96, old: true,
 	ups: p23ProdUps}
 
+// p23Busy: P23-band's chain and vendors, vendor-a's log index trailing its
+// head by 500 ms, every block but 1 in 8 with logs, so a non-zero bloom,
+// and no client reads receipts: as a busy production chain, whose tracker
+// fetched none in 20 min, so its bloom was never trusted and every recent
+// empty eth_getLogs answer of a block with transactions was checked
+// (optimism: 36% of its log reads asked a second upstream). Its reads
+// are at each pod's tip, filtered by an address no log holds
+// (p23BusyReads). On main 4e30a0a2, 2 runs, the gate checked every such
+// read of a block with transactions: absent reads p50 2.12-2.21 s, p90
+// 5.37 s, p99 6.04 s (their control 21 ms), 0.553-0.596 of their
+// new-block verdicts no, no receipts fetched. With trust on demand: p50
+// 21 ms, p90 24 ms, p99 5.21 s (17 absent-read verdicts still checked,
+// with the reads that joined them), 0.990 no, 10 trust fetches in 3 min.
+var p23Busy = p23Shape{name: "P23-busy", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
+	ahead: 3 * time.Minute, logsLag: 500 * time.Millisecond, busy: true, ups: p23Band.ups}
+
+// p23BusyThin: P23-busy on a chain whose header blooms leave out the logs
+// of one address its blocks hold: receipts never prove such a bloom, so
+// trust is never earned, and a read filtered by that address, which
+// vendor-a answers [] while its log index trails, is checked, never ruled
+// out by the header.
+var p23BusyThin = p23Shape{name: "P23-busy-thin", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
+	ahead: 3 * time.Minute, logsLag: 500 * time.Millisecond, busy: true, thin: true, ups: p23Band.ups}
+
 // p23ProdUps are P23-band's vendors with vendor-b serving each block at
 // its mint.
 var p23ProdUps = []freshUp{
@@ -284,7 +333,7 @@ var p23ProdUps = []freshUp{
 // pods' numbered block reads per client eth_getBlockByNumber at most the
 // old pods' plus 5%.
 func p23(sh p23Shape) spec {
-	sp := freshSpec(sh.name, 1, sh.ups, chainsim.Config{BlockTime: sh.bt, MintJitter: sh.jitter}, sh.faults, func(s *scenario) { p23Body(s, sh) })
+	sp := freshSpec(sh.name, 1, sh.ups, chainsim.Config{BlockTime: sh.bt, MintJitter: sh.jitter, ThinBloom: sh.thin}, sh.faults, func(s *scenario) { p23Body(s, sh) })
 	sp.pods, sp.oldPods = 1, nil
 	if sh.old {
 		sp.pods, sp.oldPods, sp.memory, sp.splitState = 4, []int{0, 1}, false, true
@@ -384,6 +433,10 @@ func p23Body(s *scenario, sh p23Shape) {
 	heads := liveReads(p23HeadRate, s.chain.BlockTime(), vl)
 	if sh.split > 0 || sh.lone {
 		s.p23SplitBody(sh, heads)
+		return
+	}
+	if sh.busy {
+		s.p23BusyBody(sh, heads)
 		return
 	}
 	taps := make([]*viewTap, len(s.h.pods))
@@ -669,6 +722,158 @@ func (s *scenario) p23OldReads(b *strings.Builder, heads []liveRead, pieces floa
 			s.violate(s.name, "pod-%d: %.0f eth_getLogs calls beyond the old split reads' own pieces: an old block's empty answer asked other holders", p.idx+1, extra)
 		}
 	}
+}
+
+// p23BusyBody runs the busy reads (p23BusyReads) on each pod beside heads
+// for sh.ahead, then judges each pod: every read answers the chain's logs,
+// none failed, none answered [] for a block with matching logs
+// (wrongEmpty); at most p23ExtraAsks per checked read (p23Cost). Bloom
+// trust (spec §11): the gate's first demand starts a trust run of at most
+// p23TrustRun receipts fetches, and while the gate relies on trust one
+// block is checked again at most every p23TrustEvery. The gate's verdicts
+// on new blocks, less one per filtered read, which the bloom may hold, are
+// the absent reads' (one per upstream request: identical reads in flight
+// share it). With blooms that hold every log, at least p23BusyNo of them
+// are no; an absent read at most one round trip of its control, a held
+// block's, later at p50 and p90 (a checked read holds toward W while no
+// other vendor's poll shows the block, and identical reads join it); at
+// most p23TrustRun fetches plus one a p23TrustEvery. Thin, at most
+// p23ThinNo of them are no, and at most p23TrustRun fetches a
+// p23TrustEvery.
+func (s *scenario) p23BusyBody(sh p23Shape, heads []liveRead) {
+	reads := make([]*p23Reads, len(s.h.pods))
+	for _, p := range s.h.pods {
+		reads[p.idx] = newP23Reads()
+	}
+	calls0, gates0, trust0, held0 := s.p23LogsCalls(), s.p23Gates(), s.p23Fetches("bloom_trust"), s.p23Fetches("receipts")
+	s.liveRun(sh.ahead, heads, func(ctx context.Context, _ *faultWindows) {
+		var wg sync.WaitGroup
+		for _, p := range s.h.pods {
+			wg.Go(func() { s.p23BusyReads(ctx, p.idx, reads[p.idx]) })
+		}
+		wg.Wait()
+	})
+	calls1, gates1, trust1, held1 := s.p23LogsCalls(), s.p23Gates(), s.p23Fetches("bloom_trust"), s.p23Fetches("receipts")
+	checks := float64(sh.ahead/p23TrustEvery) + 1
+	var b strings.Builder
+	for _, p := range s.h.pods {
+		r := reads[p.idx]
+		s.p23Judge(&b, p.idx, sh.name+" reads", r, nil, true, nil)
+		var line []string
+		for _, v := range p23Verdicts {
+			line = append(line, fmt.Sprintf("%s %.0f", v, gates1[p.idx][v]-gates0[p.idx][v]))
+		}
+		r.mu.Lock()
+		absent := float64(len(r.took[p23AbsentKind]) + r.fails[p23AbsentKind])
+		filtered := float64(len(r.took["eth_getLogs filtered"]) + r.fails["eth_getLogs filtered"])
+		wrong := r.wrongEmpty
+		ds := slices.Sorted(slices.Values(r.took[p23AbsentKind]))
+		rtt := pctl(slices.Sorted(slices.Values(r.took[p23AbsentKind+" control"])), 50)
+		r.mu.Unlock()
+		fmt.Fprintf(&b, "pod-%d %s reads: absent p50 %s p90 %s p99 %s; control p50 %s\n", p.idx+1, sh.name, pctl(ds, 50), pctl(ds, 90), pctl(ds, 99), rtt)
+		if bound := 2*rtt + p23Noise; !sh.thin && (pctl(ds, 50) > bound || pctl(ds, 90) > bound) {
+			s.violate(s.name, "pod-%d: absent reads p50 %s p90 %s, above %s (two control round trips +%s): their header did not rule them out", p.idx+1, pctl(ds, 50), pctl(ds, 90), bound, p23Noise)
+		}
+		var judged float64
+		for _, v := range p23Verdicts {
+			if v != "old" {
+				judged += gates1[p.idx][v] - gates0[p.idx][v]
+			}
+		}
+		judged -= filtered
+		no := (gates1[p.idx]["no"] - gates0[p.idx]["no"]) / max(judged, 1)
+		fetches := trust1[p.idx] - trust0[p.idx]
+		fmt.Fprintf(&b, "pod-%d %s reads: logs gate verdicts %s; %.0f absent reads, %.0f new-block verdicts of theirs, %.3f of them no; %.0f bloom trust fetches, %.0f other receipts fetches; wrongEmpty %d\n",
+			p.idx+1, sh.name, strings.Join(line, ", "), absent, judged, no, fetches, held1[p.idx]-held0[p.idx], wrong)
+		if wrong > 0 {
+			s.violate(s.name, "pod-%d: %d eth_getLogs answered [] for a block with matching logs", p.idx+1, wrong)
+		}
+		bar := p23TrustRun + checks
+		switch {
+		case absent == 0 || judged <= 0:
+			s.violate(s.name, "pod-%d: %.0f absent reads, %.0f new-block verdicts of theirs", p.idx+1, absent, judged)
+		case sh.thin && no > p23ThinNo:
+			s.violate(s.name, "pod-%d: headers ruled out %.3f of the absent reads' new-block verdicts, above %.2f: bloom trust earned on a chain whose blooms omit logs", p.idx+1, no, p23ThinNo)
+		case !sh.thin && no < p23BusyNo:
+			s.violate(s.name, "pod-%d: headers ruled out %.3f of the absent reads' new-block verdicts, below %.2f: bloom trust not earned on a busy chain", p.idx+1, no, p23BusyNo)
+		}
+		if sh.thin {
+			bar = p23TrustRun * checks
+		}
+		if fetches > bar {
+			s.violate(s.name, "pod-%d: %.0f bloom trust fetches in %s, above %.0f", p.idx+1, fetches, sh.ahead, bar)
+		}
+	}
+	s.p23Cost(&b, sh.name+" reads", calls0, calls1, gates0, gates1, reads, 1, true)
+	s.logf("%s", b.String())
+}
+
+// p23BusyReads reads on pod, about p23BusyRate times a second until ctx
+// ends, the block of the pod's eth_blockNumber filtered by p23AbsentAddr
+// (p23Absent), beside it the same read of the block p23Back below as
+// control, which the logs gate counts old, and each new block's first-log
+// filter (p23Filtered), which its bloom may hold.
+func (s *scenario) p23BusyReads(ctx context.Context, pod int, r *p23Reads) {
+	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.h.podClient()))
+	if err != nil {
+		s.violate("harness", "pod-%d: busy client: %v", pod+1, err)
+		return
+	}
+	defer c.Close()
+	call := func(result interface{}, method string, args ...interface{}) error {
+		ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
+		defer cancel()
+		return c.CallContext(ctx, result, method, args...)
+	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	period := time.Duration(float64(time.Second) / p23BusyRate)
+	var filtered uint64
+	for ctx.Err() == nil {
+		sleepCtx(ctx, period/2+rand.N(period))
+		var tip hexutil.Uint64
+		if err := call(&tip, "eth_blockNumber"); err != nil || ctx.Err() != nil {
+			continue
+		}
+		n := uint64(tip)
+		wg.Go(func() { p23Absent(call, r, n, p23AbsentKind) })
+		if n > p23Back {
+			wg.Go(func() { p23Absent(call, r, n-p23Back, p23AbsentKind+" control") })
+		}
+		if n > filtered {
+			filtered = n
+			wg.Go(func() { s.p23Filtered(call, r, n, false) })
+		}
+	}
+}
+
+// p23Absent reads eth_getLogs(n, n) filtered by p23AbsentAddr, tallied as
+// kind: the answer must be none.
+func p23Absent(call func(result interface{}, method string, args ...interface{}) error, r *p23Reads, n uint64, kind string) {
+	q := map[string]interface{}{"fromBlock": hexutil.EncodeUint64(n), "toBlock": hexutil.EncodeUint64(n), "address": p23AbsentAddr}
+	var logs []json.RawMessage
+	start := time.Now()
+	err := call(&logs, "eth_getLogs", q)
+	took := time.Since(start)
+	switch {
+	case err != nil:
+		r.fail(kind, "eth_getLogs(%d) of %s failed after %s: %v", n, p23AbsentAddr, took.Round(time.Millisecond), err)
+	case len(logs) > 0:
+		r.fail(kind, "eth_getLogs(%d) of %s answered %d logs, not none, after %s", n, p23AbsentAddr, len(logs), took.Round(time.Millisecond))
+	default:
+		r.ok(kind, took)
+	}
+}
+
+// p23Fetches are, per pod, its tracker's fetches of kind
+// (erpc_chain_tracker_fetch_total): bloom_trust, a trust check's
+// receipts; receipts, every other receipts fetch.
+func (s *scenario) p23Fetches(kind string) []float64 {
+	out := make([]float64, len(s.h.pods))
+	for _, p := range s.h.pods {
+		out[p.idx], _ = s.metric(p.idx, "erpc_chain_tracker_fetch_total", map[string]string{"kind": kind})
+	}
+	return out
 }
 
 // p23Cost reports, per pod, the upstream asks for eth_getLogs from calls0

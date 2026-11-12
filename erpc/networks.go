@@ -1527,7 +1527,9 @@ func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 // matching log (counted no): of every pinned block of a concrete range
 // (ChainTracker.LogsMayExist), or of a blockHash filter's block
 // (ChainTracker.LogsMayExistAt, which looks a hash no tracker holds up
-// once, from u); or when req may select no other upstream (counted
+// once, from u); a bloom proves it once receipts proved the network's
+// blooms, and a verdict that trust decides starts the tracker's trust
+// check in the background; or when req may select no other upstream (counted
 // maybe_alone): one routed upstream, or a UseUpstream pin, a client's or
 // an eth_getLogs split piece's, that matches only u. A split's merged
 // answer is judged at its parent, which has no pin. Else it may hold one,
