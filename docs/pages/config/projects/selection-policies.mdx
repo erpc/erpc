@@ -214,7 +214,7 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
 
 `errorRate` counts only genuine upstream-quality failures: connection refused, 5xx, genuine timeouts. EVM reverts, rate-limit 429s, oversized-request rejections (`ErrEndpointRequestTooLarge`), client disconnects, and hedge cancellations are deliberately excluded so a misbehaving caller or aggressive hedger cannot inflate a healthy upstream's error rate.
 
-`throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles come from successful responses plus primary attempts cancelled because another attempt won the hedge race, which count at their elapsed time as a lower bound. Client cancels and deadlines record nothing. An upstream whose every attempt loses the hedge race therefore reads at least the hedge delay, not `0`. A fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
+`throttledRate` counts remote 429 responses specifically — vendor quota exhaustion. `misbehaviorRate` tracks upstreams returning semantically wrong data. Latency quantiles come from successful responses plus cancelled primary attempts (another attempt won the hedge race, or the client gave up), which count at their elapsed time as a lower bound. Deadlines count as errors, not latency. An upstream that never answers before the hedge or the client gives up therefore reads at least that elapsed time, not `0`. A client that cancels early (one that races several providers and drops the loser) caps the bound at its own wait: the order of upstreams holds, but an absolute bar such as `latencyAbove(1000)` trips only when clients wait longer than the bar. A fast-failing upstream that rejects connections in 1ms has empty quantile sketches and reports `p70 = 0` (unknown quality, not ultra-fast). A well-written policy should guard `latencyAbove` with `samplesAbove(N)`.
 
 `blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's EMA-estimated block time (alpha 0.1, minimum 3 samples before publishing). Until the EMA is warm, both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
 
@@ -350,8 +350,11 @@ Global JS helpers available inside every `evalFunc`:
 
 ```js
 const live = upstreams.excludeIf(creditRemainingBelow(4e9), { probe: false });
-return live.filter(creditPaceBelow(1.0)).union(live);
+const hangs = all(samplesAbove(20), latencyAbove(1000, 90), latencyDeviationAbove(3, { mode: 'veto', quantile: 90 }));
+return live.filter(all(creditPaceBelow(1.0), not(hangs))).union(live);
 ```
+
+`hangs` keeps a prepaid upstream out of the fill while its p90 is over 1 s and over 3× a peer's on some method; it then ranks by score like the rest. Without it, the fill puts an upstream that hangs some reads first even when a peer answers them in a fraction of the time.
 
 Size the `creditRemainingBelow` margin above the credits the account bills during the vendor's usage-reporting lag (QuickNode: 2-3 h of hourly buckets; Alchemy: about 1 minute) plus the 5-minute refresh and the stale window.
 

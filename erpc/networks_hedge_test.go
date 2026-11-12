@@ -1379,13 +1379,12 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		}
 	})
 
-	// The reviewer's concern: "a client disconnecting mid-request will
-	// affect upstream error rate, right?". Simulates a real client
-	// disconnect (context.Canceled, not DeadlineExceeded) by cancelling
-	// the request's context while the upstream is still in flight.
-	// The bare ErrCodeEndpointRequestCanceled lives in the tracker's
-	// skip list, so no upstream is blamed for the client's behavior.
-	t.Run("ClientDisconnect_PrimaryNotPenalized", func(t *testing.T) {
+	// A client disconnect (context.Canceled, not DeadlineExceeded) while
+	// the primary is in flight. The bare ErrCodeEndpointRequestCanceled
+	// lives in the tracker's skip list, so no error is counted; the
+	// elapsed time is a latency lower bound, so an upstream that hangs
+	// until clients give up does not read 0 s.
+	t.Run("ClientDisconnect_RecordsLowerBoundNotError", func(t *testing.T) {
 		util.ResetGock()
 		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
@@ -1441,10 +1440,11 @@ func TestNetwork_HedgeAttemptsExcludedFromTrackerCounters(t *testing.T) {
 		assert.Equal(t, int64(1), m1.RequestsTotal.Load(), "primary attempt counted")
 		assert.Equal(t, int64(0), m1.ErrorsTotal.Load(),
 			"client disconnect must NOT count as an upstream failure — the upstream didn't do anything wrong")
-		// A client cancel says nothing about rpc1's speed: no latency
-		// lower bound reaches the policy view.
-		assert.Equal(t, time.Duration(0), m1.PolicyQuantiles([]float64{0.70})[0],
-			"client disconnect must NOT record a latency lower bound")
+		// The primary did not answer within ~150 ms: the policy view
+		// reads at least that, never the mock's 2 s.
+		p70 := m1.PolicyQuantiles([]float64{0.70})[0]
+		assert.GreaterOrEqual(t, p70, 140*time.Millisecond, "client disconnect must record a latency lower bound")
+		assert.Less(t, p70, time.Second, "the lower bound must not exceed the elapsed time")
 	})
 
 	// The smoking-gun scenario from #878's description: under heavy
