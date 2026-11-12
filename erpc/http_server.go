@@ -767,6 +767,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					}
 				}
 
+				// Each request of a path-less batch names its own network, so
+				// resolve into locals: writing the shared path values from
+				// concurrent goroutines raced and routed every request of the
+				// batch to whichever network one of them named first.
+				architecture, chainId := architecture, chainId
 				var networkId string
 
 				if architecture == "" || chainId == "" {
