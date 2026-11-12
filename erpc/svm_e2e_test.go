@@ -1026,6 +1026,19 @@ func setupTestSvmNetworkFinalized(t *testing.T, ctx context.Context, upstreams [
 // of every SDK call that omits the field.
 func setupTestSvmNetworkWithCommitment(t *testing.T, ctx context.Context, commitment string, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
 	t.Helper()
+	return setupTestSvmNetworkFromConfig(t, ctx, &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm: &common.SvmNetworkConfig{
+			Cluster:    "mainnet-beta",
+			Commitment: commitment,
+		},
+	}, upstreams)
+}
+
+// setupTestSvmNetworkFromConfig builds the SVM network from a caller-owned
+// config, e.g. one carrying a production-shaped failsafe policy.
+func setupTestSvmNetworkFromConfig(t *testing.T, ctx context.Context, networkConfig *common.NetworkConfig, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
+	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
@@ -1052,14 +1065,6 @@ func setupTestSvmNetworkWithCommitment(t *testing.T, ctx context.Context, commit
 		upstreams, ssr, rateLimitersRegistry, vr, pr,
 		nil, metricsTracker, nil,
 	)
-
-	networkConfig := &common.NetworkConfig{
-		Architecture: common.ArchitectureSvm,
-		Svm: &common.SvmNetworkConfig{
-			Cluster:    "mainnet-beta",
-			Commitment: commitment,
-		},
-	}
 	network, err := NewNetwork(
 		ctx, &log.Logger, "test", networkConfig,
 		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,

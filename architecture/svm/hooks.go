@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -562,66 +563,9 @@ func toInt64(v interface{}) (int64, bool) {
 // that doesn't expose getMaxShredInsertSlot) must not cost us requests every
 // upstream could serve.
 func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
-	svmNet, ok := n.(common.SvmNetwork)
-	if !ok {
-		return false, nil, nil
-	}
-	if !svmNet.SvmEnforceBlockAvailability() {
-		return false, nil, nil
-	}
-
-	// Resolve the commitment BEFORE taking the params read lock below:
-	// effectiveCommitment acquires rpcReq.RLock itself, and a recursive RLock on
-	// the same RWMutex deadlocks whenever a writer is queued between the two
-	// acquisitions.
-	commitment := effectiveCommitment(ctx, n, r)
-
-	rpcReq, err := r.JsonRpcRequest(ctx)
-	if err != nil {
-		return false, nil, nil
-	}
-	rpcReq.RLock()
-	defer rpcReq.RUnlock()
-
-	if len(rpcReq.Params) == 0 {
-		return false, nil, nil
-	}
-	slot, ok := toInt64(rpcReq.Params[0])
-	if !ok || slot <= 0 {
-		return false, nil, nil
-	}
-
-	// The indexed frontier bounds every commitment level, and only when we
-	// actually have it. Unknown frontier → forward: absence of shred-insert
-	// tracking is not evidence of unavailability.
-	indexedTip := svmNet.SvmHighestIndexedSlot(ctx)
-	if indexedTip <= 0 {
-		return false, nil, nil
-	}
-
-	// At finalized commitment the indexed frontier is far too loose. It sits at
-	// or above the processed slot, which is itself ~60 slots above the finalized
-	// slot on Solana, and an upstream answers -32004 for anything above its own
-	// finalized root regardless of what it has indexed. Measured on devnet, that
-	// band is where ~71% of getBlock requests died: forwarded by this guard,
-	// then rejected by every upstream.
-	//
-	// MAX, not the majority tip: see the rejection-gate rationale on the doc
-	// comment. A zero value means UNKNOWN, never a literal bound — treating it
-	// as one would collapse the bound to 0 and gate every request.
-	tip := indexedTip
-	if commitment == "finalized" {
-		if finalizedTip := svmNet.SvmHighestFinalizedSlotMax(ctx); finalizedTip > 0 && finalizedTip < tip {
-			tip = finalizedTip
-		}
-	}
-
-	// Overflow-safe form of `slot <= tip + margin`: a hostile or bogus
-	// upstream tip near math.MaxInt64 would wrap that addition negative and turn
-	// the guard into a reject-everything gate. Subtracting from slot instead
-	// cannot wrap — slot is > 0 and the margin is a small positive derived from
-	// the poll debounce.
-	if slot-tipStalenessMargin(n) <= tip {
+	slot := leadingSlotParam(ctx, r)
+	tip, beyond := beyondPoolTip(ctx, n, slot, effectiveCommitment(ctx, n, r))
+	if !beyond {
 		return false, nil, nil
 	}
 
@@ -637,6 +581,133 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 		),
 		nil,
 	)
+}
+
+// networkPreForward_getBlockTime answers getBlockTime locally, with agave's own
+// error, when the slot is beyond what the pool can serve. agave's
+// get_block_time reads rooted slots from the blockstore and anything above the
+// root from a frozen bank, so the bound is the indexed frontier at every
+// commitment (the method takes none) — the non-finalized branch of the getBlock
+// guard. An upstream answers `-32004 Block not available for slot N`
+// (RpcCustomError::BlockNotAvailable) for such a slot, and so does this guard,
+// so a client cannot tell the local answer from a node's.
+func networkPreForward_getBlockTime(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	slot := leadingSlotParam(ctx, r)
+	if _, beyond := beyondPoolTip(ctx, n, slot, ""); !beyond {
+		return false, nil, nil
+	}
+	return true, nil, common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(
+			svmCodeBlockNotAvailable,
+			common.JsonRpcErrorNumber(svmCodeBlockNotAvailable),
+			fmt.Sprintf("Block not available for slot %d", slot),
+			nil, nil,
+		),
+		nil,
+	)
+}
+
+// networkPreForward_minContextSlot answers locally, for any method, a request
+// whose minContextSlot option is beyond what the pool can serve at the
+// request's effective commitment. agave's get_bank_with_config rejects such a
+// request with `-32016 Minimum context slot has not been reached` and
+// `data: {"contextSlot": <its bank slot>}` before reading anything, so every
+// upstream, failover, retry and hedge would return that same error.
+//
+// The local -32016 carries agave's meaning only — "no node of this pool has
+// reached that slot" — with the pool's tip as contextSlot, so clients back off
+// and retry exactly as they do for a node's answer. It is not eRPC's
+// JsonRpcErrorUnauthorized, which shares the number; eRPC still never emits
+// -32016 for its own verdicts on SVM. The outer class matches what the error
+// normalizer builds for an upstream -32016.
+func networkPreForward_minContextSlot(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	mcs := MinContextSlotOf(ctx, r)
+	if mcs <= 0 {
+		return false, nil, nil
+	}
+	tip, beyond := beyondPoolTip(ctx, n, mcs, effectiveCommitment(ctx, n, r))
+	if !beyond {
+		return false, nil, nil
+	}
+	details := map[string]interface{}{
+		"data": map[string]interface{}{"contextSlot": tip},
+	}
+	return true, nil, common.NewErrEndpointServerSideException(
+		common.NewErrJsonRpcExceptionInternal(
+			svmCodeMinContextSlotNotReached,
+			common.JsonRpcErrorNumber(svmCodeMinContextSlotNotReached),
+			"Minimum context slot has not been reached",
+			nil, details,
+		),
+		details, http.StatusOK,
+	)
+}
+
+// leadingSlotParam returns the slot in params[0], or 0 when absent or not a
+// positive number.
+func leadingSlotParam(ctx context.Context, r *common.NormalizedRequest) int64 {
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil || rpcReq == nil {
+		return 0
+	}
+	rpcReq.RLock()
+	defer rpcReq.RUnlock()
+	if len(rpcReq.Params) == 0 {
+		return 0
+	}
+	slot, ok := toInt64(rpcReq.Params[0])
+	if !ok || slot <= 0 {
+		return 0
+	}
+	return slot
+}
+
+// beyondPoolTip reports whether slot is beyond what the provider pool can
+// serve at commitment, plus the staleness margin, and returns the tip it was
+// compared against. It is the rule shared by the getBlock, getBlockTime and
+// minContextSlot guards (see networkPreForward_getBlock for the reasoning). It
+// fails open — reports false — when svm.enforceBlockAvailability is off, the
+// slot is not positive, or the indexed frontier is unknown.
+func beyondPoolTip(ctx context.Context, n common.Network, slot int64, commitment string) (int64, bool) {
+	if slot <= 0 {
+		return 0, false
+	}
+	svmNet, ok := n.(common.SvmNetwork)
+	if !ok || !svmNet.SvmEnforceBlockAvailability() {
+		return 0, false
+	}
+
+	// The indexed frontier bounds every commitment level, and only when we
+	// actually have it. Unknown frontier → forward: absence of shred-insert
+	// tracking is not evidence of unavailability.
+	indexedTip := svmNet.SvmHighestIndexedSlot(ctx)
+	if indexedTip <= 0 {
+		return 0, false
+	}
+
+	// At finalized commitment the indexed frontier is far too loose. It sits at
+	// or above the processed slot, which is itself ~60 slots above the finalized
+	// slot on Solana, and an upstream answers -32004 for anything above its own
+	// finalized root regardless of what it has indexed. Measured on devnet, that
+	// band is where ~71% of getBlock requests died: forwarded by this guard,
+	// then rejected by every upstream.
+	//
+	// MAX, not the majority tip: see the rejection-gate rationale on the
+	// getBlock guard. A zero value means UNKNOWN, never a literal bound —
+	// treating it as one would collapse the bound to 0 and gate every request.
+	tip := indexedTip
+	if commitment == "finalized" {
+		if finalizedTip := svmNet.SvmHighestFinalizedSlotMax(ctx); finalizedTip > 0 && finalizedTip < tip {
+			tip = finalizedTip
+		}
+	}
+
+	// Overflow-safe form of `slot <= tip + margin`: a hostile or bogus
+	// upstream tip near math.MaxInt64 would wrap that addition negative and turn
+	// the guard into a reject-everything gate. Subtracting from slot instead
+	// cannot wrap — slot is > 0 and the margin is a small positive derived from
+	// the poll debounce.
+	return tip, slot-tipStalenessMargin(n) > tip
 }
 
 // tipStalenessMargin returns the slot tolerance the getBlock guard adds on top

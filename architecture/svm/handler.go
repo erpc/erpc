@@ -55,8 +55,10 @@ func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, ne
 	switch method {
 	case "getBlock", "getConfirmedBlock":
 		return networkPreForward_getBlock(ctx, network, req)
+	case "getBlockTime":
+		return networkPreForward_getBlockTime(ctx, network, req)
 	}
-	return false, nil, nil
+	return networkPreForward_minContextSlot(ctx, network, req)
 }
 
 func (h *SvmArchitectureHandler) HandleNetworkPostForward(ctx context.Context, network common.Network, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
