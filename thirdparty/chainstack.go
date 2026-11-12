@@ -156,9 +156,16 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			return nil, ErrRemoteCacheCold
 		}
 
+		multichainToken, _ := settings["multichainToken"].(string)
+
 		var upstreams []*common.UpstreamConfig
 		for _, node := range nodes {
 			if node.ChainID == chainID && node.Status == "running" && node.Details.HTTPSEndpoint != "" {
+				endpoint, err := chainstackEndpoint(node, multichainToken)
+				if err != nil {
+					logger.Warn().Str("nodeId", node.ID).Msg("skipping chainstack node with unparsable https_endpoint")
+					continue
+				}
 				// Create a copy of the upstream config for each node
 				upsCopy := upstream.Copy()
 				if upstream.Id != "" {
@@ -166,7 +173,7 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 				} else {
 					upsCopy.Id = fmt.Sprintf("chainstack-%d-%s", chainID, node.ID)
 				}
-				upsCopy.Endpoint = node.Details.HTTPSEndpoint + "/" + node.Details.AuthKey
+				upsCopy.Endpoint = endpoint
 				upsCopy.Type = common.UpstreamTypeEvm
 
 				// Add authentication if available
@@ -184,6 +191,38 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 	} else {
 		return []*common.UpstreamConfig{upstream}, nil
 	}
+}
+
+// chainstackEndpoint builds a node's upstream URL. A multichain token takes the
+// place of the node's auth key; without the key in https_endpoint, the token
+// goes right after the host, ahead of any path (Chainstack's multichain shape).
+func chainstackEndpoint(node *ChainstackNode, multichainToken string) (string, error) {
+	if multichainToken == "" {
+		return node.Details.HTTPSEndpoint + "/" + node.Details.AuthKey, nil
+	}
+	u, err := url.Parse(node.Details.HTTPSEndpoint)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSuffix(u.Path, "/")
+	segments := strings.Split(path, "/")
+	replaced := false
+	if node.Details.AuthKey != "" {
+		for i, s := range segments {
+			if s == node.Details.AuthKey {
+				segments[i] = multichainToken
+				replaced = true
+				break
+			}
+		}
+	}
+	if replaced {
+		u.Path = strings.Join(segments, "/")
+	} else {
+		u.Path = "/" + multichainToken + path
+	}
+	u.RawPath = ""
+	return u.String(), nil
 }
 
 func (v *ChainstackVendor) extractFilterParams(settings common.VendorSettings) *ChainstackFilterParams {

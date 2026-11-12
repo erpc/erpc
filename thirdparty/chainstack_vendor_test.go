@@ -197,6 +197,42 @@ func TestChainstackVendor_DiscoveryLifecycle(t *testing.T) {
 	assert.Equal(t, "chainstack-137-c", got[0].Id)
 }
 
+func TestChainstackVendor_MultichainTokenReplacesNodeKey(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	ctx := context.Background()
+	logger := zerolog.Nop()
+	chainIdReply := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+	gock.New("https://ethereum-mainnet.core.chainstack.com").Post("/core-key").Persist().Reply(200).JSON(chainIdReply)
+	gock.New("https://nd-123-456-789.p2pify.com").Post("/dedicated-key/dedicated-key").Persist().Reply(200).JSON(chainIdReply)
+	gock.New("https://api.chainstack.com").
+		Get("/v1/nodes/").
+		Persist().
+		Reply(200).
+		JSON(map[string]interface{}{"next": nil, "results": []interface{}{
+			map[string]interface{}{"id": "core", "status": "running", "details": map[string]interface{}{"https_endpoint": "https://ethereum-mainnet.core.chainstack.com", "auth_key": "core-key"}},
+			map[string]interface{}{"id": "dedicated", "status": "running", "details": map[string]interface{}{"https_endpoint": "https://nd-123-456-789.p2pify.com/dedicated-key", "auth_key": "dedicated-key"}},
+		}})
+
+	v := CreateChainstackVendor()
+	settings := common.VendorSettings{"apiKey": "cs", "multichainToken": "mt_test"}
+
+	require.Eventually(t, func() bool {
+		ok, err := v.SupportsNetwork(ctx, &logger, settings, "evm:1")
+		return err == nil && ok
+	}, 5*time.Second, 10*time.Millisecond)
+
+	got, err := v.GenerateConfigs(ctx, &logger, &common.UpstreamConfig{Id: "cs", Evm: &common.EvmUpstreamConfig{ChainId: 1}}, settings)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	endpoints := map[string]string{got[0].Id: got[0].Endpoint, got[1].Id: got[1].Endpoint}
+	assert.Equal(t, map[string]string{
+		"cs-core":      "https://ethereum-mainnet.core.chainstack.com/mt_test",
+		"cs-dedicated": "https://nd-123-456-789.p2pify.com/mt_test",
+	}, endpoints)
+}
+
 func TestChainstackVendor_GenerateConfigs_Validation(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
