@@ -1465,11 +1465,14 @@ type EvmUpstreamConfig struct {
 	// it lacks fails as missing data so the next upstream answers, instead of an older "latest".
 	// Never a request whose tag reaches upstreams as is (translateLatestTag: false, skip-interpolation).
 	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
-	// SubscriptionSource makes this ws/wss upstream a push source of the chain
-	// tracker: it subscribes newHeads from network init. true on any other
-	// endpoint is refused at load: the block clock fetches every upstream's
-	// head. Unset: true for ws/wss endpoints, false otherwise.
-	SubscriptionSource *bool `yaml:"subscriptionSource,omitempty" json:"subscriptionSource"`
+	// SubscriptionSource sets when this ws/wss upstream pushes newHeads to
+	// the chain tracker: off, onDemand (while a client tap needs every
+	// block: eth_subscribe newHeads or logs, a gRPC block stream; it stops
+	// 60s after the last one ends) or always (from network init). Anything
+	// but off on another endpoint is refused at load: the block clock
+	// fetches every upstream's head. Unset: onDemand for ws/wss endpoints,
+	// off otherwise.
+	SubscriptionSource SubscriptionSourceMode `yaml:"subscriptionSource,omitempty" json:"subscriptionSource"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1661,10 +1664,6 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 		v := *c.PinLatestTag
 		copied.PinLatestTag = &v
 	}
-	if c.SubscriptionSource != nil {
-		v := *c.SubscriptionSource
-		copied.SubscriptionSource = &v
-	}
 	if c.DeprecatedIntegrity != nil {
 		copied.DeprecatedIntegrity = c.DeprecatedIntegrity.Copy()
 	}
@@ -1684,13 +1683,26 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	return copied
 }
 
-// IsSubscriptionSource reports whether the upstream feeds the chain tracker:
-// evm.subscriptionSource, or, unset, whether its endpoint is ws/wss.
-func (u *UpstreamConfig) IsSubscriptionSource() bool {
-	if u.Evm != nil && u.Evm.SubscriptionSource != nil {
-		return *u.Evm.SubscriptionSource
+// SubscriptionSourceMode is when a ws/wss upstream pushes newHeads
+// (evm.subscriptionSource).
+type SubscriptionSourceMode string
+
+const (
+	SubscriptionSourceOff      SubscriptionSourceMode = "off"
+	SubscriptionSourceOnDemand SubscriptionSourceMode = "onDemand"
+	SubscriptionSourceAlways   SubscriptionSourceMode = "always"
+)
+
+// SubscriptionSource is the upstream's evm.subscriptionSource, or, unset,
+// onDemand for a ws/wss endpoint and off for any other.
+func (u *UpstreamConfig) SubscriptionSource() SubscriptionSourceMode {
+	if u.Evm != nil && u.Evm.SubscriptionSource != "" {
+		return u.Evm.SubscriptionSource
 	}
-	return util.IsWsEndpoint(u.Endpoint)
+	if util.IsWsEndpoint(u.Endpoint) {
+		return SubscriptionSourceOnDemand
+	}
+	return SubscriptionSourceOff
 }
 
 // IsShadow reports whether the upstream only receives copies of served

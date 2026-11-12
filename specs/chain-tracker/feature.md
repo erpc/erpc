@@ -16,7 +16,7 @@ Decisions:
 10. On a reorg, resumable transports resend from the fork point; ws `logs` gets `removed:true`, as geth does (§10.2).
 11. Resumable transports resume from the last block they applied; a cursor the instance cannot place ends the stream, so a client never keeps a branch it was not told about (§10.3).
 12. `newPendingTransactions` uses the same sources and taps, over a mempool feed (§12).
-13. Polls and pending-transaction subscriptions stop 60s after the last tap closes; wss `newHeads` starts with the network and stays on (§5.2).
+13. Polls, pending-transaction subscriptions and `onDemand` wss `newHeads` stop 60s after the last tap needing them closes; an `always` wss `newHeads` starts with the network and stays on (§5.2).
 14. Reads decide finality on `Head.Finalized`; a permanent cache write also needs the serving upstream's finalized (§6.4).
 15. `translateLatestTag: false` stays the per-method opt-out; the tag-state gate skips an upstream whose `latest` state is stale (§7, §6.11).
 16. Nothing needs a person: every degraded state has a detector, an automatic recovery and a time bound (§15). No switch stays set until a restart.
@@ -289,7 +289,7 @@ Example, one wss push, two wss voters:
 | `http`, `https`, `grpc` | poll, `eth_getBlockByNumber(latest)` through the upstream's client | `newHeads` | the fetch schedule's cadence (§6.8) |
 | gRPC `StreamBlocks` client, Kafka consumer | push | `newHeads` | not planned; each is one `Source` |
 
-- `upstreams[].evm.subscriptionSource`: unset is true for `ws`/`wss`, false otherwise.
+- `upstreams[].evm.subscriptionSource`: `off`, `onDemand` or `always`; unset is `onDemand` for `ws`/`wss`, `off` otherwise.
 - Poll mode runs in the poller's goroutine. `fetchBlock("latest")` returns the header bytes; `TryUpdateIfLocallyStale` still merges polls with traffic.
 - A wss upstream that refuses `eth_subscribe newHeads` as unsupported (`ErrCodeEndpointUnsupported`) feeds `newHeads` by poll, under the poll rule of §5.2, until a subscribe succeeds. Its source asks again on each reconnect and every 10 min. Other failed subscribes retry with backoff up to 30s.
 - A source on a new transport registers as an upstream, so intake can gate it.
@@ -297,7 +297,7 @@ Example, one wss push, two wss voters:
 ### 5.2 Which topics each source feeds
 
 ```
-push u:  newHeads                       always, from network init
+push u:  newHeads                       always: from network init; onDemand: while demand has newHeads at pace 0
 poll u:  newHeads                       while demand has newHeads and admitted(u)
 push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 ```
@@ -305,7 +305,8 @@ push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 `admitted(u)` is topic admission (§6.2).
 
 - One reconciler per network, on one goroutine, calls `Set`: at network init, whether or not a WebSocket or gRPC server runs; then on demand changes, hash-voter changes, subscribe answers (`Intake.Subscribed`), and on a timer at W.
-- Idle: no demand for 60s → polls and pending-transaction subscriptions stop.
+- Idle: no demand for 60s → polls, pending-transaction subscriptions and `onDemand` `newHeads` stop. Only a tap at pace 0 (ws `newHeads` or `logs`, gRPC `StreamBlocks`) wants `onDemand` `newHeads`; the integrity follow tap's pace is the block clock's.
+- A head a push source pushed meets the latest part of its own full poll (`AskPushed`): a push-fed upstream is not polled for latest as well.
 - Silent `newHeads`: a connected push source whose `newHeads` pushed nothing for 15s, while its own head counter stood above its last push when those 15s began, reconnects its socket (`watchHeads`). A halted chain or a lagging node trips neither half. Pushes count before intake, so a gated source is not silent. Its hash vote ages out after W, before the reconnect.
 - A pending-transaction topic with no message for 60s, while heads carry transactions, is subscribed again; a topic that stays silent backs off from 60s to 30 min.
 
@@ -875,7 +876,7 @@ upstreams:
   - id: rpc-a
     endpoint: https://rpc.vendor.example/monad
     evm:
-      subscriptionSource: true    # unset: true for ws/wss, false otherwise
+      subscriptionSource: always  # off | onDemand | always; unset: onDemand for ws/wss, off otherwise
 networks:
   - architecture: evm
     evm:
@@ -890,7 +891,7 @@ networks:
 
 | Key | Change |
 |---|---|
-| `upstreams[].evm.subscriptionSource` | new; push only: `true` on an endpoint that is not `ws`/`wss` is refused at load, naming the key (no poll sources: the block clock fetches every other upstream's head, §6.8) |
+| `upstreams[].evm.subscriptionSource` | new; `off`, `onDemand` or `always`; push only: anything but `off` on an endpoint that is not `ws`/`wss` is refused at load, naming the key (no poll sources: the block clock fetches every other upstream's head, §6.8) |
 | `networks[].evm.chainTracker.reorgWindow` | moved from `integrity.reorgWindow` (project, network, profiles) |
 | `networks[].evm.chainTracker.maxBackfill` | new; replaces `integrity.follow.maxBlocksPerTick` |
 | `networks[].evm.stripSubscribeFromBlockZero` | deleted: no upstream `logs` subscribe |
@@ -909,7 +910,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_chain_tracker_invariant_violations_total{project,network,invariant}` | new; invariant: `sent_above_head` (a tap wrote a block above its lane's view Head, or one the pins no longer hold), `tap_gap`, `removed_unsent`, `pins_unlinked`, `final_hash_changed`, `latest_regressed` (a lane's view Head fell while its pin still stands: only a pins move may lower it); must stay 0 except `final_hash_changed`, which logs a followed majority. `sent_above_latest` and `sent_unconfirmed` are deleted, merged into `sent_above_head` |
 | `erpc_head_refusal_total{project,network,rule}` | new; rule: `served`, `thin_found` and `thin_missing` (a thin-region read, `Firm` < N ≤ `Latest`, found or still empty or missing after its retry), `retried_found`, `retried_missing` (a band read, above `Latest` and at most the ceiling, answered empty or missing after the retry: a vendor head no node serves yet; expected at a low rate where clients read ahead), `served_missing` (`eth_getBlockByNumber` of a block in the head region, `Latest` − `reorgWindow` < N ≤ `Latest`, whose final answer is a JSON `null` or a missing-data error after the retry: the head promise broke on this instance; must stay 0. Other methods are not counted: their `null` or missing-data answer at or below `Latest` can be legit, a transaction or uncle index past the block's count, a state read on a pruned node; nor is a block below the head region, which is block availability, not the head promise), `future`, `future_after_wait` (near future, §6.4) |
 | `erpc_logs_empty_gate_total{project,network,verdict}` | new; the logs gate's verdicts on empty `eth_getLogs` answers the refusal rule would serve (§6.4 logs gate): `old` (the block reached the view head W or more ago: served at once, unjudged), `no` (the pinned headers prove no matching log: served at once), `maybe_alone` (the request may select no other upstream, by its routing or its use-upstream selector, a split piece's pin included: served unconfirmed), `maybe_agreed` (another holder answered it empty: served), `maybe_found` (another holder answered logs: served), `maybe_reasked` (no holder answered within W: the first upstream asked once more, its answer served); `maybe_agreed`, `maybe_found` and `maybe_reasked` reads asked other holders, one at a time, the next on an error, a `null` or the hedge delay |
-| `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`clock`, `poll`: a full poll's latest part, `refusal`, `settle`); `catch_up`, `refresh`, `no_source` are deleted with their callers; outcome: `fetched`, `shared_fresh`, `inflight`, `backoff` |
+| `erpc_head_ask_total{project,network,reason,outcome}` | new; reason: the §6.8 caller (`clock`, `poll`: a full poll's latest part, `refusal`, `settle`); `catch_up`, `refresh`, `no_source` are deleted with their callers; outcome: `fetched`, `shared_fresh`, `inflight`, `backoff`, `pushed` (a pushed head met a poll) |
 | `erpc_head_clock_total{project,network,lane,kind,outcome}` | new; one per clock fetch's answer; kind: `rung` (a ladder rung before the last), `probe` (the last rung, S_k, or the block's one fetch), `retry` (a tail rung, or a fetch whose delay doubles), `vote` (a turn sent at the block's sight, on a cache-fed lane at its held vote, §6.8 cache head), `catch_up`, `guarantee`, `holder`, `edge`, `cold` (before any sight), `held` (a by-hash answer's block fetched by number from the upstream that answered, §6.8 proof probe), `ahead` (the shared early fetch of a block reads wait for, that block by number, §6.8); outcome: `new`, `early` (a rung's, probe's or retry's answer at its top; an `ahead` fetch answered null), `behind` (another channel brought the block first), `same` (another kind's answer at its top), `failed`, `dropped` (answered after a clock reset), `joined` (another fetch met the Ask: no fetch), `skipped_push` (a last rung a push or another local fetch made needless: no fetch). Every outcome but `joined` and `skipped_push` is a fetch; less kinds `held` and `ahead`, block fetches that are no head Ask, their sum equals `erpc_head_ask_total{reason="clock",outcome="fetched"}` (§6.8) |
 | `erpc_chain_tracker_header_proof_total{project,network,proof,reason}` | new; headers the network-wide tracker held, by proof (§6.5): `verified`, `unverified` (1 holder), `mismatch` (q holders); reason for the last two: `unencodable`, `hash_differs` |
 | `erpc_head_view_lag_seconds{project,network,lane}` | new histogram: a block's first local sight → the view swap that made it Head |
@@ -1073,6 +1074,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | D7 | `maxSubscriptionsPerConnection: 3`; 4th subscribe | `-32005` |
 | D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance): they take no permit (§6.8); no stall longer than W |
 | D9 | pending stream silent with socket open | resubscribe after 60s |
+| D10 | wss `onDemand` and wss `always`, WebSocket server on; no client, then a `logs` client on one instance, then a `newHeads` client, then none | `onDemand`: 0 upstream `newHeads` with no client, 1 on the client's instance with a client, 0 within 60s after the last; no upstream `logs` subscription; `always`: 1 per instance throughout, and no latest poll reaches it; latest reads within W at every step |
 | X1 | no fault | the oracle holds for every block on both instances |
 | X2 | memory shared state; instance 2 serves only numbered calls | the oracle holds after at most 1 retry; never `future` for a sent block |
 | X3 | cold instance joins mid-chain | `Latest` known at once; taps wait for the first confirmed head; nothing above `Latest` sent |
@@ -1086,7 +1088,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | K1 | YAML and TS configs with each deleted key | boot refuses and names the key |
 | K2 | minimal YAML: 1 wss + 1 https, no `evm` block | wss is a source, https is not; q = 2; subscriptions work |
 | K3 | 2 networks, `reorgWindow` 64 on one; 40-deep reorg on both | 64: Reverted; 32: re-anchor + `1013` |
-| K4 | `subscriptionSource: false` on wss; `true` on https | wss no source; https refused at load (no poll sources, §6.8) |
+| K4 | `subscriptionSource: off` on wss; `always` on https | wss no source; https refused at load (no poll sources, §6.8) |
 | K5 | same seed and plan, integrity on vs off | identical client chains and logs |
 | K6 | `servedTip.quorum: majority`, `guaranteedFor`, failover tiers | taps never above the guarantee-clamped `Latest`; no deadlock |
 | K7 | `shortCircuitFutureBlocks` on and off; head+1 polling | on: `null` with 0 dispatch above the ceiling; each poll reaches each vendor at most once (the band sweep); each band probe counts one `retried_missing` |
@@ -1230,7 +1232,7 @@ One home per fact:
 - An upstream that does not gzip sends about 10× the receipts bytes.
 - Decision 17 is an assumption: a vendor that announces heads before its receipts are ready delays logs by one retry per block.
 - Each voter's full poll costs its `latest` call once per `statePollerInterval` while no clock turn meets it: a far or lagging voter's always.
-- wss upstreams subscribe `newHeads` at network init, even when no WebSocket or gRPC server runs: one push per block per upstream per instance.
+- `always` wss upstreams subscribe `newHeads` at network init, even when no WebSocket or gRPC server runs: one push per block per upstream per instance. `onDemand` ones (the default) push only while a client needs every block.
 - With integrity on, a network where no upstream serves `eth_getBlockReceipts` serves `logs` only through the corroborated fallback (§11).
 - A network with one voter follows it: `q.Of(1)` = 1, so a fork it alone is on reaches clients.
 - A tie with no upstream left to settle keeps the pinned branch.

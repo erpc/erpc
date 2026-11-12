@@ -235,7 +235,7 @@ func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 		chains[id].verifyAt(t, 999)
 		v, url := newMockWsVendor(t, chains[id], func(v *mockWsVendor) { v.staleRPC = true })
 		vendors[id] = v
-		upCfgs = append(upCfgs, sourceUpstream(id, url, nil))
+		upCfgs = append(upCfgs, sourceUpstream(id, url, ""))
 	}
 	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
 		nw.SelectionPolicy = &common.SelectionPolicyConfig{EvalFunc: `(upstreams, ctx) => upstreams.filter(u => true)`}
@@ -441,9 +441,9 @@ func TestNetworkIntake_NonSourceVoterNeverHoldsTaps(t *testing.T) {
 			ups := make([]*common.UpstreamConfig, 0, len(tc.wsSources)+1)
 			for _, id := range tc.wsSources {
 				_, wsURL := newMockWsVendor(t, chain, nil)
-				ups = append(ups, sourceUpstream(id, wsURL, nil))
+				ups = append(ups, sourceUpstream(id, wsURL, ""))
 			}
-			httpUp := sourceUpstream("z-http", srv.URL, nil)
+			httpUp := sourceUpstream("z-http", srv.URL, "")
 			httpUp.Evm.StatePollerInterval = common.Duration(30 * time.Second)
 			addr, cleanup := setupTestERPCServer(t, sourcesConfig(tc.network, append(ups, httpUp)...))
 			defer cleanup()
@@ -821,7 +821,7 @@ func sourcesNetwork(t *testing.T, cfg *common.Config) (*Network, map[string]*ups
 
 // pollerUpstream is an HTTP upstream that is no source, polled every 30s.
 func pollerUpstream(id, endpoint string) *common.UpstreamConfig {
-	u := sourceUpstream(id, endpoint, nil)
+	u := sourceUpstream(id, endpoint, "")
 	u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
 	return u
 }
@@ -841,7 +841,7 @@ func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
 	bVendor, bURL := newMockWsVendor(t, chain, nil)
 	httpVendor, srv := newMockHttpVendor(t, chain)
 	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil,
-		sourceUpstream("a-ws", aURL, nil), sourceUpstream("b-ws", bURL, nil), pollerUpstream("z-http", srv.URL)))
+		sourceUpstream("a-ws", aURL, ""), sourceUpstream("b-ws", bURL, ""), pollerUpstream("z-http", srv.URL)))
 	require.Eventually(t, func() bool {
 		return httpVendor.latestPolls.Load() > 0 && aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0
 	}, 5*time.Second, 10*time.Millisecond, "the poller reads its first head and both sources subscribe")
@@ -901,7 +901,7 @@ func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
 	chain := newMockChain(1000, false)
 	aVendor, aURL := newMockWsVendor(t, chain, nil)
 	bVendor, bURL := newMockWsVendor(t, chain, nil)
-	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil, sourceUpstream("a-ws", aURL, nil), sourceUpstream("b-ws", bURL, nil)))
+	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil, sourceUpstream("a-ws", aURL, ""), sourceUpstream("b-ws", bURL, "")))
 	require.Eventually(t, func() bool { return aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0 },
 		5*time.Second, 10*time.Millisecond, "both sources subscribe")
 	chain.advance()

@@ -1039,6 +1039,7 @@ func (i *covPollerIntake) Polled(_ string, sh SourceHeader, malformed error, _ H
 }
 func (i *covPollerIntake) PollFailed(string, time.Time)         { i.failed.Add(1) }
 func (i *covPollerIntake) PolledFinalized(string, SourceHeader) {}
+func (i *covPollerIntake) PushSource(string) bool               { return false }
 
 // A counter another path keeps fresh meets a number need, but never a hash
 // need: its local fetch still runs, so this instance keeps sampling block

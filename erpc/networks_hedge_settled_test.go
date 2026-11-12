@@ -233,7 +233,7 @@ func newSettledNode(t *testing.T, bt, hedgeDelay time.Duration, faults map[strin
 		require.NoError(t, err)
 		v.SetFaults(faults[id])
 		n.vendors = append(n.vendors, v)
-		ups = append(ups, sourceUpstream(v.ID, v.URL(), util.BoolPtr(true)))
+		ups = append(ups, sourceUpstream(v.ID, v.URL(), common.SubscriptionSourceAlways))
 	}
 	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
 		nw.Failsafe = []*common.FailsafeConfig{{

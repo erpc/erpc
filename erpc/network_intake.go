@@ -100,7 +100,21 @@ func (p pushIntake) Header(upstreamId string, raw json.RawMessage) {
 		p.count(upstreamId, "malformed")
 		return
 	}
-	p.header(upstreamId, sh, evm.HeaderStreamed, false, time.Now())
+	at := time.Now()
+	if !p.header(upstreamId, sh, evm.HeaderStreamed, false, at) {
+		return
+	}
+	if u := p.upstream(upstreamId); u != nil {
+		if poller, ok := u.EvmStatePoller().(*evm.EvmStatePoller); ok {
+			poller.Pushed(at)
+		}
+	}
+}
+
+// PushSource is evm.PollIntake's: whether upstreamId pushes its heads now
+// (sourceReconciler.pushSource).
+func (in *networkIntake) PushSource(upstreamId string) bool {
+	return in.nw.sources.pushSource(upstreamId)
 }
 
 var (
