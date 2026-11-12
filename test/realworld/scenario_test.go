@@ -44,7 +44,8 @@ type spec struct {
 	integrity bool
 	// integrityOff are pods whose config leaves integrity off when
 	// integrity is on (K5: the same chain and plan, on vs off); checks are
-	// integrity checks enabled beyond the level's.
+	// integrity checks enabled beyond the level's, or alone, with no level,
+	// when integrity is off (P23: the logs gate).
 	integrityOff []int
 	checks       []string
 	minimal      bool
