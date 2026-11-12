@@ -43,8 +43,13 @@ const p11NitroChain = 42170
 // first, the lowest.
 var p11Depths = map[string]uint64{"ws-a": 20, "http-b": 20 + p11Gap, "ws-b": 20 + 2*p11Gap, "http-a": 20 + 3*p11Gap}
 
+// p11Integrity turns the state prober on, and nothing else: its probes
+// are integrity's (spec §6.11 Probe).
+var p11Integrity = map[string]interface{}{"stateProbe": map[string]interface{}{"enabled": true}}
+
 // P11: eth_call keeps its latest tag to upstreams (translateLatestTag:
-// false), and the selection policy ranks http-a first. http-a executes
+// false), integrity turns stateProbe on (p11Integrity), and the selection
+// policy ranks http-a first. http-a executes
 // latest p11Stale blocks below its head while its header head is current.
 // The gate skips it for tag requests: every eth_call(latest) to Multicall3
 // getBlockNumber() executes within W of Latest, and every pod shows http-a
@@ -59,6 +64,7 @@ func p11() spec {
 		// a stale vendor executes no lower than the first block.
 		sim: chainsim.Config{History: int(p11Refused) + chainsim.HistoryBlocks},
 		network: map[string]interface{}{
+			"integrity":       p11Integrity,
 			"selectionPolicy": rankFirst("http-a"),
 			"methods": map[string]interface{}{"preserveDefaultMethods": true, "definitions": map[string]interface{}{
 				"eth_call": map[string]interface{}{"reqRefs": [][]interface{}{{1}}, "translateLatestTag": false},
@@ -147,7 +153,8 @@ func p11() spec {
 		}}
 }
 
-// P11-nitro: a Nitro chain other than Arbitrum One. Multicall3
+// P11-nitro: a Nitro chain other than Arbitrum One, integrity turning
+// stateProbe on (p11Integrity). Multicall3
 // getBlockNumber() answers the parent chain's height, far below the
 // chain's; ArbSys arbBlockNumber() answers the chain's own. A
 // skip-interpolation eth_call(latest) reaches every upstream as the tag,
@@ -156,6 +163,7 @@ func p11() spec {
 // Latest, and no pod shows any upstream stale (§6.11 Fact).
 func p11Nitro() spec {
 	return spec{name: "P11-nitro", bound: healthyDelivery, sim: chainsim.Config{ChainID: p11NitroChain, Nitro: true},
+		network: map[string]interface{}{"integrity": p11Integrity},
 		body: func(s *scenario) {
 			s.blocks(25)
 			s.logf("skip-interpolation eth_call(latest) reaches every upstream as the tag")

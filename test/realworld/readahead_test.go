@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rpc"
 
+	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/test/chainsim"
 )
 
@@ -74,6 +75,12 @@ const (
 	// p23TrustEvery.
 	p23TrustRun   = 8
 	p23TrustEvery = time.Minute
+	// p23TagRate: P23-busy-off's skip-interpolation eth_call(latest) reads
+	// a second per pod (p23BusyReads), tag requests the state prober
+	// probes the upstreams of while it runs.
+	p23TagRate = 1.0
+	// p23TagKind tallies those reads.
+	p23TagKind = "eth_call tag"
 )
 
 // p23Verdicts are the logs gate's verdicts (erpc_logs_empty_gate_total);
@@ -82,6 +89,25 @@ var (
 	p23Verdicts = []string{"old", "no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_reasked"}
 	p23Checked  = []string{"maybe_agreed", "maybe_found", "maybe_reasked"}
 )
+
+// p23AuxFetches are the tracker fetch kinds (erpc_chain_tracker_fetch_total)
+// no latest tracking sends: the logs gate's logs_hash and bloom_trust, and
+// the receipts and logs a logs tap or an integrity check reads.
+var p23AuxFetches = []string{"logs_hash", "bloom_trust", "receipts", "logs"}
+
+// p23Origins are the methods a P23-busy-off pod may send its vendors, by
+// origin: its client reads' own (client), its state pollers' polls (poll)
+// and latest tracking's head and header fetches (latest). Any other is an
+// auxiliary request.
+var p23Origins = map[string]string{
+	"eth_getLogs":          "client",
+	"eth_call":             "client",
+	"eth_blockNumber":      "client, poll",
+	"eth_chainId":          "poll",
+	"eth_syncing":          "poll",
+	"eth_getBlockByNumber": "poll, latest",
+	"eth_getBlockByHash":   "latest",
+}
 
 // p23Shape is one chain P23 runs on: its vendors, block time and mint
 // jitter (blocks come bt ± jitter apart, so the block clock's predicted
@@ -102,7 +128,10 @@ var (
 // alone (p23SplitBody). With lone, the body is those reads unsplit, on
 // vendors no other of which holds the tip within W. With busy, the body is
 // the busy reads alone (p23BusyBody); with thin, on a chain whose header
-// blooms omit logs (chainsim Config.ThinBloom).
+// blooms omit logs (chainsim Config.ThinBloom). Every shape's network
+// enables the logs gate's check alone (integrity.GetLogsEmptyGate, the
+// config that keeps the gate where integrity is otherwise off), on its
+// new-image pods; with off, no integrity at all (p23OffBody).
 type p23Shape struct {
 	name              string
 	ups               []freshUp
@@ -116,7 +145,7 @@ type p23Shape struct {
 	slack             int
 	split             int64
 	lone              bool
-	busy, thin        bool
+	busy, thin, off   bool
 	pre               *p23Pre
 	gate              *p23Gate
 }
@@ -299,6 +328,17 @@ var p23Busy = p23Shape{name: "P23-busy", bt: 2 * time.Second, jitter: 200 * time
 var p23BusyThin = p23Shape{name: "P23-busy-thin", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	ahead: 3 * time.Minute, logsLag: 500 * time.Millisecond, busy: true, thin: true, ups: p23Band.ups}
 
+// p23BusyOff: P23-busy on a network whose integrity is off, its reads
+// beside a skip-interpolation eth_call(latest) a second (p23TagRate), a
+// tag request the state prober would probe for (spec §6.11 Probe), and no
+// WebSocket client: the gate judges nothing and asks no other vendor, and
+// the pod sends no auxiliary request (p23OffBody). On main d9483b54, 1
+// run: 3115 gate verdicts, 97 extra eth_getLogs asks, 10 bloom_trust
+// receipts fetches and 56 state probes; here 0 of each, 77 wrongEmpty
+// served as they came.
+var p23BusyOff = p23Shape{name: "P23-busy-off", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
+	ahead: 3 * time.Minute, logsLag: 500 * time.Millisecond, busy: true, off: true, ups: p23Band.ups}
+
 // p23ProdUps are P23-band's vendors with vendor-b serving each block at
 // its mint.
 var p23ProdUps = []freshUp{
@@ -335,6 +375,9 @@ var p23ProdUps = []freshUp{
 func p23(sh p23Shape) spec {
 	sp := freshSpec(sh.name, 1, sh.ups, chainsim.Config{BlockTime: sh.bt, MintJitter: sh.jitter, ThinBloom: sh.thin}, sh.faults, func(s *scenario) { p23Body(s, sh) })
 	sp.pods, sp.oldPods = 1, nil
+	if !sh.off {
+		sp.checks = []string{integrity.GetLogsEmptyGate}
+	}
 	if sh.old {
 		sp.pods, sp.oldPods, sp.memory, sp.splitState = 4, []int{0, 1}, false, true
 	}
@@ -741,6 +784,10 @@ func (s *scenario) p23OldReads(b *strings.Builder, heads []liveRead, pieces floa
 // p23ThinNo of them are no, and at most p23TrustRun fetches a
 // p23TrustEvery.
 func (s *scenario) p23BusyBody(sh p23Shape, heads []liveRead) {
+	if sh.off {
+		s.p23OffBody(sh, heads)
+		return
+	}
 	reads := make([]*p23Reads, len(s.h.pods))
 	for _, p := range s.h.pods {
 		reads[p.idx] = newP23Reads()
@@ -806,6 +853,129 @@ func (s *scenario) p23BusyBody(sh p23Shape, heads []liveRead) {
 	}
 	s.p23Cost(&b, sh.name+" reads", calls0, calls1, gates0, gates1, reads, 1, true)
 	s.logf("%s", b.String())
+}
+
+// p23OffBody runs the busy reads (p23BusyReads) and the tag reads
+// (p23TagReads) on each pod beside heads for sh.ahead, on a network whose
+// integrity is off and that no WebSocket client reads, then counts every
+// request each pod sent its vendors by origin and judges each pod: the
+// logs gate judged no answer; no eth_getLogs went out again beyond each
+// client read's own (p23LogsCalls repeats); no tracker fetch of a kind
+// latest tracking never sends (p23AuxFetches), no state probe and no
+// auxiliary request (erpc_integrity_aux_request_total); and every method
+// its vendors got has an origin (p23Origins). Reads are reported only: an
+// empty answer is served as it came, as before the gate.
+func (s *scenario) p23OffBody(sh p23Shape, heads []liveRead) {
+	reads := make([]*p23Reads, len(s.h.pods))
+	for _, p := range s.h.pods {
+		reads[p.idx] = newP23Reads()
+	}
+	// counts are, per pod, its aux signals and its vendor requests by
+	// method ("method " keys), from one scrape.
+	counts := func() []map[string]float64 {
+		out := make([]map[string]float64, len(s.h.pods))
+		for _, p := range s.h.pods {
+			c := map[string]float64{}
+			out[p.idx] = c
+			for _, px := range s.proxies {
+				for m, n := range px.methodReads(p) {
+					c[methodRead(m)] += float64(n)
+				}
+			}
+			ss, err := p.scrape()
+			if err != nil {
+				s.violate("harness", "pod-%d: scrape: %v", p.idx+1, err)
+				continue
+			}
+			sum := func(name string, labels map[string]string) float64 {
+				match := map[string]string{"project": s.project, "network": s.network()}
+				maps.Copy(match, labels)
+				v, _ := sumOf(ss, name, match)
+				return v
+			}
+			c["logs gate verdicts"] = sum("erpc_logs_empty_gate_total", nil)
+			for _, k := range p23AuxFetches {
+				c[k+" fetches"] = sum("erpc_chain_tracker_fetch_total", map[string]string{"kind": k})
+			}
+			c["state probes"] = sum("erpc_upstream_state_probe_total", nil)
+			c["integrity aux requests"] = sum("erpc_integrity_aux_request_total", nil)
+		}
+		return out
+	}
+	calls0, before := s.p23LogsCalls(), counts()
+	s.liveRun(sh.ahead, heads, func(ctx context.Context, _ *faultWindows) {
+		var wg sync.WaitGroup
+		for _, p := range s.h.pods {
+			wg.Go(func() { s.p23BusyReads(ctx, p.idx, reads[p.idx]) })
+			wg.Go(func() { s.p23TagReads(ctx, p.idx, reads[p.idx]) })
+		}
+		wg.Wait()
+	})
+	calls1, after := s.p23LogsCalls(), counts()
+	var b strings.Builder
+	for _, p := range s.h.pods {
+		r := reads[p.idx]
+		s.p23Judge(&b, p.idx, sh.name+" reads", r, nil, false, nil)
+		r.mu.Lock()
+		wrong := r.wrongEmpty
+		r.mu.Unlock()
+		n := r.logsReads()
+		asks := calls1[p.idx].repeats - calls0[p.idx].repeats
+		fmt.Fprintf(&b, "pod-%d %s reads: %.0f eth_getLogs reads, %.0f vendor eth_getLogs calls, %.0f extra asks; wrongEmpty %d (served as it came)\n",
+			p.idx+1, sh.name, n, calls1[p.idx].calls-calls0[p.idx].calls, asks, wrong)
+		if asks > 0 {
+			s.violate(s.name, "pod-%d: %.0f eth_getLogs asks beyond the client reads' own with integrity off", p.idx+1, asks)
+		}
+		for _, k := range slices.Sorted(maps.Keys(after[p.idx])) {
+			d := after[p.idx][k] - before[p.idx][k]
+			m, isMethod := strings.CutPrefix(k, methodRead(""))
+			if !isMethod {
+				fmt.Fprintf(&b, "pod-%d %s: %s %.0f\n", p.idx+1, sh.name, k, d)
+				if d > 0 {
+					s.violate(s.name, "pod-%d: %.0f %s with integrity off", p.idx+1, d, k)
+				}
+				continue
+			}
+			origin, ok := p23Origins[m]
+			if !ok {
+				origin = "auxiliary"
+			}
+			fmt.Fprintf(&b, "pod-%d %s: vendor requests %s %.0f (%s)\n", p.idx+1, sh.name, m, d, origin)
+			if !ok && d > 0 {
+				s.violate(s.name, "pod-%d: %.0f %s requests to vendors with integrity off: no client, poll or latest tracking sends it", p.idx+1, d, m)
+			}
+		}
+	}
+	s.logf("%s", b.String())
+}
+
+// p23TagReads reads on pod, about p23TagRate times a second until ctx
+// ends, a skip-interpolation eth_call(latest) to Multicall3
+// getBlockNumber(), tallied as p23TagKind: a tag request (spec §6.11
+// Applies to), so each vendor it reaches is one the state prober probes.
+func (s *scenario) p23TagReads(ctx context.Context, pod int, r *p23Reads) {
+	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()),
+		rpc.WithHTTPClient(s.h.podClient()), rpc.WithHeader("X-ERPC-Skip-Interpolation", "true"))
+	if err != nil {
+		s.violate("harness", "pod-%d: tag client: %v", pod+1, err)
+		return
+	}
+	defer c.Close()
+	period := time.Duration(float64(time.Second) / p23TagRate)
+	call := map[string]interface{}{"to": chainsim.Multicall3.Hex(), "data": chainsim.GetBlockNumberSig}
+	for ctx.Err() == nil {
+		sleepCtx(ctx, period/2+rand.N(period))
+		cctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
+		var res hexutil.Bytes
+		start := time.Now()
+		err := c.CallContext(cctx, &res, "eth_call", call, "latest")
+		cancel()
+		if err != nil {
+			r.fail(p23TagKind, "eth_call(latest) failed after %s: %v", time.Since(start).Round(time.Millisecond), err)
+			continue
+		}
+		r.ok(p23TagKind, time.Since(start))
+	}
 }
 
 // p23BusyReads reads on pod, about p23BusyRate times a second until ctx

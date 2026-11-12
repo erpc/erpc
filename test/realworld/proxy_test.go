@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,8 +56,8 @@ type link struct {
 	resets  int64 // connections RSTMid reset
 	// reads count the pod's JSON-RPC requests (anyRead), its
 	// eth_getBlockByNumber requests by tag ("latest", "finalized"), its
-	// eth_blockNumber requests (blockNumberRead) and its eth_getLogs
-	// requests (getLogsRead).
+	// eth_blockNumber requests (blockNumberRead), its eth_getLogs
+	// requests (getLogsRead) and its requests by method (methodRead).
 	reads map[string]int64
 	// logIDs count the pod's eth_getLogs requests by JSON-RPC id: eRPC
 	// sends a client's id on, so one id through several links is one
@@ -72,6 +73,9 @@ const blockNumberRead = "blockNumber"
 
 // getLogsRead keys a link's count of eth_getLogs requests.
 const getLogsRead = "getLogs"
+
+// methodRead keys a link's count of requests of method m.
+func methodRead(m string) string { return "method " + m }
 
 func (l *link) count(kind string, n int) {
 	l.mu.Lock()
@@ -230,6 +234,7 @@ var (
 	idKey          = []byte(`"id":`)
 	answerKey      = []byte(`{"id":`)
 	pushKey        = []byte(`{"jsonrpc"`)
+	methodKey      = []byte(`"method":"`)
 )
 
 // tagKeys mark an eth_getBlockByNumber message's block param, by the kind
@@ -253,10 +258,23 @@ func (sc *headerScan) request(b []byte) {
 		return
 	}
 	sc.l.count(anyRead, len(starts))
+	starts[0] = 0
+	for k, from := range starts {
+		to := len(b)
+		if k+1 < len(starts) {
+			to = starts[k+1]
+		}
+		msg := b[from:to]
+		if i := bytes.Index(msg, methodKey); i >= 0 {
+			m := msg[i+len(methodKey):]
+			if j := bytes.IndexByte(m, '"'); j >= 0 {
+				sc.l.count(methodRead(string(m[:j])), 1)
+			}
+		}
+	}
 	if !bytes.Contains(b, byNumberKey) && !bytes.Contains(b, blockNumberKey) && !bytes.Contains(b, getLogsKey) {
 		return
 	}
-	starts[0] = 0
 	for k, from := range starts {
 		to := len(b)
 		if k+1 < len(starts) {
@@ -484,6 +502,20 @@ func (px *proxy) logsIDs(p *pod) map[string]int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return maps.Clone(l.logIDs)
+}
+
+// methodReads are p's requests through this proxy by method (methodRead).
+func (px *proxy) methodReads(p *pod) map[string]int64 {
+	l := px.link(p)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := map[string]int64{}
+	for k, n := range l.reads {
+		if m, ok := strings.CutPrefix(k, methodRead("")); ok {
+			out[m] = n
+		}
+	}
+	return out
 }
 
 // resets counts p's connections that RSTMid reset.

@@ -2675,10 +2675,11 @@ export interface IntegritySettings {
    * rejects feed — for the selection policy to act on (e.g. the
    * misbehaviorRateAbove predicate); absence of proof has no effect at all,
    * and ObserveOnly suppresses the misbehavior recording like every other
-   * integrity effect. Requires follow to be enabled (the verified header is
-   * the trust anchor). Off by default. The "latest" tag-state probe behind
-   * the tag-state gate runs on every network from its first client
-   * request, whatever this says.
+   * integrity effect. These pinned probes require follow to be enabled
+   * (the verified header is the trust anchor). Off by default. On, it also
+   * runs, from the network's first client request, the "latest" tag-state
+   * probe behind the tag-state gate, with or without follow; off, no probe
+   * runs and that gate skips no upstream.
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**

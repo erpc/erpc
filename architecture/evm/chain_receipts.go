@@ -114,9 +114,10 @@ type bloomProfile struct {
 	// roots are not Ethereum's trie (Hedera, Kaia), so gasUsed 0, not the
 	// empty-trie root, marks an empty block.
 	foreignRoots bool
-	// agreeLogs: integrity is on, so logs from eth_getLogs by blockHash,
-	// which stand in for receipts that keep failing, are held only once
-	// vendors that meet the evidence quorum answered the same logs.
+	// agreeLogs: integrity validates responses (CheckSet.Validates), so
+	// logs from eth_getLogs by blockHash, which stand in for receipts that
+	// keep failing, are held only once vendors that meet the evidence
+	// quorum answered the same logs.
 	agreeLogs bool
 	// logIndexes: integrity checks logIndexContiguity, so logs from
 	// eth_getLogs by blockHash must run 0..N-1 as receipts' do.
@@ -149,7 +150,7 @@ func (g *bloomGate) prof() *bloomProfile {
 			}
 		}
 		cs, _, _, _ := resolveIntegrity(n, nil)
-		g.profile.agreeLogs = len(cs) > 0
+		g.profile.agreeLogs = cs.Validates()
 		g.profile.logIndexes = cs.For("logIndexContiguity").Enabled
 	})
 	return &g.profile
@@ -1185,6 +1186,7 @@ func (t *ChainTracker) checkTrust() {
 // trust too: the header's bloom is not its receipts'.
 func (t *ChainTracker) trustResult(h *chainHeader, res fetchResult) {
 	g := t.fetch.bloom
+	t.emitAuxFetch("bloom_trust", "eth_getBlockReceipts", int64(h.number), res)
 	switch {
 	case res.err == nil:
 		r := res.val.(*heldReceipts)

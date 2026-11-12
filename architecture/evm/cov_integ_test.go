@@ -379,7 +379,7 @@ func TestCovInteg_ChainTrackerOf(t *testing.T) {
 		assert.Nil(t, stateProberFor(net))
 		ClientRequested(net)
 		p := stateProberFor(net)
-		require.NotNil(t, p, "every network probes tag-state heads from its first client request")
+		require.NotNil(t, p, "stateProbe alone probes tag-state heads from the first client request")
 		assert.Same(t, v, p.view)
 		assert.False(t, p.pinnedProbes, "context and proof probes still need follow")
 		p.onNewHead(5)

@@ -3778,7 +3778,13 @@ func (t *ChainTracker) LogsMayExistAt(ctx context.Context, f *logfilter.LogsFilt
 		spec.kind = "logs_hash"
 		res := t.fetch.fetch(ctx, t, spec)
 		s := t.state.Load()
-		if ch, _ = res.val.(*chainHeader); ch == nil {
+		ch, _ = res.val.(*chainHeader)
+		number := int64(-1)
+		if ch != nil {
+			number = int64(ch.number)
+		}
+		t.emitAuxFetch("logs_hash", "eth_getBlockByHash", number, res)
+		if ch == nil {
 			if len(s.pins) == 0 {
 				return 0, LogsUnheld
 			}
@@ -4165,6 +4171,26 @@ func (t *ChainTracker) emitAux(kind, method, finality string, ok bool) {
 	).Inc()
 }
 
+// CountAux records an auxiliary request a caller outside the tracker sent
+// for block number of t's lane (the logs gate's probe legs), as emitAux.
+// Nil-safe.
+func (t *ChainTracker) CountAux(kind, method string, number int64, ok bool) {
+	if t == nil || t.network == nil {
+		return
+	}
+	t.emitAux(kind, method, t.finalityLabel(number), ok)
+}
+
+// emitAuxFetch records res, a fetch of block number for an auxiliary
+// kind, as emitAux, when it reached an upstream: a cache answer or a
+// backed-off key sent none.
+func (t *ChainTracker) emitAuxFetch(kind, method string, number int64, res fetchResult) {
+	if errors.Is(res.err, errFetchBackoff) || res.err == nil && res.upstream == "" {
+		return
+	}
+	t.emitAux(kind, method, t.finalityLabel(number), res.err == nil)
+}
+
 // projectId / networkLabel are nil-safe metric label helpers.
 func (t *ChainTracker) projectId() string {
 	if t.network == nil {
@@ -4465,8 +4491,9 @@ func seedLane(ctx context.Context, wide, t *ChainTracker) {
 	}
 }
 
-// ClientRequested starts n's state probes and an integrity follow tap per
-// tracker at the network's first client request, as main started its
+// ClientRequested starts n's state probes, when integrity turns
+// stateProbe on, and an integrity follow tap per tracker, when it turns
+// follow on, at the network's first client request, as main started its
 // follower and prober, and keeps them on (spec §6.11 Probe, §13): an idle
 // network sends no follow Asks and no probes, and its trackers serve no
 // history for its integrity checks (readServed), so they walk nothing.
@@ -4482,14 +4509,16 @@ func ClientRequested(n common.Network) {
 		return
 	}
 	nt.requested.Store(true)
-	// The context and proof probes ride on the follow tap: its pinned
-	// headers are the anchor for judging an upstream's state claims.
-	var probeCfg *common.IntegrityStateProbeConfig
-	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.Follow.IsEnabled() && cfg.Integrity.StateProbe.IsEnabled() {
-		probeCfg = cfg.Integrity.StateProbe
-	}
-	if wide := nt.groups[""]; wide != nil {
-		startStateProber(nt.ctx, n, wide, probeCfg)
+	if cfg := n.Config(); cfg != nil && cfg.Integrity != nil && cfg.Integrity.StateProbe.IsEnabled() {
+		// The context and proof probes ride on the follow tap: its pinned
+		// headers are the anchor for judging an upstream's state claims.
+		var pinned *common.IntegrityStateProbeConfig
+		if cfg.Integrity.Follow.IsEnabled() {
+			pinned = cfg.Integrity.StateProbe
+		}
+		if wide := nt.groups[""]; wide != nil {
+			startStateProber(nt.ctx, n, wide, pinned)
+		}
 	}
 	for _, t := range nt.groups {
 		startFollow(nt, n, t)

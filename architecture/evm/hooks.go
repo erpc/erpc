@@ -208,7 +208,7 @@ func validateIntegrity(ctx context.Context, n common.Network, u common.Upstream,
 	}
 	dirs := rq.Directives()
 	cs, policy, observeOnly, autoCorrect := resolveIntegrity(n, dirs)
-	if len(cs) == 0 {
+	if !cs.Validates() {
 		return nil
 	}
 	own := rq.UpstreamPolicies() != common.UpstreamPoliciesConfigured
