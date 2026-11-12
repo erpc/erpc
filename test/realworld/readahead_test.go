@@ -37,13 +37,34 @@ const (
 	p23Noise = 10 * time.Millisecond
 	// p23Examples: failed reads quoted per kind.
 	p23Examples = 5
+	// p23SplitRate: split reads a second per pod (p23SplitReads).
+	p23SplitRate = 10.0
+	// p23SplitBlocks: each split read's range.
+	p23SplitBlocks = 8
+	// p23SplitKind tallies the split reads.
+	p23SplitKind = "eth_getLogs split"
+	// p23ExtraAsks: a new-image pod's upstream asks for eth_getLogs beyond
+	// one per client read (a split read's pieces count as one ask), per
+	// read the logs gate checked, at most this: it asks one holder at a
+	// time, the next on an error, a null or its hedge delay (spec §6.4
+	// logs gate).
+	p23ExtraAsks = 1.3
+	// p23OldRun: the old split reads' run (p23OldReads).
+	p23OldRun = 20 * time.Second
+)
+
+// p23Verdicts are the logs gate's verdicts (erpc_logs_empty_gate_total);
+// p23Checked those of the reads it checked by asking other holders.
+var (
+	p23Verdicts = []string{"old", "no", "maybe_alone", "maybe_agreed", "maybe_found", "maybe_reasked"}
+	p23Checked  = []string{"maybe_agreed", "maybe_found", "maybe_reasked"}
 )
 
 // p23Shape is one chain P23 runs on: its vendors, block time and mint
 // jitter (blocks come bt ± jitter apart, so the block clock's predicted
 // sight misses some and its tail finds them), the faults every vendor
-// has, vendor-a's BlockLag, the blocks before the bar (warm), the
-// clock-only, by-hash and read-ahead runs' lengths, and the read-ahead
+// has, vendor-a's BlockLag and LogsLag, the blocks before the bar (warm),
+// the clock-only, by-hash and read-ahead runs' lengths, and the read-ahead
 // run's head fetch budget (0: p23FetchBudget). With old, it runs 2
 // old-image and 2 new-image pods, each image's pair sharing redis as a
 // fleet's pods do, and reports the new image's reads beside the old's
@@ -52,19 +73,27 @@ const (
 // than the old's at most. With future, both images set
 // evm.shortCircuitFutureBlocks (shortCircuited). With pre, the checks
 // that failed the same way before this change are judged against it
-// (p23Pre).
+// (p23Pre). With gate, the logs gate's own costs are judged against it
+// (p23Gate). With split, every vendor splits an eth_getLogs range longer
+// than split blocks into pieces pinned to it
+// (getLogsAutoSplittingRangeThreshold), and the body is the tip logs reads
+// alone (p23SplitBody). With lone, the body is those reads unsplit, on
+// vendors no other of which holds the tip within W.
 type p23Shape struct {
 	name              string
 	ups               []freshUp
 	bt, jitter        time.Duration
 	faults            chainsim.Faults
-	blockLag          time.Duration
+	blockLag, logsLag time.Duration
 	warm              int
 	base, hash, ahead time.Duration
 	budget            float64
 	old, peer, future bool
 	slack             int
+	split             int64
+	lone              bool
 	pre               *p23Pre
+	gate              *p23Gate
 }
 
 // p23Pre are a shape's bars for checks that already failed before this
@@ -78,6 +107,15 @@ type p23Pre struct {
 	failed float64
 	// servedMissing: each new-image pod's served_missing.
 	servedMissing float64
+}
+
+// p23Gate are the logs gate's own bars (spec §6.4 logs gate), measured on
+// this branch: its eth_getLogs p99, no worse than there plus 5%, judged
+// against it instead of the old image's; no refusal Ask at all, since its
+// probe asks only upstreams whose evidence holds the block; and at most
+// p23ExtraAsks per checked read (p23Cost).
+type p23Gate struct {
+	logsP99 time.Duration
 }
 
 // p23PreSlack: a measured bar's margin.
@@ -105,6 +143,34 @@ var p23Fast = p23Shape{name: "P23", bt: 100 * time.Millisecond, jitter: 20 * tim
 		{"http-f", "vendor-f", 45 * time.Millisecond, 10 * time.Second, 0, 0},
 	}}
 
+// p23Split: P23's chain and vendors, each splitting an eth_getLogs range
+// longer than 2 blocks into pieces pinned to it, read over 8 blocks ending
+// at the tip with a filter the held blooms call maybe that matches no log
+// (p23SplitReads). A pinned piece may ask no other upstream: gated as a
+// read with peers, its empty answer waited W for a holder it could not
+// reserve, then failed, and so did its upstream's whole split, upstream
+// after upstream. The vendors are polled every block, so other holders of
+// the tip exist when the parent's merged empty answer is gated (p23Lone
+// reads with none).
+var p23Split = p23Shape{name: "P23-split", bt: 100 * time.Millisecond, jitter: 20 * time.Millisecond, warm: 300,
+	ahead: time.Minute, split: 2,
+	ups: []freshUp{
+		{"http-a", "vendor-a", 20 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-b", "vendor-b", 25 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-c", "vendor-c", 30 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-d", "vendor-d", 35 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-e", "vendor-e", 40 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+		{"http-f", "vendor-f", 45 * time.Millisecond, 100 * time.Millisecond, 0, 0},
+	}}
+
+// p23Lone: p23Split's reads, unsplit, on P23's vendors, polled every 10 s:
+// the clock's one fetch a block leaves no other holder of the tip within
+// W, so a gated read's probe finds none and asks the first upstream again
+// (maybe_reasked). Ending in a block-unavailable error instead, 451 of 605
+// such reads failed.
+var p23Lone = p23Shape{name: "P23-lone", bt: 100 * time.Millisecond, jitter: 20 * time.Millisecond, warm: 300,
+	ahead: time.Minute, lone: true, ups: p23Fast.ups}
+
 // p23Slow: four https vendors 20-35 ms away, polled every 10 s, on a 2 s
 // chain, W 6 s, that serve each block 0-0.75 s after it is minted, and
 // whose latest tag names a block only 3 s after they serve it, as load
@@ -124,26 +190,35 @@ var p23Slow = p23Shape{name: "P23-slow", bt: 2 * time.Second, jitter: 200 * time
 	}}
 
 // p23Band: P23-slow's vendors without TagDelay, vendor-a's block readers
-// trailing its tag by 300 ms (BlockLag): its tag names each block first,
-// so a read of it is a band read whose first attempt, vendor-a, answers
-// it empty, and no vendor serves the block by number for 250 ms. Main's
-// retry waited for the block clock's next turn: by-number reads 0.56 s
-// later than the first vendor's serve at p50 (production, mantle and
-// optimism: retried_found reads 1-3 s on 2 s blocks). No read can answer
-// before a vendor serves the block. A read at or below Latest of a block
-// vendor-a's tag announced fails while no vendor serves it, on a788b613
-// (this branch's parent) as here; runs alternated with one harness, 4
-// each: a788b613 failed 3.76%, 4.70%, 4.18%, 4.23% of its reads,
-// served_missing per pod at most 53, 67, 61, 58, p99 648, 589, 676,
-// 610 ms; this branch 5.10%, 4.36%, 3.82%, 4.21%, at most 72, 64, 54,
-// 59, p99 660 and 610 ms in its last two. Those are judged against
-// a788b613's highest plus 5% (pre). Head fetches per new block, polls
-// left out, the higher pod of each run: a788b613 1.867, 1.823, 1.933,
-// 1.944; this branch 1.911, 1.822, 1.845, 1.811; bar 1.944 x 1.05.
+// trailing its tag by 300 ms (BlockLag) and its log index by 500 ms
+// (LogsLag): its tag names each block first, so a read of it is a band
+// read whose first attempt, vendor-a, answers it empty, and no vendor
+// serves the block by number for 250 ms; its eth_getLogs, by range or
+// blockHash, answer [] for the block until vendor-c serves it too, as a
+// vendor whose log index trails its head. Main's retry waited for the
+// block clock's next turn: by-number reads 0.56 s later than the first
+// vendor's serve at p50 (production, mantle and optimism: retried_found
+// reads 1-3 s on 2 s blocks). No read can answer before a vendor serves
+// the block. A read at or below Latest of a block vendor-a's tag
+// announced fails while no vendor serves it, on main as here. The bars of
+// those checks (pre) are 172a2ec7's highest plus 5%, from earlier runs.
+// Runs with this harness, alternated, 4 each, main cd3e82d4 then this
+// branch: wrong empty eth_getLogs per new pod 917-934 on main, 0 here;
+// eth_getBlockByNumber failed on 4.02%, 4.14%, 4.25%, 3.79% of main's
+// reads, 3.74%, 4.17%, 3.82%, 4.73% here, p99 629, 662, 351, 590 ms on
+// main, 950, 691, 664, 708 ms here; served_missing per pod at most 57,
+// 56, 59, 53 on main, 52, 63, 63, 67 here; no null at or below Latest on
+// either. Head fetches per new block, polls left out, the higher pod of
+// each run, at most 1.933 on main, 1.978 here (budget). The logs gate's
+// own costs (gate), its parallel probe of the other holders: no refusal
+// Ask in any run (0.000 per new block on every pod); eth_getLogs p99 719,
+// 742, 759 ms (978 ms in a run that started at host load 17.5), against
+// main's 23-24 ms, which served the wrong empty answers.
 var p23Band = p23Shape{name: "P23-band", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	base: 2 * time.Minute, hash: 2 * time.Minute, ahead: 3 * time.Minute,
-	blockLag: 300 * time.Millisecond, budget: 2.04, old: true, peer: true,
-	pre: &p23Pre{p99: 676 * time.Millisecond, failed: 0.0470, servedMissing: 67},
+	blockLag: 300 * time.Millisecond, logsLag: 500 * time.Millisecond, budget: 2.00, old: true, peer: true,
+	pre:  &p23Pre{p99: 683 * time.Millisecond, failed: 0.0463, servedMissing: 70},
+	gate: &p23Gate{logsP99: 759 * time.Millisecond},
 	ups: []freshUp{
 		{"http-a", "vendor-a", 20 * time.Millisecond, 10 * time.Second, 0, 0},
 		{"http-b", "vendor-b", 25 * time.Millisecond, 10 * time.Second, 0, 250 * time.Millisecond},
@@ -214,13 +289,18 @@ func p23(sh p23Shape) spec {
 	if sh.old {
 		sp.pods, sp.oldPods, sp.memory, sp.splitState = 4, []int{0, 1}, false, true
 	}
-	if sh.blockLag > 0 {
+	if sh.blockLag > 0 || sh.logsLag > 0 {
 		f := sp.faults["http-a"]
-		f.BlockLag = sh.blockLag
+		f.BlockLag, f.LogsLag = sh.blockLag, sh.logsLag
 		sp.faults["http-a"] = f
 	}
 	if sh.future {
 		sp.evm = map[string]interface{}{"shortCircuitFutureBlocks": true}
+	}
+	if sh.split > 0 {
+		for _, ev := range sp.upEvm {
+			ev["getLogsAutoSplittingRangeThreshold"] = sh.split
+		}
 	}
 	return sp
 }
@@ -236,6 +316,9 @@ type p23Reads struct {
 	// empty counts by-number reads answered empty or failed: a band
 	// read answered so is a retried_missing (§17).
 	empty int
+	// wrongEmpty counts eth_getLogs answered [] for a block whose
+	// canonical logs match the read (§6.4 logs gate): wrong data.
+	wrongEmpty int
 	// byClass tallies the by-number reads again under "method class",
 	// class the read's block against the pod's Latest just before it
 	// (p23Class); nil when the shape has no peer readers.
@@ -272,12 +355,37 @@ func (r *p23Reads) fail(kind, format string, args ...interface{}) {
 	}
 }
 
+// logsReads counts r's client eth_getLogs reads of every kind, answered,
+// null or failed.
+func (r *p23Reads) logsReads() float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int
+	for _, m := range []map[string]int{r.nulls, r.fails} {
+		for k, v := range m {
+			if strings.HasPrefix(k, "eth_getLogs") {
+				n += v
+			}
+		}
+	}
+	for k, ds := range r.took {
+		if strings.HasPrefix(k, "eth_getLogs") {
+			n += len(ds)
+		}
+	}
+	return float64(n)
+}
+
 func p23Body(s *scenario, sh p23Shape) {
 	// The bar waits until the block time estimate settled (sh.warm).
 	s.blocks(sh.warm)
 	vl := &viewLog{}
 	// Both latest reads: eth_blockNumber alone is no clock demand.
 	heads := liveReads(p23HeadRate, s.chain.BlockTime(), vl)
+	if sh.split > 0 || sh.lone {
+		s.p23SplitBody(sh, heads)
+		return
+	}
 	taps := make([]*viewTap, len(s.h.pods))
 	for _, p := range s.h.pods {
 		if !p.old {
@@ -305,13 +413,17 @@ func p23Body(s *scenario, sh p23Shape) {
 			r.byClass = newP23Reads()
 		}
 	}
+	// With the gate's bars, each block's logs are read by its blockHash
+	// too, as the first vendor's tag names it: a hash no tracker holds yet.
+	hashCalls0, hashGates0 := s.p23LogsCalls(), s.p23Gates()
 	_, byHash, _, _, _ := s.liveRun(sh.hash, heads, func(ctx context.Context, _ *faultWindows) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
-			wg.Go(func() { s.p23ByHash(ctx, p.idx, hashReads[p.idx], vl) })
+			wg.Go(func() { s.p23ByHash(ctx, p.idx, hashReads[p.idx], vl, sh.gate != nil) })
 		}
 		wg.Wait()
 	})
+	hashCalls1, hashGates1 := s.p23LogsCalls(), s.p23Gates()
 	ask2 := s.p23Asks()
 	s.judgeFetches(&b, "by-hash reads", byHash, 0)
 
@@ -319,14 +431,16 @@ func p23Body(s *scenario, sh p23Shape) {
 	for pod := range s.h.pods {
 		missing0[pod], _ = s.metric(pod, "erpc_head_refusal_total", map[string]string{"rule": "retried_missing"})
 	}
+	calls0, gates0 := s.p23LogsCalls(), s.p23Gates()
 	_, ahead, _, _, _ := s.liveRun(sh.ahead, heads, func(ctx context.Context, _ *faultWindows) {
 		var wg sync.WaitGroup
 		for _, p := range s.h.pods {
 			wg.Go(func() { s.p23ByNumber(ctx, p.idx, reads[p.idx], sh) })
-			wg.Go(func() { s.p23ByHash(ctx, p.idx, reads[p.idx], vl) })
+			wg.Go(func() { s.p23ByHash(ctx, p.idx, reads[p.idx], vl, false) })
 		}
 		wg.Wait()
 	})
+	calls1, gates1 := s.p23LogsCalls(), s.p23Gates()
 	ask3 := s.p23Asks()
 	s.judgeFetches(&b, "read-ahead", ahead, 0)
 	s.blocks(10)
@@ -343,14 +457,21 @@ func p23Body(s *scenario, sh p23Shape) {
 		// background, the same with or without readers, and stay out:
 		// with no fetch of latest left to meet them, the 10 s polls of a
 		// 2 s chain's 4 vendors cost 0.37 a block (P23-slow).
-		var polls float64
+		var polls, asks float64
 		if ahead.blocks > 0 {
 			polls = ahead.mix[p.idx]["ask poll fetched"] / float64(ahead.blocks)
+			asks = ahead.mix[p.idx]["ask refusal fetched"] / float64(ahead.blocks)
 		}
-		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %.3f head fetches per new block, %.3f of them polls; clock only: %.3f\n",
-			p.idx+1, s.image(p.idx), ahead.perBlock(p.idx), polls, base.perBlock(p.idx))
+		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %.3f head fetches per new block, %.3f of them polls, %.3f refusal Asks; clock only: %.3f\n",
+			p.idx+1, s.image(p.idx), ahead.perBlock(p.idx), polls, asks, base.perBlock(p.idx))
 		// Beside the old image, head+1 readers are reported only (p23BandAhead).
-		if spent := ahead.perBlock(p.idx) - polls; !p.old && (!sh.old || sh.peer) && spent > budget {
+		judged := !p.old && (!sh.old || sh.peer)
+		spent := ahead.perBlock(p.idx) - polls
+		if sh.gate != nil && judged && asks > 0 {
+			s.violate(s.name, "pod-%d: %.3f refusal Asks per new block with read-ahead clients: the logs gate probes holders only, with no Ask",
+				p.idx+1, asks)
+		}
+		if judged && spent > budget {
 			s.violate(s.name, "pod-%d: %.3f head fetches per new block with read-ahead clients, polls left out, above %.2f",
 				p.idx+1, spent, budget)
 		}
@@ -363,18 +484,42 @@ func p23Body(s *scenario, sh p23Shape) {
 		s.p23Judge(&b, p.idx, "by-hash reads", hashReads[p.idx], hashJudged, strict, sh.pre)
 		s.p23Judge(&b, p.idx, "read-ahead", reads[p.idx], hashJudged, strict, sh.pre)
 		fmt.Fprintf(&b, "pod-%d (%s image) read-ahead: %d by-number reads answered empty or failed\n", p.idx+1, s.image(p.idx), reads[p.idx].empty)
+		var gate []string
+		for _, v := range p23Verdicts {
+			gate = append(gate, fmt.Sprintf("%s %.0f", v, gates1[p.idx][v]))
+		}
+		for _, ph := range []struct {
+			name string
+			r    *p23Reads
+		}{{"by-hash reads", hashReads[p.idx]}, {"read-ahead", reads[p.idx]}} {
+			fmt.Fprintf(&b, "pod-%d (%s image) %s: eth_getLogs answered [] for a block with matching logs (wrongEmpty): %d\n",
+				p.idx+1, s.image(p.idx), ph.name, ph.r.wrongEmpty)
+			if !p.old && ph.r.wrongEmpty > 0 {
+				s.violate(s.name, "pod-%d %s: %d eth_getLogs answered [] for a block with matching logs", p.idx+1, ph.name, ph.r.wrongEmpty)
+			}
+		}
+		fmt.Fprintf(&b, "pod-%d (%s image) logs gate verdicts: %s\n", p.idx+1, s.image(p.idx), strings.Join(gate, ", "))
 		if !p.old {
 			s.judgeView(&b, taps[p.idx], vl, viewRules{bound: liveViewBound, numbers: true})
 		}
 	}
+	if sh.gate != nil {
+		s.p23Cost(&b, "by-hash reads", hashCalls0, hashCalls1, hashGates0, hashGates1, hashReads, 1, true)
+		for _, p := range s.h.pods {
+			fmt.Fprintf(&b, "pod-%d (%s image) by-hash reads: logs gate header lookups found %.0f, found none %.0f (checked at the block after the head)\n",
+				p.idx+1, s.image(p.idx), hashGates1[p.idx][p23LookupFound]-hashGates0[p.idx][p23LookupFound], hashGates1[p.idx][p23LookupNone]-hashGates0[p.idx][p23LookupNone])
+		}
+	}
+	s.p23Cost(&b, "read-ahead", calls0, calls1, gates0, gates1, reads, 1, sh.gate != nil)
 	if sh.old {
 		// By-hash reads above Latest go out as they came (§6.4 by-hash
 		// answer), as the old image's: shown, not judged here.
-		s.p23Versus(&b, "by-hash reads", hashReads, p23HashMethods, sh.slack, false, nil)
-		s.p23Versus(&b, "read-ahead", reads, p23HashMethods, sh.slack, false, nil)
-		s.p23Versus(&b, "read-ahead", reads, p23NumberMethods, sh.slack, sh.peer, sh.pre)
+		s.p23Versus(&b, "by-hash reads", hashReads, p23HashMethods, sh.slack, false, nil, nil)
+		s.p23Versus(&b, "read-ahead", reads, p23HashMethods, sh.slack, false, nil, nil)
+		s.p23Versus(&b, "read-ahead", reads, p23NumberMethods, sh.slack, sh.peer, sh.pre, sh.gate)
 		s.p23Attempts(&b, ahead, reads, sh.peer)
 		s.p23Nulls(&b, reads, sh.peer, sh.pre)
+		s.p23HashLogs(&b, reads)
 		s.p23Classes(&b, reads)
 	}
 	for _, p := range s.h.pods {
@@ -400,6 +545,324 @@ func p23Body(s *scenario, sh p23Shape) {
 	s.logf("%s", b.String())
 }
 
+// p23SplitBody runs the tip logs reads (p23SplitReads) on each pod beside
+// heads for sh.ahead, then judges each pod: every read answers the
+// chain's logs, none failed. Split, p99 latency at most a quarter of W,
+// since a pinned piece's empty answer is served at once (maybe_alone), not
+// after the probe's wait, no maybe_reasked verdict, and at most
+// p23ExtraAsks per checked read (p23Cost); then the old split reads
+// (p23OldReads). Lone, a gated read waits W for a holder, then re-asks:
+// p99 at most W plus two round trips of the slowest vendor (the first
+// answer, the re-ask) plus p23Noise, and some maybe_reasked verdicts, else
+// no read met a tip no other upstream held.
+func (s *scenario) p23SplitBody(sh p23Shape, heads []liveRead) {
+	pieces := 1.0
+	if sh.split > 0 {
+		pieces = float64((p23SplitBlocks + sh.split - 1) / sh.split)
+	}
+	reads := make([]*p23Reads, len(s.h.pods))
+	for _, p := range s.h.pods {
+		reads[p.idx] = newP23Reads()
+	}
+	calls0, gates0 := s.p23LogsCalls(), s.p23Gates()
+	_, _, _, from, to := s.liveRun(sh.ahead, heads, func(ctx context.Context, _ *faultWindows) {
+		var wg sync.WaitGroup
+		for _, p := range s.h.pods {
+			wg.Go(func() { s.p23SplitReads(ctx, p.idx, reads[p.idx], 0) })
+		}
+		wg.Wait()
+	})
+	calls1, gates1 := s.p23LogsCalls(), s.p23Gates()
+	w := max(3*s.chain.BlockTime(), liveBound)
+	bar, why := w/4, "a pinned piece's empty answer waited"
+	if sh.lone {
+		var rtt time.Duration
+		for _, u := range sh.ups {
+			rtt = max(rtt, u.slow)
+		}
+		bar, why = w+2*rtt+p23Noise, "a gated read waited past W and its re-ask"
+	}
+	var b strings.Builder
+	for _, p := range s.h.pods {
+		r := reads[p.idx]
+		s.p23Judge(&b, p.idx, "split reads", r, nil, true, nil)
+		delta := map[string]float64{}
+		var line []string
+		for _, v := range p23Verdicts {
+			delta[v] = gates1[p.idx][v] - gates0[p.idx][v]
+			line = append(line, fmt.Sprintf("%s %.0f", v, delta[v]))
+		}
+		fmt.Fprintf(&b, "pod-%d %s reads: logs gate verdicts %s\n", p.idx+1, sh.name, strings.Join(line, ", "))
+		ds := slices.Sorted(slices.Values(r.took[p23SplitKind]))
+		switch {
+		case len(ds) == 0:
+			s.violate(s.name, "pod-%d: no split read answered", p.idx+1)
+		case pctl(ds, 99) > bar:
+			s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("pod-%d: tip logs reads p99 %s, above %s (W %s): %s", p.idx+1, pctl(ds, 99), bar, w, why)))
+		}
+		switch {
+		case sh.lone && delta["maybe_reasked"] == 0:
+			s.violate(s.name, "pod-%d: no maybe_reasked verdict: no read met a tip no other upstream held", p.idx+1)
+		case !sh.lone && delta["maybe_reasked"] > 0:
+			s.violate(s.name, "pod-%d: %.0f maybe_reasked verdicts on split reads: a pinned piece has no peer to ask", p.idx+1, delta["maybe_reasked"])
+		}
+	}
+	s.p23Cost(&b, sh.name+" reads", calls0, calls1, gates0, gates1, reads, pieces, !sh.lone)
+	if !sh.lone {
+		s.p23OldReads(&b, heads, pieces, w)
+	}
+	s.logf("%s", b.String())
+}
+
+// p23OldReads runs p23SplitReads for p23OldRun over ranges ending 2 W
+// below each pod's eth_blockNumber, with the same filter: the blooms call
+// it maybe, it matches no log. Each new-image pod is judged: every read
+// answers the chain's logs (none), none fails; the logs gate judges only
+// blocks newer than W (spec §6.4 logs gate), so each read counts old
+// verdicts (its pieces' and its own), none of another verdict, and the
+// vendors get no eth_getLogs call beyond the reads' own pieces.
+func (s *scenario) p23OldReads(b *strings.Builder, heads []liveRead, pieces float64, w time.Duration) {
+	back := uint64(2 * w / s.chain.BlockTime())
+	reads := make([]*p23Reads, len(s.h.pods))
+	for _, p := range s.h.pods {
+		reads[p.idx] = newP23Reads()
+	}
+	calls0, gates0 := s.p23LogsCalls(), s.p23Gates()
+	s.liveRun(p23OldRun, heads, func(ctx context.Context, _ *faultWindows) {
+		var wg sync.WaitGroup
+		for _, p := range s.h.pods {
+			wg.Go(func() { s.p23SplitReads(ctx, p.idx, reads[p.idx], back) })
+		}
+		wg.Wait()
+	})
+	calls1, gates1 := s.p23LogsCalls(), s.p23Gates()
+	for _, p := range s.h.pods {
+		if p.old {
+			continue
+		}
+		r := reads[p.idx]
+		s.p23Judge(b, p.idx, "old split reads", r, nil, true, nil)
+		n := r.logsReads()
+		extra := calls1[p.idx].calls - calls0[p.idx].calls - pieces*n
+		var line []string
+		var judged float64
+		for _, v := range p23Verdicts {
+			d := gates1[p.idx][v] - gates0[p.idx][v]
+			line = append(line, fmt.Sprintf("%s %.0f", v, d))
+			if v != "old" {
+				judged += d
+			}
+		}
+		old := gates1[p.idx]["old"] - gates0[p.idx]["old"]
+		fmt.Fprintf(b, "pod-%d old split reads, %d blocks below the tip (W %s): %.0f reads, %.0f eth_getLogs calls beyond their pieces; logs gate verdicts %s\n",
+			p.idx+1, back, w, n, extra, strings.Join(line, ", "))
+		switch {
+		case n == 0:
+			s.violate(s.name, "pod-%d: no old split read", p.idx+1)
+		case old < n:
+			s.violate(s.name, "pod-%d: %.0f old verdicts for %.0f old split reads: a block that reached the view head W ago was judged", p.idx+1, old, n)
+		}
+		if judged > 0 {
+			s.violate(s.name, "pod-%d: %.0f logs gate verdicts other than old on old split reads", p.idx+1, judged)
+		}
+		if extra > 0 {
+			s.violate(s.name, "pod-%d: %.0f eth_getLogs calls beyond the old split reads' own pieces: an old block's empty answer asked other holders", p.idx+1, extra)
+		}
+	}
+}
+
+// p23Cost reports, per pod, the upstream asks for eth_getLogs from calls0
+// to calls1 beyond each client read's own: on a new-image pod per read
+// the logs gate checked from gates0 to gates1 (p23Checked), on an
+// old-image pod per client read. Unsplit (pieces 1), they are the client
+// reads' ids sent again (p23Calls.repeats): the tracker answers some reads
+// from held logs with no call. Split, the pieces carry ids of their own,
+// so they are the calls beyond pieces per client read, in asks of pieces
+// calls. Judged, a new-image pod's above p23ExtraAsks is flagged. Retries
+// of a band read's miss count too, so this bounds the gate's own asks from
+// above.
+func (s *scenario) p23Cost(b *strings.Builder, phase string, calls0, calls1 []p23Calls, gates0, gates1 []map[string]float64, reads []*p23Reads, pieces float64, judged bool) {
+	for _, p := range s.h.pods {
+		n := reads[p.idx].logsReads()
+		calls := calls1[p.idx].calls - calls0[p.idx].calls
+		asks := calls1[p.idx].repeats - calls0[p.idx].repeats
+		if pieces > 1 {
+			asks = (calls - pieces*n) / pieces
+		}
+		if p.old {
+			fmt.Fprintf(b, "pod-%d (old image) %s: %.0f vendor eth_getLogs calls for %.0f client reads, %.0f extra asks: %.3f per client read\n",
+				p.idx+1, phase, calls, n, asks, asks/max(n, 1))
+			continue
+		}
+		var checked float64
+		for _, v := range p23Checked {
+			checked += gates1[p.idx][v] - gates0[p.idx][v]
+		}
+		per := asks / max(checked, 1)
+		fmt.Fprintf(b, "pod-%d (new image) %s: %.0f vendor eth_getLogs calls for %.0f client reads (%.0f calls an ask), %.0f extra asks, %.0f reads checked by the logs gate: %.3f extra asks per checked read\n",
+			p.idx+1, phase, calls, n, pieces, asks, checked, per)
+		if judged && per > p23ExtraAsks {
+			s.violate(s.name, "pod-%d %s: %.3f extra eth_getLogs asks per checked read, above %.1f: the logs gate asks one holder at a time", p.idx+1, phase, per, p23ExtraAsks)
+		}
+	}
+}
+
+// p23Calls are a pod's eth_getLogs requests through every vendor proxy:
+// calls, less its tracker's logs fetches
+// (erpc_chain_tracker_fetch_total{kind="logs"}), which no client read
+// sends; repeats, each JSON-RPC id's requests past its first (link.logIDs).
+type p23Calls struct{ calls, repeats float64 }
+
+func (s *scenario) p23LogsCalls() []p23Calls {
+	out := make([]p23Calls, len(s.h.pods))
+	for _, p := range s.h.pods {
+		ids := map[string]int{}
+		for _, px := range s.proxies {
+			out[p.idx].calls += float64(px.reads(p, getLogsRead))
+			for id, n := range px.logsIDs(p) {
+				ids[id] += n
+			}
+		}
+		for _, n := range ids {
+			out[p.idx].repeats += float64(n - 1)
+		}
+		fetched, _ := s.metric(p.idx, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "logs"})
+		out[p.idx].calls -= fetched
+	}
+	return out
+}
+
+// p23LookupFound and p23LookupNone key p23Gates' counts of the gate's
+// header lookups of a blockHash the tracker does not hold
+// (erpc_chain_tracker_fetch_total{kind="logs_hash"}) that found the
+// header, and that found none.
+const (
+	p23LookupFound = "lookup found"
+	p23LookupNone  = "lookup none"
+)
+
+// p23Gates is, per pod, its logs gate verdicts (p23Verdicts) and header
+// lookups (p23LookupFound, p23LookupNone).
+func (s *scenario) p23Gates() []map[string]float64 {
+	out := make([]map[string]float64, len(s.h.pods))
+	for _, p := range s.h.pods {
+		out[p.idx] = map[string]float64{}
+		for _, v := range p23Verdicts {
+			out[p.idx][v], _ = s.metric(p.idx, "erpc_logs_empty_gate_total", map[string]string{"verdict": v})
+		}
+		out[p.idx][p23LookupFound], _ = s.metric(p.idx, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "logs_hash", "outcome": "ok"})
+		out[p.idx][p23LookupNone], _ = s.metric(p.idx, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "logs_hash", "outcome": "error"})
+	}
+	return out
+}
+
+// p23SplitReads reads on pod, about p23SplitRate times a second until ctx
+// ends, eth_getLogs over the p23SplitBlocks blocks ending back blocks
+// below the pod's eth_blockNumber, more than the shape's split, so each
+// vendor's attempt splits it into pieces pinned to that vendor. The
+// filter is p23SplitFilter's; the answer must be the chain's logs for it:
+// none.
+func (s *scenario) p23SplitReads(ctx context.Context, pod int, r *p23Reads, back uint64) {
+	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.h.podClient()))
+	if err != nil {
+		s.violate("harness", "pod-%d: split client: %v", pod+1, err)
+		return
+	}
+	defer c.Close()
+	call := func(result interface{}, method string, args ...interface{}) error {
+		ctx, cancel := context.WithTimeout(context.Background(), httpCheckWait)
+		defer cancel()
+		return c.CallContext(ctx, result, method, args...)
+	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	period := time.Duration(float64(time.Second) / p23SplitRate)
+	for ctx.Err() == nil {
+		sleepCtx(ctx, period/2+rand.N(period))
+		var tip hexutil.Uint64
+		if err := call(&tip, "eth_blockNumber"); err != nil || ctx.Err() != nil {
+			continue
+		}
+		to := uint64(tip) - back
+		from := to - p23SplitBlocks + 1
+		q, want, ok := s.p23SplitFilter(from, to)
+		if !ok {
+			continue
+		}
+		wg.Go(func() {
+			read := fmt.Sprintf("eth_getLogs(%d-%d, topic %s)", from, to, q["topics"].([]interface{})[1])
+			var logs []struct {
+				BlockHash hash           `json:"blockHash"`
+				LogIndex  hexutil.Uint64 `json:"logIndex"`
+			}
+			start := time.Now()
+			err := call(&logs, "eth_getLogs", q)
+			took := time.Since(start)
+			got := map[chainsim.LogKey]bool{}
+			for _, l := range logs {
+				got[chainsim.LogKey{BlockHash: l.BlockHash, LogIndex: int(l.LogIndex)}] = true
+			}
+			switch {
+			case err != nil:
+				r.fail(p23SplitKind, "%s failed after %s: %v", read, took.Round(time.Millisecond), err)
+			case len(logs) != len(want) || !maps.Equal(got, want):
+				r.fail(p23SplitKind, "%s answered %d logs, not the chain's %d, after %s", read, len(logs), len(want), took.Round(time.Millisecond))
+			default:
+				r.ok(p23SplitKind, took)
+			}
+		})
+	}
+}
+
+// p23SplitFilter is a filter over from..to that the held headers' blooms
+// call maybe and that matches no log: the address Addrs[0] and, at the
+// second topic position, the topic of one transaction of the range's
+// newest block that has a log of Addrs[0] in another transaction but none
+// in that one (chainsim gives each transaction's logs a topic of its own).
+// That block's bloom holds both, every other block's lacks the topic. want
+// are the chain's logs for it; ok is false for a range with no such block.
+func (s *scenario) p23SplitFilter(from, to uint64) (q map[string]interface{}, want map[chainsim.LogKey]bool, ok bool) {
+	addr := chainsim.Addrs[0]
+	for i := uint64(0); i <= to-from; i++ {
+		b := s.chain.CanonAt(to - i)
+		if b == nil {
+			continue
+		}
+		holds := map[int]bool{}
+		for _, l := range b.Logs() {
+			if l.Address == addr {
+				holds[l.TxIndex] = true
+			}
+		}
+		if len(holds) == 0 {
+			continue
+		}
+		for _, l := range b.Logs() {
+			if holds[l.TxIndex] {
+				continue
+			}
+			topic := l.Topics[1]
+			want = map[chainsim.LogKey]bool{}
+			for n := from; n <= to; n++ {
+				c := s.chain.CanonAt(n)
+				if c == nil {
+					continue
+				}
+				for _, x := range c.Logs() {
+					if x.Address == addr && len(x.Topics) > 1 && x.Topics[1] == topic {
+						want[x.Key()] = true
+					}
+				}
+			}
+			return map[string]interface{}{
+				"fromBlock": hexutil.EncodeUint64(from), "toBlock": hexutil.EncodeUint64(to),
+				"address": addr.Hex(), "topics": []interface{}{nil, topic.Hex()},
+			}, want, true
+		}
+	}
+	return nil, nil, false
+}
+
 // p23ByNumber reads, about p23AheadRate times a second until ctx ends,
 // block view + 1 on pod, view the pod's newest eth_blockNumber answer
 // (polled every block), alternating eth_getBlockByNumber and eth_getLogs,
@@ -411,7 +874,10 @@ func p23Body(s *scenario, sh p23Shape) {
 // eth_blockNumber answer (polled every bt/20): a client's eth_blockNumber
 // lands on one pod and its read of that block on another, the band's
 // source in production. With the shape's old, each read has beside it
-// the same read of the block p23Back below.
+// the same read of the block p23Back below. Each block's first
+// eth_getLogs read has beside it one filtered by an address and topic of
+// its first log, so the logs gate tests a filter against the header's
+// bloom, and one by its blockHash (p23Filtered, §6.4 logs gate).
 func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23Shape) {
 	c, err := rpc.DialOptions(ctx, s.h.pods[pod].httpURL(s.project, s.chain.ID()), rpc.WithHTTPClient(s.h.podClient()))
 	if err != nil {
@@ -442,6 +908,7 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 		}
 	}()
 	period := time.Duration(float64(time.Second) / p23AheadRate)
+	var filtered uint64
 	for i := 0; ctx.Err() == nil; i++ {
 		sleepCtx(ctx, period/2+rand.N(period))
 		v := view.Load()
@@ -465,6 +932,11 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 			if err != nil || got == "null" || got == "0 logs of []" {
 				r.mu.Lock()
 				r.empty++
+				r.mu.Unlock()
+			}
+			if want := s.chain.CanonAt(n); err == nil && method == "eth_getLogs" && got == "0 logs of []" && want != nil && got != p12Want(method, want) {
+				r.mu.Lock()
+				r.wrongEmpty++
 				r.mu.Unlock()
 			}
 			tally := []*p23Reads{r}
@@ -492,10 +964,78 @@ func (s *scenario) p23ByNumber(ctx context.Context, pod int, r *p23Reads, sh p23
 		}
 		wg.Add(1)
 		go read(v+ahead, method)
+		if n := v + ahead; method == "eth_getLogs" && n > filtered {
+			filtered = n
+			wg.Add(2)
+			go func() { defer wg.Done(); s.p23Filtered(call, r, n, false) }()
+			go func() { defer wg.Done(); s.p23Filtered(call, r, n, true) }()
+		}
 		if sh.old && v > p23Back {
 			wg.Add(1)
 			go read(v+ahead-p23Back, method+" control")
 		}
+	}
+}
+
+// p23Filtered reads eth_getLogs(n, n) filtered by the address and first
+// topic of block n's first log, tallied as "eth_getLogs filtered", or,
+// byHash, all of block n's logs by its blockHash, tallied as "eth_getLogs
+// by hash" (production: a vendor answered a blockHash read [] for a block
+// with logs); a block the chain has not made, or one with no logs, is not
+// read. An answer of [] is a wrongEmpty.
+func (s *scenario) p23Filtered(call func(result interface{}, method string, args ...interface{}) error, r *p23Reads, n uint64, byHash bool) {
+	kind, read := "eth_getLogs filtered", fmt.Sprintf("eth_getLogs(%d) filtered", n)
+	b := s.chain.CanonAt(n)
+	if b == nil || len(b.Logs()) == 0 {
+		return
+	}
+	first := b.Logs()[0]
+	want := 0
+	for _, l := range b.Logs() {
+		if l.Address == first.Address && l.Topics[0] == first.Topics[0] {
+			want++
+		}
+	}
+	q := map[string]interface{}{
+		"fromBlock": hexutil.EncodeUint64(n), "toBlock": hexutil.EncodeUint64(n),
+		"address": first.Address.Hex(), "topics": []interface{}{first.Topics[0].Hex()},
+	}
+	if byHash {
+		kind, read = p23HashLogsKind, fmt.Sprintf("eth_getLogs(%s)", b.Hash.Hex())
+		q, want = map[string]interface{}{"blockHash": b.Hash.Hex()}, len(b.Logs())
+	}
+	var logs []struct {
+		BlockHash hash `json:"blockHash"`
+	}
+	onBlock := func() bool {
+		for _, l := range logs {
+			if l.BlockHash.Hex() != b.Hash.Hex() {
+				return false
+			}
+		}
+		return true
+	}
+	start := time.Now()
+	err := call(&logs, "eth_getLogs", q)
+	end := time.Now()
+	took := end.Sub(start).Round(time.Millisecond)
+	if err != nil || len(logs) == 0 {
+		r.mu.Lock()
+		r.empty++
+		if err == nil {
+			r.wrongEmpty++
+		}
+		r.mu.Unlock()
+	}
+	switch {
+	case err != nil:
+		r.fail(kind, "%s failed after %s: %v", read, took, err)
+	case len(logs) == 0:
+		r.fail(kind, "%s answered [], not %d logs, after %s", read, want, took)
+	case len(logs) != want || !onBlock():
+		r.fail(kind, "%s answered %d logs, not %d of %s, after %s", read, len(logs), want, b.Hash.Hex(), took)
+	default:
+		r.ok(kind, s.p23Took(b, "eth_getLogs", start, end))
 	}
 }
 
@@ -522,13 +1062,20 @@ func (s *scenario) p23FirstServe(b *chainsim.Block, method string) time.Time {
 
 // p23ByHash reads on pod, as each block is minted, its eth_getBlockByHash
 // and its first transaction's receipt, logged in vl for the one-view
-// checks, and the same reads of the block p23Back below as control.
-func (s *scenario) p23ByHash(ctx context.Context, pod int, r *p23Reads, vl *viewLog) {
+// checks, and the same reads of the block p23Back below as control. With
+// logs, also each new block's logs by its blockHash as the first vendor's
+// tag names the block (p23Filtered), as a client fed by that vendor's
+// heads asks, before the pod's tracker holds that hash: its empty
+// answer's check must ask one other holder, not every routed upstream.
+func (s *scenario) p23ByHash(ctx context.Context, pod int, r *p23Reads, vl *viewLog, logs bool) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	last := s.chain.Tip().Number
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
+	call := func(result interface{}, method string, args ...interface{}) error {
+		return s.call(pod, result, method, args...)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -544,6 +1091,12 @@ func (s *scenario) p23ByHash(ctx context.Context, pod int, r *p23Reads, vl *view
 			wg.Add(2)
 			go func() { defer wg.Done(); s.p23HashReads(pod, r, vl, b, "") }()
 			go func() { defer wg.Done(); s.p23HashReads(pod, r, nil, back, " control") }()
+			if logs {
+				wg.Go(func() {
+					time.Sleep(time.Until(s.p23FirstServe(b, "eth_blockNumber")))
+					s.p23Filtered(call, r, b.Number, true)
+				})
+			}
 		}
 		last = tip.Number
 	}
@@ -642,8 +1195,9 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Rea
 		fmt.Fprintf(b, "pod-%d (%s image) %s, %s: %d answered, %d null, %d failed; latency p50 %s p99 %s max %s\n",
 			pod+1, s.image(pod), phase, k, len(ds), r.nulls[k], r.fails[k], pctl(ds, 50), pctl(ds, 99), pctl(ds, 100))
 		// With pre, failed eth_getBlockByNumber reads are judged by their
-		// share against the parent's (p23Nulls).
-		if r.fails[k] > 0 && strict && !s.h.pods[pod].old && !(pre != nil && k == "eth_getBlockByNumber") {
+		// share against the parent's (p23Nulls); eth_getLogs by hash
+		// against the old image's (p23HashLogs).
+		if r.fails[k] > 0 && strict && !s.h.pods[pod].old && !(pre != nil && k == "eth_getBlockByNumber") && k != p23HashLogsKind {
 			s.violate(s.name, "pod-%d %s: %d %s reads failed: %s", pod+1, phase, r.fails[k], k, strings.Join(r.ex[k], "; "))
 		}
 	}
@@ -676,8 +1230,8 @@ func (s *scenario) p23Judge(b *strings.Builder, pod int, phase string, r *p23Rea
 // image) and, when judged, flags a p50 or p99 more than the old's plus
 // slack round trips (the new pods' p50 of the method's control read) plus
 // p23Noise; with pre, an eth_getBlockByNumber p99 above pre's plus 5%
-// instead.
-func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads, methods []string, slack int, judged bool, pre *p23Pre) {
+// instead; with gate, an eth_getLogs p99 above the logs gate's plus 5%.
+func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads, methods []string, slack int, judged bool, pre *p23Pre, gate *p23Gate) {
 	pool := func(old bool, kind string) []time.Duration {
 		var ds []time.Duration
 		for _, p := range s.h.pods {
@@ -707,6 +1261,12 @@ func (s *scenario) p23Versus(b *strings.Builder, phase string, reads []*p23Reads
 			if q == 99 && pre != nil && m == "eth_getBlockByNumber" {
 				if bar := time.Duration(float64(pre.p99) * p23PreSlack); pctl(nw, q) > bar {
 					s.violate(s.name, "%s: %s p99 %s on the new image, above its parent's %s + 5%%", phase, m, pctl(nw, q), pre.p99)
+				}
+				continue
+			}
+			if q == 99 && gate != nil && m == "eth_getLogs" {
+				if bar := time.Duration(float64(gate.logsP99) * p23PreSlack); pctl(nw, q) > bar {
+					s.violate(s.name, "%s: %s p99 %s on the new image, above the logs gate's %s + 5%%", phase, m, pctl(nw, q), gate.logsP99)
 				}
 				continue
 			}
@@ -756,6 +1316,32 @@ func (s *scenario) p23Attempts(b *strings.Builder, fs fetchSpan, reads []*p23Rea
 // none does, its null is the truthful answer, where the old image's sweep
 // sometimes found a vendor that held the block before it said so.
 const p23NullSlack = 0.001
+
+// p23HashLogsKind tallies eth_getLogs reads by blockHash (p23Filtered).
+const p23HashLogsKind = "eth_getLogs by hash"
+
+// p23HashLogs reports each image's failed eth_getLogs reads by blockHash
+// and flags the new image's above the old's: a read of a block no vendor
+// has seen yet fails "unknown block" on either image (block availability),
+// while one answered [] for a block with logs is a wrongEmpty, judged on
+// its own.
+func (s *scenario) p23HashLogs(b *strings.Builder, reads []*p23Reads) {
+	var fails [2]int
+	for _, p := range s.h.pods {
+		r := reads[p.idx]
+		r.mu.Lock()
+		if p.old {
+			fails[0] += r.fails[p23HashLogsKind]
+		} else {
+			fails[1] += r.fails[p23HashLogsKind]
+		}
+		r.mu.Unlock()
+	}
+	fmt.Fprintf(b, "read-ahead: %s failed: new image %d, old image %d\n", p23HashLogsKind, fails[1], fails[0])
+	if fails[1] > fails[0] {
+		s.violate(s.name, "read-ahead: %d %s reads failed on the new image, above the old's %d", fails[1], p23HashLogsKind, fails[0])
+	}
+}
 
 // p23Nulls reports the read-ahead run's shares of client
 // eth_getBlockByNumber reads answered null and failed, pooled per image,

@@ -268,7 +268,7 @@ var (
 	MetricChainTrackerFetchTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "chain_tracker_fetch_total",
-		Help:      "Chain tracker fetches by kind, scheduler class and outcome (ok, error, capacity: every upstream tried refused for capacity).",
+		Help:      "Chain tracker fetches by kind (header, receipts, logs, logs_hash: the logs gate's one header lookup by blockHash), scheduler class and outcome (ok, error, capacity: every upstream tried refused for capacity).",
 	}, []string{"project", "network", "kind", "class", "outcome"})
 
 	MetricChainTrackerFetchSlots = DefineGauge(prometheus.GaugeOpts{
@@ -1013,6 +1013,24 @@ var (
 		Name:      "head_refusal_total",
 		Help:      "Total requests naming a block, by the refusal rule's outcome: served, thin_found and thin_missing (Firm < N <= Latest, found or still empty or missing after the retry), retried_found, retried_missing (above Latest, at most the ceiling, empty or missing after the retry), served_missing (eth_getBlockByNumber with Latest - reorgWindow < N <= Latest, null or missing after the retry; must stay 0; other methods are not counted, their null or missing-data answer can be legit), future, future_after_wait.",
 	}, []string{"project", "network", "rule"})
+
+	// MetricLogsEmptyGateTotal counts the logs gate's verdicts on empty
+	// eth_getLogs answers the refusal rule would serve (spec §6.4 logs
+	// gate, §17): old (the block reached the view head W or more ago:
+	// served at once, unjudged), no (the pinned headers prove the range
+	// has no matching log: served at once), or, for a range that may hold
+	// one, maybe_alone (the request may select no other upstream, by its
+	// routing or its use-upstream selector, a split piece's pin included:
+	// served at once), maybe_agreed (another holder answered it empty
+	// too), maybe_found (another holder answered logs) and maybe_reasked
+	// (no holder answered within W: the first upstream's second answer).
+	// maybe_agreed, maybe_found and maybe_reasked are the reads that asked
+	// other holders, one at a time.
+	MetricLogsEmptyGateTotal = DefineCounter(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "logs_empty_gate_total",
+		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: old (the block reached the view head W or more ago; served unjudged), no (headers prove no matching log; served), maybe_alone (the request may select no other upstream, by routing or use-upstream selector, split pieces included; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_reasked (no holder answered within W; the first upstream asked again and its answer served). maybe_agreed, maybe_found and maybe_reasked asked other holders one at a time, the next on an error, a null or the hedge delay.",
+	}, []string{"project", "network", "verdict"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its
 	// caller and how it was met.

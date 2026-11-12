@@ -15,6 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/architecture/evm/integrity"
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
@@ -3711,6 +3712,94 @@ func (t *ChainTracker) HeaderAt(number int64) (*integrity.Header, bool) {
 		return p.parsed, true
 	}
 	return nil, false
+}
+
+// LogsVerdict is the logs gate's verdict on a range (LogsMayExist).
+type LogsVerdict uint8
+
+const (
+	LogsUnheld LogsVerdict = iota // the range is below the pins, or none is held, or no header has the hash: none judges it
+	LogsNone                      // every pinned block of the range proves no log matches
+	LogsMaybe                     // a block of the range may hold a matching log
+	LogsOld                       // its block reached the view head w or more ago: not judged
+)
+
+// LogsMayExist is the logs gate (spec §6.4 logs gate) for an empty
+// eth_getLogs answer of f over [from, to]: LogsOld when the pin at to
+// reached the view head w or more ago (settled); else LogsMaybe when the
+// range reaches above the pins (no header shows that block yet) or a
+// pinned header there does not prove that none of its logs match
+// (bloomGate.provesNoLogs); LogsNone when every pinned block of the range
+// proves it. Held data only: it fetches nothing and locks nothing.
+func (t *ChainTracker) LogsMayExist(f *logfilter.LogsFilter, from, to int64, w time.Duration) LogsVerdict {
+	s := t.state.Load()
+	if len(s.pins) == 0 || to < int64(s.base) {
+		return LogsUnheld
+	}
+	if to > int64(s.head().number) {
+		return LogsMaybe
+	}
+	if settled(s.pinAt(uint64(to)), w) {
+		return LogsOld
+	}
+	for n := to; n >= max(from, int64(s.base)); n-- {
+		if !t.fetch.bloom.provesNoLogs(s.pinAt(uint64(n)), f.MayMatch) {
+			return LogsMaybe
+		}
+	}
+	return LogsNone
+}
+
+// LogsMayExistAt is LogsMayExist for upstream's empty eth_getLogs answer
+// of f by block hash: the header's number, with LogsOld when it reached
+// the view head w or more ago, LogsNone when its bloom proves no log
+// matches, else LogsMaybe. A held header (pinned or not, HeaderByHash) is
+// judged in memory. Any other is looked up once by hash, cache first, from
+// upstream alone, since its empty answer claims the block: then it is old
+// when the pin at its height, or the lowest pin above it, reached the view
+// head w or more ago. A lookup that finds none (a load balancer's block
+// readers can trail the tag its log reads follow) gives LogsMaybe at the
+// block after the head: a hash no tracker holds yet is most likely the
+// newest block. LogsUnheld only with no pin at all.
+func (t *ChainTracker) LogsMayExistAt(ctx context.Context, f *logfilter.LogsFilter, hash, upstream string, w time.Duration) (int64, LogsVerdict) {
+	key, ok := hashKey(hash)
+	if !ok {
+		return 0, LogsUnheld
+	}
+	var ch *chainHeader
+	if h, ok := t.held.Load(key); ok {
+		ch = h.(*chainHeader)
+		if settled(ch, w) {
+			return int64(ch.number), LogsOld
+		}
+	} else {
+		spec := t.headerSpec(classHead, "eth_getBlockByHash", key, upstream, true)
+		spec.kind = "logs_hash"
+		res := t.fetch.fetch(ctx, t, spec)
+		s := t.state.Load()
+		if ch, _ = res.val.(*chainHeader); ch == nil {
+			if len(s.pins) == 0 {
+				return 0, LogsUnheld
+			}
+			return int64(s.head().number) + 1, LogsMaybe
+		}
+		if len(s.pins) > 0 && ch.number <= s.head().number && settled(s.pinAt(max(ch.number, s.base)), w) {
+			return int64(ch.number), LogsOld
+		}
+	}
+	if t.fetch.bloom.provesNoLogs(ch, f.MayMatch) {
+		return int64(ch.number), LogsNone
+	}
+	return int64(ch.number), LogsMaybe
+}
+
+// settled reports whether h, as a pin, reached the view head w or more
+// ago (its confirmed stamp): a log index that trails its own head lags it
+// by less than W. A header with no stamp (unpinned, or not yet stamped)
+// counts as new.
+func settled(h *chainHeader, w time.Duration) bool {
+	at := h.confirmedAt.Load()
+	return at != 0 && time.Now().UnixNano()-at >= int64(w)
 }
 
 // HeaderByHash is a held header by hash, pinned or not. It never fetches.
