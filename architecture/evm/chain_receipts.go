@@ -185,6 +185,23 @@ func (g *bloomGate) emptySkips(h *chainHeader) bool {
 	return !p.checkOff && g.empty(h) && (p.foreignRoots || !p.skipsOff && !p.emptyOff && h.hashRecomputes())
 }
 
+// provesNoLogs reports whether block h's header proves that none of its
+// logs passes may (spec §6.4 logs gate): the block is empty (emptySkips),
+// its logsBloom is all zero where the chain profile keeps the bloom
+// check, or its bloom is trusted for skipping (bloomSkips) and fails may.
+func (g *bloomGate) provesNoLogs(h *chainHeader, may func([]byte) bool) bool {
+	if g.emptySkips(h) {
+		return true
+	}
+	if !g.prof().checkOff && bytes.Equal(h.bloom, zeroBloom[:]) {
+		return true
+	}
+	return g.bloomSkips(h) && !may(h.bloom)
+}
+
+// zeroBloom is a logsBloom no log set a bit of.
+var zeroBloom [logfilter.BloomLen]byte
+
 // newLocked reports whether v is a new outcome for block h; a block counts
 // once per outcome.
 func (g *bloomGate) newLocked(h [32]byte, v bloomVerdict) bool {

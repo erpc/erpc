@@ -1691,6 +1691,19 @@ func (r *NormalizedRequest) Untried(upstream Upstream) bool {
 	return !consumed
 }
 
+// MatchesUseUpstream reports whether the request's UseUpstream selector (a
+// client's X-ERPC-Use-Upstream, or a split piece's pin) lets it select
+// upstream at all, whatever it already tried; every upstream matches
+// without one.
+func (r *NormalizedRequest) MatchesUseUpstream(upstream Upstream) bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	return r.matchesUseUpstreamLocked(upstream)
+}
+
 // reserveLocked reserves upstream when it is selectable and not consumed
 // (in flight, or completed this round).
 func (r *NormalizedRequest) reserveLocked(upstream Upstream) bool {

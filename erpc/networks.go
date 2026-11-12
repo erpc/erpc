@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -1499,16 +1500,206 @@ func refusalMiss(ctx context.Context, method string, resp *common.NormalizedResp
 }
 
 // rangeHeld reports whether u holds the whole range of method, a range
-// query, by its evidence (reachedHead, uncredited) reaching toBlock, the
-// refusal verdict's block: its empty answer is then the range's answer,
-// no miss (spec §6.4). Retried as a miss, an empty block's logs waited W
-// for an untried holder (§19 P23: eth_getLogs p99 2.07 s).
+// query, by its evidence reaching toBlock, the refusal verdict's block
+// (holdsBlock): its empty answer is then no miss of the range's blocks
+// (spec §6.4), and an eth_getLogs one goes to the logs gate. Retried as a
+// miss, an empty block's logs waited W for an untried holder (§19 P23:
+// eth_getLogs p99 2.07 s).
 func (n *Network) rangeHeld(method string, u common.Upstream, refusal *common.HeadRefusal) bool {
 	if refusal == nil || refusal.Block <= 0 || !evm.IsRangeQuery(method) {
 		return false
 	}
+	return n.holdsBlock(u, refusal.Block)
+}
+
+// holdsBlock reports whether u's evidence (reachedHead, uncredited)
+// reaches block.
+func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 	head := n.reachedHead(u, 0)
-	return head > 0 && common.EvmHeadReaches(u, head, refusal.Block)
+	return head > 0 && common.EvmHeadReaches(u, head, block)
+}
+
+// logsGate is the logs gate on u's empty eth_getLogs answer of req, one
+// the refusal rule would serve (spec §6.4 logs gate): the answer is the
+// request's when its block, the range's toBlock or a blockHash filter's,
+// reached the view head W or more ago (counted old): a log index that
+// trails its own head lags it by less; when the held headers prove no
+// matching log (counted no): of every pinned block of a concrete range
+// (ChainTracker.LogsMayExist), or of a blockHash filter's block
+// (ChainTracker.LogsMayExistAt, which looks a hash no tracker holds up
+// once, from u); or when req may select no other upstream (counted
+// maybe_alone): one routed upstream, or a UseUpstream pin, a client's or
+// an eth_getLogs split piece's, that matches only u. A split's merged
+// answer is judged at its parent, which has no pin. Else it may hold one,
+// and the other upstreams whose evidence holds block, the range's toBlock,
+// the hash's number or, when that lookup found none, the block after the
+// head, settle it (logsProbe). A range below the pins, a non-concrete one,
+// and a network without a tracker or pins pass as before, unjudged.
+func (n *Network) logsGate(ctx context.Context, req *common.NormalizedRequest, u common.Upstream) (block int64, maybe bool) {
+	t := n.laneTracker(selectorOf(req))
+	if t == nil {
+		return 0, false
+	}
+	jrq, err := req.JsonRpcRequest()
+	if err != nil {
+		return 0, false
+	}
+	jrq.RLock()
+	f := logfilter.Parse(jrq.Params)
+	jrq.RUnlock()
+	if f == nil {
+		return 0, false
+	}
+	w := health.FreshnessWindow(n.EvmBlockTime())
+	var verdict evm.LogsVerdict
+	if f.BlockHash != "" {
+		block, verdict = t.LogsMayExistAt(ctx, f, f.BlockHash, u.Id(), w)
+	} else {
+		from, to, ok := f.ConcreteRange()
+		if !ok {
+			return 0, false
+		}
+		block, verdict = to, t.LogsMayExist(f, from, to, w)
+	}
+	switch {
+	case verdict == evm.LogsUnheld:
+		return 0, false
+	case verdict == evm.LogsOld:
+		n.countLogsGate("old")
+		return 0, false
+	case verdict == evm.LogsNone:
+		n.countLogsGate("no")
+		return 0, false
+	case !slices.ContainsFunc(req.Upstreams(), func(r common.Upstream) bool { return r.Id() != u.Id() && req.MatchesUseUpstream(r) }):
+		// No peer may agree: the wait would end in its own re-ask.
+		n.countLogsGate("maybe_alone")
+		return 0, false
+	}
+	return block, true
+}
+
+// logsProbe settles u's empty eth_getLogs answer of req, whose block may
+// hold a matching log (spec §6.4 logs gate): send (the client's own
+// request) goes to one other routed upstream whose evidence already holds
+// block (holdsBlock), so its range check passes with no Ask, in the
+// request's upstream order; its answer is served, logs found
+// (maybe_found) or an empty one, which agrees (maybe_agreed). An error or
+// a null asks the next holder at once; no answer within its hedge delay
+// (logsHedgeDelay) asks the next too, the first still in flight. With no
+// such holder left, it waits for one whose evidence reaches block, which
+// the clock's fetches bring (it sends no fetch of its own), until W after
+// u's answer. An upstream below block is never asked: its empty answer
+// proves nothing. Nobody within W: u is asked once more and its answer
+// served (maybe_reasked), since a log index that trailed u's head catches
+// up within W. A leg that ends first, a hedge another leg won, counts
+// nothing. Asked in parallel, every holder paid for each probe
+// (production: about 5 calls a probe on 6 upstreams); swept through range
+// checks that Asked a lagging vendor's head, gated reads waited up to 2 s
+// (P23-band: eth_getLogs p99 1.68-1.90 s).
+func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, block int64, send func(context.Context, common.Upstream) (*common.NormalizedResponse, error)) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartSpan(ctx, "Network.logsProbe", trace.WithAttributes(attribute.Int64("block", block)))
+	defer span.End()
+	parent := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type answer struct {
+		r   *common.NormalizedResponse
+		err error
+	}
+	ups := req.Upstreams()
+	answers := make(chan answer, len(ups))
+	asked := map[string]bool{u.Id(): true}
+	out := 0
+	w := health.FreshnessWindow(n.EvmBlockTime())
+	wait := time.NewTimer(w)
+	defer wait.Stop()
+	hedge := time.NewTimer(w)
+	hedge.Stop()
+	defer hedge.Stop()
+	// late: W passed; next: ask the next holder now, though one is in
+	// flight.
+	late, next := false, false
+	t := n.laneTracker(selectorOf(req))
+	done := func(verdict string, r *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
+		n.countLogsGate(verdict)
+		span.SetAttributes(attribute.String("outcome", verdict), attribute.Int("asked", len(asked)-1))
+		return r, err
+	}
+	canceled := func() (*common.NormalizedResponse, error) {
+		span.SetAttributes(attribute.String("outcome", "canceled"))
+		return nil, context.Cause(parent)
+	}
+	for {
+		computed := n.headsComputed()
+		var moved <-chan struct{}
+		if t != nil {
+			moved = t.Changed()
+		}
+		for _, v := range ups {
+			if late || out > 0 && !next {
+				break
+			}
+			if asked[v.Id()] || !n.holdsBlock(v, block) || !req.ReserveUpstream(v) {
+				continue
+			}
+			asked[v.Id()] = true
+			out++
+			go func() {
+				r, err := send(ctx, v)
+				answers <- answer{r, err}
+			}()
+			next = false
+			hedge.Reset(n.logsHedgeDelay(v, w))
+		}
+		if late && out == 0 {
+			r, err := send(ctx, u)
+			if parent.Err() != nil {
+				return canceled()
+			}
+			if err == nil && r.IsObjectNull() {
+				r, err = nil, common.NewErrUpstreamBlockUnavailable(u.Id(), block, upstreamLatestBlock(u), 0)
+			}
+			return done("maybe_reasked", r, err)
+		}
+		select {
+		case a := <-answers:
+			out--
+			switch {
+			case a.err != nil, a.r.IsObjectNull():
+				next = true
+			case !isEmptyNetworkResult("eth_getLogs", a.r):
+				return done("maybe_found", a.r, nil)
+			default:
+				return done("maybe_agreed", a.r, nil)
+			}
+		case <-hedge.C:
+			next = true
+		case <-computed:
+		case <-moved:
+		case <-wait.C:
+			late = true
+		case <-parent.Done():
+			return canceled()
+		}
+	}
+}
+
+// logsHedgeDelay is how long the logs probe waits on holder v before it
+// asks the next one too: v's eth_getLogs p90 from the latency the network
+// routes by, so about one probe in ten pays a second call; at most W/4,
+// its value while v has no latency yet, so a slow holder still leaves the
+// next ones time before the re-ask at W.
+func (n *Network) logsHedgeDelay(v common.Upstream, w time.Duration) time.Duration {
+	d := n.metricsTracker.GetUpstreamMethodMetrics(v, "eth_getLogs", common.DataFinalityStateAll).ResponseQuantiles.GetQuantile(0.9)
+	if d <= 0 || d > w/4 {
+		return w / 4
+	}
+	return d
+}
+
+// countLogsGate counts one logs gate verdict (MetricLogsEmptyGateTotal).
+func (n *Network) countLogsGate(verdict string) {
+	telemetry.CounterHandle(telemetry.MetricLogsEmptyGateTotal, n.projectId, n.Label(), verdict).Inc()
 }
 
 func (n *Network) countHeadRefusal(rule string) {
@@ -3039,10 +3230,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// retry asks the upstreams whose head reaches the block first.
 				// The answer after it goes to the client as the upstream gave it.
 				// An empty range from an upstream whose evidence reaches its
-				// toBlock is the range's answer (rangeHeld). From one without
-				// that evidence it is no answer, never served nor kept: a
-				// node lacking the block answers it empty too, and an indexer
-				// served that loses the block's logs.
+				// toBlock is the range's answer (rangeHeld), past the logs
+				// gate. From one without that evidence it is no answer, never
+				// served nor kept: a node lacking the block answers it empty
+				// too, and an indexer served that loses the block's logs.
 				refusal := effectiveReq.HeadRefusal()
 				emptyAnswer := err == nil && r != nil && !r.IsObjectNull() && refusalMiss(loopCtx, method, r) && !n.rangeHeld(method, u, refusal)
 				if emptyAnswer && refusal.AboveFirm() && evm.IsRangeQuery(method) {
@@ -3060,6 +3251,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				finalEmpty := false
 				if refusal.AboveFirm() && missing {
 					verdict := refusal.Miss(leg)
+					if emptyAnswer && evm.AnswersAtOnce(effectiveReq) && (refusal.Held || refusal.Rule == common.HeadThin) {
+						// A block we announced or pin exists: a node's
+						// null for it is that node's missing data, never
+						// the request's answer (spec §6.4 head promise).
+						effectiveReq.ClearLastValidResponseIf(r)
+						r, err, emptyAnswer = nil, common.NewErrEndpointMissingData(fmt.Errorf("upstream answered null for existing block %d", refusal.Block), u), false
+					}
 					switch {
 					case refusal.Rule == common.HeadBand && evm.AnswersAtOnce(effectiveReq):
 						// An eth_getBlockByNumber above Latest asks only
@@ -3093,6 +3291,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						}
 					case verdict == common.MissRetry:
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
+					case refusal.Held && evm.AnswersAtOnce(effectiveReq):
+						// A held block's eth_getBlockByNumber missed on its
+						// retry too: the block exists, so the leg sweeps
+						// for a holder, at most W, as a thin miss does
+						// (spec §6.4 held). Served as final, the retry's
+						// null said a block we announced did not exist
+						// (P23-band: 1-5 per pod).
+						if next := n.bandNext(loopCtx, effectiveReq, attempted, &sweep, u, refusal.Block); next != nil {
+							verdict, nextUpstream = common.MissRetry, next
+						}
 					}
 					switch verdict {
 					case common.MissRetry:
@@ -3129,12 +3337,41 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				//    consensus is required. Failsafe would accept the empty
 				//    result anyway, so trying more upstreams just wastes time
 				//    on slow ones.
+				//  - An empty eth_getLogs qualifies only past the logs gate
+				//    (spec §6.4 logs gate); else the other holders settle
+				//    it (logsProbe).
 				//  - Otherwise emptyish results continue to the next upstream.
 				if err == nil && r != nil && !r.IsObjectNull() {
 					emptyish := isEmptyNetworkResult(method, r)
 					acceptEmpty := !emptyish || finalEmpty ||
 						(!failsafeExecutor.HasConsensus() && (refusal.AboveFirm() && !emptyAnswer ||
 							!refusal.AboveFirm() && failsafeExecutor.acceptsEmptyResult(method, r)))
+					if acceptEmpty && emptyish && method == "eth_getLogs" {
+						if toBlock, maybe := n.logsGate(loopCtx, effectiveReq, u); maybe {
+							effectiveReq.ClearLastValidResponseIf(r)
+							if refusal.AboveFirm() {
+								refusal.Miss(leg)
+							}
+							send := func(c context.Context, v common.Upstream) (*common.NormalizedResponse, error) {
+								vlg := lg.With().Str("upstreamId", v.Id()).Logger()
+								vr, verr := tryForward(v, effectiveReq, c, &vlg, hedges, attempts, snap.Retries)
+								if e := n.normalizeResponse(c, effectiveReq, vr); e != nil {
+									verr = e
+								}
+								effectiveReq.MarkUpstreamCompleted(c, v, vr, verr)
+								if vr != nil {
+									vr.SetUpstream(v)
+									vr.WithRequest(effectiveReq)
+								}
+								return vr, verr
+							}
+							if r, err = n.logsProbe(loopCtx, effectiveReq, u, toBlock, send); err != nil {
+								common.SetTraceSpanError(loopSpan, err)
+								loopSpan.End()
+								return nil, err
+							}
+						}
+					}
 					if acceptEmpty {
 						st := effectiveReq.ExecState()
 						st.MarkUpstreamAttemptWon(r.UpstreamId())
