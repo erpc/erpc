@@ -66,8 +66,8 @@ const (
 	p23BusyNo = 0.9
 	// p23ThinNo: on a chain whose header blooms omit logs, at most this
 	// share: trust is never earned, so only empty blocks' are no (0.460 on
-	// main); an earned trust would rule out about all.
-	p23ThinNo = 0.75
+	// main, 0.603 with trust on demand); an earned trust rules out 0.97.
+	p23ThinNo = 0.8
 	// p23TrustRun and p23TrustEvery are bloomTrustRun and
 	// bloomTrustCheck (spec §11 bloom trust): a trust run fetches at
 	// most p23TrustRun blocks' receipts, and one starts at most every
@@ -725,17 +725,19 @@ func (s *scenario) p23OldReads(b *strings.Builder, heads []liveRead, pieces floa
 // p23BusyBody runs the busy reads (p23BusyReads) on each pod beside heads
 // for sh.ahead, then judges each pod: every read answers the chain's logs,
 // none failed, none answered [] for a block with matching logs
-// (wrongEmpty); an absent read's latency over its control's, the round
-// trip, at most one round trip at p50 and two at p99 (p23Judge); at most
-// p23ExtraAsks per checked read (p23Cost). Bloom trust (spec §11): the
-// gate's first demand starts a trust run of at most p23TrustRun receipts
-// fetches, and while the gate relies on trust one block is checked again
-// at most every p23TrustEvery. The gate's verdicts on new blocks, less one
-// per filtered read, which the bloom may hold, are the absent reads' (one
-// per upstream request: identical reads in flight share it). With blooms
-// that hold every log, at least p23BusyNo of them are no, at most
-// p23TrustRun fetches plus one a p23TrustEvery; thin, at most p23ThinNo,
-// and at most p23TrustRun fetches a p23TrustEvery.
+// (wrongEmpty); at most p23ExtraAsks per checked read (p23Cost). Bloom
+// trust (spec §11): the gate's first demand starts a trust run of at most
+// p23TrustRun receipts fetches, and while the gate relies on trust one
+// block is checked again at most every p23TrustEvery. The gate's verdicts
+// on new blocks, less one per filtered read, which the bloom may hold, are
+// the absent reads' (one per upstream request: identical reads in flight
+// share it). With blooms that hold every log, at least p23BusyNo of them
+// are no; an absent read at most one round trip of its control, a held
+// block's, later at p50 and p90 (a checked read holds toward W while no
+// other vendor's poll shows the block, and identical reads join it); at
+// most p23TrustRun fetches plus one a p23TrustEvery. Thin, at most
+// p23ThinNo of them are no, and at most p23TrustRun fetches a
+// p23TrustEvery.
 func (s *scenario) p23BusyBody(sh p23Shape, heads []liveRead) {
 	reads := make([]*p23Reads, len(s.h.pods))
 	for _, p := range s.h.pods {
@@ -754,7 +756,7 @@ func (s *scenario) p23BusyBody(sh p23Shape, heads []liveRead) {
 	var b strings.Builder
 	for _, p := range s.h.pods {
 		r := reads[p.idx]
-		s.p23Judge(&b, p.idx, sh.name+" reads", r, []string{p23AbsentKind}, true, nil)
+		s.p23Judge(&b, p.idx, sh.name+" reads", r, nil, true, nil)
 		var line []string
 		for _, v := range p23Verdicts {
 			line = append(line, fmt.Sprintf("%s %.0f", v, gates1[p.idx][v]-gates0[p.idx][v]))
@@ -763,7 +765,13 @@ func (s *scenario) p23BusyBody(sh p23Shape, heads []liveRead) {
 		absent := float64(len(r.took[p23AbsentKind]) + r.fails[p23AbsentKind])
 		filtered := float64(len(r.took["eth_getLogs filtered"]) + r.fails["eth_getLogs filtered"])
 		wrong := r.wrongEmpty
+		ds := slices.Sorted(slices.Values(r.took[p23AbsentKind]))
+		rtt := pctl(slices.Sorted(slices.Values(r.took[p23AbsentKind+" control"])), 50)
 		r.mu.Unlock()
+		fmt.Fprintf(&b, "pod-%d %s reads: absent p50 %s p90 %s p99 %s; control p50 %s\n", p.idx+1, sh.name, pctl(ds, 50), pctl(ds, 90), pctl(ds, 99), rtt)
+		if bound := 2*rtt + p23Noise; !sh.thin && (pctl(ds, 50) > bound || pctl(ds, 90) > bound) {
+			s.violate(s.name, "pod-%d: absent reads p50 %s p90 %s, above %s (two control round trips +%s): their header did not rule them out", p.idx+1, pctl(ds, 50), pctl(ds, 90), bound, p23Noise)
+		}
 		var judged float64
 		for _, v := range p23Verdicts {
 			if v != "old" {
