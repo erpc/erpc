@@ -332,9 +332,10 @@ var p23BusyThin = p23Shape{name: "P23-busy-thin", bt: 2 * time.Second, jitter: 2
 // beside a skip-interpolation eth_call(latest) a second (p23TagRate), a
 // tag request the state prober would probe for (spec §6.11 Probe), and no
 // WebSocket client: the gate judges nothing and asks no other vendor, and
-// the pod sends no auxiliary request (p23OffBody). On main d9483b54 the
-// gate judged these reads, earned bloom trust by receipts fetches and
-// probed each vendor's latest state.
+// the pod sends no auxiliary request (p23OffBody). On main d9483b54, 1
+// run: 3115 gate verdicts, 97 extra eth_getLogs asks, 10 bloom_trust
+// receipts fetches and 56 state probes; here 0 of each, 77 wrongEmpty
+// served as they came.
 var p23BusyOff = p23Shape{name: "P23-busy-off", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	ahead: 3 * time.Minute, logsLag: 500 * time.Millisecond, busy: true, off: true, ups: p23Band.ups}
 
