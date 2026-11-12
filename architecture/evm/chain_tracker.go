@@ -279,8 +279,8 @@ type feedState struct {
 	// firm is the view's Firm: the highest block at or below Head that q
 	// voters hold; 0 while unknown.
 	firm uint64
-	// viewAt is when the view first stood at its Head: how long it has
-	// stood bounds the Head's age from below (LatestRead).
+	// viewAt is when the view first stood at its Head: View.HeadAt and the
+	// view steps (MinStep) read it.
 	viewAt  time.Time
 	changed chan struct{}  // closed once a newer state is published
 	logs    indexer.Cursor // the logs head (spec §1)
