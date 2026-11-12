@@ -417,9 +417,10 @@ don't time out prematurely:
 />
 
 **3. Transaction hash lookups: tight network timeout, no hedge.** A null
-`eth_getTransactionReceipt` means the tx isn't indexed yet — hedging or heavy retries only
-multiply load. The network timeout ceiling matches the `upstream.timeout × maxAttempts`
-budget so the last retry isn't silently cut short:
+`eth_getTransactionReceipt` means the tx isn't mined yet — heavy retries only multiply load,
+and a hedge on receipts costs calls only near a block (a settled head ends the race at the
+first null; see [hedge](/config/failsafe/hedge)). The network timeout ceiling matches the
+`upstream.timeout × maxAttempts` budget so the last retry isn't silently cut short:
 
 <ConfigTabs
   path="projects[].networks[].failsafe[]"

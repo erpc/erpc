@@ -36,6 +36,7 @@ type Faults struct {
 	BareHeaders     bool          // blocks and newHeads pushes lack stateRoot (Bare): no header format encodes them
 	NullReceipts    bool          // eth_getBlockReceipts answers null
 	ReceiptsDown    bool          // eth_getBlockReceipts answers -32603
+	TxReceiptsDown  bool          // eth_getTransactionReceipt answers -32603
 	LogsDown        bool          // eth_getLogs answers -32603
 	CapLogs         bool          // eth_getLogs one log short where the bloom and logIndexes hide it (lastLogCovered)
 	TruncReceipts   bool          // receipts without their last 10
@@ -52,6 +53,7 @@ type Faults struct {
 	RefuseFinalized bool          // the finalized and safe tags answer unsupported, as Prism's readers do
 	Slow            time.Duration // every answer waits this long
 	SlowReceipts    time.Duration // receipts and logs answers wait this long more
+	SlowTxReceipts  time.Duration // eth_getTransactionReceipt answers wait this long more
 	SlowHistory     time.Duration // answers by hash, and by number below its head, wait this long more
 	SilentHeads     bool          // newHeads subscriptions stay open and push nothing
 	SilentPending   bool          // newPendingTransactions subscriptions push nothing
@@ -115,6 +117,8 @@ type Vendor struct {
 	served   map[Hash]bool
 	// latestCalls are the eth_getBlockByNumber(latest) calls answered.
 	latestCalls []LatestCall
+	// methodCalls counts the JSON-RPC calls answered, per method.
+	methodCalls map[string]int64
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
@@ -197,7 +201,7 @@ func (c *Chain) AddVendor(id, name string, ws bool) (*Vendor, error) {
 		return nil, err
 	}
 	v := &Vendor{ID: id, Name: name, WS: ws, chain: c, ln: ln, seen: make(map[Hash]bool), conns: make(map[*wsConn]bool),
-		numberCalls: make(map[uint64][]numberCall), receipts: make(map[Hash]int), served: make(map[Hash]bool)}
+		numberCalls: make(map[uint64][]numberCall), receipts: make(map[Hash]int), served: make(map[Hash]bool), methodCalls: make(map[string]int64)}
 	v.srv = &http.Server{Handler: v, ReadHeaderTimeout: 10 * time.Second}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
@@ -321,6 +325,14 @@ func (v *Vendor) NumberCalls(n uint64, full bool, from, to time.Time) int {
 		}
 	}
 	return k
+}
+
+// MethodCalls counts the method calls the vendor answered, over HTTP and
+// ws, batch members each.
+func (v *Vendor) MethodCalls(method string) int64 {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	return v.methodCalls[method]
 }
 
 // Stats are the vendor's counters.
@@ -814,6 +826,9 @@ func (v *Vendor) byNumberLocked(n uint64) *Block {
 // answer serves one JSON-RPC call from the vendor's view and faults.
 func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcError) {
 	v.calls.Add(1)
+	v.chain.mu.Lock()
+	v.methodCalls[method]++
+	v.chain.mu.Unlock()
 	if method == "eth_getBlockReceipts" {
 		if res, ok := v.trapped(params); ok {
 			return res, nil
@@ -966,6 +981,9 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		}
 		return rs, nil
 	case "eth_getTransactionReceipt":
+		if f.TxReceiptsDown {
+			return nil, &rpcError{-32603, "receipt unavailable"}
+		}
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
 		if !ok {
@@ -1007,6 +1025,8 @@ func (v *Vendor) delay(method string, params []interface{}) time.Duration {
 	switch method {
 	case "eth_getBlockReceipts", "eth_getLogs":
 		d += f.SlowReceipts
+	case "eth_getTransactionReceipt":
+		d += f.SlowTxReceipts
 	case "eth_getBlockByHash":
 		d += f.SlowHistory
 	case "eth_getBlockByNumber":

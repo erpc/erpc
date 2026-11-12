@@ -59,6 +59,16 @@ func AnswersAtOnce(rq *common.NormalizedRequest) bool {
 	return strings.EqualFold(method, "eth_getBlockByNumber")
 }
 
+// NullUntilMined reports whether rq is an eth_getTransactionReceipt, whose
+// null means the transaction is not mined yet: only a new block changes
+// it, so a hedge on a settled Head (common.EvmHead.Settled) finds nothing
+// the first sweep missed (spec §6.4 settled head). eth_getTransactionByHash
+// is not: a node's mempool can gain the pending transaction between blocks.
+func NullUntilMined(rq *common.NormalizedRequest) bool {
+	method, _ := rq.Method()
+	return strings.EqualFold(method, "eth_getTransactionReceipt")
+}
+
 // ShortCircuitsFuture reports whether a future block on rq gets null with
 // no dispatch: a numbered eth_getBlockByNumber (AnswersAtOnce) on a network
 // with shortCircuitFutureBlocks (spec §6.4, #1238).
