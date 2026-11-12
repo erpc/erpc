@@ -50,7 +50,7 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // (evm.ReadsLatest) is the block clock's demand (§6.8); the first after W
 // without demand waits for the view to reach the idle edge's fetch,
 // before the cache: a cache hit is pinned to that Head too. A head number
-// waits only on a view that stood for W. A network-wide client request's
+// never waits. A network-wide client request's
 // Head is anchored to the cache's head (anchorHead); an internal one
 // (UpstreamPolicies other than Configured: tracker fetches, their cache
 // seeds, probes) takes the tracker's own Head, so it neither starts the

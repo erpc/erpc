@@ -1530,12 +1530,12 @@ func (t *ChainTracker) countFire(f *clockFire, a common.HeadAnswer, outcome stri
 
 // LatestRead marks a read of the lane's latest (spec §6.8 demand): for
 // readDemand after it the block clock runs. The first read after that is
-// the idle edge, which fetches heads at once; every read of that edge
+// the idle edge, which fetches heads at once; every tag read of that edge
 // waits for the view to reach the fetched head, at most W or until ctx
 // ends, so none serves a Head older than it; with no pins yet nothing
-// waits, and tags pass through (§7). A head number (number) waits only
-// while the view has stood for W, so it is never older than W; else it
-// answers from the view at once, as from memory (§5).
+// waits, and tags pass through (§7). A head number (number) never waits:
+// it answers from the view at once, as the old image answered from its
+// pollers, and the edge's fetch moves the view for the next read (§7).
 func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
 	now := time.Now()
 	prev := t.latestReadAt.Swap(now.UnixNano())
@@ -1549,8 +1549,7 @@ func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
 			edge = t.edge.Load()
 		}
 	}
-	s := t.state.Load()
-	if edge == nil || s.viewHead() == nil || number && now.Sub(s.viewAt) < t.W() {
+	if number || edge == nil || t.state.Load().viewHead() == nil {
 		return
 	}
 	w := time.NewTimer(t.W())
