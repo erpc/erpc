@@ -174,7 +174,7 @@ The `finalized` branch caps downward for a different reason: `getSlot(finalized)
 
 **`getBlockHeight` is never corrected.** Only `getSlot` is routed to the corrector. Block height is a different counter that trails the slot number by every skipped slot, so rewriting a `getBlockHeight` answer to a slot value would be straightforwardly wrong. It is passed through untouched.
 
-**`getBlock` availability guard.** An upstream returns `-32004` both for a slot above its `maxShredInsertSlot` and for a slot above its own finalized root, so hitting all upstreams only to collect N identical `-32004`s wastes quota and delays the retry. When the requested slot is above what the pool can serve, `getBlock`/`getConfirmedBlock` are short-circuited with `ErrEndpointMissingData` before any upstream call — the same error class that maps to the `missing_data` retry reason, so the indexing-lag retry fires immediately.
+**`getBlock` availability guard.** An upstream returns `-32004` both for a slot above its `maxShredInsertSlot` and for a slot above its own finalized root, so hitting all upstreams only to collect N identical `-32004`s wastes quota and delays the client's retry. When the requested slot is above what the pool can serve, `getBlock`/`getConfirmedBlock` are short-circuited with `ErrEndpointMissingData` before any upstream call. The short-circuit runs before the failsafe executor, so the network's retry and hedge do not run on it: the client gets the error at once, and the client's own retry reaches the slot once the pool has indexed it.
 
 The bound is **commitment-dependent**, on the same effective commitment as the `getSlot` correction:
 
@@ -195,14 +195,16 @@ The `+2` covers tick scheduling and the cross-source skew between `getSlot` (ser
 
 The guard **fails open** whenever the tip it needs is unknown — an indexed frontier of `0` forwards every slot, and a finalized root of `0` falls back to the indexed bound rather than collapsing to slot `0`. Absence of tracking is not evidence of unavailability, so a cold poller or a vendor without `getMaxShredInsertSlot` must not cost requests every upstream could serve.
 
-**`getBlockTime` and `minContextSlot` guards.** The same check, with the same tip per commitment, the same staleness margin and the same fail-open, answers two more reads locally, before any upstream call:
+**`getBlockTime` and `minContextSlot` guards.** The same check, with the same tip per commitment and the same fail-open, answers two more reads locally, before any upstream call. Their margin is wider than the `getBlock` one: the slot must be more than **128 slots** (`maxRetryableSlotDistance`, the same slot count that separates a retryable miss from a real one for declared windows) beyond the bound:
 
 | Read | Bound | Local answer (agave's own error) |
 |---|---|---|
 | `getBlockTime(slot)` | `indexedFrontier` — agave serves any frozen bank, so the method has no finalized bound | `-32004` `Block not available for slot N` (`ErrEndpointMissingData`) |
 | Any method whose config object carries `minContextSlot` | The bound of the request's effective commitment (table above) | `-32016` `Minimum context slot has not been reached`, `data: {"contextSlot": <bound>}` (`ErrEndpointServerSideException`) |
 
-agave checks `minContextSlot` against its bank before it reads anything, so a slot above every upstream's bank fails the same way on each one, and every failover, retry and hedge repeats it. The local `-32016` carries agave's meaning only: `contextSlot` is the pool's bound, so a client backs off and retries as it does for a node's answer. Within the margin, or with a cold poller, the request forwards as before. The local answer is final for the request: the guard runs before the failsafe executor, so retry and hedge never run on it. The client's next request is checked again against fresh tips.
+agave checks `minContextSlot` against its bank before it reads anything, so a slot far above every upstream's bank fails the same way on each one, and every failover, retry and hedge repeats it. The local `-32016` carries agave's meaning only: `contextSlot` is the pool's bound, so a client backs off and retries as it does for a node's answer. The local answer is final for the request: the guard runs before the failsafe executor, so retry and hedge never run on it. The client's next request is checked again against fresh tips.
+
+The getBlock staleness margin would be too tight here. A client that takes `minContextSlot` from a fresher node often asks for a slot a few slots past the pool's last snapshot, and the network's retry waits usually reach it: against live upstreams, slots 2-10 past the freshest processed slot succeeded on every run after about 0.5-2 s. A final local error at that distance would turn those successes into failures. So within 128 slots of the bound, and with a cold poller, the request forwards as it does without the guard.
 
 **Declared slot windows.** Optional `upstreams[*].svm.blockAvailability.{lower,upper}` (`exactSlot` / `latestSlotMinus` / `firstAvailableSlotPlus`) is an operator declaration of the slots an upstream may serve, gated by `svm.enforceBlockAvailability`. An upstream whose declared window excludes the slot a request names is skipped (lower: `-32001`, permanent for the request; upper: `-32004`). The upper bound is checked against the **end** of a `getBlocks` / `getBlocksWithLimit` range, not only its start. Without a declared window every upstream is tried.
 
@@ -432,7 +434,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 17. **A continued answer stays the fallback.** The verdict is permanent (`WithPermanentMissingData`), so a completed sweep is not re-swept after a block-time delay. If the deeper upstream fails, the client receives the shallower answer through last-valid-response.
 18. **The history sweep does not run on consensus participant slots.** Consensus participants (`IsConsensusSlot`) vote on the bodies they returned; turning a legitimate short page into MissingData would make consensus agree on an error.
 19. **History-sweep continuation is not wrong-empty misbehavior.** Sweep verdicts carry `historySweepContinuation` in error details; the network layer skips `MetricUpstreamWrongEmptyResponseTotal` and `RecordUpstreamMisbehavior` for them.
-20. **A far-future `minContextSlot` or `getBlockTime` slot never reaches an upstream.** Beyond the tip plus margin, eRPC answers `-32016` (with `data.contextSlot`) or `-32004` itself, once, with no retry or hedge. This is not eRPC's `Unauthorized` `-32016`: on SVM that number always means agave's `MinContextSlotNotReached`. `svm.enforceBlockAvailability: false` turns these guards off with the `getBlock` guard.
+20. **A far-future `minContextSlot` or `getBlockTime` slot never reaches an upstream.** More than 128 slots beyond the bound, eRPC answers `-32016` (with `data.contextSlot`) or `-32004` itself, once, with no retry or hedge. Within 128 slots the request forwards, even past the `getBlock` staleness margin. This is not eRPC's `Unauthorized` `-32016`: on SVM that number always means agave's `MinContextSlotNotReached`. `svm.enforceBlockAvailability: false` turns these guards off with the `getBlock` guard.
 
 ### Observability
 

@@ -564,7 +564,7 @@ func toInt64(v interface{}) (int64, bool) {
 // upstream could serve.
 func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	slot := leadingSlotParam(ctx, r)
-	tip, beyond := beyondPoolTip(ctx, n, slot, effectiveCommitment(ctx, n, r))
+	tip, beyond := beyondPoolTip(ctx, n, slot, effectiveCommitment(ctx, n, r), tipStalenessMargin(n))
 	if !beyond {
 		return false, nil, nil
 	}
@@ -584,16 +584,23 @@ func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common
 }
 
 // networkPreForward_getBlockTime answers getBlockTime locally, with agave's own
-// error, when the slot is beyond what the pool can serve. agave's
+// error, when the slot is far beyond what the pool can serve. agave's
 // get_block_time reads rooted slots from the blockstore and anything above the
 // root from a frozen bank, so the bound is the indexed frontier at every
 // commitment (the method takes none) — the non-finalized branch of the getBlock
 // guard. An upstream answers `-32004 Block not available for slot N`
 // (RpcCustomError::BlockNotAvailable) for such a slot, and so does this guard,
 // so a client cannot tell the local answer from a node's.
+//
+// The margin is maxRetryableSlotDistance, not getBlock's tipStalenessMargin.
+// The answer is final (no retry follows a pre-forward answer), while a slot a
+// few slots past the last snapshot is often reached within the network's retry
+// waits — measured against live upstreams, slots 2-10 past the freshest
+// processed slot succeeded after ~0.5-2 s on every run. Within 128 slots the
+// read forwards; beyond it no retry round reaches it.
 func networkPreForward_getBlockTime(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	slot := leadingSlotParam(ctx, r)
-	if _, beyond := beyondPoolTip(ctx, n, slot, ""); !beyond {
+	if _, beyond := beyondPoolTip(ctx, n, slot, "", maxRetryableSlotDistance); !beyond {
 		return false, nil, nil
 	}
 	return true, nil, common.NewErrEndpointMissingData(
@@ -608,11 +615,12 @@ func networkPreForward_getBlockTime(ctx context.Context, n common.Network, r *co
 }
 
 // networkPreForward_minContextSlot answers locally, for any method, a request
-// whose minContextSlot option is beyond what the pool can serve at the
+// whose minContextSlot option is far beyond what the pool can serve at the
 // request's effective commitment. agave's get_bank_with_config rejects such a
 // request with `-32016 Minimum context slot has not been reached` and
 // `data: {"contextSlot": <its bank slot>}` before reading anything, so every
-// upstream, failover, retry and hedge would return that same error.
+// upstream, failover, retry and hedge would return that same error. The margin
+// is maxRetryableSlotDistance, for the reason given on the getBlockTime guard.
 //
 // The local -32016 carries agave's meaning only — "no node of this pool has
 // reached that slot" — with the pool's tip as contextSlot, so clients back off
@@ -625,7 +633,7 @@ func networkPreForward_minContextSlot(ctx context.Context, n common.Network, r *
 	if mcs <= 0 {
 		return false, nil, nil
 	}
-	tip, beyond := beyondPoolTip(ctx, n, mcs, effectiveCommitment(ctx, n, r))
+	tip, beyond := beyondPoolTip(ctx, n, mcs, effectiveCommitment(ctx, n, r), maxRetryableSlotDistance)
 	if !beyond {
 		return false, nil, nil
 	}
@@ -662,13 +670,14 @@ func leadingSlotParam(ctx context.Context, r *common.NormalizedRequest) int64 {
 	return slot
 }
 
-// beyondPoolTip reports whether slot is beyond what the provider pool can
-// serve at commitment, plus the staleness margin, and returns the tip it was
-// compared against. It is the rule shared by the getBlock, getBlockTime and
-// minContextSlot guards (see networkPreForward_getBlock for the reasoning). It
-// fails open — reports false — when svm.enforceBlockAvailability is off, the
-// slot is not positive, or the indexed frontier is unknown.
-func beyondPoolTip(ctx context.Context, n common.Network, slot int64, commitment string) (int64, bool) {
+// beyondPoolTip reports whether slot is more than margin slots beyond what the
+// provider pool can serve at commitment, and returns the tip it was compared
+// against. It is the rule shared by the getBlock, getBlockTime and
+// minContextSlot guards (see networkPreForward_getBlock for the reasoning); each
+// guard picks its margin. It fails open — reports false — when
+// svm.enforceBlockAvailability is off, the slot is not positive, or the indexed
+// frontier is unknown.
+func beyondPoolTip(ctx context.Context, n common.Network, slot int64, commitment string, margin int64) (int64, bool) {
 	if slot <= 0 {
 		return 0, false
 	}
@@ -705,9 +714,8 @@ func beyondPoolTip(ctx context.Context, n common.Network, slot int64, commitment
 	// Overflow-safe form of `slot <= tip + margin`: a hostile or bogus
 	// upstream tip near math.MaxInt64 would wrap that addition negative and turn
 	// the guard into a reject-everything gate. Subtracting from slot instead
-	// cannot wrap — slot is > 0 and the margin is a small positive derived from
-	// the poll debounce.
-	return tip, slot-tipStalenessMargin(n) > tip
+	// cannot wrap — slot is > 0 and every guard's margin is a small positive.
+	return tip, slot-margin > tip
 }
 
 // tipStalenessMargin returns the slot tolerance the getBlock guard adds on top

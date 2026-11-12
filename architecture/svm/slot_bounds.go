@@ -23,7 +23,9 @@ const DeclaredConfidenceLabel = "configured"
 // that would be machinery for SVM chains this codebase does not yet serve —
 // and there is no SVM operator override (EVM's
 // networks[].evm.maxRetryableBlockDistance is not mirrored): a knob whose
-// only non-default use is tuning a wait window nobody has needed.
+// only non-default use is tuning a wait window nobody has needed. The
+// getBlockTime and minContextSlot guards (hooks.go) use the same count: within
+// it of the pool tip a read forwards, beyond it eRPC answers locally.
 const maxRetryableSlotDistance = int64(128)
 
 // ResolveDeclaredSlotBounds resolves the upstream's configured

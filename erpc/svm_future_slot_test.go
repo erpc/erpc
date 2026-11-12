@@ -57,8 +57,10 @@ func svmWireError(t *testing.T, req *common.NormalizedRequest, err error) map[st
 // beyond the highest slot any upstream of the pool knows: getBlockTime's slot
 // and a minContextSlot option. No upstream can answer them, so every attempt,
 // failover, retry and hedge is a wasted round-trip ending in the same agave
-// error. Within the staleness margin above the tracked tip (a read-your-writes
-// slot just ahead of a stale poll) and with a cold poller, they forward.
+// error. Up to 128 slots above the tracked tip (a read-your-writes slot from a
+// fresher node, which the pool often reaches within the retry waits) and with a
+// cold poller, they forward. The getBlock guard's staleness margin (7 slots
+// here) is not the bound: tip+10 is past it and still forwards.
 func TestSvm_ReadBeyondPoolTip_AnsweredLocally(t *testing.T) {
 	const (
 		latest    = int64(300000)
@@ -108,18 +110,43 @@ func TestSvm_ReadBeyondPoolTip_AnsweredLocally(t *testing.T) {
 			wantMsg:  fmt.Sprintf("Block not available for slot %d", indexedTip+far),
 		},
 		{
-			name:   "minContextSlot within the staleness margin forwards",
+			name:   "minContextSlot past the getBlock margin forwards",
 			method: "getBalance",
-			params: fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+5),
+			params: fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+10),
 			shred:  latest,
-			reply:  fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":42}}`, finalizedTip+5),
+			reply:  fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":42}}`, finalizedTip+10),
 		},
 		{
-			name:   "getBlockTime within the staleness margin forwards",
+			name:   "getBlockTime past the getBlock margin forwards",
 			method: "getBlockTime",
-			params: fmt.Sprintf(`[%d]`, indexedTip+5),
+			params: fmt.Sprintf(`[%d]`, indexedTip+10),
 			shred:  latest,
 			reply:  `{"jsonrpc":"2.0","id":1,"result":1700000000}`,
+		},
+		{
+			name:   "minContextSlot at tip plus 128 forwards",
+			method: "getBalance",
+			params: fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+128),
+			shred:  latest,
+			reply:  fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":42}}`, finalizedTip+128),
+		},
+		{
+			name:   "getBlockTime at tip plus 128 forwards",
+			method: "getBlockTime",
+			params: fmt.Sprintf(`[%d]`, indexedTip+128),
+			shred:  latest,
+			reply:  `{"jsonrpc":"2.0","id":1,"result":1700000000}`,
+		},
+		{
+			name:     "minContextSlot at tip plus 129 answered locally",
+			method:   "getBalance",
+			params:   fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+129),
+			shred:    latest,
+			reply:    minContextSlotNotReached,
+			local:    true,
+			wantCode: -32016,
+			wantMsg:  "Minimum context slot has not been reached",
+			wantData: map[string]interface{}{"contextSlot": float64(finalizedTip)},
 		},
 		{
 			name:   "minContextSlot with a cold poller forwards",
