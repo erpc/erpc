@@ -1143,7 +1143,7 @@ func (t *ChainTracker) provesNoLogs(h *chainHeader, may func([]byte) bool) bool 
 // wantTrust starts a trust check on the tracker's goroutine when one is
 // due (bloomGate.dueTrust); the caller never waits on it.
 func (t *ChainTracker) wantTrust() {
-	if t.canFetch() && t.ctx.Err() == nil && t.fetch.bloom.dueTrust() {
+	if t.receiptsOn && t.canFetch() && t.ctx.Err() == nil && t.fetch.bloom.dueTrust() {
 		t.mb.put(trackerMsg{kind: msgCall, fn: t.checkTrust})
 	}
 }
@@ -1157,6 +1157,10 @@ func (t *ChainTracker) wantTrust() {
 // next demand goes on a block time later, with the next block.
 func (t *ChainTracker) checkTrust() {
 	g := t.fetch.bloom
+	if !t.receiptsOn {
+		g.endTrust(bloomTrustCheck)
+		return
+	}
 	if len(t.methodUpstreams("eth_getBlockReceipts")) == 0 {
 		g.endTrust(bloomTrustCheck)
 		return
@@ -1354,6 +1358,9 @@ func (t *ChainTracker) wantsSnapshot() []func([]byte) bool {
 // registered MayMatch wants it or its bloom cannot skip it yet. Decided once
 // per held block while the registry and the skip stay; drop forgets it.
 func (t *ChainTracker) feedNeeds(h *chainHeader) bool {
+	if !t.receiptsOn {
+		return false
+	}
 	v, ok := t.needs[h.hash]
 	if !ok {
 		v = t.needsOf(h, t.needsWants)

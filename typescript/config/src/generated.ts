@@ -2133,6 +2133,15 @@ export interface EvmChainTrackerConfig {
    * network-wide tracker holds for resumable taps (default 5m).
    */
   maxBackfill?: Duration;
+  /**
+   * Receipts gates the tracker's background eth_getBlockReceipts fetches
+   * (the logs feed's per-block fetch at pin time and the bloom trust
+   * checks). Default true. False: the tracker never fetches receipts on
+   * its own; ws `logs` taps then fall back to eth_getLogs by blockHash.
+   * Client-driven eth_getBlockReceipts reads (integrity receiptVsBlock)
+   * are unaffected.
+   */
+  receipts?: boolean;
 }
 /**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"

@@ -62,6 +62,10 @@ type ChainTracker struct {
 	// backfill is the chain time the network-wide tracker holds above its
 	// floor of window blocks (spec §8); 0 for group trackers.
 	backfill time.Duration
+	// receiptsOn gates the tracker's background eth_getBlockReceipts
+	// fetches (feedNeeds at pin time and the bloom trust checks).
+	// Client-driven receiptsByHash is unaffected.
+	receiptsOn bool
 	// laneHead reads the lane's published Head; nil when the network has none.
 	laneHead func() common.EvmHead
 
@@ -508,6 +512,10 @@ func newChainTracker(ctx context.Context, n common.Network, window int, backfill
 		reconfirmedAt: make(map[int64]time.Time),
 	}
 	t.laneHead = laneHead
+	t.receiptsOn = true
+	if cfg := n.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.ChainTracker != nil && cfg.Evm.ChainTracker.Receipts != nil {
+		t.receiptsOn = *cfg.Evm.ChainTracker.Receipts
+	}
 	t.clear()
 	s := &feedState{view: -1, changed: make(chan struct{}), backing: &pinBacking{}}
 	t.state.Store(s)

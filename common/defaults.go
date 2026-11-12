@@ -2709,13 +2709,19 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 	return nil
 }
 
-// SetDefaults fills the reorg window (32 blocks) and maxBackfill (5m).
+// SetDefaults fills the reorg window (32 blocks), maxBackfill (5m) and
+// receipts (true: the tracker fetches receipts for the logs feed and bloom
+// trust).
 func (c *EvmChainTrackerConfig) SetDefaults() {
 	if c.ReorgWindow == 0 {
 		c.ReorgWindow = 32
 	}
 	if c.MaxBackfill == 0 {
 		c.MaxBackfill = Duration(5 * time.Minute)
+	}
+	if c.Receipts == nil {
+		t := true
+		c.Receipts = &t
 	}
 }
 
