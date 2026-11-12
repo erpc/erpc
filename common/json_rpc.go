@@ -1226,6 +1226,11 @@ type JsonRpcRequest struct {
 	// be echoed.
 	idInvalid bool
 
+	// idNullReply makes error replies carry a null id. An architecture sets
+	// it when its nodes cannot read the id the client gave and answer null
+	// for it (a Solana node and a negative id).
+	idNullReply bool
+
 	// networkId holds the optional top-level "networkId" member, the body-side
 	// equivalent of the /<architecture>/<chainId> path segments. It is captured
 	// by the envelope parse so routing reads it from the same result as
@@ -1320,12 +1325,13 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	}
 
 	clone := &JsonRpcRequest{
-		JSONRPC:   r.JSONRPC,
-		ID:        r.ID,
-		Method:    r.Method,
-		Params:    clonedParams,
-		idAbsent:  r.idAbsent,
-		idInvalid: r.idInvalid,
+		JSONRPC:     r.JSONRPC,
+		ID:          r.ID,
+		Method:      r.Method,
+		Params:      clonedParams,
+		idAbsent:    r.idAbsent,
+		idInvalid:   r.idInvalid,
+		idNullReply: r.idNullReply,
 	}
 	// Carry idRaw forward so the cloned request still round-trips its id
 	// byte-for-byte through normalizeResponse. Without this, the clone falls
@@ -1397,12 +1403,13 @@ func (r *JsonRpcRequest) IDRawBytes() []byte {
 // id. A `null` id answers `null` only when echoNull is set (Solana, as Agave
 // does); otherwise it answers the random id the request was given for
 // upstreams, which is what EVM clients have always received. An id that is not
-// a JSON-RPC id (a bool, object, or array) answers `null` (JSON-RPC 2.0 §5).
+// a JSON-RPC id (a bool, object, or array) answers `null` (JSON-RPC 2.0 §5),
+// and so does an id marked by AnswerIDAsNull.
 func (r *JsonRpcRequest) ResponseID(echoNull bool) interface{} {
 	r.RLock()
-	invalid := r.idInvalid
+	nullID := r.idInvalid || r.idNullReply
 	r.RUnlock()
-	if invalid {
+	if nullID {
 		return nil
 	}
 	if raw := r.IDRawBytes(); raw != nil && (echoNull || string(raw) != "null") {
@@ -1411,6 +1418,14 @@ func (r *JsonRpcRequest) ResponseID(echoNull bool) interface{} {
 	r.RLock()
 	defer r.RUnlock()
 	return r.ID
+}
+
+// AnswerIDAsNull makes error replies to this request carry `"id": null`, as a
+// node does for an id it cannot read.
+func (r *JsonRpcRequest) AnswerIDAsNull() {
+	r.Lock()
+	r.idNullReply = true
+	r.Unlock()
 }
 
 // UnmarshalJSON is the one place a raw request body becomes a JsonRpcRequest.
@@ -1494,8 +1509,17 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			// onto the same internal id. idRaw still preserves the original
 			// bytes for the client echo, but this typed ID feeds the upstream
 			// request body and internal identity, so it must not be corrupted.
-			idInt, err := strconv.ParseInt(util.B2Str(bytes.TrimSpace(aux.ID)), 10, 64)
+			idText := util.B2Str(bytes.TrimSpace(aux.ID))
+			idInt, err := strconv.ParseInt(idText, 10, 64)
 			if err != nil {
+				// An integer above the int64 range, up to the u64 maximum
+				// (the id range of a Solana node), is echoed from idRaw. The
+				// typed ID only names the request upstream, so it gets a
+				// random value, as a null id does.
+				if _, uerr := strconv.ParseUint(idText, 10, 64); uerr == nil {
+					r.ID = util.RandomID()
+					return nil
+				}
 				return fmt.Errorf("json-rpc request id %s cannot be represented as a 64-bit integer", aux.ID)
 			}
 			r.ID = idInt

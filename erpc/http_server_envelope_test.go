@@ -224,6 +224,22 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 				var calls atomic.Int32
 				for _, host := range tc.hosts {
 					util.SetupMocksForSvmStatePoller(host, 1000, 990)
+					if tc.name == "svm" {
+						// A Solana node answers a negative id with a parse error.
+						gock.New("http://" + host).
+							Post("").
+							Persist().
+							Filter(func(request *http.Request) bool {
+								body := util.SafeReadBody(request)
+								if request.URL.Host != host || !strings.Contains(body, `"method":"`+tc.method+`"`) || !strings.Contains(body, `"id":-`) {
+									return false
+								}
+								calls.Add(1)
+								return true
+							}).
+							Reply(200).
+							JSON(map[string]interface{}{"jsonrpc": "2.0", "id": nil, "error": map[string]interface{}{"code": -32700, "message": "Parse error"}})
+					}
 					gock.New("http://" + host).
 						Post("").
 						Persist().
@@ -242,7 +258,7 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 				defer shutdown()
 				time.Sleep(1500 * time.Millisecond)
 
-				post := func(body string) []map[string]interface{} {
+				postRaw := func(body string) (int, []byte, []map[string]interface{}) {
 					t.Helper()
 					resp, err := http.Post(baseURL+tc.path, "application/json", strings.NewReader(body))
 					require.NoError(t, err)
@@ -257,7 +273,15 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 						require.NoError(t, common.SonicCfg.Unmarshal(raw, &item), "body: %s", raw)
 						items = append(items, item)
 					}
+					return resp.StatusCode, raw, items
+				}
+				post := func(body string) []map[string]interface{} {
+					t.Helper()
+					_, _, items := postRaw(body)
 					return items
+				}
+				item := func(id string) string {
+					return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":%q,"params":["0x0000000000000000000000000000000000000001"]}`, id, tc.method)
 				}
 				assertInvalidRequest := func(item map[string]interface{}) {
 					t.Helper()
@@ -271,10 +295,6 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 				}
 
 				for _, badID := range []string{`true`, `{"a":1}`, `[1]`} {
-					item := func(id string) string {
-						return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":%q,"params":["0x0000000000000000000000000000000000000001"]}`, id, tc.method)
-					}
-
 					calls.Store(0)
 					single := post(item(badID))
 					require.Len(t, single, 1)
@@ -289,6 +309,59 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 					assert.Equal(t, "0xfeed", batch[1]["result"], "the valid item is served: %v", batch[1])
 					assert.EqualValues(t, 1, calls.Load(), "id %s: only the valid item reaches an upstream", badID)
 				}
+
+				// A Solana node reads an id as a u64 or a string. It answers a
+				// negative id with -32700 "Parse error", id null, HTTP 200, so
+				// on Solana eRPC gives that reply itself instead of asking
+				// every upstream for it. EVM nodes take any number as an id,
+				// so there the request is forwarded.
+				t.Run("NegativeId", func(t *testing.T) {
+					assertAgaveParseError := func(item map[string]interface{}) {
+						t.Helper()
+						id, hasID := item["id"]
+						assert.True(t, hasID, "the reply must carry an id member: %v", item)
+						assert.Nil(t, id, "the reply carries id null: %v", item)
+						errObj, ok := item["error"].(map[string]interface{})
+						require.True(t, ok, "the reply must carry an error object: %v", item)
+						assert.EqualValues(t, common.JsonRpcErrorParseException, errObj["code"], "error: %v", errObj)
+						assert.Equal(t, "Parse error", errObj["message"], "error: %v", errObj)
+					}
+
+					calls.Store(0)
+					status, raw, single := postRaw(item(`-7`))
+					require.Len(t, single, 1)
+					if tc.name == "svm" {
+						assert.Equal(t, http.StatusOK, status, "body: %s", raw)
+						assertAgaveParseError(single[0])
+						assert.Zero(t, calls.Load(), "no upstream may be asked")
+
+						calls.Store(0)
+						batch := post("[" + item(`-7`) + "," + item(`7`) + "]")
+						require.Len(t, batch, 2)
+						assertAgaveParseError(batch[0])
+						assert.EqualValues(t, 7, batch[1]["id"])
+						assert.Equal(t, "0xfeed", batch[1]["result"], "the valid item is served: %v", batch[1])
+						assert.EqualValues(t, 1, calls.Load(), "only the valid item reaches an upstream")
+					} else {
+						assert.EqualValues(t, -7, single[0]["id"], "body: %s", raw)
+						assert.Equal(t, "0xfeed", single[0]["result"], "body: %s", raw)
+						assert.EqualValues(t, 1, calls.Load(), "the request is forwarded")
+					}
+				})
+
+				// An integer id above the int64 range (up to the u64 maximum a
+				// Solana node accepts) is served and echoed byte for byte.
+				t.Run("Uint64RangeId", func(t *testing.T) {
+					for _, bigID := range []string{`9223372036854775808`, `18446744073709551615`} {
+						calls.Store(0)
+						status, raw, single := postRaw(item(bigID))
+						require.Len(t, single, 1)
+						assert.Equal(t, http.StatusOK, status, "body: %s", raw)
+						assert.Contains(t, string(raw), `"id":`+bigID, "the id is echoed verbatim")
+						assert.Equal(t, "0xfeed", single[0]["result"], "body: %s", raw)
+						assert.EqualValues(t, 1, calls.Load(), "id %s", bigID)
+					}
+				})
 			})
 		}
 	})

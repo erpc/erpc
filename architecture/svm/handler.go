@@ -17,6 +17,10 @@ func init() {
 type SvmArchitectureHandler struct{}
 
 func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, network common.Network, req *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	// First: an id a Solana node cannot read decides the reply on its own.
+	if handled, resp, nerr := projectPreForward_negativeId(ctx, req); handled {
+		return handled, resp, nerr
+	}
 	method, err := req.Method()
 	if err != nil {
 		return false, nil, err
