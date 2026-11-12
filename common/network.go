@@ -79,6 +79,25 @@ type EvmHead struct {
 	// reports any more (spec §10.1, §19 C16).
 	CeilingPeak   int64
 	CeilingFellAt time.Time
+	// LatestAt is when the lane's view first stood at Latest; zero when
+	// Latest is not the view's Head (a limit, a guarantee cap, the cache
+	// head's anchor lowered it) or unknown.
+	LatestAt time.Time
+	// NextAt is the earliest time the lane's next block may come: LatestAt
+	// plus the shorter of half a block and the shortest recent step of the
+	// view; zero while LatestAt is, or too few steps or no block time are
+	// known.
+	NextAt time.Time
+}
+
+// Settled reports whether no block can reach an upstream within d of now:
+// Latest stood at least d before now, and Latest+1 is due more than d
+// after it. A lookup asked again d later can only find what a block that
+// reached an upstream within d brought: one that just came (an upstream
+// slower than this instance's view) or one about to come. Either time
+// unknown: not settled.
+func (h EvmHead) Settled(now time.Time, d time.Duration) bool {
+	return !h.LatestAt.IsZero() && !h.NextAt.IsZero() && !now.Before(h.LatestAt.Add(d)) && h.NextAt.Sub(now) > d
 }
 
 // HeadRule is the refusal rule's row for block N on a request (spec §6.4).

@@ -27,6 +27,7 @@ type Faults struct {
 	HeadJitter      time.Duration // serves each canonical block a further [0, HeadJitter] after HeadDelay, fixed per vendor and block
 	TagDelay        time.Duration // eth_blockNumber and the latest tag name its newest block served at least this long, as a load balancer whose head readers trail its block readers; newHeads pushes do not wait
 	BlockLag        time.Duration // eth_getBlockByNumber of a number and eth_getBlockByHash serve a block only this long after its tag names it, as a load balancer whose head readers lead its block readers; receipts, logs and state do not wait
+	LogsLag         time.Duration // eth_getLogs, by range or blockHash, leaves out a block's logs until this long after its tag names it, as a vendor whose log index trails its head: its [] for the block reads as a block with no logs; receipts and blocks do not wait
 	PushDelay       time.Duration // newHeads pushes leave this long after the vendor serves the block over HTTP
 	Frozen          bool          // head stops moving; still answers what it holds
 	WrongChainID    bool          // eth_chainId answers another chain
@@ -36,6 +37,8 @@ type Faults struct {
 	BareHeaders     bool          // blocks and newHeads pushes lack stateRoot (Bare): no header format encodes them
 	NullReceipts    bool          // eth_getBlockReceipts answers null
 	ReceiptsDown    bool          // eth_getBlockReceipts answers -32603
+	TxReceiptsDown  bool          // eth_getTransactionReceipt answers -32603
+	ReceiptsLead    time.Duration // eth_getTransactionReceipt answers a canonical block's receipts this long before the vendor serves the block, as a flashblocks node answers preconfirmed receipts; blocks, head and pushes do not move
 	LogsDown        bool          // eth_getLogs answers -32603
 	CapLogs         bool          // eth_getLogs one log short where the bloom and logIndexes hide it (lastLogCovered)
 	TruncReceipts   bool          // receipts without their last 10
@@ -52,6 +55,7 @@ type Faults struct {
 	RefuseFinalized bool          // the finalized and safe tags answer unsupported, as Prism's readers do
 	Slow            time.Duration // every answer waits this long
 	SlowReceipts    time.Duration // receipts and logs answers wait this long more
+	SlowTxReceipts  time.Duration // eth_getTransactionReceipt answers wait this long more
 	SlowHistory     time.Duration // answers by hash, and by number below its head, wait this long more
 	SilentHeads     bool          // newHeads subscriptions stay open and push nothing
 	SilentPending   bool          // newPendingTransactions subscriptions push nothing
@@ -115,6 +119,8 @@ type Vendor struct {
 	served   map[Hash]bool
 	// latestCalls are the eth_getBlockByNumber(latest) calls answered.
 	latestCalls []LatestCall
+	// methodCalls counts the JSON-RPC calls answered, per method.
+	methodCalls map[string]int64
 
 	connects, headsSubs, pendingSubs, logsSubs, throttled, receiptsCalls  atomic.Int64
 	logsCalls, slowAnswers, forgedHeads, cappedLogs, subSeq, headsRefused atomic.Int64
@@ -197,7 +203,7 @@ func (c *Chain) AddVendor(id, name string, ws bool) (*Vendor, error) {
 		return nil, err
 	}
 	v := &Vendor{ID: id, Name: name, WS: ws, chain: c, ln: ln, seen: make(map[Hash]bool), conns: make(map[*wsConn]bool),
-		numberCalls: make(map[uint64][]numberCall), receipts: make(map[Hash]int), served: make(map[Hash]bool)}
+		numberCalls: make(map[uint64][]numberCall), receipts: make(map[Hash]int), served: make(map[Hash]bool), methodCalls: make(map[string]int64)}
 	v.srv = &http.Server{Handler: v, ReadHeaderTimeout: 10 * time.Second}
 	c.mu.Lock()
 	v.setTipLocked(c.tipLocked())
@@ -276,13 +282,16 @@ func (v *Vendor) Head() *Block {
 
 // ServesAt is when the vendor first answers method for b: its mint, plus
 // HeadDelay and its HeadJitter share, plus BlockLag for a block read by
-// number or hash.
+// number or hash, or LogsLag for its logs.
 func (v *Vendor) ServesAt(b *Block, method string) time.Time {
 	v.chain.mu.Lock()
 	defer v.chain.mu.Unlock()
 	at := b.MintedAt.Add(v.serveDelayLocked(b))
-	if method == "eth_getBlockByNumber" || method == "eth_getBlockByHash" {
+	switch method {
+	case "eth_getBlockByNumber", "eth_getBlockByHash":
 		at = at.Add(v.faults.BlockLag)
+	case "eth_getLogs":
+		at = at.Add(v.faults.LogsLag)
 	}
 	return at
 }
@@ -321,6 +330,14 @@ func (v *Vendor) NumberCalls(n uint64, full bool, from, to time.Time) int {
 		}
 	}
 	return k
+}
+
+// MethodCalls counts the method calls the vendor answered, over HTTP and
+// ws, batch members each.
+func (v *Vendor) MethodCalls(method string) int64 {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	return v.methodCalls[method]
 }
 
 // Stats are the vendor's counters.
@@ -811,9 +828,20 @@ func (v *Vendor) byNumberLocked(n uint64) *Block {
 	return b
 }
 
+// leadsLocked reports whether the vendor answers b's receipts ahead of b
+// itself (ReceiptsLead): b is canonical and its serve time, less the lead,
+// has passed.
+func (v *Vendor) leadsLocked(b *Block) bool {
+	lead := v.faults.ReceiptsLead
+	return lead > 0 && v.chain.canonAtLocked(b.Number) == b && !time.Now().Before(b.MintedAt.Add(v.serveDelayLocked(b)-lead))
+}
+
 // answer serves one JSON-RPC call from the vendor's view and faults.
 func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcError) {
 	v.calls.Add(1)
+	v.chain.mu.Lock()
+	v.methodCalls[method]++
+	v.chain.mu.Unlock()
 	if method == "eth_getBlockReceipts" {
 		if res, ok := v.trapped(params); ok {
 			return res, nil
@@ -966,13 +994,16 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		}
 		return rs, nil
 	case "eth_getTransactionReceipt":
+		if f.TxReceiptsDown {
+			return nil, &rpcError{-32603, "receipt unavailable"}
+		}
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
 		if !ok {
 			return nil, &rpcError{-32602, "invalid transaction hash"}
 		}
 		tx, ok := c.byTx[h]
-		if !ok || f.NullHeld || v.byNumberLocked(tx.b.Number) != tx.b {
+		if !ok || f.NullHeld || v.byNumberLocked(tx.b.Number) != tx.b && !v.leadsLocked(tx.b) {
 			return nil, nil
 		}
 		return tx.b.Receipt(tx.i), nil
@@ -1007,6 +1038,8 @@ func (v *Vendor) delay(method string, params []interface{}) time.Duration {
 	switch method {
 	case "eth_getBlockReceipts", "eth_getLogs":
 		d += f.SlowReceipts
+	case "eth_getTransactionReceipt":
+		d += f.SlowTxReceipts
 	case "eth_getBlockByHash":
 		d += f.SlowHistory
 	case "eth_getBlockByNumber":
@@ -1156,7 +1189,9 @@ func (v *Vendor) logsLocked(params []interface{}) (interface{}, *rpcError) {
 		if b == nil || !v.seen[h] {
 			return nil, &rpcError{-32000, "unknown block"}
 		}
-		blocks = []*Block{b}
+		if v.logsIndexedLocked(b) {
+			blocks = []*Block{b}
+		}
 	} else {
 		from, to := v.tip.Number, v.tip.Number
 		if s, ok := q["fromBlock"].(string); ok && s != "latest" {
@@ -1166,7 +1201,7 @@ func (v *Vendor) logsLocked(params []interface{}) (interface{}, *rpcError) {
 			to, _ = parseNumber(s)
 		}
 		for n := from; n <= to && n <= v.tip.Number; n++ {
-			if b := v.byNumberLocked(n); b != nil {
+			if b := v.byNumberLocked(n); b != nil && v.logsIndexedLocked(b) {
 				blocks = append(blocks, b)
 			}
 		}
@@ -1186,6 +1221,12 @@ func (v *Vendor) logsLocked(params []interface{}) (interface{}, *rpcError) {
 		}
 	}
 	return out, nil
+}
+
+// logsIndexedLocked reports whether the vendor's log index holds b's logs:
+// LogsLag after its tag names b.
+func (v *Vendor) logsIndexedLocked(b *Block) bool {
+	return v.faults.LogsLag == 0 || !time.Now().Before(b.MintedAt.Add(v.serveDelayLocked(b)+v.faults.LogsLag))
 }
 
 // queryOf parses a filter's address (one or a list) and positional topics

@@ -25,6 +25,10 @@ import (
 var (
 	bloomTrustRun = 8 // matching blocks with transactions in a row before the bloom skip
 	bloomSeenCap  = 1024
+	// bloomTrustCheck: a trust check starts at most this often per
+	// network, so keeping trust fresh costs at most one block's receipts
+	// per interval while the logs gate relies on it.
+	bloomTrustCheck = time.Minute
 )
 
 // Receipts timings (spec §10); exported so end-to-end tests can scale them.
@@ -79,13 +83,19 @@ const (
 // skipping" (spec §6.9, §11), shared by its trackers. Trust allows the
 // bloom skip: set after bloomTrustRun matching blocks with transactions
 // in a row, cleared by any mismatch. The bloom check's suspension is the
-// network's checkSuspensions, which never touches trust.
+// network's checkSuspensions, which never touches trust. A logs gate
+// verdict trust decides makes a trust check due (dueTrust): one in flight
+// network-wide, at most one every bloomTrustCheck.
 type bloomGate struct {
 	network common.Network
 	once    sync.Once
 	profile bloomProfile // read from the network's config on first use
 
 	trusted atomic.Bool
+	// trustBusy: a trust check runs; trustAt: unix nanos before which
+	// none starts.
+	trustBusy atomic.Bool
+	trustAt   atomic.Int64
 
 	mu    sync.Mutex
 	txRun int
@@ -155,11 +165,17 @@ func (g *bloomGate) checking() bool {
 	return s == nil || s.mode(bloomCheckID) == integrity.CheckEnforced
 }
 
-// bloomSkips: a block no registered MayMatch wants need not be fetched.
-// Only for a header whose hash recomputes, so its bloom is the block's.
-func (g *bloomGate) bloomSkips(h *chainHeader) bool {
+// trustable: h's bloom may be trusted for skipping once trust is earned:
+// the chain profile keeps the check and both skips, and h's hash
+// recomputes, so its bloom is the block's.
+func (g *bloomGate) trustable(h *chainHeader) bool {
 	p := g.prof()
-	return !p.checkOff && !p.skipsOff && g.trusted.Load() && h.hashRecomputes()
+	return !p.checkOff && !p.skipsOff && h.hashRecomputes()
+}
+
+// bloomSkips: a block no registered MayMatch wants need not be fetched.
+func (g *bloomGate) bloomSkips(h *chainHeader) bool {
+	return g.trusted.Load() && g.trustable(h)
 }
 
 // empty reports whether block h has no transactions, so no receipts (spec
@@ -184,6 +200,49 @@ func (g *bloomGate) emptySkips(h *chainHeader) bool {
 	p := g.prof()
 	return !p.checkOff && g.empty(h) && (p.foreignRoots || !p.skipsOff && !p.emptyOff && h.hashRecomputes())
 }
+
+// provesNoLogs reports whether block h's header proves that none of its
+// logs passes may (spec §6.4 logs gate): the block is empty (emptySkips),
+// its logsBloom is all zero where the chain profile keeps the bloom
+// check, or its bloom is trusted for skipping (bloomSkips) and fails may.
+// byTrust reports that bloom trust decides the verdict: a trustable bloom
+// that fails may, whether or not trust is earned yet.
+func (g *bloomGate) provesNoLogs(h *chainHeader, may func([]byte) bool) (no, byTrust bool) {
+	if g.emptySkips(h) {
+		return true, false
+	}
+	if !g.prof().checkOff && bytes.Equal(h.bloom, zeroBloom[:]) {
+		return true, false
+	}
+	if len(h.bloom) == 0 || !g.trustable(h) || may(h.bloom) {
+		return false, false
+	}
+	return g.trusted.Load(), true
+}
+
+// dueTrust reports whether a trust check may start now, and claims it:
+// none runs and the time the last one set passed. The caller runs it and
+// ends it with endTrust.
+func (g *bloomGate) dueTrust() bool {
+	return time.Now().UnixNano() >= g.trustAt.Load() && g.trustBusy.CompareAndSwap(false, true)
+}
+
+// endTrust ends the trust check in flight; the next may start after.
+func (g *bloomGate) endTrust(after time.Duration) {
+	g.trustAt.Store(time.Now().Add(after).UnixNano())
+	g.trustBusy.Store(false)
+}
+
+// judged reports whether block hash's bloom verdict is noted.
+func (g *bloomGate) judged(hash [32]byte) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.seen[hash]
+	return ok
+}
+
+// zeroBloom is a logsBloom no log set a bit of.
+var zeroBloom [logfilter.BloomLen]byte
 
 // newLocked reports whether v is a new outcome for block h; a block counts
 // once per outcome.
@@ -1068,6 +1127,96 @@ func (t *ChainTracker) runProbe() {
 			}
 		}})
 	})
+}
+
+// provesNoLogs is the logs gate's test of block h (bloomGate.provesNoLogs);
+// a verdict bloom trust decides makes a trust check due (wantTrust).
+func (t *ChainTracker) provesNoLogs(h *chainHeader, may func([]byte) bool) bool {
+	no, byTrust := t.fetch.bloom.provesNoLogs(h, may)
+	if byTrust {
+		t.wantTrust()
+	}
+	return no
+}
+
+// wantTrust starts a trust check on the tracker's goroutine when one is
+// due (bloomGate.dueTrust); the caller never waits on it.
+func (t *ChainTracker) wantTrust() {
+	if t.canFetch() && t.ctx.Err() == nil && t.fetch.bloom.dueTrust() {
+		t.mb.put(trackerMsg{kind: msgCall, fn: t.checkTrust})
+	}
+}
+
+// checkTrust is one step of a trust check (spec §11 bloom trust): the
+// receipts of trustBlock through the receipts fetch path, held and noted
+// for trust as any receipts. Untrusted, a match goes on to the next block
+// until trust is earned; trusted, one block keeps it fresh. A mismatch or
+// a failed fetch ends the check. Untrusted with no block left, as on a
+// tracker that has pinned fewer than bloomTrustRun such blocks yet, the
+// next demand goes on a block time later, with the next block.
+func (t *ChainTracker) checkTrust() {
+	g := t.fetch.bloom
+	if len(t.methodUpstreams("eth_getBlockReceipts")) == 0 {
+		g.endTrust(bloomTrustCheck)
+		return
+	}
+	h := t.trustBlock()
+	if h == nil {
+		after := bloomTrustCheck
+		if !g.trusted.Load() {
+			after = t.BlockTime()
+		}
+		g.endTrust(after)
+		return
+	}
+	spec := t.receiptsSpec(classTipReceipts, h.hash, h, false)
+	spec.kind = "bloom_trust"
+	w := t.fetch.submit(nil, spec)
+	if !t.fetch.bg.Go(func() {
+		res := w.wait(t.ctx)
+		t.mb.put(trackerMsg{kind: msgCall, fn: func() { t.trustResult(h, res) }})
+	}) {
+		g.endTrust(bloomTrustCheck)
+	}
+}
+
+// trustResult takes the answer of checkTrust's fetch of block h. A
+// mismatch every upstream answered, so the fetch failed on it, clears
+// trust too: the header's bloom is not its receipts'.
+func (t *ChainTracker) trustResult(h *chainHeader, res fetchResult) {
+	g := t.fetch.bloom
+	switch {
+	case res.err == nil:
+		r := res.val.(*heldReceipts)
+		t.holdReceipts(r, res.upstream)
+		if r.bloom == bloomMatch && !g.trusted.Load() {
+			t.checkTrust()
+			return
+		}
+	case errors.Is(res.err, errBloomMismatch):
+		g.noted(h, bloomMismatch)
+	}
+	g.endTrust(bloomTrustCheck)
+}
+
+// trustBlock is the newest pin within reorgWindow of the head with
+// transactions and a trustable bloom whose verdict is not noted yet.
+func (t *ChainTracker) trustBlock() *chainHeader {
+	head := t.head()
+	if head == nil {
+		return nil
+	}
+	g := t.fetch.bloom
+	for i := len(t.pins) - 1; i >= 0; i-- {
+		h := t.pins[i].h
+		if h.number+uint64(t.window) < head.number {
+			break
+		}
+		if len(h.bloom) > 0 && !g.empty(h) && g.trustable(h) && !g.judged(h.hash) {
+			return h
+		}
+	}
+	return nil
 }
 
 // usableMethods reports whether an upstream of the group serves

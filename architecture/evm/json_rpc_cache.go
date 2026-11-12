@@ -1166,6 +1166,40 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 	return policies, nil
 }
 
+// LogsHead is the newest block that a connector Get would read req's
+// eth_getLogs from reports holding (data.CacheHeadReporter), the highest of
+// them; false when none reports one. A range store such as Prism refuses a
+// range past that block whole, though it holds every block below it.
+func (c *EvmJsonRpcCache) LogsHead(ctx context.Context, req *common.NormalizedRequest) (int64, bool) {
+	rpcReq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return 0, false
+	}
+	policies, err := c.findGetPolicies(req.NetworkId(), rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, req.Finality(ctx), true))
+	if err != nil {
+		return 0, false
+	}
+	useUpstream := useUpstreamSelector(req)
+	head, found := int64(0), false
+	for _, p := range policies {
+		conn := p.GetConnector()
+		if req.ShouldSkipCacheRead(conn.Id()) {
+			continue
+		}
+		if eligible, _ := p.MatchesUpstreamSelector(useUpstream); !eligible {
+			continue
+		}
+		reporter, ok := conn.(data.CacheHeadReporter)
+		if !ok {
+			continue
+		}
+		if number, _, known := reporter.CacheLatestBlock(req.NetworkId()); known && (!found || number > head) {
+			head, found = number, true
+		}
+	}
+	return head, found
+}
+
 func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, error) {
 	rpcReq.RLockWithTrace(ctx)
 	defer rpcReq.RUnlock()

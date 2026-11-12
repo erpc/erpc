@@ -328,11 +328,20 @@ func projectPreForward_eth_getLogs(ctx context.Context, n common.Network, nq *co
 }
 
 // networkPreForward_eth_getLogs performs network-level validation, and splits
-// a range that consensus will vote on. Otherwise range splitting is per
-// upstream, in upstreamPreForward_eth_getLogs: one upstream's small limit must
-// not cut the range for every other upstream. Under consensus every
-// participant would split the whole range again, so the range splits once
-// here, at the smallest threshold of ups, and each piece is voted on alone.
+// a range in two cases. It runs after the cache missed the whole range.
+//
+//   - The range runs past the newest block the cache holds (cacheLogsHead):
+//     a range store such as Prism refuses such a range whole. The range
+//     splits there: the cache serves everything up to its head in one read,
+//     and only the blocks above it go to upstreams. Else every upstream piece
+//     below would read the cache again, cut to that upstream's threshold.
+//   - Consensus will vote on it. Otherwise range splitting is per upstream,
+//     in upstreamPreForward_eth_getLogs: one upstream's small limit must not
+//     cut the range for every other upstream. Under consensus every
+//     participant would split the whole range again, so the range splits
+//     once here, at the smallest threshold of ups, and each piece is voted
+//     on alone.
+//
 // The hard limits are re-checked here as a backstop for callers that reach
 // Network.Forward without the project hook; normally projectPreForward_eth_getLogs
 // has already refused an over-cap request before the cache read.
@@ -391,11 +400,20 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	}
 
 	// A range sent as a tag moves with the head: it goes whole.
-	threshold := minGetLogsSplitThreshold(ups)
-	if sentAsTag || threshold <= 0 || toBlock-fromBlock+1 <= threshold || !common.RunsConsensus(n, ctx, nrq) {
+	if sentAsTag {
 		return false, nil, nil
 	}
-	subRequests := getLogsRangePieces(fromBlock, toBlock, threshold, address, topics)
+	var subRequests []ethGetLogsSubRequest
+	if head, ok := cacheLogsHead(ctx, nrq); ok && fromBlock <= head && head < toBlock {
+		subRequests = []ethGetLogsSubRequest{
+			{fromBlock: fromBlock, toBlock: head, address: address, topics: topics},
+			{fromBlock: head + 1, toBlock: toBlock, address: address, topics: topics},
+		}
+	} else if threshold := minGetLogsSplitThreshold(ups); threshold > 0 && toBlock-fromBlock+1 > threshold && common.RunsConsensus(n, ctx, nrq) {
+		subRequests = getLogsRangePieces(fromBlock, toBlock, threshold, address, topics)
+	} else {
+		return false, nil, nil
+	}
 	skipCache := ""
 	if dirs := nrq.Directives(); dirs != nil {
 		skipCache = dirs.SkipCacheRead
@@ -405,6 +423,16 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 		return true, nil, err
 	}
 	return true, common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
+}
+
+// cacheLogsHead is the newest block the cache req reads holds for its
+// eth_getLogs (EvmJsonRpcCache.LogsHead); false without such a cache.
+func cacheLogsHead(ctx context.Context, req *common.NormalizedRequest) (int64, bool) {
+	cache, ok := req.CacheDal().(*EvmJsonRpcCache)
+	if !ok || cache == nil {
+		return 0, false
+	}
+	return cache.LogsHead(ctx, req)
 }
 
 // minGetLogsSplitThreshold is the smallest positive

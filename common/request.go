@@ -1691,6 +1691,19 @@ func (r *NormalizedRequest) Untried(upstream Upstream) bool {
 	return !consumed
 }
 
+// MatchesUseUpstream reports whether the request's UseUpstream selector (a
+// client's X-ERPC-Use-Upstream, or a split piece's pin) lets it select
+// upstream at all, whatever it already tried; every upstream matches
+// without one.
+func (r *NormalizedRequest) MatchesUseUpstream(upstream Upstream) bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	return r.matchesUseUpstreamLocked(upstream)
+}
+
 // reserveLocked reserves upstream when it is selectable and not consumed
 // (in flight, or completed this round).
 func (r *NormalizedRequest) reserveLocked(upstream Upstream) bool {
@@ -1742,6 +1755,36 @@ func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
 		}
 		selectable++
 		if !r.failedPermanentlyLocked(upstream) {
+			return false
+		}
+	}
+	return selectable > 0
+}
+
+// EveryUpstreamAnsweredEmpty reports whether every upstream this request
+// may select answered empty or with an error no retry changes: a transient
+// error (timeout, 429, 5xx) or an attempt still in flight in a sibling leg
+// is no answer, and that upstream may hold what the rest lack. False with
+// no selectable upstream.
+func (r *NormalizedRequest) EveryUpstreamAnsweredEmpty() bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	selectable := 0
+	for _, upstream := range r.upstreamList {
+		if !r.matchesUseUpstreamLocked(upstream) {
+			continue
+		}
+		selectable++
+		stored, ok := r.ErrorsByUpstream.Load(upstream)
+		if !ok {
+			return false
+		}
+		err, _ := stored.(error)
+		if err == nil || !HasErrorCode(err, ErrCodeEndpointMissingData) && IsRetryableTowardsUpstream(err) {
 			return false
 		}
 	}

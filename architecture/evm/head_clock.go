@@ -1620,10 +1620,12 @@ func (t *ChainTracker) Sighted(n uint64) {
 
 // prove records that block n existed by at (zero: now), held when by
 // answered it by hash, so the target's probe goes once n reaches it
-// (proveTarget).
+// (proveTarget), and raises ProvenAbove to n.
 func (t *ChainTracker) prove(n uint64, held bool, by string, at time.Time) {
 	if at.IsZero() {
 		at = time.Now()
+	}
+	for p := t.provenAbove.Load(); n > p && !t.provenAbove.CompareAndSwap(p, n); p = t.provenAbove.Load() {
 	}
 	t.mb.put(trackerMsg{kind: msgCall, fn: func() {
 		if c := &t.clock; n > c.top() && n > c.proven {

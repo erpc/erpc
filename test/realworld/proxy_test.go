@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"slices"
@@ -53,9 +54,14 @@ type link struct {
 	accepts int64
 	resets  int64 // connections RSTMid reset
 	// reads count the pod's JSON-RPC requests (anyRead), its
-	// eth_getBlockByNumber requests by tag ("latest", "finalized") and its
-	// eth_blockNumber requests (blockNumberRead).
+	// eth_getBlockByNumber requests by tag ("latest", "finalized"), its
+	// eth_blockNumber requests (blockNumberRead) and its eth_getLogs
+	// requests (getLogsRead).
 	reads map[string]int64
+	// logIDs count the pod's eth_getLogs requests by JSON-RPC id: eRPC
+	// sends a client's id on, so one id through several links is one
+	// client read asked of several vendors.
+	logIDs map[string]int
 }
 
 // anyRead keys a link's count of every request.
@@ -64,6 +70,9 @@ const anyRead = "*"
 // blockNumberRead keys a link's count of eth_blockNumber requests.
 const blockNumberRead = "blockNumber"
 
+// getLogsRead keys a link's count of eth_getLogs requests.
+const getLogsRead = "getLogs"
+
 func (l *link) count(kind string, n int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -71,6 +80,15 @@ func (l *link) count(kind string, n int) {
 		l.reads = map[string]int64{}
 	}
 	l.reads[kind] += int64(n)
+}
+
+func (l *link) countLogsID(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.logIDs == nil {
+		l.logIDs = map[string]int{}
+	}
+	l.logIDs[id]++
 }
 
 type pconn struct {
@@ -206,6 +224,7 @@ var hashKey = []byte(`"hash":"0x`)
 var (
 	byNumberKey    = []byte(`eth_getBlockByNumber`)
 	blockNumberKey = []byte(`"eth_blockNumber"`)
+	getLogsKey     = []byte(`"eth_getLogs"`)
 	latestKey      = []byte(`"latest"`)
 	jsonrpcKey     = []byte(`"jsonrpc"`)
 	idKey          = []byte(`"id":`)
@@ -234,7 +253,7 @@ func (sc *headerScan) request(b []byte) {
 		return
 	}
 	sc.l.count(anyRead, len(starts))
-	if !bytes.Contains(b, byNumberKey) && !bytes.Contains(b, blockNumberKey) {
+	if !bytes.Contains(b, byNumberKey) && !bytes.Contains(b, blockNumberKey) && !bytes.Contains(b, getLogsKey) {
 		return
 	}
 	starts[0] = 0
@@ -246,6 +265,13 @@ func (sc *headerScan) request(b []byte) {
 		msg := b[from:to]
 		if bytes.Contains(msg, blockNumberKey) {
 			sc.l.count(blockNumberRead, 1)
+			continue
+		}
+		if bytes.Contains(msg, getLogsKey) {
+			sc.l.count(getLogsRead, 1)
+			if id, ok := jsonID(msg, bytes.Index(msg, idKey)); ok {
+				sc.l.countLogsID(id)
+			}
 			continue
 		}
 		if !bytes.Contains(msg, byNumberKey) {
@@ -449,6 +475,15 @@ func (px *proxy) reads(p *pod, kind string) int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.reads[kind]
+}
+
+// logsIDs is a copy of p's eth_getLogs requests by JSON-RPC id through
+// this proxy (link.logIDs).
+func (px *proxy) logsIDs(p *pod) map[string]int {
+	l := px.link(p)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return maps.Clone(l.logIDs)
 }
 
 // resets counts p's connections that RSTMid reset.

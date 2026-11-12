@@ -104,6 +104,7 @@ func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
 		c = indexer.Cursor{Number: uint64(latest)}
 	}
 	a.Latest, a.LatestHash = latest, c.Hash
+	a.LatestAt, a.NextAt = time.Time{}, time.Time{}
 	a.Firm = min(a.Firm, latest)
 	a.Finalized = min(a.Finalized, latest)
 	return &a
@@ -183,7 +184,9 @@ func (n *Network) requestScope(ctx context.Context, req *common.NormalizedReques
 // no lane, or a method only some of its upstreams serve, takes the
 // stateless pick of the facts and the selector lane's view, its Head
 // capped at the block q of the scope's upstreams likely hold
-// (likelyHolders); Firm stays the view's, by proof.
+// (likelyHolders); Firm stays the view's, by proof. A Head that is the
+// view's own carries the earliest time the lane's next block may come
+// (nextAt).
 func (n *Network) headFor(s tipScope) *common.EvmHead {
 	var h common.EvmHead
 	var limit int64
@@ -193,40 +196,77 @@ func (n *Network) headFor(s tipScope) *common.EvmHead {
 		h = n.computeHead(nil, s)
 		limit = n.likelyHolders(s)
 	}
+	h.LatestAt, h.NextAt = time.Time{}, time.Time{}
 	if t := n.laneTracker(s.sel); t != nil {
 		viewHead(&h, t.View(), limit)
+		h.NextAt = n.nextAt(t, h.LatestAt)
 	}
 	return &h
 }
+
+// nextAt is the earliest time the lane's next block may come after its
+// view's Head stood at latestAt: plus the shorter of half a block and the
+// shortest of the view's recent steps (ChainTracker.MinStep). Zero while
+// latestAt is, the block time is cold, or fewer than minViewSteps steps
+// are known (spec §6.4 settled head).
+func (n *Network) nextAt(t *evm.ChainTracker, latestAt time.Time) time.Time {
+	bt := n.EvmBlockTime()
+	step, steps := t.MinStep()
+	if latestAt.IsZero() || bt <= 0 || steps < minViewSteps {
+		return time.Time{}
+	}
+	return latestAt.Add(min(bt/2, step))
+}
+
+// minViewSteps is how many view steps nextAt needs before it bounds
+// anything.
+const minViewSteps = 8
 
 // viewHead sets h's view fields from v, its Head at most limit when that
 // is set; Finalized never above the Head. A limit the pins do not hold
 // (its upstreams' branch is not linked to them yet), or a guarantee cap
 // below the pins (View.Capped), serves the number alone: no hash to check
 // an answer against, and never a block above what the selector's or the
-// guarantee's upstreams hold.
+// guarantee's upstreams hold. LatestAt is set only for the view's own
+// Head.
 func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	head, ok := v.Head()
+	at := v.HeadAt()
 	if !ok {
 		n, capped := v.Capped()
 		if !capped {
-			h.Latest, h.LatestHash, h.Firm = 0, [32]byte{}, 0
+			h.Latest, h.LatestHash, h.Firm, h.LatestAt = 0, [32]byte{}, 0, time.Time{}
 			return
 		}
-		head = indexer.Cursor{Number: n}
+		head, at = indexer.Cursor{Number: n}, time.Time{}
 	}
 	if limit > 0 && uint64(limit) < head.Number {
 		c, pinned := v.PinAt(uint64(limit))
 		if !pinned {
 			c = indexer.Cursor{Number: uint64(limit)}
 		}
-		head = c
+		head, at = c, time.Time{}
 	}
-	h.Latest, h.LatestHash = int64(head.Number), head.Hash
+	h.Latest, h.LatestHash, h.LatestAt = int64(head.Number), head.Hash, at
 	h.Firm = int64(min(v.Firm(), head.Number))
 	if h.Finalized > h.Latest {
 		h.Finalized = h.Latest
 	}
+}
+
+// laneStill reports whether req's lane's view still stands at latest, the
+// Latest req took at its start, its block clock runs, and no by-hash answer
+// or cache sighting showed a block above it (ChainTracker.ProvenAbove): a
+// block that landed during its sweep, a preconfirmation or an early block
+// shows data a hedge could find, and a stopped clock leaves the view, and
+// so LatestAt, up to a full poll behind the chain (spec §6.4 settled head).
+func (n *Network) laneStill(req *common.NormalizedRequest, latest int64) bool {
+	t := n.laneTracker(selectorOf(req))
+	if t == nil || !t.ClockRuns() || t.ProvenAbove() > uint64(latest) {
+		return false
+	}
+	head, ok := t.View().Head()
+	return ok && int64(head.Number) == latest
 }
 
 // laneTracker is the chain tracker whose view selector sel's lane serves:
