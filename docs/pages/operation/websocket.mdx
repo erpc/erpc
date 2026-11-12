@@ -194,7 +194,7 @@ wss newHeads / http poll → intake → chain tracker → confirmed head → tap
 | ws `logs` | the sent logs of the dropped blocks with `"removed": true`, newest first; then the logs of the new branch |
 | gRPC `StreamBlocks` | resends from the fork point + 1: a number at or below the last one replaces it and every number above |
 
-**Logs from receipts.** `logs` notifications come from each block's `eth_getBlockReceipts`, fetched once when the block is pinned and its `logsBloom` may match a subscribed filter. Receipts that fail on every upstream for 5s fall back to `eth_getLogs` by `blockHash`. Logs reach clients one receipts round trip after the confirmed head.
+**Logs from receipts.** `logs` notifications come from each block's `eth_getBlockReceipts`, fetched once when the block is pinned and its `logsBloom` may match a subscribed filter. Receipts that fail on every upstream for 5s fall back to `eth_getLogs` by `blockHash`. A receipts (or fallback logs) answer whose bloom does not match the header is rejected and another vendor is tried — that guard runs even with integrity off; only the `erpc_integrity_violation` metric for `bloomMatch` requires an `integrity:` block. Logs reach clients one receipts round trip after the confirmed head.
 
 **The window.** The tracker holds headers within `chainTracker.maxBackfill` of chain time below the head, and at least `chainTracker.reorgWindow` blocks; receipts for the last `reorgWindow` blocks. A reorg deeper than `reorgWindow` re-anchors the tracker on the majority's branch.
 

@@ -119,6 +119,10 @@ type bloomProfile struct {
 	// keep failing, are held only once vendors that meet the evidence
 	// quorum answered the same logs.
 	agreeLogs bool
+	// integrityBloom: the resolved integrity CheckSet enables bloomMatch.
+	// Rejection and misbehavior scoring stay on regardless (spec §11);
+	// only erpc_integrity_violation is gated on this — see countBloomMismatch.
+	integrityBloom bool
 	// logIndexes: integrity checks logIndexContiguity, so logs from
 	// eth_getLogs by blockHash must run 0..N-1 as receipts' do.
 	logIndexes bool
@@ -151,13 +155,16 @@ func (g *bloomGate) prof() *bloomProfile {
 		}
 		cs, _, _, _ := resolveIntegrity(n, nil)
 		g.profile.agreeLogs = cs.Validates()
+		g.profile.integrityBloom = cs.For("bloomMatch").Enabled
 		g.profile.logIndexes = cs.For("logIndexContiguity").Enabled
 	})
 	return &g.profile
 }
 
 // checking reports whether a mismatching answer fails its fetch: the chain
-// profile keeps the check and the network has not suspended it.
+// profile keeps the check and the network has not suspended it. Spec §11:
+// the tracker's bloom guard runs on every receipts answer; integrity opt-in
+// only gates the erpc_integrity_violation metric (countBloomMismatch).
 func (g *bloomGate) checking() bool {
 	if g.prof().checkOff {
 		return false
@@ -1259,16 +1266,19 @@ func (t *ChainTracker) endJob(j *receiptsJob, r *heldReceipts) {
 	t.receiptsDirty = true
 }
 
-// countBloomMismatch counts u's mismatching answer against it, as
-// integrity counts a bloomMatch violation, in its misbehavior score, and
-// for the network's bloom check. It runs in the fetch's answer check.
+// countBloomMismatch counts u's mismatching answer against it in its
+// misbehavior score and for the network's bloom check. The
+// erpc_integrity_violation metric fires only when integrity enables
+// bloomMatch (opt-in); rejection itself is gated by checking() alone.
 func (t *ChainTracker) countBloomMismatch(u common.Upstream, method string, h *chainHeader) {
 	if s := suspensionsOf(t.network); s != nil {
 		s.recordBloom(h.number, t.vendorTable().Of[u.Id()], false)
 	}
-	telemetry.MetricIntegrityViolation.WithLabelValues(
-		t.projectId(), u.VendorName(), t.networkLabel(), u.Id(), strings.ToLower(method), "bloomMatch", "reject", t.finalityLabel(int64(h.number)),
-	).Inc()
+	if t.fetch.bloom.prof().integrityBloom {
+		telemetry.MetricIntegrityViolation.WithLabelValues(
+			t.projectId(), u.VendorName(), t.networkLabel(), u.Id(), strings.ToLower(method), "bloomMatch", "reject", t.finalityLabel(int64(h.number)),
+		).Inc()
+	}
 	if ht := u.Tracker(); ht != nil {
 		ht.RecordUpstreamMisbehavior(u, strings.ToLower(method), common.DataFinalityStateUnfinalized)
 	}
