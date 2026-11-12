@@ -255,13 +255,14 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 }
 
 // laneStill reports whether req's lane's view still stands at latest, the
-// Latest req took at its start, and no by-hash answer or cache sighting
-// showed a block above it (ChainTracker.ProvenAbove): a block that landed
-// during its sweep, a preconfirmation or an early block shows data a
-// hedge could find (spec §6.4 settled head).
+// Latest req took at its start, its block clock runs, and no by-hash answer
+// or cache sighting showed a block above it (ChainTracker.ProvenAbove): a
+// block that landed during its sweep, a preconfirmation or an early block
+// shows data a hedge could find, and a stopped clock leaves the view, and
+// so LatestAt, up to a full poll behind the chain (spec §6.4 settled head).
 func (n *Network) laneStill(req *common.NormalizedRequest, latest int64) bool {
 	t := n.laneTracker(selectorOf(req))
-	if t == nil || t.ProvenAbove() > uint64(latest) {
+	if t == nil || !t.ClockRuns() || t.ProvenAbove() > uint64(latest) {
 		return false
 	}
 	head, ok := t.View().Head()
