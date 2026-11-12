@@ -2548,11 +2548,12 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		assert.Less(t, elapsed, 3*time.Second)
 	})
 
-	for _, message := range []string{"transaction underpriced", "replacement transaction underpriced"} {
+	for _, message := range []string{"transaction underpriced", "replacement transaction underpriced", "nonce too high"} {
 		message := message
-		t.Run("UnderpricedFromEveryUpstreamIsNotRetried/"+message, func(t *testing.T) {
-			// Minimum gas price and mempool contents are node-local, so each
-			// upstream gets one try; once all refuse, the broadcast ends.
+		t.Run("NodeLocalRefusalFromEveryUpstreamIsNotRetried/"+message, func(t *testing.T) {
+			// Minimum gas price, mempool contents and the head a node has
+			// applied are node-local, so each upstream gets one try; once all
+			// refuse, the broadcast ends.
 			calls, elapsed, err := forwardSendEveryUpstreamRefuses(t, -32000, message)
 
 			require.Error(t, err)
@@ -2568,11 +2569,12 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		})
 	}
 
-	// A nonce gap ("nonce too high") is a verdict on the sender's nonce, not
-	// an upstream fault: the client must get the node's message after one
-	// upstream, and a stream of them must not open the upstream breakers,
-	// which would also refuse the reads (eth_getTransactionCount) a relayer
-	// needs to repair its nonce.
+	// A nonce gap ("nonce too high") on every upstream is a verdict on the
+	// sender's nonce, not an upstream fault: the client must get the node's
+	// message once each upstream refused, no upstream is retried in place, and
+	// a stream of them must not open the upstream breakers, which would also
+	// refuse the reads (eth_getTransactionCount) a relayer needs to repair its
+	// nonce.
 	for _, refusal := range []struct {
 		code    int
 		message string
@@ -2583,13 +2585,15 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		{-32000, "nonce gap too large: transaction nonce is too far ahead of sender's on-chain nonce"},
 	} {
 		code, message := refusal.code, refusal.message
-		t.Run("NonceTooHighIsFinalAndKeepsBreakersClosed/"+message, func(t *testing.T) {
+		t.Run("NonceTooHighEverywhereKeepsBreakersClosed/"+message, func(t *testing.T) {
 			util.ResetGock()
 			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
-			sends := &atomic.Int64{}
+			sends := map[string]*atomic.Int64{}
 			for _, endpoint := range []string{"http://rpc1.localhost", "http://rpc2.localhost"} {
+				sent := &atomic.Int64{}
+				sends[endpoint] = sent
 				gock.New(endpoint).
 					Post("").
 					Persist().
@@ -2597,7 +2601,7 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 						if !strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction") {
 							return false
 						}
-						sends.Add(1)
+						sent.Add(1)
 						return true
 					}).
 					Reply(200).
@@ -2639,8 +2643,16 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 					"client must get the node's refusal, got: %v", err)
 				assert.Contains(t, err.Error(), message)
 			}
-			assert.Equal(t, int64(broadcasts), sends.Load(),
-				"each broadcast must ask exactly one upstream, never retry or fail over")
+			// The network retry (3 attempts) may revisit an upstream after
+			// all have refused; an in-place upstream retry would exceed it.
+			var total int64
+			for endpoint, sent := range sends {
+				assert.GreaterOrEqual(t, sent.Load(), int64(broadcasts),
+					"each broadcast must ask %s", endpoint)
+				total += sent.Load()
+			}
+			assert.LessOrEqual(t, total, int64(broadcasts*3),
+				"a broadcast must not retry the upstream that refused")
 
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_getTransactionCount","params":["0x3535353535353535353535353535353535353535","pending"]}`))
 			resp, err := network.Forward(ctx, req)
@@ -2650,6 +2662,115 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 			assert.Equal(t, `"0x9"`, string(jrr.GetResultBytes()))
 		})
 	}
+
+	// An upstream whose head lags has not applied the sender's last mined
+	// transaction, so it reads the next nonce as a gap and refuses with
+	// "nonce too high" while up-to-date upstreams accept the transaction.
+	// That refusal must never be the client's answer while another upstream
+	// accepts.
+	const acceptedTxHash = "0x0a8c6b4a9d1e1f0d6b3c9e2f4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7"
+	mockLaggingAndFreshUpstreams := func(lagging string, fresh []string, freshDelay time.Duration) (refusals *atomic.Int64) {
+		refusals = &atomic.Int64{}
+		gock.New("http://" + lagging + ".localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				if !strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction") {
+					return false
+				}
+				refusals.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error":   map[string]interface{}{"code": -32000, "message": "nonce too high"},
+			})
+		for _, id := range fresh {
+			gock.New("http://" + id + ".localhost").
+				Post("").
+				Persist().
+				Filter(func(r *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(r), "eth_sendRawTransaction")
+				}).
+				Reply(200).
+				Delay(freshDelay).
+				JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": acceptedTxHash})
+		}
+		return refusals
+	}
+
+	t.Run("NonceTooHighFromLaggingUpstreamFailsOverToFreshUpstream", func(t *testing.T) {
+		util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		util.SetupMocksForEvmStatePoller()
+		refusals := mockLaggingAndFreshUpstreams("rpc1", []string{"rpc2"}, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		network := setupTwoUpstreamNetworkForSkip(t, ctx, nil, nil, nil, nil,
+			[]*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}}},
+			nil, nil,
+		)
+		t.Cleanup(cancel)
+
+		for range 4 {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err, "a fresh upstream accepts the transaction")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Equal(t, `"`+acceptedTxHash+`"`, string(jrr.GetResultBytes()))
+		}
+		assert.Positive(t, refusals.Load(), "the lagging upstream must be asked at least once")
+	})
+
+	t.Run("NonceTooHighFromLaggingUpstreamDoesNotEndBroadcast", func(t *testing.T) {
+		util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		util.SetupMocksForEvmStatePoller()
+		ids := []string{"rpc1", "rpc2", "rpc3", "rpc4"}
+		// The lagging upstream answers first, so the consensus round sees its
+		// refusal before any acceptance.
+		refusals := mockLaggingAndFreshUpstreams("rpc1", ids[1:], 150*time.Millisecond)
+		var upstreamConfigs []*common.UpstreamConfig
+		for _, id := range ids {
+			upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
+				Id:       id,
+				Endpoint: "http://" + id + ".localhost",
+				Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+			})
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			Failsafe: []*common.FailsafeConfig{{
+				MatchMethod: "eth_sendRawTransaction",
+				Hedge: &common.HedgePolicyConfig{
+					MaxCount: 2,
+					Delay:    common.NewStaticDuration(500 * time.Millisecond),
+				},
+				Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
+				Consensus: &common.ConsensusPolicyConfig{
+					MaxParticipants:    sendBroadcastParticipants,
+					AgreementThreshold: 1,
+					FireAndForget:      true,
+				},
+			}},
+		})
+		t.Cleanup(cancel)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err, "fresh upstreams accept the transaction")
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, `"`+acceptedTxHash+`"`, string(jrr.GetResultBytes()))
+		assert.Positive(t, refusals.Load(), "the lagging upstream must be asked")
+	})
 }
 
 // sendBroadcastParticipants is the consensus fan-out of the production

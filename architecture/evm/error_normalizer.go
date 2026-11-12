@@ -471,15 +471,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// preChecks on eth_call/eth_estimateGas). Wordings: geth, reth, Nethermind
 		// "nonce too high"; Besu "Nonce too high" (-32006) and "Transaction nonce
 		// is too distant from current sender nonce"; Erigon "nonce gap too large".
-		// The chain's nonce is the same on every upstream, so the verdict is
-		// final: one upstream answers and the caller gets its message to repair
-		// the nonce. Left to the server-side fallback it was retried on every
-		// upstream and each refusal counted toward the circuit breaker, so a
-		// relayer's nonce gap opened the breakers and refused its reads as well.
+		// The node answered correctly, so the refusal must not count toward the
+		// circuit breaker: as a server-side exception a relayer's nonce gap
+		// opened the breakers and refused its reads as well.
 		if strings.Contains(ml, "nonce too high") ||
 			strings.Contains(ml, "nonce is too distant") ||
 			strings.Contains(ml, "nonce gap too large") {
-			return common.NewErrEndpointExecutionException(
+			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorTransactionRejected,
@@ -488,6 +486,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+			// The verdict is only as fresh as the node's head: an upstream that
+			// has not applied the sender's last mined transaction sees the
+			// correct next nonce as a gap. Keep eth_sendRawTransaction failover
+			// so an up-to-date upstream can accept it; the upstream that refused
+			// is not asked again.
+			if nr != nil && nr.Request() != nil {
+				if m, _ := nr.Request().Method(); strings.EqualFold(m, "eth_sendRawTransaction") {
+					if re, ok := execErr.(common.RetryableError); ok {
+						return re.WithRetryableTowardNetwork(true)
+					}
+				}
+			}
+			return execErr
 		}
 
 		// HyperEVM (Hyperliquid) returns opaque HyperCore↔HyperEVM boundary
