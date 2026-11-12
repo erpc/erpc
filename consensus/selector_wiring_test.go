@@ -426,6 +426,32 @@ func TestBuildEvalContext_AvailabilityOnlyNotPinned(t *testing.T) {
 	}
 }
 
+// Selected is always the post-selection candidate list, even when Upstreams
+// prefers the broader network registry — so noneSelected() can see lag /
+// diversity exclusions that leave the peer healthy in the registry.
+func TestBuildEvalContext_SelectedFromCandidates(t *testing.T) {
+	c := newWiringConsensus(t)
+
+	primary := common.NewFakeUpstream("primary-a", common.WithTags("tier:primary"))
+	secondary := common.NewFakeUpstream("provider-b", common.WithTags("tier:secondary"))
+
+	req := wiringRequest(t, "eth_getBalance", "")
+	// Selection dropped the laggy primary; network registry still has both.
+	req.SetUpstreams([]common.Upstream{secondary})
+	req.SetNetworkUpstreams([]common.Upstream{primary, secondary})
+
+	ectx := c.buildEvalContext(req)
+	if !ectx.HasSelected {
+		t.Fatal("HasSelected must be true after buildEvalContext")
+	}
+	if len(ectx.Selected) != 1 || ectx.Selected[0].ID != "provider-b" {
+		t.Fatalf("Selected = %+v, want only provider-b", ectx.Selected)
+	}
+	if len(ectx.Upstreams) != 2 {
+		t.Fatalf("Upstreams = %+v, want both network nodes", ectx.Upstreams)
+	}
+}
+
 // An explicitly empty NetworkUpstreams snapshot (nothing method-eligible after
 // filter) must not fall back to post-selection candidates — that would
 // reintroduce method-ineligible nodes as healthy selector inputs.

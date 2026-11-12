@@ -131,6 +131,11 @@ func (c *Consensus) buildEvalContext(req *common.NormalizedRequest) policyengine
 			BlockNumber: blockNumberPtr(req.EvmBlockNumber()),
 		},
 		Upstreams: toEvalUpstreams(upsForHealth, method, finality),
+		// Always stamp Selected from the post-selection candidate list so
+		// noneSelected() can tell "lag/diversity excluded from this round"
+		// apart from "still healthy in the network registry".
+		Selected:    toEvalUpstreams(req.Upstreams(), method, finality),
+		HasSelected: true,
 	}
 
 	// Auth is the strategy name stamped by the auth registry onto ExecState
