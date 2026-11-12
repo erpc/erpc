@@ -638,7 +638,8 @@ func TestCovJsonrpcRequest_UnmarshalIdForms(t *testing.T) {
 		{"too large", `{"method":"m","id":99999999999999999999}`, nil, false, "", false, "cannot be represented"},
 		{"no method", `{"id":1}`, nil, false, "", false, `no "method" member`},
 		{"bad json", `{`, nil, false, "", false, "?"},
-		{"bool id ignored", `{"method":"m","id":true}`, nil, true, "true", false, ""},
+		// Not a JSON-RPC id: no bytes are kept to echo, and Validate rejects it.
+		{"bool id invalid", `{"method":"m","id":true}`, nil, true, "", false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

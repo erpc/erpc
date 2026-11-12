@@ -2,9 +2,11 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,6 +43,40 @@ func envelopeTestConfig() *common.Config {
 						Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 					},
 				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+}
+
+func svmEnvelopeTestConfig() *common.Config {
+	upstream := func(id string) *common.UpstreamConfig {
+		return &common.UpstreamConfig{
+			Id:       id,
+			Type:     common.UpstreamTypeSvm,
+			Endpoint: "http://" + id + ".localhost",
+			Svm:      &common.SvmUpstreamConfig{Cluster: "mainnet-beta"},
+		}
+	}
+	return &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureSvm,
+						Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta"},
+						Failsafe: []*common.FailsafeConfig{{
+							MatchMethod: "*",
+							Retry:       &common.RetryPolicyConfig{MaxAttempts: 3},
+							Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(10 * time.Millisecond), MaxCount: 1},
+						}},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{upstream("svm-env-rpc1"), upstream("svm-env-rpc2")},
 			},
 		},
 		RateLimiters: &common.RateLimiterConfig{},
@@ -165,6 +201,96 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", string(respBody))
 		assert.Contains(t, string(respBody), "0x1a2b3c")
+	})
+
+	// JSON-RPC 2.0 §4: an id is a string, a number, or null. Any other id is
+	// an Invalid Request (-32600, id null) answered before any upstream is
+	// asked, alone or as one item of a batch, on every architecture. The
+	// Solana network carries a retry and a hedge over two upstreams, so a
+	// bad id that leaks into forwarding is seen as many upstream calls.
+	t.Run("NonScalarIdIsInvalidRequestAndReachesNoUpstream", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, path, method string
+			cfg                func() *common.Config
+			hosts              []string
+		}{
+			{name: "evm", path: "/test_project/evm/123", method: "eth_getBalance", cfg: envelopeTestConfig, hosts: []string{"rpc1.localhost"}},
+			{name: "svm", path: "/test_project/svm/mainnet-beta", method: "getBalance", cfg: svmEnvelopeTestConfig, hosts: []string{"svm-env-rpc1.localhost", "svm-env-rpc2.localhost"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				util.ResetGock()
+				t.Cleanup(util.ResetGock)
+				util.SetupMocksForEvmStatePoller()
+				var calls atomic.Int32
+				for _, host := range tc.hosts {
+					util.SetupMocksForSvmStatePoller(host, 1000, 990)
+					gock.New("http://" + host).
+						Post("").
+						Persist().
+						Filter(func(request *http.Request) bool {
+							if request.URL.Host != host || !strings.Contains(util.SafeReadBody(request), `"method":"`+tc.method+`"`) {
+								return false
+							}
+							calls.Add(1)
+							return true
+						}).
+						Reply(200).
+						JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xfeed"})
+				}
+
+				_, _, baseURL, shutdown, _ := createServerTestFixtures(tc.cfg(), t)
+				defer shutdown()
+				time.Sleep(1500 * time.Millisecond)
+
+				post := func(body string) []map[string]interface{} {
+					t.Helper()
+					resp, err := http.Post(baseURL+tc.path, "application/json", strings.NewReader(body))
+					require.NoError(t, err)
+					defer resp.Body.Close()
+					raw, err := io.ReadAll(resp.Body)
+					require.NoError(t, err)
+					var items []map[string]interface{}
+					if strings.HasPrefix(body, "[") {
+						require.NoError(t, common.SonicCfg.Unmarshal(raw, &items), "body: %s", raw)
+					} else {
+						var item map[string]interface{}
+						require.NoError(t, common.SonicCfg.Unmarshal(raw, &item), "body: %s", raw)
+						items = append(items, item)
+					}
+					return items
+				}
+				assertInvalidRequest := func(item map[string]interface{}) {
+					t.Helper()
+					id, hasID := item["id"]
+					assert.True(t, hasID, "the reply must carry an id member: %v", item)
+					assert.Nil(t, id, "a bad id is answered with id null: %v", item)
+					assert.Nil(t, item["result"])
+					errObj, ok := item["error"].(map[string]interface{})
+					require.True(t, ok, "the reply must carry an error object: %v", item)
+					assert.EqualValues(t, common.JsonRpcErrorClientSideException, errObj["code"], "error: %v", errObj)
+				}
+
+				for _, badID := range []string{`true`, `{"a":1}`, `[1]`} {
+					item := func(id string) string {
+						return fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":%q,"params":["0x0000000000000000000000000000000000000001"]}`, id, tc.method)
+					}
+
+					calls.Store(0)
+					single := post(item(badID))
+					require.Len(t, single, 1)
+					assertInvalidRequest(single[0])
+					assert.Zero(t, calls.Load(), "id %s: no upstream may be asked", badID)
+
+					calls.Store(0)
+					batch := post("[" + item(badID) + "," + item(`7`) + "]")
+					require.Len(t, batch, 2)
+					assertInvalidRequest(batch[0])
+					assert.EqualValues(t, 7, batch[1]["id"])
+					assert.Equal(t, "0xfeed", batch[1]["result"], "the valid item is served: %v", batch[1])
+					assert.EqualValues(t, 1, calls.Load(), "id %s: only the valid item reaches an upstream", badID)
+				}
+			})
+		}
 	})
 
 	// Empty batch body must stay "[]". The Solana notification path writes an

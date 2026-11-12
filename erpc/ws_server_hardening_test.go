@@ -474,6 +474,19 @@ func TestWebSocket_ErrorShapes(t *testing.T) {
 		require.NotNil(t, resp["error"])
 		assert.EqualValues(t, common.JsonRpcErrorClientSideException, resp["error"].(map[string]interface{})["code"])
 	})
+
+	// The HTTP rule holds per message: a bool, object, or array id is an
+	// Invalid Request answered with a null id.
+	t.Run("NonScalarIdIsInvalidRequest", func(t *testing.T) {
+		for _, id := range []string{`true`, `{"a":1}`, `[1]`} {
+			resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":`+id+`,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+			require.NotNil(t, resp["error"], "id %s: %v", id, resp)
+			assert.EqualValues(t, common.JsonRpcErrorClientSideException, resp["error"].(map[string]interface{})["code"], "id %s", id)
+			gotID, hasID := resp["id"]
+			assert.True(t, hasID, "id %s: reply must carry an id member", id)
+			assert.Nil(t, gotID, "id %s", id)
+		}
+	})
 }
 
 // A WebSocket connection is bound to one network, so a path that doesn't
