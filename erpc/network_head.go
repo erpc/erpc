@@ -185,7 +185,8 @@ func (n *Network) requestScope(ctx context.Context, req *common.NormalizedReques
 // stateless pick of the facts and the selector lane's view, its Head
 // capped at the block q of the scope's upstreams likely hold
 // (likelyHolders); Firm stays the view's, by proof. A Head that is the
-// view's own carries the block clock's next sight (NextAt).
+// view's own carries the earliest time the lane's next block may come
+// (nextAt).
 func (n *Network) headFor(s tipScope) *common.EvmHead {
 	var h common.EvmHead
 	var limit int64
@@ -198,12 +199,28 @@ func (n *Network) headFor(s tipScope) *common.EvmHead {
 	h.LatestAt, h.NextAt = time.Time{}, time.Time{}
 	if t := n.laneTracker(s.sel); t != nil {
 		viewHead(&h, t.View(), limit)
-		if !h.LatestAt.IsZero() {
-			h.NextAt = t.NextSight(uint64(h.Latest) + 1)
-		}
+		h.NextAt = n.nextAt(t, h.LatestAt)
 	}
 	return &h
 }
+
+// nextAt is the earliest time the lane's next block may come after its
+// view's Head stood at latestAt: plus the shorter of half a block and the
+// shortest of the view's recent steps (ChainTracker.MinStep). Zero while
+// latestAt is, the block time is cold, or fewer than minViewSteps steps
+// are known (spec §6.4 settled head).
+func (n *Network) nextAt(t *evm.ChainTracker, latestAt time.Time) time.Time {
+	bt := n.EvmBlockTime()
+	step, steps := t.MinStep()
+	if latestAt.IsZero() || bt <= 0 || steps < minViewSteps {
+		return time.Time{}
+	}
+	return latestAt.Add(min(bt/2, step))
+}
+
+// minViewSteps is how many view steps nextAt needs before it bounds
+// anything.
+const minViewSteps = 8
 
 // viewHead sets h's view fields from v, its Head at most limit when that
 // is set; Finalized never above the Head. A limit the pins do not hold
@@ -237,12 +254,14 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	}
 }
 
-// viewStands reports whether req's lane's view still stands at latest, the
-// Latest req took at its start: a block that landed during its sweep moves
-// the view, whatever the Head's NextAt predicted (spec §6.4 settled head).
-func (n *Network) viewStands(req *common.NormalizedRequest, latest int64) bool {
+// laneStill reports whether req's lane's view still stands at latest, the
+// Latest req took at its start, and no by-hash answer or cache sighting
+// showed a block above it (ChainTracker.ProvenAbove): a block that landed
+// during its sweep, a preconfirmation or an early block shows data a
+// hedge could find (spec §6.4 settled head).
+func (n *Network) laneStill(req *common.NormalizedRequest, latest int64) bool {
 	t := n.laneTracker(selectorOf(req))
-	if t == nil {
+	if t == nil || t.ProvenAbove() > uint64(latest) {
 		return false
 	}
 	head, ok := t.View().Head()

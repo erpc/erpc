@@ -818,7 +818,8 @@ func (e *networkExecutor) runHedge(
 // a consensus slot, answered empty by every upstream it may select, on a
 // Head no block can move before the last hedge would fire, delay times
 // MaxCount (common.EvmHead.Settled, spec §6.4 settled head), whose view
-// has not moved since the request took it. A hedge then asks every
+// has not moved and above which no data showed since the request took it
+// (laneStill). A hedge then asks every
 // upstream again for the answer the first sweep already had; an upstream
 // still in flight in a sibling leg, or one that failed transiently, may
 // hold what the others lack, so the race waits for it.
@@ -831,5 +832,5 @@ func (e *networkExecutor) settledNull(req *common.NormalizedRequest, consensusSl
 		return false
 	}
 	n, ok := req.Network().(*Network)
-	return ok && n.viewStands(req, h.Latest)
+	return ok && n.laneStill(req, h.Latest)
 }

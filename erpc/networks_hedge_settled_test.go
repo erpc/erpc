@@ -26,36 +26,65 @@ func init() {
 }
 
 // A null eth_getTransactionReceipt from every vendor on a settled Head ends
-// the hedge race: no block can reach an upstream before the hedge would
-// fire, so the first sweep's null is the answer, at once, one call per
-// vendor. Asked just before a block reaches the vendors, the Head is not
-// settled and the hedge finds the receipt the block brought; a vendor
-// still in flight, or one that failed transiently, when the hedge leg's
-// null comes keeps the race, and its receipt is the answer; on a lane with
-// a vendor that answers receipts before the block, the head never settles
-// and the hedge finds its receipt (spec §6.4 settled head). Full HTTP
-// server, the real chain tracker and block clock on a running simulated
-// chain whose vendors serve each block 500 ms after its mint.
+// the hedge race: the Head stood a hedge delay, and the next block can come
+// no sooner than half a block, nor sooner than the view's shortest recent
+// step, after it; so the first sweep's null is the answer, at once, one
+// call per vendor. Late in the slot the Head is not settled and the hedge
+// finds the receipt a block brought; a vendor still in flight, or one that
+// failed transiently, keeps the race and its receipt is the answer; a
+// receipt above Latest already seen (a preconfirmation) keeps the hedge;
+// and a 2 s chain never settles at a 500 ms hedge (spec §6.4 settled
+// head). Full HTTP server and the real chain tracker on running simulated
+// chains.
 func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 	const (
-		bt         = 2 * time.Second
-		headDelay  = 500 * time.Millisecond
+		// 4 s blocks that every vendor serves 3 s after mint: the view's
+		// Head stands from 1 s before a block's mint to 3 s after it, and
+		// is settled for 300 ms from 0.3 s to 1.7 s into that time.
+		bt         = 4 * time.Second
+		headDelay  = 3 * time.Second
 		hedgeDelay = 300 * time.Millisecond
 	)
 	node := newSettledNode(t, bt, hedgeDelay, map[string]chainsim.Faults{
-		"http-a": {HeadDelay: headDelay}, "http-b": {HeadDelay: headDelay}, "http-c": {HeadDelay: headDelay},
+		"http-a": {HeadDelay: headDelay}, "http-b": {HeadDelay: headDelay}, "http-c": {HeadDelay: headDelay}, "http-p": {HeadDelay: headDelay},
 	})
 	chain, vendors, nw := node.chain, node.vendors, node.nw
 	receipt, receiptCalls := node.receipt, node.receiptCalls
+	vendor := func(id string) *chainsim.Vendor {
+		return vendors[slices.IndexFunc(vendors, func(v *chainsim.Vendor) bool { return v.ID == id })]
+	}
+	step, steps := nw.chainTracker.MinStep()
+	t.Logf("view step S %v over %d steps; block time %v", step, steps, nw.EvmBlockTime())
+	settled := func(d time.Duration) func() bool {
+		return func() bool { return nw.EvmLaneHead("", "").Settled(time.Now(), d) }
+	}
+	oldReceipt := func() *chainsim.Block {
+		for n := chain.Tip().Number - 10; ; n-- {
+			if c := chain.CanonAt(n); c != nil && c.TxCount() > 0 {
+				return c
+			}
+		}
+	}
+	// pruneBut prunes every vendor but holder, so only it holds an old
+	// block's receipt.
+	pruneBut := func(t *testing.T, holder *chainsim.Vendor) {
+		for _, v := range vendors {
+			if v != holder {
+				v.Update(func(f *chainsim.Faults) { f.Pruned = 5 })
+			}
+		}
+		t.Cleanup(func() {
+			for _, v := range vendors {
+				v.Update(func(f *chainsim.Faults) { f.Pruned, f.SlowTxReceipts, f.TxReceiptsDown = 0, 0, false })
+			}
+		})
+	}
+	unknown := "0x" + fmt.Sprintf("%064x", 0xdead)
 
 	t.Run("settled head answers a null receipt from the first sweep", func(t *testing.T) {
-		// Mid-block: the view stood a hedge delay ago and the next block is
-		// more than a hedge delay away, with room for the request's trip.
-		require.Eventually(t, func() bool {
-			return nw.EvmLaneHead("", "").Settled(time.Now(), hedgeDelay+300*time.Millisecond)
-		}, 4*bt, 10*time.Millisecond, "the head settles mid-block")
+		require.Eventually(t, settled(hedgeDelay+300*time.Millisecond), 2*bt, 10*time.Millisecond, "the head settles")
 		before := receiptCalls()
-		res, took := receipt("0x" + fmt.Sprintf("%064x", 0xdead))
+		res, took := receipt(unknown)
 		after := receiptCalls()
 		assert.Equal(t, "null", string(res))
 		assert.Less(t, took, hedgeDelay, "the null is answered before the hedge would fire")
@@ -70,8 +99,9 @@ func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 		b := chain.Tip()
 		require.Positive(t, b.TxCount(), "the block holds a transaction")
 		serves := vendors[0].ServesAt(b, "eth_getTransactionReceipt")
-		// Asked 150 ms before the vendors serve the block: the first sweep
-		// gets null everywhere, the hedge fires 150 ms after they do.
+		// Asked 150 ms before the vendors serve the block, late in the
+		// Head's slot: the first sweep gets null everywhere, the hedge fires
+		// 150 ms after they serve it.
 		time.Sleep(time.Until(serves.Add(-150 * time.Millisecond)))
 		require.True(t, time.Now().Before(serves.Add(-100*time.Millisecond)), "asked before the vendors serve block %d", b.Number)
 		before := receiptCalls()
@@ -92,31 +122,15 @@ func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 	})
 
 	t.Run("an upstream in flight keeps the race on a settled head", func(t *testing.T) {
-		// An old block's receipt: http-a and http-b pruned it and answer null
-		// at once; http-c holds it and answers 300 ms after the hedge fires.
-		var b *chainsim.Block
-		for n := chain.Tip().Number - 10; b == nil; n-- {
-			if c := chain.CanonAt(n); c != nil && c.TxCount() > 0 {
-				b = c
-			}
-		}
-		for _, v := range vendors[:2] {
-			v.Update(func(f *chainsim.Faults) { f.Pruned = 5 })
-		}
-		vendors[2].Update(func(f *chainsim.Faults) { f.SlowTxReceipts = hedgeDelay + 300*time.Millisecond })
-		t.Cleanup(func() {
-			for _, v := range vendors {
-				v.Update(func(f *chainsim.Faults) { f.Pruned, f.SlowTxReceipts = 0, 0 })
-			}
-		})
-		// Leg 1's sweep reserves http-c whatever the order, so the hedge leg
-		// sweeps only the pruned two and ends null while http-c is in flight.
-		// The Head must stay settled until then: the hedge fires a hedge
-		// delay in, and its null must find the next block more than one away.
-		require.Eventually(t, func() bool {
-			h, now := nw.EvmLaneHead("", ""), time.Now()
-			return h.Settled(now, hedgeDelay+300*time.Millisecond) && h.NextAt.Sub(now) > 2*hedgeDelay+300*time.Millisecond
-		}, 4*bt, 10*time.Millisecond, "the head settles early in the block")
+		// An old block's receipt: every vendor but http-c pruned it and
+		// answers null at once; http-c holds it and answers 300 ms after the
+		// hedge fires. Leg 1's sweep reserves http-c whatever the order, so
+		// the hedge leg sweeps only the pruned and ends null while http-c is
+		// in flight; the Head must stay settled until then.
+		b, holder := oldReceipt(), vendor("http-c")
+		pruneBut(t, holder)
+		holder.Update(func(f *chainsim.Faults) { f.SlowTxReceipts = hedgeDelay + 300*time.Millisecond })
+		require.Eventually(t, settled(2*hedgeDelay+300*time.Millisecond), 2*bt, 10*time.Millisecond, "the head settles")
 		res, took := receipt(b.TxHash(0).Hex())
 		var got struct {
 			TransactionHash string `json:"transactionHash"`
@@ -127,81 +141,73 @@ func TestHedge_NullReceiptEndsRaceOnSettledHead(t *testing.T) {
 	})
 
 	t.Run("an upstream that failed transiently keeps the race on a settled head", func(t *testing.T) {
-		// An old block's receipt: http-a and http-b pruned it and answer null;
-		// http-c holds it, answers -32603 in the first sweep and recovers
-		// 100 ms in, before the hedge fires and asks it again.
-		var b *chainsim.Block
-		for n := chain.Tip().Number - 10; b == nil; n-- {
-			if c := chain.CanonAt(n); c != nil && c.TxCount() > 0 {
-				b = c
-			}
-		}
-		for _, v := range vendors[:2] {
-			v.Update(func(f *chainsim.Faults) { f.Pruned = 5 })
-		}
-		vendors[2].Update(func(f *chainsim.Faults) { f.TxReceiptsDown = true })
-		t.Cleanup(func() {
-			for _, v := range vendors {
-				v.Update(func(f *chainsim.Faults) { f.Pruned, f.TxReceiptsDown = 0, false })
-			}
-		})
-		require.Eventually(t, func() bool {
-			return nw.EvmLaneHead("", "").Settled(time.Now(), hedgeDelay+300*time.Millisecond)
-		}, 4*bt, 10*time.Millisecond, "the head settles mid-block")
+		// An old block's receipt: every vendor but http-c pruned it; http-c
+		// holds it, answers -32603 in the first sweep and recovers 100 ms
+		// in, before the hedge fires and asks it again.
+		b, holder := oldReceipt(), vendor("http-c")
+		pruneBut(t, holder)
+		holder.Update(func(f *chainsim.Faults) { f.TxReceiptsDown = true })
+		require.Eventually(t, settled(hedgeDelay+300*time.Millisecond), 2*bt, 10*time.Millisecond, "the head settles")
 		heal := time.AfterFunc(100*time.Millisecond, func() {
-			vendors[2].Update(func(f *chainsim.Faults) { f.TxReceiptsDown = false })
+			holder.Update(func(f *chainsim.Faults) { f.TxReceiptsDown = false })
 		})
 		defer heal.Stop()
-		before := vendors[2].MethodCalls("eth_getTransactionReceipt")
+		before := holder.MethodCalls("eth_getTransactionReceipt")
 		res, _ := receipt(b.TxHash(0).Hex())
 		var got struct {
 			TransactionHash string `json:"transactionHash"`
 		}
 		require.NoError(t, json.Unmarshal(res, &got), "result: %s", res)
 		assert.Equal(t, b.TxHash(0).Hex(), got.TransactionHash, "result: %s", res)
-		assert.GreaterOrEqual(t, vendors[2].MethodCalls("eth_getTransactionReceipt")-before, int64(2), "the hedge asked http-c again")
+		assert.GreaterOrEqual(t, holder.MethodCalls("eth_getTransactionReceipt")-before, int64(2), "the hedge asked http-c again")
 	})
 
-	t.Run("a preconfirming upstream keeps the hedge", func(t *testing.T) {
-		// Every vendor serves each block 500 ms after mint; http-p answers
-		// its receipts at mint, as a flashblocks node answers a preconfirmed
-		// receipt, so no head, poll or by-number fetch sights the block
-		// sooner than the others serve it.
-		const pDelay = 200 * time.Millisecond
-		p := newSettledNode(t, bt, pDelay, map[string]chainsim.Faults{
-			"http-a": {HeadDelay: headDelay}, "http-b": {HeadDelay: headDelay}, "http-c": {HeadDelay: headDelay},
-			"http-p": {HeadDelay: headDelay, ReceiptsLead: headDelay},
+	t.Run("a receipt seen above Latest keeps the hedge", func(t *testing.T) {
+		// http-p answers each block's receipts at its mint, as a flashblocks
+		// node answers a preconfirmed receipt, 3 s before any vendor serves
+		// the block: at mint the Head is the block before, settled by time.
+		p := vendor("http-p")
+		p.Update(func(f *chainsim.Faults) { f.ReceiptsLead = headDelay })
+		t.Cleanup(func() { p.Update(func(f *chainsim.Faults) { f.ReceiptsLead = 0 }) })
+		chain.Plan(chainsim.KindQuiet)
+		chain.WaitTicks(1)
+		b := chain.Tip()
+		require.Positive(t, b.TxCount(), "the block holds a transaction")
+		res, _ := receipt(b.TxHash(0).Hex())
+		require.Contains(t, string(res), b.TxHash(0).Hex(), "http-p answers block %d's receipt at its mint", b.Number)
+		h := nw.EvmLaneHead("", "")
+		require.Less(t, h.Latest, int64(b.Number), "block %d is above Latest", b.Number)
+		require.True(t, h.Settled(time.Now(), hedgeDelay+100*time.Millisecond), "the Head is settled by time alone")
+		before := receiptCalls()
+		res, took := receipt(unknown)
+		after := receiptCalls()
+		assert.Equal(t, "null", string(res))
+		assert.GreaterOrEqual(t, took, hedgeDelay, "the hedge fired")
+		for i := range vendors {
+			assert.EqualValues(t, 2, after[i]-before[i], "vendor %s is asked by both legs", vendors[i].ID)
+		}
+	})
+
+	t.Run("a 2 s chain never settles at a 500 ms hedge", func(t *testing.T) {
+		const fastDelay = 500 * time.Millisecond
+		fast := newSettledNode(t, 2*time.Second, fastDelay, map[string]chainsim.Faults{
+			"http-a": {HeadDelay: 500 * time.Millisecond}, "http-b": {HeadDelay: 500 * time.Millisecond}, "http-c": {HeadDelay: 500 * time.Millisecond},
 		})
-		pv := p.vendors[slices.IndexFunc(p.vendors, func(v *chainsim.Vendor) bool { return v.ID == "http-p" })]
-		txOf := func() *chainsim.Block {
-			p.chain.Plan(chainsim.KindQuiet)
-			p.chain.WaitTicks(1)
-			b := p.chain.Tip()
-			require.Positive(t, b.TxCount(), "block %d holds a transaction", b.Number)
-			return b
+		step, steps := fast.nw.chainTracker.MinStep()
+		t.Logf("view step S %v over %d steps; block time %v", step, steps, fast.nw.EvmBlockTime())
+		// Mid-slot: the Head stood 1 s.
+		require.Eventually(t, func() bool {
+			h := fast.nw.EvmLaneHead("", "")
+			return !h.LatestAt.IsZero() && time.Since(h.LatestAt) >= time.Second
+		}, 4*time.Second, 10*time.Millisecond, "mid-slot")
+		before := fast.receiptCalls()
+		res, took := fast.receipt(unknown)
+		after := fast.receiptCalls()
+		assert.Equal(t, "null", string(res))
+		assert.GreaterOrEqual(t, took, fastDelay, "the hedge fired")
+		for i := range fast.vendors {
+			assert.EqualValues(t, 2, after[i]-before[i], "vendor %s is asked by both legs", fast.vendors[i].ID)
 		}
-		// Warm-up: each new block's receipt, asked at its mint, comes from
-		// http-p above Latest: the clock's proof, and its lead.
-		for range 4 {
-			b := txOf()
-			res, _ := p.receipt(b.TxHash(0).Hex())
-			require.Contains(t, string(res), b.TxHash(0).Hex(), "http-p answers block %d's receipt at its mint", b.Number)
-		}
-		// The next block's receipts reach http-p 150 ms after mint: asked at
-		// mint, the first sweep gets null everywhere on a Head that stood
-		// 1.5 s, and a next block predicted about 450 ms away.
-		pv.Update(func(f *chainsim.Faults) { f.ReceiptsLead = headDelay - 150*time.Millisecond })
-		b := txOf()
-		h, now := p.nw.EvmLaneHead("", ""), time.Now()
-		require.True(t, now.Before(b.MintedAt.Add(100*time.Millisecond)), "asked at block %d's mint", b.Number)
-		require.GreaterOrEqual(t, now.Sub(h.LatestAt), pDelay, "the view stood a hedge delay")
-		t.Logf("NextAt %v after now", h.NextAt.Sub(now))
-		res, _ := p.receipt(b.TxHash(0).Hex())
-		var got struct {
-			TransactionHash string `json:"transactionHash"`
-		}
-		require.NoError(t, json.Unmarshal(res, &got), "result: %s", res)
-		assert.Equal(t, b.TxHash(0).Hex(), got.TransactionHash, "the hedge found http-p's receipt; result: %s", res)
 	})
 }
 
@@ -275,8 +281,11 @@ func newSettledNode(t *testing.T, bt, hedgeDelay time.Duration, faults map[strin
 	}()
 	t.Cleanup(func() { close(stopReads); reads.Wait() })
 	chain.Start()
-	// The clock's fit warms over regular blocks.
-	chain.WaitTicks(8)
+	// The view's step record and the block time warm over regular blocks.
+	require.Eventually(t, func() bool {
+		_, steps := n.nw.chainTracker.MinStep()
+		return steps >= 9 && n.nw.EvmBlockTime() > 0
+	}, 16*bt, 50*time.Millisecond, "nine view steps")
 	return n
 }
 
