@@ -141,6 +141,9 @@ type EvmStatePoller struct {
 	// clockTurn is the unix nanoseconds by which a lane's block clock
 	// planned a turn of this upstream, the latest of its lanes' (ClockTurn).
 	clockTurn atomic.Int64
+	// pushedAt is the unix nanoseconds the upstream's last pushed head
+	// passed intake (Pushed); 0 before any.
+	pushedAt atomic.Int64
 
 	// chainIdRecheck is the pending eth_chainId check of a chain-identity
 	// cordon, nil while none; chainIdRecheckUnwatch stops watching appCtx
@@ -843,7 +846,10 @@ func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, pace tim
 	var at time.Time
 	var inHand bool
 	outcome := common.AskBackoff
-	if e.askable() {
+	switch {
+	case reason == common.AskPoll && e.pushMeets(need, pace, after):
+		outcome, at, inHand = common.AskPushed, time.Unix(0, e.pushedAt.Load()), true
+	case e.askable():
 		f, outcome, at, inHand = e.askFetch(trace.SpanContextFromContext(ctx), need, pace, after)
 	}
 	e.askCounts.Inc(telemetry.MetricHeadAskTotal, askCount{e.projectId, e.netLabel(), reason, outcome}, askCountLabels)
@@ -851,6 +857,23 @@ func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, pace tim
 		(*hook)(e, AskMet{Reason: reason, After: after, Outcome: outcome, At: at, InHand: inHand})
 	}
 	return f, outcome, at
+}
+
+// Pushed notes that a head the upstream pushed passed intake at at: it
+// meets the latest part of the upstream's poll for the pace (pushMeets).
+func (e *EvmStatePoller) Pushed(at time.Time) {
+	if e.IsObjectNull() {
+		return
+	}
+	e.pushedAt.Store(at.UnixNano())
+}
+
+// pushMeets reports whether a pushed head meets a poll's Ask with need at
+// pace after after: a push source's head is the node's head as it
+// changes, so a poll fetches latest only once its pushes stopped.
+func (e *EvmStatePoller) pushMeets(need common.HeadNeed, pace time.Duration, after time.Time) bool {
+	at := e.pushedAt.Load()
+	return at != 0 && need != common.HeadNeedFork && withinPace(time.Unix(0, at), after, time.Now(), askPace(need, pace, e.pollCadence()))
 }
 
 // askCount is one series of erpc_head_ask_total.
@@ -1361,6 +1384,8 @@ type PollIntake interface {
 	PollFailed(upstreamId string, started time.Time)
 	// PolledFinalized takes the header a poll of finalized fetched.
 	PolledFinalized(upstreamId string, h SourceHeader)
+	// PushSource reports whether upstreamId pushes its heads now.
+	PushSource(upstreamId string) bool
 }
 
 // BindIntake sends this poller's latest headers to intake. An upstream
@@ -1413,15 +1438,15 @@ func (e *EvmStatePoller) pollCadence() time.Duration {
 }
 
 // BackedOffCadence is how often this upstream's latest head reaches this
-// instance at least, the head bench's cadence (spec §6.1, §6.8): a wss
-// subscription source pushes every head, so its cadence; any other gets
-// its turn of the block clock and its full poll every interval, so the
-// interval or the backoff, the longer.
+// instance at least, the head bench's cadence (spec §6.1, §6.8): a push
+// source pushes every head, so its cadence; any other gets its turn of
+// the block clock and its full poll every interval, so the interval or
+// the backoff, the longer.
 func (e *EvmStatePoller) BackedOffCadence() time.Duration {
-	c := e.upstream.Config()
-	if c != nil && c.IsSubscriptionSource() && util.IsWsEndpoint(c.Endpoint) {
+	if b := e.pollSrc.Load(); b != nil && b.intake.PushSource(e.upstream.Id()) {
 		return e.pollCadence()
 	}
+	c := e.upstream.Config()
 	interval := time.Duration(0)
 	if c != nil && c.Evm != nil {
 		interval = c.Evm.StatePollerInterval.Duration()

@@ -23,8 +23,9 @@ import (
 
 // Source timing (spec §5.2, §11); vars so tests can shorten them.
 var (
-	// sourceIdleStop is how long pending-transaction subscriptions keep
-	// running after the last tap needing them closed.
+	// sourceIdleStop is how long a push topic keeps running after the
+	// last tap needing it closed: an onDemand source's newHeads, every
+	// pending-transaction topic.
 	sourceIdleStop = util.NewDuration(60 * time.Second)
 	// pendingSilentAfter: a pending-transaction topic with no message this
 	// long, while heads carry transactions, is subscribed again; each
@@ -39,14 +40,18 @@ var (
 
 // sourceReconciler decides which topics each source of one network feeds:
 //
-//	push u: newHeads                    always, from network init
+//	push u: newHeads                    always, or onDemand while heads are wanted
 //	push u: newPendingTransactions:<v>  while demand has it and admitted(u)
 //
+// Heads are wanted while a tap needs every block (pace 0: eth_subscribe
+// newHeads or logs, a gRPC block stream) and sourceIdleStop after; a
+// paced tap, the integrity follow tap, is fed by the block clock alone.
 // Heads that no push brings come from each lane's block clock (spec §6.8),
-// which fetches the voters' heads while taps demand them. It runs on one goroutine, from network init whether or not a WebSocket or
-// gRPC server runs, and wakes on demand changes, hash-voter changes,
-// subscribe answers, and a timer at W. admitted(u) is topic admission
-// (spec §6.2); each pass computes it first.
+// which fetches the voters' heads while taps demand them. It runs on one
+// goroutine, from network init whether or not a WebSocket or gRPC server
+// runs, and wakes on demand changes, hash-voter changes, subscribe
+// answers, and a timer at W. admitted(u) is topic admission (spec §6.2);
+// each pass computes it first.
 type sourceReconciler struct {
 	nw *Network
 
@@ -64,6 +69,10 @@ type sourceReconciler struct {
 	// block clock fetches; push: some push source can carry pending
 	// transactions.
 	heads, push bool
+	// headsSeen is when a pass last saw heads wanted by a tap, or saw that
+	// demand end; headsDemanded is whether the last pass saw it.
+	headsSeen     time.Time
+	headsDemanded bool
 	// pending holds each pending-transaction topic that is held, demanded,
 	// idle within sourceIdleStop, or still set on a source.
 	pending map[indexer.Topic]*pendingTopic
@@ -149,14 +158,14 @@ func pendingRefusal(err error) bool {
 	return errors.As(err, &jre)
 }
 
-// source is one upstream's transports: push over its WebSocket client;
-// clocked: its state poller is bound to intake, so the block clock can
-// fetch its heads.
+// source is one upstream's transports: push over its WebSocket client,
+// when mode is not off; clocked: its state poller is bound to intake, so
+// the block clock can fetch its heads.
 type source struct {
-	id       string
-	isSource bool
-	clocked  bool
-	push     *wsupstream.Adapter
+	id      string
+	mode    common.SubscriptionSourceMode
+	clocked bool
+	push    *wsupstream.Adapter
 	// pushTopics is what push was last Set to; nil before.
 	pushTopics []indexer.Topic
 }
@@ -438,7 +447,8 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 	}
 
 	demand := r.nw.taps.Demand(r.nw.Label())
-	pending, left := r.pendingWanted(demand, now)
+	pace, demanded := r.nw.taps.Pace(r.nw.Label(), indexer.TopicNewHeads)
+	wantHeads, pending, left := r.wanted(demand, demanded && pace == 0, now)
 	if left > 0 {
 		next = min(next, left)
 	}
@@ -450,11 +460,15 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 	heads, push := false, false
 	pushes := make(map[string]*wsupstream.Adapter)
 	for _, s := range r.sources {
-		heads = heads || s.isSource || s.clocked
-		if s.push != nil && s.isSource {
-			push = true
+		isSource := s.mode != common.SubscriptionSourceOff
+		heads = heads || isSource || s.clocked
+		if s.push == nil || !isSource {
+			continue
+		}
+		push = true
+		r.setPush(s, wantHeads || s.mode == common.SubscriptionSourceAlways, pending, now, txHeadAt)
+		if slices.Contains(s.pushTopics, indexer.TopicNewHeads) {
 			pushes[s.id] = s.push
-			r.setPush(s, pending, now, txHeadAt)
 		}
 	}
 	if old := r.pushes.Load(); old == nil || !maps.Equal(*old, pushes) {
@@ -466,14 +480,28 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 	return next
 }
 
-// pendingWanted marks the demanded and held pending topics seen now and
-// returns, sorted, every topic seen within sourceIdleStop, with the time
-// until the next idle one stops (0 if none). A topic no longer wanted and
-// set on no source is forgotten.
-func (r *sourceReconciler) pendingWanted(demand []indexer.Topic, now time.Time) (wanted []indexer.Topic, left time.Duration) {
+// wanted marks heads, when headsDemanded, and the demanded and held
+// pending topics seen now. It returns whether heads were seen within
+// sourceIdleStop, and, sorted, every pending topic that was, with the time
+// until the next idle topic stops (0 if none). A pending topic no longer
+// wanted and set on no source is forgotten.
+func (r *sourceReconciler) wanted(demand []indexer.Topic, headsDemanded bool, now time.Time) (heads bool, wanted []indexer.Topic, left time.Duration) {
 	idle := sourceIdleStop.Load()
+	keep := func(seen time.Time) bool {
+		l := idle - now.Sub(seen)
+		if l > 0 && l < idle && (left == 0 || l < left) {
+			left = l
+		}
+		return l > 0
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// The pass that sees the demand end runs as it ends (demandChanged).
+	if headsDemanded || r.headsDemanded {
+		r.headsSeen = now
+	}
+	r.headsDemanded = headsDemanded
+	heads = keep(r.headsSeen)
 	for _, t := range demand {
 		if _, ok := t.PendingTxVariant(); !ok {
 			continue
@@ -489,28 +517,27 @@ func (r *sourceReconciler) pendingWanted(demand []indexer.Topic, now time.Time) 
 		if st.holders > 0 {
 			st.seen = now
 		}
-		l := idle - now.Sub(st.seen)
 		switch {
-		case l <= 0 && len(st.on) == 0:
-			delete(r.pending, t)
-		case l <= 0:
-		default:
+		case keep(st.seen):
 			wanted = append(wanted, t)
-			if l < idle && (left == 0 || l < left) {
-				left = l
-			}
+		case len(st.on) == 0:
+			delete(r.pending, t)
 		}
 	}
 	slices.Sort(wanted)
-	return wanted, left
+	return heads, wanted, left
 }
 
-// setPush sets push source s to newHeads plus the wanted pending topics
-// while s is admitted. While s is connected, each pending topic it
-// carries that stayed silent for its silentAfter, while heads carried
-// transactions, is subscribed again, and its next silentAfter doubles.
-func (r *sourceReconciler) setPush(s *source, wanted []indexer.Topic, now, txHeadAt time.Time) {
-	topics := []indexer.Topic{indexer.TopicNewHeads}
+// setPush sets push source s to newHeads, when heads, plus the wanted
+// pending topics while s is admitted. While s is connected, each pending
+// topic it carries that stayed silent for its silentAfter, while heads
+// carried transactions, is subscribed again, and its next silentAfter
+// doubles.
+func (r *sourceReconciler) setPush(s *source, heads bool, wanted []indexer.Topic, now, txHeadAt time.Time) {
+	var topics []indexer.Topic
+	if heads {
+		topics = append(topics, indexer.TopicNewHeads)
+	}
 	if len(wanted) > 0 && r.nw.intake.admits(s.id) {
 		topics = append(topics, wanted...)
 	}
@@ -518,8 +545,10 @@ func (r *sourceReconciler) setPush(s *source, wanted []indexer.Topic, now, txHea
 	var acts []activity
 	if s.push.Connected() {
 		acts = make([]activity, len(topics))
-		for i, t := range topics[1:] {
-			acts[i+1].heard, acts[i+1].subscribed = s.push.Activity(t)
+		for i, t := range topics {
+			if t != indexer.TopicNewHeads {
+				acts[i].heard, acts[i].subscribed = s.push.Activity(t)
+			}
 		}
 	}
 	minSilent, maxSilent := pendingSilentAfter.Load(), pendingSilentMax.Load()
@@ -564,9 +593,10 @@ func (r *sourceReconciler) setPush(s *source, wanted []indexer.Topic, now, txHea
 }
 
 // pushSource reports whether upstreamId is a push source (spec §6.1): a
-// WebSocket subscription source whose newHeads the upstream did not refuse,
-// so its requests ride the socket its pushes come on. A push source whose
-// socket closed is one still: its expired vote moves it last.
+// WebSocket subscription source the last pass set to newHeads, whose
+// newHeads the upstream did not refuse, so its requests ride the socket
+// its pushes come on. A push source whose socket closed is one still: its
+// expired vote moves it last.
 func (r *sourceReconciler) pushSource(upstreamId string) bool {
 	if r == nil {
 		return false
@@ -584,7 +614,7 @@ func (r *sourceReconciler) pushSource(upstreamId string) bool {
 // §6.3), source or not.
 func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	cfg := u.Config()
-	s := &source{id: u.Id(), isSource: cfg.IsSubscriptionSource()}
+	s := &source{id: u.Id(), mode: cfg.SubscriptionSource()}
 	p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
 	if ok && !p.IsObjectNull() {
 		p.BindIntake(r.nw.intake)

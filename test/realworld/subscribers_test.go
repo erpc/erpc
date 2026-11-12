@@ -660,3 +660,127 @@ func d9() spec {
 		s.blocks(10)
 	}}
 }
+
+// Bounds of D10. d10Poll is the ws upstreams' statePollerInterval, so a
+// poll that fetches latest shows within d10PollWindow; d10Reads latest
+// reads, one a second, sample each step's freshness. d10IdleStop is eRPC's
+// sourceIdleStop: a push topic stops this long after its last tap closed.
+const (
+	d10Poll       = 2 * time.Second
+	d10PollWindow = 10 * time.Second
+	d10Reads      = 15
+	d10IdleStop   = 60 * time.Second
+)
+
+// D10: upstream newHeads follow client demand (erpc/erpc#1414). ws-a's
+// subscriptionSource is unset (onDemand), ws-b's always. With the
+// WebSocket server on and no client, ws-a holds no newHeads subscription
+// and ws-b one per pod, whose pushes meet its polls: no latest poll
+// reaches it. A logs-only client on pod-1 opens ws-a's newHeads there and
+// no upstream logs subscription; a newHeads client keeps it; once both
+// left, ws-a's closes within d10IdleStop. At every step latest reads
+// answer a block no older than W of chain time (§6.8).
+func d10() spec {
+	upEvm := map[string]map[string]interface{}{
+		"ws-a": {"statePollerInterval": d10Poll.String()},
+		"ws-b": {"statePollerInterval": d10Poll.String(), "subscriptionSource": "always"},
+	}
+	return spec{name: "D10", bound: healthyDelivery, upEvm: upEvm, clients: func(*scenario) {}, body: func(s *scenario) {
+		a, b := s.vendors["ws-a"], s.vendors["ws-b"]
+		pods := len(s.h.pods)
+		// heads waits up to within for ws-a to hold wantA open newHeads
+		// subscriptions and ws-b one per pod.
+		heads := func(step string, wantA int, within time.Duration) {
+			start := time.Now()
+			for (a.OpenHeads() != wantA || b.OpenHeads() != pods) && time.Since(start) < within {
+				time.Sleep(100 * time.Millisecond)
+			}
+			na, nb := a.OpenHeads(), b.OpenHeads()
+			s.logf("%s: upstream newHeads subscriptions %s %d, %s %d after %s", step, s.upstream("ws-a"), na, s.upstream("ws-b"), nb, time.Since(start).Round(100*time.Millisecond))
+			if na != wantA {
+				s.violate(s.name, "%s: %s (onDemand) holds %d newHeads subscriptions, not %d, %s in", step, s.upstream("ws-a"), na, wantA, within)
+			}
+			if nb != pods {
+				s.violate(s.name, "%s: %s (always) holds %d newHeads subscriptions, not one per pod (%d)", step, s.upstream("ws-b"), nb, pods)
+			}
+		}
+		// fresh reads latest on pod-1 d10Reads times, one a second: each
+		// answers a block no older than W of chain time when sent.
+		fresh := func(step string) {
+			var ages []time.Duration
+			for i := range d10Reads {
+				method := p13Methods[i%len(p13Methods)]
+				sent := time.Now()
+				n, _, err := p13Read(s, 0, method)
+				if err != nil {
+					s.violate(s.name, "%s: pod-1 %s: %v", step, method, err)
+				} else {
+					age := time.Duration(0)
+					if next := s.chain.CanonAt(n + 1); next != nil && next.MintedAt.Before(sent) {
+						age = sent.Sub(next.MintedAt)
+					}
+					ages = append(ages, age)
+				}
+				time.Sleep(time.Until(sent.Add(time.Second)))
+			}
+			slices.Sort(ages)
+			s.logf("%s: pod-1 latest reads served age p50 %s p99 %s max %s over %d reads", step, pctl(ages, 50), pctl(ages, 99), pctl(ages, 100), len(ages))
+			if p99 := pctl(ages, 99); p99 > liveBound {
+				s.violate(s.name, "%s: pod-1 latest reads served age p99 %s, older than W %s", step, p99, liveBound)
+			}
+		}
+		// subscribe opens one client subscription on pod-1 and drains it.
+		subscribe := func(args ...interface{}) (stop func()) {
+			cl, err := rpc.DialContext(s.ctx, s.h.pods[0].wsURL(s.project, s.chain.ID()))
+			if err != nil {
+				s.violate(s.name, "pod-1: ws dial: %v", err)
+				return func() {}
+			}
+			ch := make(chan json.RawMessage, 1024)
+			sub, err := cl.EthSubscribe(s.ctx, ch, args...)
+			if err != nil {
+				s.violate(s.name, "pod-1: %v subscribe: %v", args[0], err)
+				cl.Close()
+				return func() {}
+			}
+			done := make(chan struct{})
+			go func() {
+				for {
+					select {
+					case <-ch:
+					case <-done:
+						return
+					}
+				}
+			}()
+			return func() { sub.Unsubscribe(); cl.Close(); close(done) }
+		}
+
+		s.blocks(25)
+		heads("no client", 0, reconnectSlack)
+		fresh("no client")
+		from := time.Now()
+		time.Sleep(d10PollWindow)
+		la, lb := len(a.LatestCalls(from, time.Now())), len(b.LatestCalls(from, time.Now()))
+		s.logf("no client: latest calls in %s, %s %d (polled), %s %d (pushed)", d10PollWindow, s.upstream("ws-a"), la, s.upstream("ws-b"), lb)
+		if lb > pods {
+			s.violate(s.name, "%s pushes every head, yet answered %d latest calls in %s with no client: a push does not meet its poll", s.upstream("ws-b"), lb, d10PollWindow)
+		}
+
+		logs0 := a.Stats().LogsSubscribes + b.Stats().LogsSubscribes
+		stopLogs := subscribe("logs", chainsim.Filters[0].Params())
+		heads("logs client", 1, reconnectSlack)
+		if n := a.Stats().LogsSubscribes + b.Stats().LogsSubscribes - logs0; n > 0 {
+			s.violate(s.name, "a logs client opened %d upstream logs subscriptions", n)
+		}
+		fresh("logs client")
+
+		stopHeads := subscribe("newHeads")
+		stopLogs()
+		heads("newHeads client", 1, reconnectSlack)
+		s.blocks(10)
+		stopHeads()
+		heads("after the last client", 0, d10IdleStop+reconnectSlack)
+		fresh("after the last client")
+	}}
+}

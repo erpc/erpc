@@ -42,9 +42,10 @@ const (
 	// fire erpc_head_clock_total counts by kind.
 	AskClock AskReason = "clock"
 	// AskPoll: the latest part of an upstream's full poll, every
-	// statePollerInterval; a clock fetch within the interval meets it,
-	// within the interval plus a block, at most two intervals, while the
-	// clock has a turn of the upstream planned (ClockTurn).
+	// statePollerInterval; a head the upstream pushed or a clock fetch
+	// within the interval meets it, within the interval plus a block, at
+	// most two intervals, while the clock has a turn of the upstream
+	// planned (ClockTurn).
 	AskPoll    AskReason = "poll"
 	AskRefusal AskReason = "refusal"
 	AskSettle  AskReason = "settle"
@@ -64,6 +65,9 @@ const (
 	AskInflight AskOutcome = "inflight"
 	// AskBackoff: the upstream backs off; nothing was fetched.
 	AskBackoff AskOutcome = "backoff"
+	// AskPushed: a head the upstream pushed within the pace met its
+	// poll's latest part; nothing was fetched.
+	AskPushed AskOutcome = "pushed"
 )
 
 // HeadAnswer is what a head Ask gives its caller: the fetch's one

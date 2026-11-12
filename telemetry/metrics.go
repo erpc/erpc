@@ -1040,7 +1040,7 @@ var (
 	MetricHeadAskTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "head_ask_total",
-		Help:      "Total head Asks, by caller (clock, refusal, settle) and outcome (fetched, shared_fresh, inflight, backoff).",
+		Help:      "Total head Asks, by caller (clock, refusal, settle) and outcome (fetched, shared_fresh, inflight, backoff, pushed).",
 	}, []string{"project", "network", "reason", "outcome"})
 
 	// MetricFinalizedUnderQuorumTotal counts each advance of a lane's

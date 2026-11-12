@@ -1168,10 +1168,16 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			return fmt.Errorf("upstream.*.evm.chainId must be 0 for non-http endpoints, but '%d' is provided for %s", e.ChainId, util.RedactEndpoint(u.Endpoint))
 		}
 	}
+	switch e.SubscriptionSource {
+	case "", SubscriptionSourceOff, SubscriptionSourceOnDemand, SubscriptionSourceAlways:
+	default:
+		return fmt.Errorf("upstream '%s': upstreams[].evm.subscriptionSource '%s' is invalid, must be one of: %s, %s, %s", u.Id, e.SubscriptionSource, SubscriptionSourceOff, SubscriptionSourceOnDemand, SubscriptionSourceAlways)
+	}
+	pushes := e.SubscriptionSource != "" && e.SubscriptionSource != SubscriptionSourceOff
 	// A source is push only (spec §5.1): heads of any other endpoint come
 	// from the block clock.
-	if e.SubscriptionSource != nil && *e.SubscriptionSource && !util.IsWsEndpoint(u.Endpoint) {
-		return fmt.Errorf("upstream '%s': upstreams[].evm.subscriptionSource needs a ws or wss endpoint, %s is not one", u.Id, util.RedactEndpoint(u.Endpoint))
+	if pushes && !util.IsWsEndpoint(u.Endpoint) {
+		return fmt.Errorf("upstream '%s': upstreams[].evm.subscriptionSource %s needs a ws or wss endpoint, %s is not one", u.Id, e.SubscriptionSource, util.RedactEndpoint(u.Endpoint))
 	}
 
 	if e.StatePollerInterval == 0 {
@@ -1179,8 +1185,8 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	}
 	// Shadow upstreams never join the network's upstreams, so intake would
 	// drop every header they feed.
-	if e.SubscriptionSource != nil && *e.SubscriptionSource && u.IsShadow() {
-		return fmt.Errorf("upstream '%s': evm.subscriptionSource cannot be true on a shadow upstream", u.Id)
+	if pushes && u.IsShadow() {
+		return fmt.Errorf("upstream '%s': evm.subscriptionSource %s is invalid on a shadow upstream, only off", u.Id, e.SubscriptionSource)
 	}
 	// NodeType deprecated; keep syntax validation for back-compat only
 	if e.NodeType != "" {

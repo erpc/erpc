@@ -150,6 +150,148 @@ func TestStdlib_AllUnavailable(t *testing.T) {
 	}
 }
 
+func TestStdlib_AllOperatorCordoned(t *testing.T) {
+	yn := `(ctx) => ctx.upstreams.allOperatorCordoned() ? "y" : "n"`
+
+	cases := []struct {
+		name string
+		ups  []Upstream
+		want string
+	}{
+		{"empty set is false", nil, "n"},
+		{"all operator-cordoned", []Upstream{
+			up("a", nil, StateCordoned, []string{CordonOperator}, nil),
+			up("b", nil, StateCordoned, []string{CordonOperator}, nil),
+		}, "y"},
+		{"operator plus availability still counts", []Upstream{
+			up("a", nil, StateCordoned, []string{CordonOperator, CordonAvailability}, nil),
+		}, "y"},
+		{"one healthy makes it false", []Upstream{
+			up("a", nil, StateCordoned, []string{CordonOperator}, nil),
+			up("b", nil, StateHealthy, nil, nil),
+		}, "n"},
+		{"availability-only makes it false", []Upstream{
+			up("a", nil, StateCordoned, []string{CordonAvailability}, nil),
+		}, "n"},
+		{"punishment-only makes it false", []Upstream{
+			up("a", nil, StateCordoned, []string{CordonPunishment}, nil),
+		}, "n"},
+		{"mixed operator and availability-only is false", []Upstream{
+			up("a", nil, StateCordoned, []string{CordonOperator}, nil),
+			up("b", nil, StateCordoned, []string{CordonAvailability}, nil),
+		}, "n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := evalName(t, yn, EvalContext{Upstreams: tc.ups}); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// withTag scopes to the tag side — both primary peers operator-cordoned
+	// while a secondary stays healthy.
+	ctx := EvalContext{Upstreams: []Upstream{
+		up("a", []string{"tier:primary"}, StateCordoned, []string{CordonOperator}, nil),
+		up("b", []string{"tier:primary"}, StateCordoned, []string{CordonOperator}, nil),
+		up("c", []string{"tier:secondary"}, StateHealthy, nil, nil),
+	}}
+	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:primary").allOperatorCordoned() ? "y" : "n"`, ctx); got != "y" {
+		t.Fatalf("primary.allOperatorCordoned: got %q, want y", got)
+	}
+	if got := evalName(t, `(ctx) => ctx.upstreams.allOperatorCordoned() ? "y" : "n"`, ctx); got != "n" {
+		t.Fatalf("network-wide allOperatorCordoned with healthy secondary: got %q, want n", got)
+	}
+}
+
+func TestStdlib_NoneSelected(t *testing.T) {
+	yn := `(ctx) => ctx.upstreams.noneSelected() ? "y" : "n"`
+
+	// Unset Selected → helper stays false even when the network set is nonempty
+	// (missing bridge wire-up must not look like an empty round).
+	unset := EvalContext{Upstreams: []Upstream{
+		up("a", []string{"tier:primary"}, StateHealthy, nil, nil),
+	}}
+	if got := evalName(t, yn, unset); got != "n" {
+		t.Fatalf("unset Selected: got %q, want n", got)
+	}
+
+	// Empty network set is false (config error), even with HasSelected.
+	emptyNet := EvalContext{
+		Upstreams:   nil,
+		Selected:    []Upstream{up("provider-b", []string{"tier:secondary"}, StateHealthy, nil, nil)},
+		HasSelected: true,
+	}
+	if got := evalName(t, yn, emptyNet); got != "n" {
+		t.Fatalf("empty network set: got %q, want n", got)
+	}
+
+	// Network primaries present, none in Selected → true.
+	excluded := EvalContext{
+		Upstreams: []Upstream{
+			up("primary-a", []string{"tier:primary"}, StateHealthy, nil, nil),
+			up("primary-b", []string{"tier:primary"}, StateHealthy, nil, nil),
+			up("provider-b", []string{"tier:secondary"}, StateHealthy, nil, nil),
+		},
+		Selected: []Upstream{
+			up("provider-b", []string{"tier:secondary"}, StateHealthy, nil, nil),
+		},
+		HasSelected: true,
+	}
+	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:primary").noneSelected() ? "y" : "n"`, excluded); got != "y" {
+		t.Fatalf("primaries excluded from selection: got %q, want y", got)
+	}
+	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:secondary").noneSelected() ? "y" : "n"`, excluded); got != "n" {
+		t.Fatalf("secondary still selected: got %q, want n", got)
+	}
+	// Network-wide: provider-b is still selected → false.
+	if got := evalName(t, yn, excluded); got != "n" {
+		t.Fatalf("network-wide with secondary selected: got %q, want n", got)
+	}
+
+	// One primary still selected → false.
+	partial := EvalContext{
+		Upstreams: []Upstream{
+			up("primary-a", []string{"tier:primary"}, StateHealthy, nil, nil),
+			up("primary-b", []string{"tier:primary"}, StateHealthy, nil, nil),
+		},
+		Selected: []Upstream{
+			up("primary-a", []string{"tier:primary"}, StateHealthy, nil, nil),
+		},
+		HasSelected: true,
+	}
+	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:primary").noneSelected() ? "y" : "n"`, partial); got != "n" {
+		t.Fatalf("one primary still selected: got %q, want n", got)
+	}
+
+	// Explicitly empty Selected with nonempty network → true.
+	emptySel := EvalContext{
+		Upstreams: []Upstream{
+			up("primary-a", []string{"tier:primary"}, StateHealthy, nil, nil),
+		},
+		Selected:    nil,
+		HasSelected: true,
+	}
+	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:primary").noneSelected() ? "y" : "n"`, emptySel); got != "y" {
+		t.Fatalf("explicit empty Selected: got %q, want y", got)
+	}
+
+	// Upstream id that collides with Object.prototype must not look selected
+	// when absent from Selected (plain {} would inherit toString).
+	protoId := EvalContext{
+		Upstreams: []Upstream{
+			up("toString", []string{"tier:primary"}, StateHealthy, nil, nil),
+		},
+		Selected: []Upstream{
+			up("provider-b", []string{"tier:secondary"}, StateHealthy, nil, nil),
+		},
+		HasSelected: true,
+	}
+	if got := evalName(t, `(ctx) => ctx.upstreams.withTag("tier:primary").noneSelected() ? "y" : "n"`, protoId); got != "y" {
+		t.Fatalf("prototype-colliding id excluded: got %q, want y", got)
+	}
+}
+
 // AllUnavailable must be order-independent: punish, then availability-cordon
 // the same node, and it stays false; drop the availability class and the
 // punishment still holds it false.
