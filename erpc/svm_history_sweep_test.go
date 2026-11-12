@@ -437,9 +437,11 @@ func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
 			},
 		},
 		{
-			// An unknown `before` signature: the deepest upstream rejects it,
-			// the two shallower ones answer an empty page, which is a history
-			// sweep verdict because a deeper floor is selected.
+			// An unknown `before` signature: one upstream rejects the cursor
+			// (-32020), the others answer an empty page, and a fourth does not
+			// serve the method. The rejection is that upstream's verdict, so
+			// neither the hedge leg nor a retry asks it again, and the request
+			// ends with the empty page the others gave.
 			name: "unknown before signature", method: "getSignaturesForAddress", params: `["addr",{"limit":5,"before":"unknownsig"}]`,
 			bodies: []string{
 				`{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"Transaction unknownsig not found"}}`,
@@ -449,8 +451,7 @@ func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
 			},
 			floors: []int64{0, 500, 400, -1}, ignoreAt: 3,
 			check: func(t *testing.T, per []int64, _ int64) {
-				require.Equal(t, int64(1), per[1], "a short page is asked for once")
-				require.Equal(t, int64(1), per[2], "a short page is asked for once")
+				require.Equal(t, []int64{1, 1, 1, 0}, per, "each serving upstream is asked for the page once")
 			},
 		},
 		{
@@ -504,6 +505,9 @@ func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
 			if tc.wantCode == 0 {
 				require.NoError(t, err)
 				require.NotNil(t, resp)
+				jrr, jerr := resp.JsonRpcResponse()
+				require.NoError(t, jerr)
+				require.Equal(t, "[]", string(jrr.GetResultBytes()))
 			} else {
 				require.Error(t, err)
 				require.Equal(t, common.JsonRpcErrorNumber(tc.wantCode), svmClientErrorCode(t, req, err))
