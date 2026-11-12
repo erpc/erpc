@@ -62,7 +62,7 @@ const (
 	// this share of the absent reads' new-block verdicts are no. Before
 	// bloom trust, only empty blocks' were (1 in 8 of chainsim's), and a
 	// checked read, held toward W, shares its verdict with the identical
-	// reads that join it: 0.596 on main 4e30a0a2.
+	// reads that join it: 0.553-0.596 on main 4e30a0a2, 0.990 here.
 	p23BusyNo = 0.9
 	// p23ThinNo: on a chain whose header blooms omit logs, at most this
 	// share: trust is never earned, so only empty blocks' are no (0.460 on
@@ -282,10 +282,12 @@ var p23BandAhead = p23Shape{name: "P23-band-ahead", bt: 2 * time.Second, jitter:
 // empty eth_getLogs answer of a block with transactions was checked
 // (optimism: 36% of its log reads asked a second upstream). Its reads
 // are at each pod's tip, filtered by an address no log holds
-// (p23BusyReads). On main 4e30a0a2 the gate checked every such read of a
-// block with transactions: absent reads p50 2.12 s, p99 6.04 s (their
-// control 21 ms), 0.596 of their new-block verdicts no, 1.016 extra asks
-// per checked read, no receipts fetched.
+// (p23BusyReads). On main 4e30a0a2, 2 runs, the gate checked every such
+// read of a block with transactions: absent reads p50 2.12-2.21 s, p90
+// 5.37 s, p99 6.04 s (their control 21 ms), 0.553-0.596 of their
+// new-block verdicts no, no receipts fetched. With trust on demand: p50
+// 21 ms, p90 24 ms, p99 5.21 s (17 absent-read verdicts still checked,
+// with the reads that joined them), 0.990 no, 10 trust fetches in 3 min.
 var p23Busy = p23Shape{name: "P23-busy", bt: 2 * time.Second, jitter: 200 * time.Millisecond, warm: 25,
 	ahead: 3 * time.Minute, logsLag: 500 * time.Millisecond, busy: true, ups: p23Band.ups}
 
