@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -313,16 +314,20 @@ func receiptsRoot(tag string, txs [][]logSpec) Hash {
 
 // header builds a block whose header hashes to its hash (blockHashRecompute)
 // and whose logsBloom is the OR of its receipts' blooms, or with offBloom
-// and transactions that OR with one more value added (OffHeaderBloom). A
+// and transactions that OR with one more value added (OffHeaderBloom), or
+// with thin that OR without the logs of Addrs[0] (Config.ThinBloom). A
 // foreign header (Config.Foreign) carries a hash it does not hash to, and
 // an empty one the roots keccak("") instead of the empty-trie root.
-func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int, baseFee int64, offBloom, foreign bool) (Hash, json.RawMessage) {
+func header(chainID int64, parent *Block, number uint64, ts uint64, tag string, txs [][]logSpec, pad int, baseFee int64, offBloom, thin, foreign bool) (Hash, json.RawMessage) {
 	var ph Hash
 	if parent != nil {
 		ph = parent.Hash
 	}
 	var bloom gethtypes.Bloom
 	for i, tx := range txs {
+		if thin {
+			tx = slices.DeleteFunc(slices.Clone(tx), func(l logSpec) bool { return l.addr == 0 })
+		}
 		addTxBloom(&bloom, tag, i, tx)
 	}
 	if offBloom && len(txs) > 0 {
