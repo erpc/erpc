@@ -98,6 +98,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "try paginating") ||
 			(strings.Contains(msg, "maximum") && strings.Contains(msg, "blocks distance")) ||
 			strings.Contains(msg, "eth_getLogs is limited") ||
+			// Chainstack (-32602) and Filecoin (-32005); as a client or capacity
+			// error the first stopped the sweep and the second never split.
+			strings.Contains(msg, "block range exceeds") ||
+			// thirdweb (-32005).
+			strings.Contains(msg, "number of requested blocks") ||
 			// jsonrpsee — which reth and everything built on it uses — rejects an
 			// oversized response body with "Response is too big" and carries the
 			// byte cap in Data ("Exceeded max limit of 167772160"). That is a SIZE
@@ -190,6 +195,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if r.StatusCode == 429 ||
+			// -32005 is the vendors' "limit exceeded" code, sent with any
+			// HTTP status; range and billing refusals that share it matched above.
+			code == common.JsonRpcErrorCapacityExceeded ||
+			strings.Contains(msg, "compute units") ||
 			strings.Contains(msg, "requests limited to") ||
 			strings.Contains(msg, "has exceeded") ||
 			strings.Contains(msg, "Exceeded the quota") ||
@@ -346,12 +355,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//   "no EVM execution in transaction 0x…": a NEAR-native transaction
 		//     surfaced in the EVM block, so there is nothing to trace;
 		//   "EVM tracing failed in transaction 0x… due to ContractError {…}":
-		//     the engine's own verdict for that transaction.
+		//     the engine's own verdict for that transaction;
+		//   "StandaloneError(TransactionHashNotFound(0x…))": the tracer has no
+		//     EVM record of a transaction the chain does list (engine system
+		//     calls to 0x4444…192b), for old and new blocks alike.
 		// As a server-side exception every request was retried until the
 		// failsafe gave up (12 attempts each) and the caller saw
 		// ErrUpstreamsExhausted instead of the real reason.
 		if strings.Contains(msg, "no EVM execution in transaction") ||
-			strings.Contains(msg, "EVM tracing failed in transaction") {
+			strings.Contains(msg, "EVM tracing failed in transaction") ||
+			strings.Contains(msg, "StandaloneError(TransactionHashNotFound(") {
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -413,7 +426,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Duplicate transaction / nonce" errors for eth_sendRawTransaction idempotency
 		// IMPORTANT: This must come BEFORE the generic -32003 handling below, because
 		// some upstreams use -32003 for "already known" or "nonce too low" messages.
-		// Note: "replacement transaction underpriced" is NOT handled here - it should remain an error
+		// Note: "replacement transaction underpriced" is NOT handled here - it is not an
+		// idempotent success but a node-local refusal (see the mempool branch below)
 		//----------------------------------------------------------------
 
 		ml := strings.ToLower(msg)
@@ -492,20 +506,25 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//   - "A newer transaction had higher priority"      (ReplacedByHigherPriority)
 		//   - "Transaction fee too low"                      (FeeTooLow)
 		//   - bare "rejected"                                (TxStatus::Evicted)
+		// and from geth-family pools as -32000:
+		//   - "transaction underpriced"             (below the node's minimum gas price)
+		//   - "replacement transaction underpriced" (fee bump too small for the pool's tx)
 		// These are deterministic pool verdicts about the transaction; the
 		// node is healthy and answered correctly. Left unclassified they fall
 		// through to ErrEndpointServerSideException, which counts toward the
 		// circuit breaker: a burst of rejections used to open the catch-all
 		// breaker and cordon the upstream for ALL methods, reads included.
+		// A server-side exception is also retried on the same upstream, so an
+		// eth_sendRawTransaction broadcast asked every upstream again and
+		// again until its retry budget ran out.
 		// The bare-"rejected" equality intentionally checks err.Message (the
 		// pristine wire message), not ml, which may carry a " Data: …" suffix.
-		// geth-family "replacement transaction underpriced" is deliberately
-		// NOT reclassified here (see the nonce/duplicate note above).
 		//----------------------------------------------------------------
 
 		if strings.Contains(ml, "existing transaction had higher priority") ||
 			strings.Contains(ml, "newer transaction had higher priority") ||
 			strings.Contains(ml, "transaction fee too low") ||
+			strings.Contains(ml, "underpriced") ||
 			strings.EqualFold(strings.TrimSpace(err.Message), "rejected") {
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
@@ -519,7 +538,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// Mempool contents and min-fee policies are node-local: another
 			// upstream may accept the same broadcast. Keep eth_sendRawTransaction
 			// failover, consistent with the -32003 "transaction rejected" branch
-			// below; only the breaker/scoring treatment changes.
+			// below; the upstream that refused is not asked again.
 			if nr != nil && nr.Request() != nil {
 				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
 					if re, ok := execErr.(common.RetryableError); ok {
@@ -573,11 +592,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//----------------------------------------------------------------
 		// "Transaction rejected" or "out of gas" errors
 		// Note: This comes AFTER nonce/duplicate detection to avoid masking those errors.
+		//
+		// "gas required exceeds allowance (N)" is the eth_estimateGas verdict of
+		// go-ethereum's gas estimator (eth/gasestimator) when the call still runs
+		// out of gas at its cap N (for a sender with a tiny balance, the gas its
+		// balance can buy). Seen from Arbitrum nitro nodes, which carry that
+		// estimator in their go-ethereum fork. As a server-side exception every
+		// upstream was asked and answered the same, and the caller saw
+		// ErrUpstreamsExhausted instead of the node's reason.
 		//----------------------------------------------------------------
 
 		if code == common.JsonRpcErrorTransactionRejected ||
 			strings.Contains(msg, "out of gas") ||
 			strings.Contains(msg, "gas too low") ||
+			strings.Contains(msg, "gas required exceeds allowance") ||
 			strings.Contains(msg, "IntrinsicGas") {
 
 			execErr := common.NewErrEndpointExecutionException(
@@ -599,6 +627,43 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				}
 			}
 			return execErr
+		}
+
+		//----------------------------------------------------------------
+		// "Invalid chain ID": the transaction's chainId does not match the
+		// network. Every upstream answers the same, so it is not retried, not
+		// even for eth_sendRawTransaction.
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "invalid chain id") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
+		//----------------------------------------------------------------
+		// "Exceeds block gas limit": the transaction's gas limit is above the
+		// block gas limit (geth txpool ErrGasLimit). The block gas limit is
+		// consensus state, so every upstream refuses the same transaction:
+		// not retried, not even for eth_sendRawTransaction.
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "exceeds block gas limit") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorTransactionRejected,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		}
 
 		//----------------------------------------------------------------

@@ -50,6 +50,8 @@ func IsMissingDataError(err error) bool {
 		strings.Contains(txt, "No state available") ||
 		strings.Contains(txt, "no state found for block") ||
 		(strings.Contains(txt, "state at block") && strings.Contains(txt, "is pruned")) ||
+		strings.Contains(txt, "pruned history unavailable") ||
+		strings.Contains(txt, "earliest available") ||
 		(strings.Contains(txt, "historical state") && (strings.Contains(txt, "is not available") || strings.Contains(txt, "unavailable"))) ||
 		strings.Contains(txt, "trie does not") ||
 		strings.Contains(txt, "greater than latest") ||

@@ -74,8 +74,6 @@ func TestCovValidation_Config(t *testing.T) {
 		{"proxyPool valid", func(c *Config) {
 			c.ProxyPools = []*ProxyPoolConfig{{ID: "p", Urls: []string{"http://proxy"}}}
 		}, ""},
-		{"indexer invalid", func(c *Config) { c.Indexer = &IndexerConfig{DedupWindowSize: -1} }, "indexer.dedupWindowSize must be >= 0"},
-		{"indexer zero uses default", func(c *Config) { c.Indexer = &IndexerConfig{} }, ""},
 	})
 }
 
@@ -113,7 +111,6 @@ func TestCovValidation_Server(t *testing.T) {
 				PingInterval:                       cvDur(time.Second),
 				MaxSubscriptionsPerConnection:      1,
 				MaxConcurrentRequestsPerConnection: 1,
-				SubscriptionBufferSize:             1,
 				MaxConnectionsPerIP:                -1,
 			}
 		}, "maxConnections, maxConnectionsPerIP and maxSubscriptions must not be negative"},

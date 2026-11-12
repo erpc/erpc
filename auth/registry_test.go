@@ -144,3 +144,54 @@ func newSecretAuthRegistry(t *testing.T, cfg *common.AuthConfig) *AuthRegistry {
 	require.NoError(t, err)
 	return registry
 }
+
+func TestAuthRegistry_Authenticate_StampsStrategyName(t *testing.T) {
+	registry := newSecretAuthRegistry(t, &common.AuthConfig{
+		Strategies: []*common.AuthStrategyConfig{
+			{
+				Name:   "consensus-waive",
+				Type:   common.AuthTypeSecret,
+				Secret: &common.SecretStrategyConfig{Id: "waive", Value: "waive-token"},
+			},
+			{
+				Type:   common.AuthTypeSecret,
+				Secret: &common.SecretStrategyConfig{Id: "anon", Value: "anon-token"},
+			},
+		},
+	})
+
+	t.Run("named strategy", func(t *testing.T) {
+		req := common.NewNormalizedRequest(nil)
+		user, err := registry.Authenticate(context.Background(), req, "eth_call", &AuthPayload{
+			Method: "eth_call",
+			Type:   common.AuthTypeSecret,
+			Secret: &SecretPayload{Value: "waive-token"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, user)
+		name, authed := req.ExecState().AuthStrategy()
+		assert.True(t, authed)
+		assert.Equal(t, "consensus-waive", name)
+	})
+
+	t.Run("unnamed strategy stamps empty", func(t *testing.T) {
+		req := common.NewNormalizedRequest(nil)
+		user, err := registry.Authenticate(context.Background(), req, "eth_call", &AuthPayload{
+			Method: "eth_call",
+			Type:   common.AuthTypeSecret,
+			Secret: &SecretPayload{Value: "anon-token"},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, user)
+		name, authed := req.ExecState().AuthStrategy()
+		assert.True(t, authed, "an unnamed strategy is still an authenticated strategy")
+		assert.Equal(t, "", name)
+	})
+
+	t.Run("no auth leaves stamp unset", func(t *testing.T) {
+		req := common.NewNormalizedRequest(nil)
+		name, authed := req.ExecState().AuthStrategy()
+		assert.False(t, authed)
+		assert.Equal(t, "", name)
+	})
+}

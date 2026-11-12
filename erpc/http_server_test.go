@@ -40,7 +40,7 @@ import (
 func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("ConcurrentRequestsWithTimeouts", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		gock.EnableNetworking()
 		gock.NetworkingFilter(func(req *http.Request) bool {
 			shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -107,12 +107,13 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -182,7 +183,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	t.Run("RapidSuccessiveRequests", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		gock.EnableNetworking()
 		gock.NetworkingFilter(func(req *http.Request) bool {
 			shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -249,12 +250,13 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -314,7 +316,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		gock.EnableNetworking()
 		gock.NetworkingFilter(func(req *http.Request) bool {
 			shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -395,12 +397,13 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 
 		erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 		require.NoError(t, err)
 
 		// Start the server on a random port
@@ -524,7 +527,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -606,7 +609,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -687,7 +690,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -764,7 +767,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -850,7 +853,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -927,7 +930,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1006,7 +1009,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1087,7 +1090,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1117,7 +1120,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 	t.Run("GetLogsShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -1249,7 +1252,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 }
 func TestHttpServer_SingleUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	type testCase struct {
 		name      string
@@ -1311,7 +1314,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 
 			// t.Run("ConcurrentRequests", func(t *testing.T) {
 			// 	cfg := &common.Config{
@@ -1857,7 +1860,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				}
 
 				util.ResetGock()
-				defer util.ResetGock()
+				t.Cleanup(util.ResetGock)
 				util.SetupMocksForEvmStatePoller()
 				defer util.AssertNoPendingMocks(t, 0)
 
@@ -2670,7 +2673,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// The default selection policy probes the directive-excluded upstream in
 		// the background, so rpc1 is hit by the rpc2-directed request (as a probe)
@@ -2790,7 +2793,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		// The default selection policy probes the directive-excluded rpc1 in the
 		// background (re-issuing the same eth_getBalance request), so rpc1 is hit
@@ -2840,14 +2843,16 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 	t.Run("ShouldReturnEmptyArrayWhenHedgeAndRetryDefinedOnBothNetworkAndUpstream", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// Configure multiple upstreams to test failover behavior
+		// 8 attempts × 2 upstreams × 3 tries sleep ~4.5s in retry delays;
+		// the timeout leaves room for scheduling stalls under load.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+				MaxTimeout: common.Duration(15 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -2993,7 +2998,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 	t.Run("ShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3150,7 +3155,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3210,7 +3215,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -3273,7 +3278,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		_, sendOptionsRequest, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -4072,7 +4077,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			name: "Eval strategy - any:evm:eth_chainId with incorrect chain ID",
 			setupServer: func(ctx context.Context) *HttpServer {
 				util.ResetGock()
-				defer util.ResetGock()
+				t.Cleanup(util.ResetGock)
 
 				pp := &PreparedProject{
 					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
@@ -4384,7 +4389,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 				// Cordon the upstream
 				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
-				mtk.Cordon(up, "*", "test cordoning")
+				mtk.CordonClass(up, "*", "test cordoning", common.CordonClassOperator)
 
 				return &HttpServer{
 					logger: logger,
@@ -4494,7 +4499,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 
 			ctx, ctxCancel := context.WithCancel(testCtx)
@@ -4556,7 +4561,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
@@ -4606,7 +4611,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
@@ -4657,7 +4662,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
@@ -4674,7 +4679,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			"expected network evm:1 to not be supported because only evm:5 and evm:10 are allowed")
 	})
 
-	t.Run("RespectsOnlyNetworksWhenMatch", func(t *testing.T) {
+	t.Run("RespectsOnlyAndIgnoreNetworksWhenMatch", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
@@ -4692,18 +4697,27 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 							OnlyNetworks:       []string{"evm:1", "evm:10"},
 							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
 						},
+						{
+							Id:     "alchemy-ignored",
+							Vendor: "alchemy",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+							IgnoreNetworks:     []string{"evm:1"},
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+						},
 					},
 				},
 			},
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		_ = util.SetupMocksForUpstream("https://eth-mainnet.g.alchemy.com", map[string]interface{}{
 			"chainId": "0x1",
 		})
 
-		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
@@ -4711,6 +4725,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
+			Persist().
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -4718,12 +4733,23 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				"result":  "0x123456",
 			})
 
-		// This request calls evm:1, which is not in the OnlyNetworks list
-		statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
-			"chainId": "1",
-		})
-		assert.Equal(t, http.StatusOK, statusCode)
-		assert.Contains(t, body, "0x123456")
+		// A zero-padded chain id names evm:1 too: it is served by the evm:1
+		// upstream and creates no upstream from a provider that ignores evm:1.
+		for _, chainId := range []string{"1", "01", "0001"} {
+			statusCode, _, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, map[string]string{
+				"chainId": chainId,
+			})
+			assert.Equal(t, http.StatusOK, statusCode, "chainId %s: %s", chainId, body)
+			assert.Contains(t, body, "0x123456", "chainId %s", chainId)
+		}
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+		var upstreamIds []string
+		for _, ups := range prj.upstreamsRegistry.GetAllUpstreams() {
+			upstreamIds = append(upstreamIds, ups.Id())
+		}
+		assert.Equal(t, []string{"alchemy-prod-evm:1"}, upstreamIds)
 	})
 
 	t.Run("EventuallyAddsUpstreamWhenSupportsNetworkFailsInitially", func(t *testing.T) {
@@ -4746,7 +4772,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("https://12340001234.rpc.hypersync.xyz").
 			Post("/").
@@ -4855,7 +4881,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
@@ -4974,7 +5000,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		}
 
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		gock.New("https://eth-mainnet.g.alchemy.com").
 			Post("/v2/test-key").
@@ -5093,7 +5119,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 func TestHttpServer_EvmGetLogs(t *testing.T) {
 	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5282,7 +5308,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 	t.Run("FailSplitIfOneOfSubRequestsFailsServerSide", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5401,7 +5427,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 	})
 	t.Run("FailSplitIfOneOfSubRequestsFailsMissingData", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
@@ -5530,110 +5556,11 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
-
-	t.Run("FallbackToHighestBlockIfUpstreamReturnsOlderBlock", func(t *testing.T) {
-		// 1. Reset gock, set up poller mocks, etc.
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-
-		// 2. Create a config with 2 upstreams and enforce highest block
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: "evm",
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-								Integrity: &common.EvmIntegrityConfig{
-									EnforceHighestBlock: util.BoolPtr(true),
-								},
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc3",
-							Endpoint: "http://rpc3.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-					},
-				},
-			},
-		}
-
-		// 3. Request: eth_getBlockByNumber("latest", true)
-		requestBody := `{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"method":  "eth_getBlockByNumber",
-			"params": ["latest", true]
-		}`
-
-		// 4. Spin up the test server, make the request, and check the final result
-		// The test will use the state poller's mocks which return the latest block as 0x11118888
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-
-		// Give state poller time to initialize and update shared state
-		time.Sleep(500 * time.Millisecond)
-
-		headers := map[string]string{
-			"X-ERPC-Skip-Interpolation": "true",
-		}
-		statusCode, _, body := sendRequest(requestBody, headers, nil)
-
-		assert.Equal(t, http.StatusOK, statusCode, "should return 200 OK body: %s", body)
-
-		t.Logf("Response body: %s", body)
-
-		var respObject map[string]interface{}
-		err = sonic.UnmarshalString(body, &respObject)
-		assert.NoError(t, err, "should parse response body")
-
-		// 8. Confirm we got the highest known block from state poller
-		result, hasResult := respObject["result"].(map[string]interface{})
-		assert.True(t, hasResult, "response should have a 'result' field")
-		assert.Equal(t, "0x22228888", result["number"], "should have the state poller's latest block number")
-		// The test confirms that when an upstream returns an older block than what the state poller knows,
-		// it falls back to requesting the highest known block
-	})
+	t.Cleanup(util.ResetGock)
 
 	t.Run("ReturnBlockIfUpstreamReturnsNewerBlock", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -5703,210 +5630,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, "0x11118888", result["number"], "should return the state poller's latest block")
 	})
 
-	t.Run("ReturnsHigherAvailableBlockFromLaggingUpstreamWhenItSyncs", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		// Create a config with 2 upstreams and enforce highest block.
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(100 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: "evm",
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-								Integrity: &common.EvmIntegrityConfig{
-									EnforceHighestBlock: util.BoolPtr(true),
-								},
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc3",
-							Endpoint: "http://rpc3.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-					},
-				},
-			},
-		}
-
-		requestBody := `{
-			"jsonrpc": "2.0",
-			"id":      999,
-			"method":  "eth_getBlockByNumber",
-			"params": ["latest", false]
-		}`
-
-		// eth_getBlockByNumber does NOT interpolate "latest" (TranslateLatestTag=false by default),
-		// so the request goes to upstream with "latest" directly.
-		// The state poller mock for rpc1 returns 0x11118888 for "latest".
-		// EnforceHighestBlock will detect that 0x11118888 < 0x22228888 (highest known from rpc2)
-		// and re-fetch using 0x22228888.
-		// The state poller mock for rpc2 matches "0x22228888", so it will handle the re-fetch.
-
-		// Spin up the test server, make the request, and check final result.
-		// The test will use the state poller's mocks which return the latest block as 0x11118888
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-
-		// Give state poller time to initialize and update shared state
-		time.Sleep(500 * time.Millisecond)
-
-		statusCode, _, body := sendRequest(requestBody, nil, nil)
-
-		assert.Equal(t, http.StatusOK, statusCode)
-
-		var respObject map[string]interface{}
-		err = sonic.UnmarshalString(body, &respObject)
-		assert.NoError(t, err, "should parse response body successfully")
-
-		// The test will return the highest state poller's latest block (0x22228888)
-		result, hasResult := respObject["result"].(map[string]interface{})
-		assert.True(t, hasResult, "response should have a 'result' field")
-		assert.Equal(t, "0x22228888", result["number"], "should return the state poller's latest block")
-	})
-
-	t.Run("ReturnsHigherAvailableBlockFromUpToDateUpstreamWhenOneIsLagging", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		// Create a config with 2 upstreams and enforce highest block.
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(100 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: "evm",
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-								Integrity: &common.EvmIntegrityConfig{
-									EnforceHighestBlock: util.BoolPtr(true),
-								},
-							},
-							Failsafe: []*common.FailsafeConfig{
-								{
-									// This is necessary to ensure that request will be retried towards rpc2 when rpc1 still returns a block not found error.
-									Retry: &common.RetryPolicyConfig{
-										MaxAttempts: 2,
-									},
-								},
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc3",
-							Endpoint: "http://rpc3.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-					},
-				},
-			},
-		}
-
-		requestBody := `{
-			"jsonrpc": "2.0",
-			"id":      999,
-			"method":  "eth_getBlockByNumber",
-			"params": ["latest", false]
-		}`
-
-		// eth_getBlockByNumber does NOT interpolate "latest" (TranslateLatestTag=false by default),
-		// so the request goes to upstream with "latest" directly.
-		// The state poller mock for rpc1 returns 0x11118888 for "latest".
-		// EnforceHighestBlock will detect that 0x11118888 < 0x22228888 (highest known from rpc2)
-		// and re-fetch using 0x22228888.
-		// The state poller mock for rpc2 matches "0x22228888", so it will handle the re-fetch and return the block.
-
-		// Spin up the test server, make the request, and check final result.
-		// The test will use the state poller's mocks which return the latest block as 0x11118888
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-
-		// Give state poller time to initialize and update shared state
-		time.Sleep(500 * time.Millisecond)
-
-		statusCode, _, body := sendRequest(requestBody, nil, nil)
-
-		assert.Equal(t, http.StatusOK, statusCode)
-
-		var respObject map[string]interface{}
-		err = sonic.UnmarshalString(body, &respObject)
-		assert.NoError(t, err, "should parse response body successfully")
-
-		// The test will return the highest state poller's latest block (0x22228888)
-		result, hasResult := respObject["result"].(map[string]interface{})
-		assert.True(t, hasResult, "response should have a 'result' field")
-		assert.Equal(t, "0x22228888", result["number"], "should return the state poller's latest block")
-	})
-
 	t.Run("HonorsEnforceHighestBlockFalseQueryOverride", func(t *testing.T) {
 		// Regression test for PR #820: HTTP query param `enforce-highest-block=false`
 		// must override the config-level default `EnforceHighestBlock=true` and NOT
@@ -5921,7 +5644,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// survives; post-hook sees EnforceHighestBlock=false and returns early,
 		// preserving rpc1's lagging block (0x11118888).
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6016,7 +5739,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	t.Run("ReturnsMissingDataIfAllUpstreamsReturnNull", func(t *testing.T) {
 		util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// Create a config with 1 upstream and enforce highest block.
@@ -6106,7 +5829,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("FailFastIfSharedStateIsTooSlow", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
@@ -6208,22 +5931,26 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
 
+		// Hashed, so a view forms (spec §6.5: the view is a pin hash votes
+		// back), and persistent: the block clock fetches latest again.
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
+			JSON([]byte(`{"result":{"number":"0x777","hash":"0x7777777777777777777777777777777777777777777777777777777777777777","parentHash":"0x7676767676767676767676767676767676767676767676767676767676767676"}}`))
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
+			JSON([]byte(`{"result":{"number":"0x777","hash":"0x7777777777777777777777777777777777777777777777777777777777777777","parentHash":"0x7676767676767676767676767676767676767676767676767676767676767676"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -6241,37 +5968,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x775"}}`))
-
-		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
-		// for the method "eth_getBlockByNumber('latest')".
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				// Accept any eth_getBlockByNumber user call for rpc1; integrity logic will verify contents
-				return strings.Contains(body, "eth_getBlockByNumber")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result": map[string]interface{}{
-					"number": "0x123", // Lower than highest latest block (0x777)
-					"hash":   "0x6a251dd26d1f5b4c84bb434fea376a91c8d37c11dc8b496ca1e79a9101906df7",
-				},
-			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x777"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result":  nil,
-			})
 
 		// Spin up the test server, make the request, and check final result.
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
@@ -6292,13 +5988,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
-		assert.Contains(t, body, "0x123")
+		// The user's read of latest reaches its upstream as the tag (spec
+		// §6.4 client read): the latest mock answers it, the view's Head.
+		assert.Contains(t, body, "0x777")
 
 	})
 
 	t.Run("FailFastIfSharedStateIsDown", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
@@ -6400,22 +6098,26 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
 
+		// Hashed, so a view forms (spec §6.5: the view is a pin hash votes
+		// back), and persistent: the block clock fetches latest again.
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
+			JSON([]byte(`{"result":{"number":"0x777","hash":"0x7777777777777777777777777777777777777777777777777777777777777777","parentHash":"0x7676767676767676767676767676767676767676767676767676767676767676"}}`))
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x777"}}`))
+			JSON([]byte(`{"result":{"number":"0x777","hash":"0x7777777777777777777777777777777777777777777777777777777777777777","parentHash":"0x7676767676767676767676767676767676767676767676767676767676767676"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -6433,37 +6135,6 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x775"}}`))
-
-		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
-		// for the method "eth_getBlockByNumber('latest')".
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				// Accept any eth_getBlockByNumber user call for rpc1; integrity logic will verify contents
-				return strings.Contains(body, "eth_getBlockByNumber")
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result": map[string]interface{}{
-					"number": "0x123", // Lower than highest latest block (0x777)
-					"hash":   "0x6a251dd26d1f5b4c84bb434fea376a91c8d37c11dc8b496ca1e79a9101906df7",
-				},
-			})
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x777"`)
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      999,
-				"result":  nil,
-			})
 
 		// Spin up the test server, make the request, and check final result.
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
@@ -6484,13 +6155,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		err = sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err, "should parse response body successfully")
 
-		assert.Contains(t, body, "0x123")
+		// The user's read of latest reaches its upstream as the tag (spec
+		// §6.4 client read): the latest mock answers it, the view's Head.
+		assert.Contains(t, body, "0x777")
 
 	})
 
 	t.Run("ShouldSkipHookIfHighestBlockCheckDisabled", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0) // We use Times(2) not Persist() for the user call
 
@@ -6566,7 +6239,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldReturnSuccessWithRealStatePoller", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6638,7 +6311,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldNoopIfParamIsDirectHex", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6727,7 +6400,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldNoopIfParamIsEarliestOrPending", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -6857,100 +6530,9 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	// Highest finalized from poller mocks: rpc1=0x11117777, rpc2=0x22227777
 	// Expect final result to be 0x22227777.
 
-	t.Run("ShouldHonorSkipInterpolationOnFinalized", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 123,
-								Integrity: &common.EvmIntegrityConfig{
-									EnforceHighestBlock: util.BoolPtr(true),
-								},
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Endpoint: "http://rpc1.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
-								StatePollerDebounce: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc2",
-							Endpoint: "http://rpc2.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(30 * time.Second),
-								StatePollerDebounce: common.Duration(10 * time.Second),
-							},
-						},
-						{
-							Id:       "rpc3",
-							Endpoint: "http://rpc3.localhost",
-							Type:     common.UpstreamTypeEvm,
-							Evm: &common.EvmUpstreamConfig{
-								ChainId:             123,
-								StatePollerInterval: common.Duration(10 * time.Second),
-							},
-						},
-					},
-				},
-			},
-		}
-
-		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		prj, err := erpcInstance.GetProject("test_project")
-		require.NoError(t, err)
-		policy.OverrideAllForTest(prj.policyEngine)
-
-		// Allow poller to initialize
-		time.Sleep(500 * time.Millisecond)
-
-		requestBody := `{
-			"jsonrpc": "2.0",
-			"id":      42,
-			"method":  "eth_getBlockByNumber",
-			"params": ["finalized", false]
-		}`
-
-		headers := map[string]string{
-			"X-ERPC-Skip-Interpolation": "true",
-		}
-
-		statusCode, _, body := sendRequest(requestBody, headers, nil)
-		assert.Equal(t, http.StatusOK, statusCode)
-
-		var resp map[string]interface{}
-		err = sonic.UnmarshalString(body, &resp)
-		require.NoError(t, err)
-		result, ok := resp["result"].(map[string]interface{})
-		require.True(t, ok, "the response must contain a 'result' object")
-		assert.Equal(t, "0x22227777", result["number"], "should return highest finalized when skip-interpolation is true")
-	})
-
 	t.Run("ShouldOverrideIfUpstreamReturnsOlderBlockOnFinalized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -7017,12 +6599,8 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Give state poller time to initialize and populate highest finalized
 		time.Sleep(500 * time.Millisecond)
 
-		// eth_getBlockByNumber does NOT interpolate "finalized" (TranslateFinalizedTag=false by default),
-		// so the request goes to upstream with "finalized" directly.
-		// The state poller mock for rpc1 returns 0x11117777 for finalized, and rpc2 returns 0x22227777.
-		// EnforceHighestBlock will detect that rpc1's response (0x11117777) is older than the highest
-		// known finalized (0x22227777 from rpc2), and will re-fetch using that block number.
-		// The state poller mocks already handle both "finalized" and the concrete hex block numbers.
+		// "finalized" is interpolated to the request's Head.Finalized, 0x22227777 (rpc2's),
+		// and the state poller mocks answer that number.
 
 		userRequest := `{
 			"jsonrpc": "2.0",
@@ -7047,7 +6625,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldStickWithUpstreamBlockIfItMatchesHighestOnFinalized", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Use a config with 2 upstreams, EnforceHighestBlock = true,
 		// so we can confirm that even with multiple upstreams, no fallback request is triggered if
@@ -7200,17 +6778,15 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		}`
 
 		// The user request mock should be more specific and placed after the general mocks
-		// eth_getBlockByNumber does NOT interpolate "finalized" (TranslateFinalizedTag=false by default),
-		// so the request goes to upstream with "finalized" directly.
+		// "finalized" is interpolated to the request's Head.Finalized, 0x100.
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1). // Only match once for the specific user request
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
-				// Match the exact user request with id:999 and "finalized" tag (NOT interpolated)
 				return strings.Contains(body, `"id":999`) &&
 					strings.Contains(body, `"eth_getBlockByNumber"`) &&
-					strings.Contains(body, `"finalized"`) &&
+					strings.Contains(body, `"0x100"`) &&
 					strings.Contains(body, `true`) // Full block data requested
 			}).
 			Reply(200).
@@ -7260,7 +6836,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleInvalidBlockTag", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		// Provide a config with EnforceHighestBlock = true so we can confirm that
 		// the logic still skips override if the block tag is not one of the recognized keywords.
@@ -7383,7 +6959,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleSuccessfulConsensus", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -7530,7 +7106,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleConsensusFailureDueToLowParticipants", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -7662,7 +7238,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 	t.Run("ShouldHandleConsensusFailureDueToDispute", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -7858,6 +7434,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	}
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, evmJsonRpcCache, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 
 	// Callback now set at construction; do not mutate in tests
@@ -7865,7 +7442,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -7965,7 +7542,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	t.Skip("Skipping memory profile test in CI - run locally for profiling")
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -8058,7 +7635,7 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 
 	// Setup mocks for state poller initialization
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	// We need to set up mocks for each upstream for the state poller
 	for _, host := range []string{"http://rpc1.localhost", "http://rpc2.localhost", "http://rpc3.localhost", "http://rpc4.localhost"} {
@@ -8151,13 +7728,14 @@ func TestHttpServer_Evm_GetLogs_MemoryProfile(t *testing.T) {
 	require.NoError(t, err)
 
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
 	// Give state poller more time to initialize and update shared state
 	time.Sleep(1 * time.Second)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8229,7 +7807,7 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	// (this also resets gock and re-allows real localhost calls, which the
 	// assertions below depend on).
 	util.SetupMocksForEvmStatePoller()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
@@ -8273,10 +7851,11 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 	})
 	require.NoError(t, err)
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx)
 	require.NoError(t, err)
 	erpcInstance.Bootstrap(ctx)
 
-	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8325,7 +7904,7 @@ func TestHttpServer_DrainStampsConnectionClose(t *testing.T) {
 
 func TestHttpServer_IgnoredMethodKeepsRequestId(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	cfg := &common.Config{
@@ -8410,10 +7989,11 @@ func TestHttpServer_AdminMethodFilter(t *testing.T) {
 		require.NoError(t, err)
 
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, nil, cfg)
+		stopERPCAtEnd(t, erpcInstance, ctx)
 		require.NoError(t, err)
 		erpcInstance.Bootstrap(ctx)
 
-		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, cfg.Indexer, erpcInstance)
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 		require.NoError(t, err)
 
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -8618,7 +8198,7 @@ func TestHttpServer_RejectsSubscriptionMethodsOverHttp(t *testing.T) {
 	}
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)

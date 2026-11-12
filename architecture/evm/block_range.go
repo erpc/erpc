@@ -7,17 +7,33 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+// rangeHolder is the network's side of the range check (spec §6.4): the
+// wait for an upstream to hold a range's toBlock, its counter below it.
+type rangeHolder interface {
+	EvmAwaitRangeHolder(ctx context.Context, req *common.NormalizedRequest, u common.Upstream, toBlock int64) bool
+}
+
 // CheckBlockRangeAvailability verifies that both fromBlock and toBlock are available
 // on the given upstream. This is used for range-based methods like eth_getLogs,
 // trace_filter, and arbtrace_filter.
 //
 // It checks:
-// 1. toBlock (upper bound) - with forceFreshIfStale=true since this is typically the "latest" end
-// 2. fromBlock (lower bound) - with forceFreshIfStale=false since this is historical data
+//  1. toBlock (upper bound) by the one head predicate on the upstream's
+//     counter; below it, within its configured bounds, the network waits
+//     until the upstream's evidence shows toBlock, at most W
+//     (EvmAwaitRangeHolder, spec §6.4 range check). A toBlock above the
+//     lane's Latest is the lane's read ahead, whose one shared fetch
+//     brings it; once the lane holds it, an untried holder goes first,
+//     else the upstream is Asked for it once, one Ask per upstream and
+//     block. A toBlock the refusal rule calls future never gets here:
+//     the network refuses it before dispatch.
+//  2. fromBlock (lower bound) against the configured window.
 //
 // Returns nil if both blocks are available, otherwise returns an appropriate error.
 func CheckBlockRangeAvailability(
 	ctx context.Context,
+	nw common.Network,
+	req *common.NormalizedRequest,
 	up common.EvmUpstream,
 	method string,
 	fromBlock, toBlock int64,
@@ -30,11 +46,25 @@ func CheckBlockRangeAvailability(
 		)
 	}
 
-	// Check upper bound (toBlock) first - this is typically near the chain head
-	// Use forceFreshIfStale=true since we want accurate head information
-	available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, true, toBlock)
+	available, err := up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, toBlock)
 	if err != nil {
 		return err
+	}
+	if !available {
+		// Behind by its counter only, not by its configured bounds: a
+		// latestBlockMinus upper bound moves with the head, so the
+		// upstream holds toBlock once its head reaches toBlock plus that
+		// margin.
+		need := toBlock
+		minBound, maxBound := up.EvmBlockAvailabilityBounds()
+		if m := upperLatestMinus(up); m != nil {
+			need, maxBound = toBlock+*m, toBlock
+		}
+		if toBlock >= minBound && toBlock <= maxBound && !common.EvmHeadReaches(up, statePoller.LatestBlock(), need) {
+			if h, ok := nw.(rangeHolder); ok {
+				available = h.EvmAwaitRangeHolder(ctx, req, up, need)
+			}
+		}
 	}
 	if !available {
 		latestBlock := statePoller.LatestBlock()
@@ -57,8 +87,16 @@ func CheckBlockRangeAvailability(
 		}
 	}
 
-	// Check lower bound (fromBlock) - this is historical data
-	// Use forceFreshIfStale=false since we're checking historical availability
+	// Check lower bound (fromBlock) - this is historical data. A fromBlock
+	// above the counter, its toBlock admitted above, is above any window
+	// the bounds keep: only a configured lower bound can refuse it, and
+	// read against the counter it refused a one-block range the wait had
+	// admitted.
+	if fromBlock > statePoller.LatestBlock() {
+		if minBound, _ := up.EvmBlockAvailabilityBounds(); fromBlock >= minBound {
+			return nil
+		}
+	}
 	available, err = up.EvmAssertBlockAvailability(ctx, method, common.AvailbilityConfidenceBlockHead, false, fromBlock)
 	if err != nil {
 		return err
@@ -81,5 +119,18 @@ func CheckBlockRangeAvailability(
 		}
 	}
 
+	return nil
+}
+
+// upperLatestMinus is up's latestBlockMinus upper bound, nil when its
+// upper bound is none or of another kind.
+func upperLatestMinus(up common.Upstream) *int64 {
+	cfg := up.Config()
+	if cfg == nil || cfg.Evm == nil || cfg.Evm.BlockAvailability == nil {
+		return nil
+	}
+	if b := cfg.Evm.BlockAvailability.Upper; b != nil && b.ExactBlock == nil && b.EarliestBlockPlus == nil {
+		return b.LatestBlockMinus
+	}
 	return nil
 }

@@ -3,6 +3,7 @@ package evm
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -116,6 +117,13 @@ func TestExtractJsonRpcError_InsufficientFunds_TracingMethodsRetryable(t *testin
 			message:       "Error: no EVM execution in transaction 0x37c6ca677fb7d9f6fe0d53a72288d89fb37b9483ff90950684de6e697e013a00",
 			wantRetryable: false,
 		},
+		{
+			// Aurora engine system call (to 0x4444…192b) the tracer has no EVM record of.
+			name:          "debug_traceTransaction Aurora TransactionHashNotFound stays non-retried",
+			method:        "debug_traceTransaction",
+			message:       "StandaloneError(TransactionHashNotFound(0x1e5f1daaab9c1e10582a8defeb63f0716e8e1071c8a0327e973ff47732f50141))",
+			wantRetryable: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -172,6 +180,35 @@ func TestExtractJsonRpcError_MonadReserveBalanceViolation(t *testing.T) {
 	}
 	if common.IsRetryableTowardNetwork(err) {
 		t.Fatalf("eth_call reserve balance violation must not be retried toward the network")
+	}
+}
+
+// TestExtractJsonRpcError_GasRequiredExceedsAllowance verifies that the
+// eth_estimateGas verdict of go-ethereum's gas estimator for a call that runs
+// out of gas at its cap — -32000 "gas required exceeds allowance (N)", as an
+// Arbitrum nitro node returns it for a sender whose balance buys only N gas —
+// is an execution outcome returned to the caller, not a server-side exception
+// that sends the same estimate to every upstream.
+func TestExtractJsonRpcError_GasRequiredExceedsAllowance(t *testing.T) {
+	t.Parallel()
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","method":"eth_estimateGas","params":[],"id":1}`))
+	nr := common.NewNormalizedResponse().WithRequest(req)
+
+	r := &http.Response{StatusCode: 200, Header: http.Header{}}
+	jrErr := common.NewErrJsonRpcExceptionExternal(-32000, "gas required exceeds allowance (6691)", "")
+	jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+	err := ExtractJsonRpcError(r, nr, jr, nil)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	}
+	if common.IsRetryableTowardNetwork(err) {
+		t.Fatalf("eth_estimateGas gas required exceeds allowance must not be retried toward the network")
+	}
+	if !strings.Contains(err.Error(), "gas required exceeds allowance (6691)") {
+		t.Fatalf("expected the node's message to be kept, got: %v", err)
 	}
 }
 
@@ -601,6 +638,11 @@ func TestExtractJsonRpcError_HyperEvmPrecompileStateGap(t *testing.T) {
 			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
 		{name: "eth_getCode state pruned", method: "eth_getCode", message: "state at block #51672341 is pruned",
 			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		// A node that dropped old history names its floor; an archive upstream can still serve the block.
+		{name: "eth_getLogs pruned history", method: "eth_getLogs", message: "pruned history unavailable: requested 1000, earliest available 5000",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
+		{name: "eth_getBlockByNumber below earliest available", method: "eth_getBlockByNumber", message: "block 100 is before the earliest available block 200",
+			wantCode: common.ErrCodeEndpointMissingData, wantNormalized: common.JsonRpcErrorMissingData, wantRetryableNw: true},
 	}
 
 	for _, tc := range cases {
@@ -657,5 +699,123 @@ func TestExtractJsonRpcError_TooManySubscriptions_IsCapacityExceeded(t *testing.
 	}
 	if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
 		t.Fatalf("expected ErrEndpointCapacityExceeded, got %T: %v", err, err)
+	}
+}
+
+// TestExtractJsonRpcError_InvalidChainID verifies that an "invalid chain ID"
+// upstream error — a client submitting a transaction whose chainId does not
+// match the network, via eth_estimateGas or eth_sendRawTransaction — normalizes
+// to a non-retryable ExecutionException. Left as the server-side (retryable)
+// default it retry-storms across every upstream into a false
+// ErrUpstreamsExhausted critical. Unlike "gas required exceeds allowance", it is
+// non-retryable for eth_sendRawTransaction too: the chainId mismatch is
+// deterministic on every correctly-configured upstream.
+func TestExtractJsonRpcError_InvalidChainID(t *testing.T) {
+	t.Parallel()
+
+	messages := map[string]string{
+		"reth": "invalid chain ID",
+		"geth": "invalid sender: invalid chain id for signer: have 1 want 137",
+	}
+	for client, msg := range messages {
+		for _, method := range []string{"eth_estimateGas", "eth_call", "eth_sendRawTransaction"} {
+			client, msg, method := client, msg, method
+			t.Run(client+"/"+method, func(t *testing.T) {
+				t.Parallel()
+
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
+				nr := common.NewNormalizedResponse().WithRequest(req)
+
+				r := &http.Response{StatusCode: 200, Header: http.Header{}}
+				jrErr := common.NewErrJsonRpcExceptionExternal(
+					int(common.JsonRpcErrorCallException),
+					msg,
+					"",
+				)
+				jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+
+				err := ExtractJsonRpcError(r, nr, jr, nil)
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+					t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+				}
+				if common.IsRetryableTowardNetwork(err) {
+					t.Fatalf("invalid chain ID must be non-retryable toward network (method=%s)", method)
+				}
+			})
+		}
+	}
+}
+
+// TestExtractJsonRpcError_ExceedsBlockGasLimit verifies that "exceeds block
+// gas limit" (geth txpool ErrGasLimit: the transaction's gas limit is above
+// the block gas limit) normalizes to a non-retryable ExecutionException. The
+// block gas limit is consensus state, so every upstream refuses the same
+// transaction; left as the server-side default, eth_sendRawTransaction was
+// retried and hedged across every upstream for 12-14 s before failing.
+func TestExtractJsonRpcError_ExceedsBlockGasLimit(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"eth_sendRawTransaction", "eth_estimateGas"} {
+		method := method
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
+			nr := common.NewNormalizedResponse().WithRequest(req)
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jr := common.MustNewJsonRpcResponse(1, nil,
+				common.NewErrJsonRpcExceptionExternal(-32000, "exceeds block gas limit", ""))
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+			}
+			if common.IsRetryableTowardNetwork(err) {
+				t.Fatalf("exceeds block gas limit must be non-retryable toward network (method=%s)", method)
+			}
+		})
+	}
+}
+
+// TestExtractJsonRpcError_Underpriced verifies that "underpriced" refusals
+// ("transaction underpriced", "replacement transaction underpriced") normalize
+// to an ExecutionException that stays retryable toward the network for
+// eth_sendRawTransaction: minimum gas price and mempool contents are
+// node-local, so another upstream may accept, but the refusing upstream is not
+// asked again. Left as the server-side default, the same upstreams were asked
+// over and over until the retry budget ran out.
+func TestExtractJsonRpcError_Underpriced(t *testing.T) {
+	t.Parallel()
+
+	for _, msg := range []string{"transaction underpriced", "replacement transaction underpriced", "tx underpriced"} {
+		msg := msg
+		t.Run(msg, func(t *testing.T) {
+			t.Parallel()
+
+			req := common.NewNormalizedRequest([]byte(
+				`{"jsonrpc":"2.0","method":"eth_sendRawTransaction","params":[],"id":1}`))
+			nr := common.NewNormalizedResponse().WithRequest(req)
+
+			r := &http.Response{StatusCode: 200, Header: http.Header{}}
+			jr := common.MustNewJsonRpcResponse(1, nil,
+				common.NewErrJsonRpcExceptionExternal(-32000, msg, ""))
+
+			err := ExtractJsonRpcError(r, nr, jr, nil)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+			}
+			if common.IsRetryableTowardsUpstream(err) {
+				t.Fatalf("%q must not be retried on the upstream that refused it", msg)
+			}
+			if !common.IsRetryableTowardNetwork(err) {
+				t.Fatalf("%q must stay retryable toward other upstreams", msg)
+			}
+		})
 	}
 }

@@ -24,7 +24,6 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/gorilla/websocket"
@@ -45,6 +44,7 @@ type HttpServer struct {
 	serverV4                *http.Server
 	serverV6                *http.Server
 	sharedGrpcServer        *GrpcServer
+	stopGrpcStreams         context.CancelFunc
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
@@ -69,7 +69,6 @@ func NewHttpServer(
 	cfg *common.ServerConfig,
 	healthCheckCfg *common.HealthCheckConfig,
 	adminCfg *common.AdminConfig,
-	indexerCfg *common.IndexerConfig,
 	erpc *ERPC,
 ) (*HttpServer, error) {
 	reqMaxTimeout := 150 * time.Second
@@ -95,12 +94,6 @@ func NewHttpServer(
 	gzipPool := util.NewGzipReaderPool()
 
 	subMgrLogger := logger.With().Str("component", "subscriptions").Logger()
-	indexerLogger := logger.With().Str("component", "indexer").Logger()
-	indexerOpts := indexer.Options{}
-	if indexerCfg != nil {
-		indexerOpts.DedupWindowSize = indexerCfg.DedupWindowSize
-	}
-	idx := indexer.New(&indexerLogger, indexerOpts)
 
 	srv := &HttpServer{
 		logger:              logger,
@@ -112,7 +105,7 @@ func NewHttpServer(
 		draining:            &draining,
 		drained:             make(chan struct{}),
 		gzipPool:            gzipPool,
-		subscriptionManager: NewSubscriptionManager(&subMgrLogger, idx),
+		subscriptionManager: NewSubscriptionManager(&subMgrLogger),
 		reqMaxTimeout:       reqMaxTimeout,
 	}
 
@@ -189,8 +182,34 @@ func NewHttpServer(
 			return nil, err
 		}
 		srv.sharedGrpcServer = sharedGrpcServer
+		streamsCtx, stopStreams := context.WithCancel(context.Background())
+		srv.stopGrpcStreams = stopStreams
+		streamingMethods := make(map[string]struct{})
+		for svc, info := range sharedGrpcServer.server.GetServiceInfo() {
+			for _, m := range info.Methods {
+				if m.IsServerStream || m.IsClientStream {
+					streamingMethods["/"+svc+"/"+m.Name] = struct{}{}
+				}
+			}
+		}
 		handlerV4 = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
+				// net/http applies ReadTimeout and WriteTimeout to each HTTP/2 stream
+				// and resets it on expiry; long-lived gRPC streams must outlive them.
+				if _, ok := streamingMethods[r.URL.Path]; ok {
+					rc := http.NewResponseController(w)
+					if err := rc.SetReadDeadline(time.Time{}); err != nil {
+						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear read deadline of gRPC stream")
+					}
+					if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear write deadline of gRPC stream")
+					}
+					ctx, cancel := context.WithCancel(r.Context())
+					defer cancel()
+					stop := context.AfterFunc(streamsCtx, cancel)
+					defer stop()
+					r = r.WithContext(ctx)
+				}
 				sharedGrpcServer.server.ServeHTTP(w, r)
 				return
 			}
@@ -1335,6 +1354,11 @@ func writeCounterHeaders(st *common.ExecState, w http.ResponseWriter) {
 	if snap.ConsensusLowParticipants > 0 {
 		setInt(w, "X-ERPC-Consensus-Low-Participants", snap.ConsensusLowParticipants)
 	}
+	// The consensus policy the pre-round selector resolved for this request.
+	// Present only when the custom-policy selector is enabled and ran.
+	if snap.ConsensusPolicy != "" {
+		w.Header().Set("X-ERPC-Consensus-Policy", snap.ConsensusPolicy)
+	}
 }
 
 // writeResponseMetadataHeaders emits X-ERPC-Cache, X-ERPC-Upstream,
@@ -1597,6 +1621,8 @@ func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseW
 	truncated := 0
 	withMeta, fromCache := 0, 0
 	var maxDurationMs int64
+	var consensusPolicy string
+	consensusPolicyMixed := false
 
 	for _, item := range items {
 		if req := extractRequest(item); req != nil {
@@ -1615,6 +1641,14 @@ func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseW
 				total.ConsensusSlots += snap.ConsensusSlots
 				total.ConsensusDisputes += snap.ConsensusDisputes
 				total.ConsensusLowParticipants += snap.ConsensusLowParticipants
+				if snap.ConsensusPolicy != "" {
+					switch {
+					case consensusPolicy == "":
+						consensusPolicy = snap.ConsensusPolicy
+					case consensusPolicy != snap.ConsensusPolicy:
+						consensusPolicyMixed = true
+					}
+				}
 				if mode != common.ExecutionHeadersSummary {
 					for _, attempt := range st.UpstreamAttemptLog() {
 						if len(segments) >= maxBatchTraceSegments {
@@ -1659,6 +1693,12 @@ func (s *HttpServer) writeBatchExecHeaders(ctx context.Context, w http.ResponseW
 	}
 	if total.ConsensusLowParticipants > 0 {
 		setInt(w, "X-ERPC-Consensus-Low-Participants", total.ConsensusLowParticipants)
+	}
+	// One header for the whole batch. Emit it only when every sub-request
+	// that ran the selector agreed. Mixed names have no single value; omit
+	// the header rather than name a policy that did not govern every item.
+	if consensusPolicy != "" && !consensusPolicyMixed {
+		w.Header().Set("X-ERPC-Consensus-Policy", consensusPolicy)
 	}
 
 	if withMeta > 0 {
@@ -1980,76 +2020,6 @@ func handleErrorResponse(
 	)
 }
 
-// prewarmInterval is how often the prewarm reconciler re-scans for WS-capable
-// networks that still need their newHeads subscription established. Var (not
-// const) so tests can compress it.
-var prewarmInterval = 15 * time.Second
-
-// PrewarmUpstreamSubscriptions proactively establishes the upstream newHeads
-// subscription for every WS-capable network, without waiting for a client
-// eth_subscribe. This keeps the EVM state poller's latest-block tip fed by
-// pushed heads (cheap) instead of falling back to RPC-polling `latest` every
-// cycle (expensive) — so an instance that never receives a client subscription still
-// polls efficiently.
-//
-// It runs as a reconciler because networks initialize asynchronously (the
-// registry's background initializer tasks): each tick it attempts to bootstrap
-// any network not yet warmed, until ctx is cancelled. bootstrapNetwork is
-// idempotent per network, so re-scans are cheap. Networks with no WS upstreams
-// are skipped permanently — the state poller handles head tracking for
-// HTTP-only networks via RPC polling. No-op while the WebSocket server is
-// disabled.
-func (s *HttpServer) PrewarmUpstreamSubscriptions(ctx context.Context) {
-	if s.subscriptionManager == nil || s.erpc == nil || !s.webSocketEnabled() {
-		return
-	}
-
-	// indexer network key (project/network) -> bootstrapped or definitively
-	// skipped (HTTP-only).
-	settled := make(map[string]struct{})
-
-	reconcile := func() {
-		for _, prj := range s.erpc.GetProjects() {
-			for _, nw := range prj.GetNetworks() {
-				id := nw.Id()
-				key := indexerNetworkKey(nw)
-				if _, done := settled[key]; done {
-					continue
-				}
-				err := s.subscriptionManager.bootstrapNetwork(ctx, nw)
-				switch {
-				case err == nil:
-					settled[key] = struct{}{}
-					s.logger.Info().Str("networkId", id).
-						Msg("prewarmed upstream newHeads subscription")
-				case common.HasErrorCode(err, common.ErrCodeNoWsUpstreamAvailable):
-					// HTTP-only network — nothing to prewarm; don't retry.
-					settled[key] = struct{}{}
-					s.logger.Debug().Str("networkId", id).
-						Msg("no WS upstreams; skipping subscription prewarm")
-				default:
-					// Transient (network still initializing, upstreams not ready,
-					// circuit breaker open). Leave unsettled; retried next tick.
-					s.logger.Debug().Err(err).Str("networkId", id).
-						Msg("subscription prewarm not ready yet, will retry")
-				}
-			}
-		}
-	}
-
-	reconcile() // immediate first pass
-	ticker := time.NewTicker(prewarmInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			reconcile()
-		}
-	}
-}
-
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
 	// Validate that at least one server is configured
 	if s.serverV4 == nil && s.serverV6 == nil {
@@ -2174,6 +2144,11 @@ func (s *HttpServer) createTLSConfig() (*tls.Config, error) {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http servers...")
 
+	// Streams on the shared port have no deadlines, so nothing else ends an
+	// idle one and it would hold Shutdown for its whole budget.
+	if s.stopGrpcStreams != nil {
+		s.stopGrpcStreams()
+	}
 	s.shutdownWebSockets(logger, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -82,8 +82,9 @@ func readUpstreamMetrics(tr healthTracker, u common.Upstream, method string, fin
 		// One merge → five reads. GetQuantile calls mergedSnapshot
 		// internally and each call rebuilds an ephemeral DDSketch from
 		// all sub-buckets — pprof had 5× redundant merges from this
-		// exact 5-line block. GetQuantiles shares the merge once.
-		qs := m.ResponseQuantiles.GetQuantiles(quantileFractions[:])
+		// exact 5-line block. PolicyQuantiles shares the merge once and
+		// folds in cancelled attempts as latency lower bounds.
+		qs := m.PolicyQuantiles(quantileFractions[:])
 		out.P50ResponseSeconds = qs[0].Seconds()
 		out.P70ResponseSeconds = qs[1].Seconds()
 		out.P90ResponseSeconds = qs[2].Seconds()
@@ -241,7 +242,7 @@ func convertTrackedMetrics(tr healthTracker, u common.Upstream, method string, m
 		// Single merge for all 5 quantiles — see comment in
 		// `readUpstreamMetrics`. This callsite multiplies by every
 		// (upstream, method) in the slot, so the savings stack hard.
-		qs := m.ResponseQuantiles.GetQuantiles(quantileFractions[:])
+		qs := m.PolicyQuantiles(quantileFractions[:])
 		out.P50ResponseSeconds = qs[0].Seconds()
 		out.P70ResponseSeconds = qs[1].Seconds()
 		out.P90ResponseSeconds = qs[2].Seconds()
@@ -411,10 +412,41 @@ func buildJSUpstreams(vm *sobek.Runtime, ups []common.Upstream, metrics map[stri
 			}
 		}
 
+		// creditPace / creditRemaining — account credits used this billing
+		// period over the pro-rata `creditAllowance` (1.0 = on track to use
+		// it exactly), and allowance minus credits used. Present only when
+		// the upstream sets an allowance and its vendor has a usage reading;
+		// the credit* predicates treat absence as false.
+		if usage, allowance, ok := creditUsage(u); ok {
+			_ = obj.Set("creditPace", usage.Pace(allowance, time.UnixMilli(evalCtx.Now)))
+			_ = obj.Set("creditRemaining", allowance-usage.Used)
+		}
+
 		_ = arr.Set(strconv.Itoa(i), obj)
 	}
 	_ = arr.Set("length", vm.ToValue(len(ups)))
 	return arr
+}
+
+// maxCreditUsageAge drops a usage reading the vendor has not refreshed for
+// this long (failing usage API): the credit fields go absent and policies
+// fall back to their no-allowance order rather than act on old usage.
+const maxCreditUsageAge = 30 * time.Minute
+
+func creditUsage(u common.Upstream) (common.CreditUsage, int64, bool) {
+	cfg := u.Config()
+	if cfg == nil || cfg.CreditAllowance == nil {
+		return common.CreditUsage{}, 0, false
+	}
+	provider, ok := u.Vendor().(common.CreditUsageProvider)
+	if !ok {
+		return common.CreditUsage{}, 0, false
+	}
+	usage, ok := provider.CreditUsage(u.Logger(), cfg)
+	if !ok || time.Since(usage.FetchedAt) > maxCreditUsageAge {
+		return common.CreditUsage{}, 0, false
+	}
+	return usage, cfg.CreditAllowance.Credits, true
 }
 
 // resolveScoreMultipliers selects the first `routing.scoreMultipliers`
@@ -554,6 +586,10 @@ type EvalResult struct {
 	// default to probing. Always captured (drives prober candidate
 	// filtering), independent of stepLogEnabled.
 	ProbeVerdicts map[string]ProbeVerdict
+	// MethodBlocks[upstreamID][method] = per-method blocks recorded by
+	// `blockMethods`. The upstream stays in OrderedIDs; the engine drops
+	// it per request for the blocked method only. Always captured.
+	MethodBlocks map[string]map[string]MethodBlock
 	// StickyHeld is true when `stickyPrimary` ACTIVELY held the previous
 	// primary this tick (i.e. challenger would have won under a no-sticky
 	// ordering, but cooldown or hysteresis kept the incumbent). Drives
@@ -697,6 +733,10 @@ func runEval(
 	if err := vm.GlobalObject().Set("__policyShadowReasons", vm.NewObject()); err != nil {
 		return nil, err
 	}
+	// Per-upstream, per-method blocks from `blockMethods`. Reset each tick.
+	if err := vm.GlobalObject().Set("__policyMethodBlocks", vm.NewObject()); err != nil {
+		return nil, err
+	}
 	// Cleared each tick to detect active stickyPrimary holds.
 	if err := vm.GlobalObject().Set("__policyStickyHeld", false); err != nil {
 		return nil, err
@@ -748,6 +788,7 @@ func runEval(
 		_ = vm.GlobalObject().Set("__policyLeafReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyShadowReasons", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyProbeVerdicts", sobek.Undefined())
+		_ = vm.GlobalObject().Set("__policyMethodBlocks", sobek.Undefined())
 		_ = vm.GlobalObject().Set("__policyStickyHeld", false)
 		_ = vm.GlobalObject().Set("__probeConfig", sobek.Undefined())
 		// Stub the sticky helpers back to no-ops so the pooled runtime
@@ -785,6 +826,7 @@ func runEval(
 	out.LeafReasons = readReasonsMap(vm, "__policyLeafReasons")
 	out.ShadowReasons = readReasonsMap(vm, "__policyShadowReasons")
 	out.ProbeVerdicts = readProbeVerdicts(vm)
+	out.MethodBlocks = readMethodBlocks(vm)
 	if heldVal := vm.GlobalObject().Get("__policyStickyHeld"); heldVal != nil && !sobek.IsUndefined(heldVal) && !sobek.IsNull(heldVal) {
 		out.StickyHeld = heldVal.ToBoolean()
 	}
@@ -919,6 +961,54 @@ func readProbeVerdicts(vm *sobek.Runtime) map[string]ProbeVerdict {
 			pv.Blocking = b.ToBoolean()
 		}
 		out[k] = pv
+	}
+	return out
+}
+
+// MethodBlock is one (upstream, method) block recorded by `blockMethods`.
+type MethodBlock struct {
+	Probe   bool     `json:"probe"`
+	Reasons []string `json:"reasons,omitempty"`
+}
+
+// readMethodBlocks drains `__policyMethodBlocks`
+// ({ [upstreamId]: { [method]: { probe, reasons } } }). Malformed entries
+// are skipped, like the other attribution maps.
+func readMethodBlocks(vm *sobek.Runtime) map[string]map[string]MethodBlock {
+	v := vm.GlobalObject().Get("__policyMethodBlocks")
+	if v == nil || sobek.IsUndefined(v) || sobek.IsNull(v) {
+		return nil
+	}
+	raw, ok := v.Export().(map[string]interface{})
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]MethodBlock, len(raw))
+	for id, perMethodRaw := range raw {
+		perMethod, ok := perMethodRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		blocks := make(map[string]MethodBlock, len(perMethod))
+		for method, entryRaw := range perMethod {
+			entry, ok := entryRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			b := MethodBlock{}
+			b.Probe, _ = entry["probe"].(bool)
+			if reasons, ok := entry["reasons"].([]interface{}); ok {
+				for _, r := range reasons {
+					if s, ok := r.(string); ok && s != "" {
+						b.Reasons = append(b.Reasons, s)
+					}
+				}
+			}
+			blocks[method] = b
+		}
+		if len(blocks) > 0 {
+			out[id] = blocks
+		}
 	}
 	return out
 }

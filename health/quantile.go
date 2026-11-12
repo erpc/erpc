@@ -138,11 +138,20 @@ func (q *QuantileTracker) GetQuantile(qtile float64) time.Duration {
 // Result slice matches the input slice 1:1; an empty/zero-bucket
 // sketch yields a zero Duration in every slot.
 func (q *QuantileTracker) GetQuantiles(qtiles []float64) []time.Duration {
+	return q.quantilesWith(nil, qtiles)
+}
+
+// quantilesWith is GetQuantiles over the union of q and other; a nil
+// other reads q alone. Still one ephemeral sketch per call.
+func (q *QuantileTracker) quantilesWith(other *QuantileTracker, qtiles []float64) []time.Duration {
 	out := make([]time.Duration, len(qtiles))
 	if len(qtiles) == 0 {
 		return out
 	}
 	merged := q.mergedSnapshot()
+	if other != nil {
+		other.mergeInto(merged)
+	}
 	for i, qt := range qtiles {
 		seconds := quantileSeconds(q.logger, merged, qt)
 		out[i] = time.Duration(seconds * float64(time.Second))
@@ -151,15 +160,21 @@ func (q *QuantileTracker) GetQuantiles(qtiles []float64) []time.Duration {
 }
 
 // mergedSnapshot returns an ephemeral DDSketch holding the union of
-// all sub-buckets. Holds the read lock for the duration of the merge —
-// concurrent Adds may briefly block, but DDSketch.MergeWith is fast
-// (microseconds for typical sketch sizes) and the merge runs once
-// per quantile query (or once per MarshalJSON when all five are
-// pulled together).
+// all sub-buckets.
 func (q *QuantileTracker) mergedSnapshot() *ddsketch.DDSketch {
+	out, _ := ddsketch.NewDefaultDDSketch(0.01)
+	q.mergeInto(out)
+	return out
+}
+
+// mergeInto merges every sub-bucket into out. Holds the read lock for
+// the duration of the merge — concurrent Adds may briefly block, but
+// DDSketch.MergeWith is fast (microseconds for typical sketch sizes)
+// and the merge runs once per quantile query (or once per MarshalJSON
+// when all five are pulled together).
+func (q *QuantileTracker) mergeInto(out *ddsketch.DDSketch) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	out, _ := ddsketch.NewDefaultDDSketch(0.01)
 	for _, b := range q.buckets {
 		if b == nil {
 			continue
@@ -168,7 +183,6 @@ func (q *QuantileTracker) mergedSnapshot() *ddsketch.DDSketch {
 			q.logger.Warn().Err(err).Msg("failed to merge quantile bucket; skipping")
 		}
 	}
-	return out
 }
 
 // quantileSeconds wraps the GetValueAtQuantile error/NaN/Inf guards

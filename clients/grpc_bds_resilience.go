@@ -54,8 +54,10 @@ var (
 	bdsStuckCallThreshold = 3
 	bdsStuckCallWindow    = 60 * time.Second
 
-	// bdsReplacementDedupWindow stops two simultaneous threshold-breaches
-	// from double-closing the same slot in quick succession.
+	// bdsReplacementDedupWindow is the minimum gap between replacements of
+	// one slot: it stops two simultaneous threshold-breaches from
+	// double-closing a slot, and an unreachable endpoint from turning the
+	// unservable re-dial (watchServable) into a dial loop.
 	bdsReplacementDedupWindow = 5 * time.Second
 
 	// bdsConnMaxAge bounds how long a pooled connection may live before the
@@ -300,10 +302,11 @@ func (p *bdsPool) maintainLoop() {
 }
 
 // recycleConn dials a verified replacement for c and swaps it into c's slot.
-// reason is `age`, `chainid_mismatch` or `closed`. On age recycles the old
-// conn closes after a linger (lets in-flight RPCs finish; new picks already go
-// to the replacement); on mismatch/closed the old conn is already closed (or
-// closes immediately) — a proven wrong-chain conn must not serve another call.
+// reason is `age`, `unservable`, `chainid_mismatch` or `closed`. On age and
+// unservable recycles the old conn closes after a linger (lets in-flight RPCs
+// finish; new picks already go to the replacement); on mismatch/closed the old
+// conn is already closed (or closes immediately) — a proven wrong-chain conn
+// must not serve another call.
 func (p *bdsPool) recycleConn(c *bdsConn, reason string) {
 	replacement, err := p.dial()
 	if err != nil {
@@ -332,7 +335,7 @@ func (p *bdsPool) recycleConn(c *bdsConn, reason string) {
 		Str("reason", reason).
 		Msg("BDS maintainer: recycled pool connection")
 	if c.conn != nil {
-		if reason == "age" {
+		if reason == "age" || reason == "unservable" {
 			old := c.conn
 			time.AfterFunc(bdsAgeRecycleLinger, func() { _ = old.Close() })
 		} else {
@@ -347,13 +350,7 @@ func (p *bdsPool) recycleConn(c *bdsConn, reason string) {
 func (p *bdsPool) swapInReplacement(c, replacement *bdsConn) (int, bool) {
 	p.poolMu.Lock()
 	defer p.poolMu.Unlock()
-	slot := -1
-	for i, existing := range p.conns {
-		if existing == c {
-			slot = i
-			break
-		}
-	}
+	slot := p.slotOfLocked(c)
 	if slot < 0 {
 		return -1, false
 	}
@@ -363,6 +360,55 @@ func (p *bdsPool) swapInReplacement(c, replacement *bdsConn) (int, bool) {
 	c.closedAt.Store(time.Now().UnixNano())
 	p.conns[slot] = replacement
 	return slot, true
+}
+
+// slotOfLocked returns c's slot, or -1 when c is not pooled. Caller holds poolMu.
+func (p *bdsPool) slotOfLocked(c *bdsConn) int {
+	for i, existing := range p.conns {
+		if existing == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// watchServable recycles c's slot once c's channel has no address it may send
+// to (TRANSIENT_FAILURE): every address refuses connections or, with a health
+// check, reports NOT_SERVING. grpc-go re-resolves a name only after a
+// connection breaks, and a health failure breaks none, so calls would queue on
+// a draining server until its listener closes. A fresh dial resolves the name
+// again, finding a replacement server's address, and opens new connections, so
+// a load balancer routes them to a backend still serving. Runs for c's life;
+// started by dial.
+func (p *bdsPool) watchServable(c *bdsConn) {
+	lastTry := c.dialedAt
+	state := c.conn.GetState()
+	for state != connectivity.Shutdown {
+		if state == connectivity.TransientFailure {
+			if wait := bdsReplacementDedupWindow - time.Since(lastTry); wait > 0 {
+				select {
+				case <-time.After(wait):
+				case <-p.stopCh:
+					return
+				case <-p.appCtx.Done():
+					return
+				}
+			}
+			if c.conn.GetState() == connectivity.TransientFailure {
+				lastTry = time.Now()
+				p.recycleConn(c, "unservable")
+				p.poolMu.RLock()
+				pooled := p.slotOfLocked(c) >= 0
+				p.poolMu.RUnlock()
+				if !pooled {
+					return
+				}
+			}
+		} else if !c.conn.WaitForStateChange(p.appCtx, state) {
+			return
+		}
+		state = c.conn.GetState()
+	}
 }
 
 // Size returns the number of connection slots in the pool.
@@ -412,14 +458,16 @@ func (p *bdsPool) dial() (*bdsConn, error) {
 		// ±20% jitter so pool conns never expire in lockstep.
 		maxAge = time.Duration(float64(bdsConnMaxAge) * (0.8 + 0.4*rand.Float64())) // #nosec G404 -- recycle-spread jitter, not security-sensitive
 	}
-	return &bdsConn{
+	c := &bdsConn{
 		conn:        conn,
 		rpcClient:   evm.NewRPCQueryServiceClient(conn),
 		queryClient: evm.NewQueryServiceClient(conn),
 		svmClient:   svm.NewRPCQueryServiceClient(conn),
 		dialedAt:    time.Now(),
 		maxAge:      maxAge,
-	}, nil
+	}
+	go p.watchServable(c)
+	return c, nil
 }
 
 // Pick returns the next pool slot in round-robin order.

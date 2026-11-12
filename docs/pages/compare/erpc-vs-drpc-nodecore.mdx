@@ -1,0 +1,92 @@
+---
+title: eRPC vs dRPC NodeCore
+description: eRPC vs drpc nodecore feature by feature, with a source link in every cell, and where NodeCore is the better fit.
+---
+
+import { LLMsTxtLink, AISection } from "../../components";
+
+<LLMsTxtLink />
+
+# eRPC vs dRPC NodeCore
+
+[NodeCore](https://github.com/drpcorg/nodecore) is dRPC's open-source RPC stack in Go.
+It covers 15+ chain families over JSON-RPC, REST and gRPC, and links to dRPC's hosted network.
+eRPC is an EVM and Solana JSON-RPC proxy built around failover, a finality-aware cache, and cost control.
+Every cell below links to the page or line that states it. Facts were checked on 2026-10-22.
+
+## Feature table
+
+| | eRPC | dRPC NodeCore |
+|---|---|---|
+| Language, license | Go, Apache-2.0 ([LICENSE](https://github.com/erpc/erpc/blob/32a8a1e450c6ab5a78477859c85221b6a9058c72/LICENSE#L1)) | Go, MIT ([go.mod](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/go.mod#L3), [LICENSE](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/LICENSE#L1)) |
+| Latest release | 0.4.0, 2026-10-11 ([release](https://github.com/erpc/erpc/releases/tag/0.4.0)) | 1.17.1, 2026-10-22 ([release](https://github.com/drpcorg/nodecore/releases/tag/1.17.1)) |
+| Chains | EVM and Solana ([networks](/config/projects/networks)) | EVM, Solana, Bitcoin, Starknet, TON, Cosmos, Sui, Aptos and more ([README](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/README.md#L16)) |
+| Upstream protocols | JSON-RPC over HTTP and WebSocket, gRPC ([upstreams](/config/projects/upstreams)) | JSON-RPC, WebSocket, REST, Tendermint, gRPC ([upstream config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/05-upstream-config.md#L593-L640)) |
+| Config | YAML or TypeScript ([quick start](/)) | YAML, reload on SIGHUP or file change ([config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/01-config.md#L270-L290)) |
+| Upstream selection | Score from errors, latency, 429s, block lag; JS policy ([selection policies](/config/projects/selection-policies)) | Score from latency, error rate, lag; custom TypeScript scoring ([upstream config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/05-upstream-config.md#L378-L446)) |
+| Failover and retry | Yes, per method ([retry](/config/failsafe/retry)) | Yes, backoff and jitter ([upstream config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/05-upstream-config.md#L244-L295)) |
+| Hedged requests | Yes ([hedge](/config/failsafe/hedge)) | Yes ([upstream config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/05-upstream-config.md#L273-L295)) |
+| Circuit breaker | Yes ([circuit breaker](/config/failsafe/circuit-breaker)) | No named breaker; validators and method bans remove upstreams ([upstream config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/05-upstream-config.md#L778-L848)) |
+| Cross-checking answers | Consensus across any N upstreams ([consensus](/config/failsafe/consensus)) | Quorum over signed responses from dRPC providers ([quorum](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/10-quorum.md#L1-L49)) |
+| Integrity | Tip and range guards, opt-in schema checks ([integrity](/config/failsafe/integrity)) | Block numbers never go back; lag, chain-id, log-index validators ([upstream config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/05-upstream-config.md#L225-L242)) |
+| Cache | Memory, Redis, PostgreSQL, DynamoDB; finality-aware ([drivers](/config/database/drivers), [cache](/config/database/evm-json-rpc-cache)) | Memory, Redis, PostgreSQL; finalized-only policies ([cache](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/04-cache.md#L72-L158)) |
+| Rate limits | Per client, project, network, upstream ([rate limiters](/config/rate-limiters)) | Upstream side, with auto-tune ([rate limiting](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/06-rate-limiting.md#L1-L48)) |
+| Client auth | Secret, JWT, SIWE, IP, database ([auth](/config/auth)) | Token, JWT, API keys with IP, method and contract allowlists ([auth](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/03-auth.md#L66-L215)) |
+| `eth_getLogs` splitting | Yes ([getLogs splitting](/reference/evm/getlogs-splitting)) | Not documented ([request_processor.go](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/internal/upstreams/flow/request_processor.go#L318-L331)) |
+| JSON-RPC batch | Yes ([batch](/operation/batch)) | Yes ([batch e2e test](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/test/e2e/http/batch_e2e_test.go#L15-L40)) |
+| Subscriptions | EVM `eth_subscribe` only; shared across clients ([websocket](/operation/websocket)) | EVM and other chain families, Solana included; shared across clients ([subscriptions](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/13-subscriptions.md#L1-L30)) |
+| Metrics, tracing | Prometheus, OpenTelemetry ([monitoring](/operation/monitoring), [tracing](/operation/tracing)) | Prometheus, Pyroscope ([metrics](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/08-prometheus-metrics.md), [server config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/02-server-config.md#L42)) |
+| Archive routing | Block availability per upstream ([upstreams](/config/projects/upstreams)) | Detects each upstream's lowest block and routes by height ([upstream config](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/05-upstream-config.md#L742-L760)) |
+| Deployment | Binaries, Docker, Kubernetes manifests, `npx start-erpc` ([docker](/deployment/docker), [kubernetes](/deployment/kubernetes)) | Binaries, Docker, Helm chart ([README](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/README.md#L125-L129), [chart](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/chart/nodecore/README.md#L10)) |
+| Hosted option | Managed instances ([cloud](/deployment/cloud)) | dRPC NodeCloud; keys can sync from it ([integration](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/09-integration.md#L12-L30)) |
+
+"Not documented" means the NodeCore docs do not describe it and a search of its source found no code for it.
+The [dRPC NodeCore page](https://drpc.org/docs/nodecore-open-source-rpc-stack) also lists a circuit breaker and OpenTelemetry traces. The open-source repo at the commit above does not document them, so the table does not count them.
+
+## Where NodeCore is stronger
+
+- **Chain coverage.** 15+ chain families, with REST, Tendermint and gRPC upstreams ([README](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/README.md#L16)). eRPC serves EVM and Solana only.
+- **Subscriptions beyond EVM.** Solana and other chain families, and EVM streams built from all upstreams together ([subscriptions](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/13-subscriptions.md#L1-L30)). eRPC serves only EVM `eth_subscribe`.
+- **Signed-response quorum** with dRPC providers ([quorum](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/10-quorum.md#L32-L38)).
+- **Contract allowlists per API key** for `eth_call` and `eth_getLogs` ([auth](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/docs/nodecore/03-auth.md#L172-L207)).
+- **Official Helm chart** ([chart](https://github.com/drpcorg/nodecore/blob/8d8d79af258b5f7897ec77709eb495c29e744973/chart/nodecore/README.md#L10)). eRPC ships raw manifests ([kubernetes](/deployment/kubernetes)).
+
+## Where eRPC is stronger
+
+- Consensus across any upstreams, not only signed ones ([consensus](/config/failsafe/consensus)).
+- Circuit breaker and OpenTelemetry tracing in the open-source code ([circuit breaker](/config/failsafe/circuit-breaker), [tracing](/operation/tracing)).
+- `eth_getLogs` range splitting ([getLogs splitting](/reference/evm/getlogs-splitting)).
+- Rate limits on clients, projects and networks, not only upstreams ([rate limiters](/config/rate-limiters)).
+- DynamoDB cache driver and finality-aware cache buckets ([cache](/config/database/evm-json-rpc-cache)).
+- Config in TypeScript, with typed selection policies ([selection policies](/config/projects/selection-policies)).
+
+<AISection title="eRPC vs dRPC NodeCore — agent reference">
+
+### Sources and snapshot
+
+- eRPC: `erpc/erpc` at `32a8a1e450c6ab5a78477859c85221b6a9058c72`, docs at docs.erpc.cloud.
+- NodeCore: `drpcorg/nodecore` at `8d8d79af258b5f7897ec77709eb495c29e744973` (2026-10-22), docs in `docs/nodecore/`.
+- Checked 2026-10-22. NodeCore cuts releases often; re-check rows before you rely on them. Absence claims rest on its docs and a source search of `internal/`.
+
+### Moving from NodeCore to eRPC
+
+| NodeCore concept | eRPC equivalent |
+|---|---|
+| `upstream-config.upstreams[]` | `projects[].upstreams[]` ([upstreams](/config/projects/upstreams)) |
+| `chain: ethereum` | `networks[].evm.chainId: 1` ([networks](/config/projects/networks)) |
+| `failsafe-config.retry` / `hedge` | `failsafe[].retry` / `failsafe[].hedge` ([retry](/config/failsafe/retry), [hedge](/config/failsafe/hedge)) |
+| TypeScript scoring function | selection policy ([selection policies](/config/projects/selection-policies)) |
+| cache policies | `database.evmJsonRpcCache.policies` ([cache](/config/database/evm-json-rpc-cache)) |
+
+### Keep NodeCore when
+
+- You serve non-EVM, non-Solana chains.
+- You route to dRPC providers and want their signed-response quorum.
+
+### Related pages
+
+- [Why eRPC?](/why)
+- [eRPC vs dshackle](/compare/erpc-vs-dshackle)
+- [eRPC vs web3-proxy](/compare/erpc-vs-web3-proxy)
+
+</AISection>

@@ -7,6 +7,9 @@ help:
 	@echo " build                         Build the eRPC server + simulator"
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
+	@echo " test-realworld                Run the chain tracker real-world suite, every tier (eRPC pods, redis-server); REALWORLD_LOADED_HOST=1 starts at any host load, REALWORLD_RACE=1 builds pods with -race"
+	@echo " test-realworld-long           Run only the real-world suite's long tier (C17, ~40 min)"
+	@echo " verify-fast                   Build, vet, -race every package, chaos once, real-world fast tier; prints a pass/fail table (VERIFY_DIR=<dir> for logs)"
 	@echo
 	@echo " run-k6                        Run k6 tests"
 	@echo " run-pprof                     Run the eRPC server with pprof"
@@ -91,19 +94,28 @@ test-fast:
 	@# catch-all that variance ate the entire 10m process budget and starved
 	@# every test scheduled after them; in a dedicated shard with extra
 	@# headroom it can't take anyone else down.
+	@# SHARD_CHAOS isolates the chain feed chaos test: 11 seeds of a live
+	@# 200 ms chain, ~3.5 min by design (up to 150 block times a seed), a third
+	@# of the catch-all's 10m budget on its own. SHARD_CHAIN_TRACKER holds the
+	@# chain tracker's network-level groups (~4 min together): the catch-all
+	@# then runs ~6.5 min, inside its budget with a loaded runner's headroom.
 	@bash -c '\
 	  SHARD_CONSENSUS="^(TestConsensusPolicy$$|TestConsensusGoroutine|TestConsensusSelectsLargest|TestInterpolation_)"; \
 	  SHARD_NETWORK="^(TestNetwork_Forward$$|TestNetwork_(SelectionScenarios|InFlightRequests|SkippingUpstreams|EvmGetLogs|ThunderingHerd|HighestFinalizedBlockNumber|HighestLatestBlockNumber|CacheEmptyBehavior|BatchRequests|SingleRequestErrors|CapacityExceededErrors|TraceExecutionTimeout|Multiplexer|SendRawTransaction))"; \
 	  SHARD_HTTPSERVER="^TestHttpServer_"; \
 	  SHARD_INTEGRITY="^(TestNetworkRetry_|TestNetworkForward_|TestNetworkIntegrity_|TestHedgeConsensus_|TestEmptyResultAcceptShortCircuit$$|TestNetworkFailsafe_|TestNetworksBootstrap_|TestNetworkAvailability_|TestNetwork_Forward_InfiniteLoopWithAllUpstreamsSkipping$$|TestNetwork_HedgePolicy)"; \
 	  SHARD_CONTAINER_CACHE="^TestEvmJsonRpcCache_(DynamoDB|Redis)$$"; \
-	  SKIP_ALL="$$SHARD_CONSENSUS|$$SHARD_NETWORK|$$SHARD_HTTPSERVER|$$SHARD_INTEGRITY|$$SHARD_CONTAINER_CACHE|^TestConsensusPolicy_DSL|^TestHttp_"; \
+	  SHARD_CHAOS="^TestChainFeed_ConvergesUnderFaults$$"; \
+	  SHARD_CHAIN_TRACKER="^(TestServedTip|TestNetworkIntake_|TestNetworkCacheHead_|TestForward_|TestWebSocket_)"; \
+	  SKIP_ALL="$$SHARD_CONSENSUS|$$SHARD_NETWORK|$$SHARD_HTTPSERVER|$$SHARD_INTEGRITY|$$SHARD_CONTAINER_CACHE|$$SHARD_CHAOS|$$SHARD_CHAIN_TRACKER|^TestConsensusPolicy_DSL|^TestHttp_"; \
 	  pids=(); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CONSENSUS" -test.parallel 4 $(call cover_bin,erpc-consensus) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_NETWORK" $(call cover_bin,erpc-network) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_HTTPSERVER" $(call cover_bin,erpc-httpserver) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_INTEGRITY" $(call cover_bin,erpc-integrity) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 15m -test.run "$$SHARD_CONTAINER_CACHE" $(call cover_bin,erpc-container-cache) & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CHAOS" $(call cover_bin,erpc-chaos) & pids+=($$!); \
+	  /tmp/erpc.test -test.v -test.timeout 10m -test.run "$$SHARD_CHAIN_TRACKER" $(call cover_bin,erpc-chain-tracker) & pids+=($$!); \
 	  /tmp/erpc.test -test.v -test.timeout 10m -test.skip "$$SKIP_ALL" $(call cover_bin,erpc-rest) & pids+=($$!); \
 	  fail=0; for pid in "$${pids[@]}"; do wait "$$pid" || fail=1; done; \
 	  exit $$fail'
@@ -117,6 +129,18 @@ test-race:
 	@go clean -testcache
 	@go test ./cmd/... -count 5 -parallel 5 -v -race
 	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 15 -parallel 15 -v -timeout 30m -race
+
+.PHONY: test-realworld
+test-realworld:
+	@go test ./test/realworld/... -count=1 -v -timeout 60m
+
+.PHONY: test-realworld-long
+test-realworld-long:
+	@REALWORLD_TIER=long go test ./test/realworld/... -count=1 -v -timeout 60m
+
+.PHONY: verify-fast
+verify-fast:
+	@./scripts/verify-fast.sh
 
 .PHONY: bench
 bench:

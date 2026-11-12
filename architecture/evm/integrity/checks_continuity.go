@@ -29,7 +29,7 @@ func init() {
 	// block N-1. A broken link means the chain we are being served does not
 	// connect to the one we saw before.
 	register(&Check{
-		ID: "parentHashLinkage", Family: FamilyContinuity, Class: ReorgSensitive,
+		ID: "parentHashLinkage", Family: FamilyContinuity, Class: ReorgSensitive, History: true,
 		Methods: []string{MethodGetBlockByNumber},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			hist := historyFrom(ctx)
@@ -77,7 +77,7 @@ func init() {
 	// hashStability — a block number's hash must not change from what we
 	// previously observed for it (a finalized block is immutable).
 	register(&Check{
-		ID: "hashStability", Family: FamilyContinuity, Class: ReorgSensitive,
+		ID: "hashStability", Family: FamilyContinuity, Class: ReorgSensitive, History: true,
 		Methods: []string{MethodGetBlockByNumber},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			hist := historyFrom(ctx)

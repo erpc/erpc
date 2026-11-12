@@ -223,14 +223,28 @@ func TestProvider_buildBaseUpstreamConfig(t *testing.T) {
 		assert.Equal(t, "v", got.VendorName)
 	})
 
-	t.Run("override is copied, not shared", func(t *testing.T) {
+	t.Run("override is copied, not shared, and inherits split thresholds", func(t *testing.T) {
 		override := &common.UpstreamConfig{RateLimitBudget: "b"}
-		p := &Provider{config: &common.ProviderConfig{Id: "p", Vendor: "v", Overrides: map[string]*common.UpstreamConfig{"evm:1": override}}}
+		defaults := &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{
+			GetLogsAutoSplittingRangeThreshold:     5000,
+			TraceFilterAutoSplittingRangeThreshold: 100,
+		}}
+		p := &Provider{
+			config:           &common.ProviderConfig{Id: "p", Vendor: "v", Overrides: map[string]*common.UpstreamConfig{"evm:1": override}},
+			upstreamDefaults: defaults,
+		}
 		got, err := p.buildBaseUpstreamConfig("evm:1")
 		require.NoError(t, err)
 		assert.Equal(t, "b", got.RateLimitBudget)
 		assert.Equal(t, int64(1), got.Evm.ChainId)
+		assert.Equal(t, int64(5000), got.Evm.GetLogsAutoSplittingRangeThreshold)
+		assert.Equal(t, int64(100), got.Evm.TraceFilterAutoSplittingRangeThreshold)
 		assert.Nil(t, override.Evm, "the provider's override must not be mutated")
+
+		override.Evm = &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 1000}
+		got, err = p.buildBaseUpstreamConfig("evm:1")
+		require.NoError(t, err)
+		assert.Equal(t, int64(1000), got.Evm.GetLogsAutoSplittingRangeThreshold, "an override's own threshold wins")
 	})
 
 	t.Run("invalid override pattern is skipped", func(t *testing.T) {

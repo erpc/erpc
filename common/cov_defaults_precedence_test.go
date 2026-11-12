@@ -34,6 +34,7 @@ func TestCovDefaults_BuildProviderSettings_Vendors(t *testing.T) {
 		{"ankr://k1", VendorSettings{"apiKey": "k1"}},
 		{"satelink://k1", VendorSettings{"apiKey": "k1"}},
 		{"blockdaemon://k1", VendorSettings{"apiKey": "k1"}},
+		{"willow://k1", VendorSettings{"apiKey": "k1"}},
 		{"erpc://erpc.example/main/evm", VendorSettings{"endpoint": "https://erpc.example/main/evm"}},
 		{"erpc://erpc.example/main?secret=s3", VendorSettings{"endpoint": "https://erpc.example/main", "secret": "s3"}},
 		{"erpc://erpc.example/main?other=1", VendorSettings{"endpoint": "https://erpc.example/main"}},
@@ -420,7 +421,6 @@ func TestCovDefaults_NetworkSetDefaults_NetworkDefaultsPrecedence(t *testing.T) 
 			ServedTip:                          &EvmServedTipConfig{Quorum: 3},
 			EmptyResultConfidence:              AvailbilityConfidenceFinalized,
 			ShortCircuitFutureBlocks:           util.BoolPtr(true),
-			StripSubscribeFromBlockZero:        util.BoolPtr(true),
 			LocalAnswers:                       map[string]bool{"eth_chainId": true, "net_version": false},
 		},
 	}
@@ -458,7 +458,6 @@ func TestCovDefaults_NetworkSetDefaults_NetworkDefaultsPrecedence(t *testing.T) 
 	assert.NotSame(t, defaults.Evm.ServedTip, e.ServedTip)
 	assert.Equal(t, AvailbilityConfidenceFinalized, e.EmptyResultConfidence)
 	assert.True(t, e.ShortCircuitFutureBlocksEnabled())
-	assert.True(t, *e.StripSubscribeFromBlockZero)
 	assert.Equal(t, map[string]bool{"eth_chainId": false, "net_version": false}, e.LocalAnswers, "network's own localAnswers entry wins")
 	assert.Equal(t, int64(30_000), e.GetLogsMaxAllowedRange, "fields absent from both fall to built-ins")
 
@@ -643,7 +642,7 @@ func TestCovDefaults_SelectionPolicyAndEvmNetworkDefaults(t *testing.T) {
 	assert.Nil(t, e.MaxFutureBlockRetryDistance, "deprecated field is cleared")
 	assert.Equal(t, []string{}, e.MarkEmptyAsErrorMethods, "explicit empty list is kept")
 	assert.Equal(t, AvailbilityConfidenceBlockHead, e.EmptyResultConfidence)
-	assert.Equal(t, DefaultEvmStatePollerDebounce, e.FallbackStatePollerDebounce)
+	assert.Zero(t, e.FallbackStatePollerDebounce, "no default: the cold block time sets the cold cadence")
 	assert.Equal(t, 10, e.TraceFilterSplitConcurrency)
 	assert.Nil(t, e.TraceFilterSplitOnError)
 }

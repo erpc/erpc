@@ -19,7 +19,7 @@ func (f flappingResolver) IsFinalized(ctx context.Context, bn int64) (bool, bool
 	*f.calls++
 	return *f.calls == 1, true
 }
-func (f flappingResolver) CanonicalReceipts(ctx context.Context, ref string) ([]Receipt, bool) {
+func (f flappingResolver) CanonicalReceipts(ctx context.Context, ref string, _ int64) ([]Receipt, bool) {
 	return nil, false
 }
 func (f flappingResolver) CanonicalHeader(ctx context.Context, ref string) (*Header, bool) {

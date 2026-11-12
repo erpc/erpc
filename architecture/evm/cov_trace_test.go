@@ -142,7 +142,7 @@ func TestCovTrace_ProjectPreForward_RangeHistogram(t *testing.T) {
 		{name: "genesis_from_block_not_observed", method: "trace_filter", filter: map[string]interface{}{"fromBlock": "0x0", "toBlock": "0x4"}},
 		{name: "inverted_range_not_observed", method: "trace_filter", filter: map[string]interface{}{"fromBlock": "0x5", "toBlock": "0x4"}},
 		{name: "unresolvable_safe_tag_not_observed", method: "trace_filter", filter: map[string]interface{}{"fromBlock": "safe", "toBlock": "0x4"}},
-		{name: "missing_bounds_not_observed", method: "trace_filter", filter: map[string]interface{}{}},
+		{name: "missing_bounds_observed_at_tip", method: "trace_filter", filter: map[string]interface{}{}, wantCount: 1, wantSum: 1},
 		{name: "invalid_hex_not_observed", method: "trace_filter", filter: map[string]interface{}{"fromBlock": "0xzz", "toBlock": "0x4"}},
 		{name: "non_object_filter_ignored", method: "trace_filter", filter: "0x1"},
 		{name: "other_method_ignored", method: "eth_getLogs", filter: map[string]interface{}{"fromBlock": "0x1", "toBlock": "0x4"}},
@@ -197,7 +197,7 @@ func TestCovTrace_NetworkPreForward_PassThrough(t *testing.T) {
 		{name: "other_method", cfg: evmCfg, method: "eth_getLogs", params: []interface{}{map[string]interface{}{"fromBlock": "0x1", "toBlock": "0x10"}}},
 		{name: "empty_params", cfg: evmCfg, method: "trace_filter", params: []interface{}{}},
 		{name: "non_object_filter", cfg: evmCfg, method: "trace_filter", params: []interface{}{"0x1"}},
-		{name: "missing_toBlock", cfg: evmCfg, method: "trace_filter", params: []interface{}{map[string]interface{}{"fromBlock": "0x1"}}},
+		{name: "blockHash_filter", cfg: evmCfg, method: "trace_filter", params: []interface{}{map[string]interface{}{"blockHash": "0x01"}}},
 		{name: "unresolvable_safe_tag", cfg: evmCfg, method: "trace_filter", params: []interface{}{map[string]interface{}{"fromBlock": "safe", "toBlock": "0x10"}}},
 		{name: "unparsable_hex", cfg: evmCfg, method: "trace_filter", params: []interface{}{map[string]interface{}{"fromBlock": "0x1", "toBlock": "0xnothex"}}},
 		{name: "network_without_evm_config", cfg: &common.NetworkConfig{}, method: "trace_filter", params: []interface{}{map[string]interface{}{"fromBlock": "0x1", "toBlock": "0x10"}}},
@@ -273,14 +273,24 @@ func TestCovTrace_NetworkPreForward_ProactiveSplitMerges(t *testing.T) {
 		&queryTestConfigUpstream{cfg: &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{TraceFilterAutoSplittingRangeThreshold: 5}}},
 		&queryTestConfigUpstream{cfg: &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{TraceFilterAutoSplittingRangeThreshold: 3}}},
 	}
+	// A tag bound reaches upstreams as is (translateLatestTag off, as for
+	// arbtrace_*, or skip-interpolation): numbered sub-requests would change
+	// what the client asked, so the range is not split.
+	tagged := covTraceReq(t, "ARBTRACE_FILTER", 41, map[string]interface{}{"fromBlock": "0x1", "toBlock": "latest"})
+	handled, resp, err := networkPreForward_trace_filter(ctx, net, ups, tagged)
+	require.NoError(t, err)
+	assert.False(t, handled)
+	assert.Nil(t, resp)
+	assert.Empty(t, rec.ranges(), "no sub-request for a range sent with a tag")
+
 	req := covTraceReq(t, "ARBTRACE_FILTER", 42, map[string]interface{}{
 		"fromBlock":   "0x1",
-		"toBlock":     "latest",
+		"toBlock":     "0x7",
 		"fromAddress": []interface{}{"0xaaa"},
 	})
 	req.SetDirectives(&common.RequestDirectives{SkipCacheRead: "*"})
 
-	handled, resp, err := networkPreForward_trace_filter(ctx, net, ups, req)
+	handled, resp, err = networkPreForward_trace_filter(ctx, net, ups, req)
 	require.NoError(t, err)
 	require.True(t, handled)
 	require.NotNil(t, resp)
@@ -288,7 +298,7 @@ func TestCovTrace_NetworkPreForward_ProactiveSplitMerges(t *testing.T) {
 	assert.False(t, resp.FromCache())
 	assert.Same(t, resp, req.LastValidResponse())
 
-	// Range 1..7 (latest) with min threshold 3 → [1,3], [4,6], [7,7].
+	// Range 1..7 with min threshold 3 → [1,3], [4,6], [7,7].
 	assert.Equal(t, map[string]string{"0x1": "0x3", "0x4": "0x6", "0x7": "0x7"}, rec.ranges())
 	for _, s := range rec.subs {
 		assert.Equal(t, "arbtrace_filter", s.method, "sub-requests use the lower-cased method")

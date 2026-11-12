@@ -206,6 +206,12 @@ func TestCovErrNorm_MessageClassification(t *testing.T) {
 			wantCode: common.ErrCodeEndpointRequestTooLarge, wantNormalized: common.JsonRpcErrorEvmLargeRange, wantMessage: "request exceeded max allowed range: Log response size exceeded. You can make eth_getLogs requests with up to a 2K block range and no limit on the response size, or you can request any block range with a cap of 10K logs in the response. Based on your parameters, this block range should work: [0x1, 0x2]", wantRetryNw: true},
 		{name: "maximum blocks distance", code: -32000, message: "maximum 10000 blocks distance between fromBlock and toBlock",
 			wantCode: common.ErrCodeEndpointRequestTooLarge, wantNormalized: common.JsonRpcErrorEvmLargeRange, wantMessage: "request exceeded max allowed range: maximum 10000 blocks distance between fromBlock and toBlock", wantRetryNw: true},
+		{name: "chainstack server limit", code: -32602, message: "query block range exceeds server limit, narrow your filter: 1000",
+			wantCode: common.ErrCodeEndpointRequestTooLarge, wantNormalized: common.JsonRpcErrorEvmLargeRange, wantMessage: "request exceeded max allowed range: query block range exceeds server limit, narrow your filter: 1000", wantRetryNw: true},
+		{name: "filecoin block range maximum", code: -32005, message: "block range exceeds maximum of 2880 (got 4999)",
+			wantCode: common.ErrCodeEndpointRequestTooLarge, wantNormalized: common.JsonRpcErrorEvmLargeRange, wantMessage: "request exceeded max allowed range: block range exceeds maximum of 2880 (got 4999)", wantRetryNw: true},
+		{name: "thirdweb requested blocks", code: -32005, message: "Log response size exceeded. Maximum allowed number of requested blocks is 1000",
+			wantCode: common.ErrCodeEndpointRequestTooLarge, wantNormalized: common.JsonRpcErrorEvmLargeRange, wantMessage: "request exceeded max allowed range: Log response size exceeded. Maximum allowed number of requested blocks is 1000", wantRetryNw: true},
 
 		// Billing vs capacity.
 		{name: "alchemy monthly capacity is billing", code: 429, message: "Monthly capacity limit exceeded. Visit https://dashboard.alchemyapi.io/settings/billing to upgrade your scaling policy for continued service.",
@@ -215,6 +221,10 @@ func TestCovErrNorm_MessageClassification(t *testing.T) {
 		{name: "rate limit message", code: -32005, message: "rate limit exceeded",
 			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
 		{name: "429 status with generic message", status: 429, code: -32000, message: "slow down",
+			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
+		{name: "-32005 with HTTP 200 is capacity", status: 200, code: -32005, message: "request refused",
+			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
+		{name: "compute units with HTTP 200 is capacity", status: 200, code: -32000, message: "compute units per second capacity used up",
 			wantCode: common.ErrCodeEndpointCapacityExceeded, wantNormalized: common.JsonRpcErrorCapacityExceeded, wantRetryNw: true},
 
 		// Block tags.

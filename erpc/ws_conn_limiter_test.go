@@ -89,7 +89,7 @@ func dialWsExpectStatus(t *testing.T, addr string) (*websocket.Conn, int) {
 
 func TestWebSocket_ConnectionCaps(t *testing.T) {
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	cases := []struct {
 		name   string
@@ -148,7 +148,7 @@ func TestWebSocket_InstanceSubscriptionCap(t *testing.T) {
 	defer mockUpstream.Close()
 
 	setupGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	cfg := standardWsConfig("ws" + strings.TrimPrefix(mockUpstream.URL, "http"))
 	cfg.Server.WebSocket = &common.WebSocketServerConfig{MaxSubscriptions: 1}

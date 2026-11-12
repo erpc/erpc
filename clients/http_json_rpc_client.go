@@ -187,8 +187,6 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 		return nil, err
 	case <-ctx.Done():
 		err := effectiveCause(ctx)
-		// TODO For both of these conditions failsafe library can introduce carrying
-		//      the "cause" so we know this cancellation is due to Hedge policy for example.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			err = common.NewErrEndpointRequestTimeout(time.Since(startedAt), err)
 		} else if errors.Is(err, context.Canceled) {
@@ -223,6 +221,16 @@ func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
 	}
 
 	return c.httpClient
+}
+
+// dropIdleAfterTimeout closes hc's idle connections once a request on it
+// timed out with no response: a black-holed keep-alive pool answers on
+// none of its sockets, so the next request opens a new connection rather
+// than spend another timeout on the next dead one (spec §19 U4).
+func dropIdleAfterTimeout(hc *http.Client, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
+		hc.CloseIdleConnections()
+	}
 }
 
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
@@ -433,13 +441,13 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
 	// pick the client from the proxy pool registry (if configured) or fallback
-	resp, err := c.getHttpClient().Do(httpReq)
+	hc := c.getHttpClient()
+	resp, err := hc.Do(httpReq)
 	if err != nil {
 		if batchCause := effectiveCause(batchCtx); batchCause != nil {
 			err = batchCause
 		}
-		// TODO For both of these conditions failsafe library can introduce carrying
-		//      the "cause" so we know this cancellation is due to Hedge policy for example.
+		dropIdleAfterTimeout(hc, err)
 		// Each request's own ctx carries the policy-driven cause (e.g.
 		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
 		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
@@ -674,7 +682,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	)
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -735,16 +743,16 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
-	resp, err := c.getHttpClient().Do(httpReq)
+	hc := c.getHttpClient()
+	resp, err := hc.Do(httpReq)
 	if err != nil {
 		cause := effectiveCause(ctx)
 		c.logger.Debug().Err(err).Object("request", req).AnErr("contextError", cause).Msg("transport failure while sending single request")
 		if cause != nil {
 			err = cause
 		}
+		dropIdleAfterTimeout(hc, err)
 		common.SetTraceSpanError(span, err)
-		// TODO For both of these conditions failsafe library can introduce carrying
-		//      the "cause" so we know this cancellation is due to Hedge policy for example.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
 		} else if errors.Is(err, context.Canceled) {

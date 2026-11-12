@@ -63,12 +63,86 @@ func setupTestSvmNetwork(t *testing.T, ctx context.Context, upstreams []*common.
 		ctx, &log.Logger, "test", networkConfig,
 		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 	require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.SvmNetworkId("", "mainnet-beta")))
 	// Allow state poller to run one tick.
+	time.Sleep(150 * time.Millisecond)
+	return network
+}
+
+// setupTestSvmNetworkWithConsensus is like setupTestSvmNetwork but attaches a
+// 2-of-N consensus policy scoped to the given finality states (e.g. Realtime for
+// getSignaturesForAddress).
+func setupTestSvmNetworkWithConsensus(
+	t *testing.T,
+	ctx context.Context,
+	upstreams []*common.UpstreamConfig,
+	matchFinality []common.DataFinalityState,
+) *Network {
+	t.Helper()
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+
+	sharedStateCfg := &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: common.DriverMemory,
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+		LockMaxWait:     common.Duration(200 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
+		FallbackTimeout: common.Duration(3 * time.Second),
+		LockTtl:         common.Duration(4 * time.Second),
+	}
+	sharedStateCfg.SetDefaults("test")
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, sharedStateCfg)
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
+		upstreams, ssr, rateLimitersRegistry, vr, pr,
+		nil, metricsTracker, nil,
+	)
+
+	participants := len(upstreams)
+	if participants < 2 {
+		participants = 2
+	}
+	netCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureSvm,
+		Svm: &common.SvmNetworkConfig{
+			Cluster:    "mainnet-beta",
+			Commitment: "confirmed",
+		},
+		Failsafe: []*common.FailsafeConfig{{
+			MatchMethod:   "*",
+			MatchFinality: matchFinality,
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    participants,
+				AgreementThreshold: 2,
+			},
+		}},
+	}
+	require.NoError(t, netCfg.SetDefaults(upstreams, nil))
+
+	network, err := NewNetwork(
+		ctx, &log.Logger, "test", netCfg,
+		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
+	)
+	stopAtEnd(t, network)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.SvmNetworkId("", "mainnet-beta")))
 	time.Sleep(150 * time.Millisecond)
 	return network
 }
@@ -108,7 +182,7 @@ func svmProjectForward(ctx context.Context, net *Network, req *common.Normalized
 // architectureHandler dispatch).
 func TestSvm_GetSlot_BasicProxy(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-basic-rpc1.localhost", 1000, 990)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -141,7 +215,7 @@ func TestSvm_GetSlot_BasicProxy(t *testing.T) {
 // call is made. A pending gock mock would leak if the upstream were hit.
 func TestSvm_GetGenesisHash_ShortCircuitForKnownCluster(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-genesis-rpc1.localhost", 1000, 990)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -172,7 +246,7 @@ func TestSvm_GetGenesisHash_ShortCircuitForKnownCluster(t *testing.T) {
 // secondary's result.
 func TestSvm_Failover(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-failover-rpc1.localhost", 1000, 990)
 	util.SetupMocksForSvmStatePoller("svm-failover-rpc2.localhost", 1000, 990)
 
@@ -234,7 +308,7 @@ func TestSvm_Failover(t *testing.T) {
 // propagated).
 func TestSvm_SendTransaction_NotRetriedAcrossUpstreams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-sendtx-rpc1.localhost", 1000, 990)
 	util.SetupMocksForSvmStatePoller("svm-sendtx-rpc2.localhost", 1000, 990)
 
@@ -297,7 +371,7 @@ func TestSvm_SendTransaction_NotRetriedAcrossUpstreams(t *testing.T) {
 // but is listed under mainnet-beta.
 func TestSvm_GenesisHashMismatch_FailsBootstrap(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	// getGenesisHash returns the devnet hash even though the config says mainnet-beta.
 	// KnownGenesisHash("mainnet-beta") returns the Solana mainnet genesis; we return
@@ -383,7 +457,7 @@ func TestSvm_GenesisHashMismatch_FailsBootstrap(t *testing.T) {
 // gock mock and either fail or fall through to a real HTTP request.
 func TestSvm_CacheHit_ServedFromCacheOnSecondRequest(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForSvmStatePoller("svm-cache-rpc1.localhost", 1000, 990)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -454,7 +528,7 @@ func TestSvm_CacheHit_ServedFromCacheOnSecondRequest(t *testing.T) {
 // partitioned by Host and by method namespace.
 func TestSvm_MixedProjectWithEvm(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	// Boot both architectures' state pollers against isolated hosts.
 	util.SetupMocksForEvmStatePoller() // EVM poller uses rpc1.localhost
@@ -582,7 +656,7 @@ func TestSvm_MixedProjectWithEvm(t *testing.T) {
 // asserts t.Errorf.
 func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	const (
 		freshHostA = "svm-cons-fresh-a.localhost"
@@ -691,6 +765,7 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 	require.NoError(t, netCfg.SetDefaults(upCfgs, nil))
 
 	net, err := NewNetwork(ctx, &log.Logger, "test", netCfg, rateLimiters, upsReg, mt, nil)
+	stopAtEnd(t, net)
 	require.NoError(t, err)
 
 	upsReg.Bootstrap(ctx)
@@ -706,7 +781,7 @@ func TestSvm_Consensus_SlotLagFilterExcludesStaleUpstream(t *testing.T) {
 	//   fresh-a, fresh-b: 10_000   (manual advance via SuggestFinalizedSlot)
 	//   stale:            ~990     (poller-published, unchanged)
 	//
-	// HighestFinalizedSlot over the pool → 10000.
+	// ReferenceFinalizedSlot over the pool → 10000.
 	// Lag: fresh=0, stale = 10000 - 990 = 9010 → far beyond MaxFinalizedSlotLag=100.
 	// The filter must exclude `stale` from the consensus pool.
 	for _, u := range upsReg.GetNetworkUpstreams(ctx, util.SvmNetworkId("", "mainnet-beta")) {
@@ -756,7 +831,7 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 	)
 
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	// State poller: latestSlot=10100, finalizedSlot=10064, shredInsertSlot=10032.
 	// shredInsertSlot (10032) < finalizedSlot (10064) simulates the devnet case where
 	// the provider's indexer is behind the consensus tip. The hook must use the
@@ -856,7 +931,7 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 // Only min(poolMaxFinalized, indexed) serves 1050 and rejects 1195.
 func TestSvm_GetBlock_UnpinnedCommitment_SkewedRoots_ServedByLeadingUpstream(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	const (
 		lagHost  = "svm-skew-lag.localhost"
@@ -989,6 +1064,7 @@ func setupTestSvmNetworkWithCommitment(t *testing.T, ctx context.Context, commit
 		ctx, &log.Logger, "test", networkConfig,
 		rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)

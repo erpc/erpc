@@ -36,7 +36,6 @@ node_modules/
 .env.local
 *.log
 tmp/
-scylla/data/
 Makefile
 
 # Documentation

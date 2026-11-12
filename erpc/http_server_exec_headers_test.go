@@ -19,7 +19,7 @@ import (
 // per-scope counter headers.
 func TestExecutionHeaders_All_FullTrace(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	gock.New("http://rpc1.localhost").
@@ -88,7 +88,7 @@ func TestExecutionHeaders_All_FullTrace(t *testing.T) {
 // mode keeps the counter triplet but drops the participation log.
 func TestExecutionHeaders_Summary_OmitsSliceHeaders(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	gock.New("http://rpc1.localhost").
@@ -131,7 +131,7 @@ func TestExecutionHeaders_Summary_OmitsSliceHeaders(t *testing.T) {
 // suppresses every X-ERPC-* diagnostic header.
 func TestExecutionHeaders_Off_NoDiagnosticHeaders(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	gock.New("http://rpc1.localhost").

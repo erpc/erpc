@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,15 @@ func (m *mockNetwork) Forward(
 	return respRaw, err
 }
 
+// SweepUpstreams serves tracker fetches from the same mocked Forward.
+func (m *mockNetwork) SweepUpstreams(ctx context.Context, req *common.NormalizedRequest, _ string, check func(*common.NormalizedResponse) error) (*common.NormalizedResponse, error) {
+	resp, err := m.Forward(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, check(resp)
+}
+
 func (m *mockNetwork) Config() *common.NetworkConfig {
 	args := m.Called()
 	return args.Get(0).(*common.NetworkConfig)
@@ -99,24 +109,30 @@ func (m *mockNetwork) EvmStatePoller() common.EvmStatePoller {
 	return args.Get(0).(common.EvmStatePoller)
 }
 
-func (m *mockNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	args := m.Called(ctx)
-	return args.Get(0).(int64)
+// EvmHead reads the stubbed "HeadLatest" and
+// "HeadFinalized" calls, each with the request bound to
+// ctx; an axis a test does not stub is unknown (0).
+func (m *mockNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	if req != nil {
+		ctx = context.WithValue(ctx, common.RequestContextKey, req)
+	}
+	return common.EvmHead{
+		Latest:    m.headAxis("HeadLatest", ctx),
+		Finalized: m.headAxis("HeadFinalized", ctx),
+	}
+}
+func (m *mockNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return m.EvmHead(context.Background(), nil)
 }
 
-func (m *mockNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	args := m.Called(ctx)
-	return args.Get(0).(int64)
+func (m *mockNetwork) headAxis(method string, ctx context.Context) (v int64) {
+	defer func() {
+		if recover() != nil {
+			v = 0
+		}
+	}()
+	return m.MethodCalled(method, ctx).Get(0).(int64)
 }
-
-// EvmLeaderUpstream is required by common.EvmNetwork. Tests that don't
-// exercise leader selection leave this unstubbed — returning nil is safe
-// because the helpers only use the leader where it's explicitly configured.
-func (m *mockNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	return nil
-}
-
-func (m *mockNetwork) EvmRefreshLatestBlock(ctx context.Context) {}
 
 var _ common.EvmUpstream = (*mockEvmUpstream)(nil)
 
@@ -173,6 +189,12 @@ func (m *mockEvmUpstream) EvmAssertBlockAvailability(ctx context.Context, forMet
 	return args.Bool(0), args.Error(1)
 }
 
+// EvmBlockAvailabilityBounds: no configured bounds, as an upstream without
+// blockAvailability.
+func (m *mockEvmUpstream) EvmBlockAvailabilityBounds() (int64, int64) {
+	return math.MinInt64, math.MaxInt64
+}
+
 var _ common.EvmStatePoller = (*mockStatePoller)(nil)
 
 type mockStatePoller struct {
@@ -201,6 +223,8 @@ func (m *mockStatePoller) FinalizedBlock() int64 {
 func (m *mockStatePoller) IsObjectNull() bool {
 	return false
 }
+
+func (m *mockStatePoller) Wait() {}
 
 func (m *mockStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 	return &common.EvmStatePollerDiagnostics{
@@ -448,7 +472,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 			ctx := context.Background()
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x2","address":"0x123","topics":["0xabc"]}],"id":1}`))
 
-			result, fromCache, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, "")
+			result, fromCache, err := executeGetLogsSubRequests(ctx, mockNetwork, req, tt.subRequests, "", "")
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -494,7 +518,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(5)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(0)).Return(true, nil)
 
 				return n, u, r
@@ -525,7 +549,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Mock the new EvmAssertBlockAvailability calls
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(5)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -556,7 +580,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(21)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(21)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -587,7 +611,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(20)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(20)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -621,7 +645,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(2)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(2)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -655,7 +679,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
 				// Availability checks
-				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(2)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(2)).Return(true, nil)
 				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
@@ -693,6 +717,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			n, u, r := tt.setup()
+			u.On("Config").Return(&common.UpstreamConfig{}).Maybe()
 
 			handled, resp, err := upstreamPreForward_eth_getLogs(context.Background(), n, u, r)
 
@@ -1110,7 +1135,7 @@ func TestExecuteGetLogsSubRequests_DeterministicOrder(t *testing.T) {
 		{fromBlock: 0x2, toBlock: 0x2},
 		{fromBlock: 0x3, toBlock: 0x3},
 	}
-	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, "")
+	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, subs, "", "")
 	assert.NoError(t, err)
 	var buf bytes.Buffer
 	_, _ = jrr.WriteTo(&buf)
@@ -1174,7 +1199,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x1, toBlock: 0x2, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x3, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, "")
+				}, "", "")
 				if err != nil {
 					return nil, err
 				}
@@ -1182,7 +1207,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 				subJrr, _, err = executeGetLogsSubRequests(ctx, mockNetwork, req, []ethGetLogsSubRequest{
 					{fromBlock: 0x5, toBlock: 0x6, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 					{fromBlock: 0x7, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-				}, "")
+				}, "", "")
 				if err != nil {
 					return nil, err
 				}
@@ -1207,7 +1232,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	jrr, _, err := executeGetLogsSubRequests(context.Background(), mockNetwork, req, []ethGetLogsSubRequest{
 		{fromBlock: 0x1, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
 		{fromBlock: 0x5, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
-	}, "")
+	}, "", "")
 
 	// Verify results
 	assert.NoError(t, err)
@@ -1352,85 +1377,11 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 		n.AssertExpectations(t)
 	})
 
-	t.Run("proactive_split_by_block_range_and_merge", func(t *testing.T) {
-		n := new(mockNetwork)
-		n.On("ProjectId").Return("test")
-		n.On("Config").Return(&common.NetworkConfig{
-			Evm: &common.EvmNetworkConfig{},
-		})
-
-		// Upstreams with thresholds: min is 2
-		u1 := new(mockEvmUpstream)
-		u2 := new(mockEvmUpstream)
-		u1.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 2}})
-		u2.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 4}})
-
-		// Expect 3 sub-requests for range 1..5 with threshold 2: [1-2],[3-4],[5-5]
-		n.On("Forward", mock.Anything, mock.Anything).Return(
-			func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-				jrq, err := r.JsonRpcRequest()
-				assert.NoError(t, err)
-				filter := jrq.Params[0].(map[string]interface{})
-				fb := filter["fromBlock"].(string)
-				tb := filter["toBlock"].(string)
-				body := []byte(fmt.Sprintf(`[{"data":"%s-%s"}]`, fb, tb))
-				subJrr := common.MustNewJsonRpcResponseFromBytes([]byte(`"0x1"`), body, nil)
-				return common.NewNormalizedResponse().WithJsonRpcResponse(subJrr), nil
-			},
-			nil,
-		).Times(3)
-
-		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x5",
-		})
-
-		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u1, u2}, r)
-		assert.True(t, handled)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-
-		jrr, err := resp.JsonRpcResponse(ctx)
-		assert.NoError(t, err)
-		var buf bytes.Buffer
-		_, _ = jrr.WriteTo(&buf)
-		var out map[string]interface{}
-		err = json.Unmarshal(buf.Bytes(), &out)
-		assert.NoError(t, err)
-		res, ok := out["result"].([]interface{})
-		assert.True(t, ok)
-		assert.Equal(t, 3, len(res))
-
-		n.AssertExpectations(t)
-		u1.AssertExpectations(t)
-		u2.AssertExpectations(t)
-	})
-
-	t.Run("no_split_when_request_range_below_threshold", func(t *testing.T) {
-		n := new(mockNetwork)
-		n.On("Config").Return(&common.NetworkConfig{Evm: &common.EvmNetworkConfig{}})
-		u := new(mockEvmUpstream)
-		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{GetLogsAutoSplittingRangeThreshold: 10}})
-
-		r := createTestRequest(map[string]interface{}{
-			"fromBlock": "0x1",
-			"toBlock":   "0x5",
-		})
-
-		handled, resp, err := networkPreForward_eth_getLogs(ctx, n, []common.Upstream{u}, r)
-		assert.False(t, handled)
-		assert.NoError(t, err)
-		assert.Nil(t, resp)
-
-		n.AssertExpectations(t)
-		u.AssertExpectations(t)
-	})
-
 	// Tests for block tag resolution before validation (fixes bypass when using "latest", "finalized", etc.)
 	t.Run("latest_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(1000))
+		n.On("HeadFinalized", mock.Anything).Return(int64(990)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
 		})
@@ -1451,8 +1402,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("finalized_toBlock_resolved_before_max_range_validation", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000)).Maybe()
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990))
+		n.On("HeadLatest", mock.Anything).Return(int64(1000)).Maybe()
+		n.On("HeadFinalized", mock.Anything).Return(int64(990))
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 10}, // max 10 blocks
 		})
@@ -1473,8 +1424,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("latest_toBlock_passes_when_within_range", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(10))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(5)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(10))
+		n.On("HeadFinalized", mock.Anything).Return(int64(5)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100}, // max 100 blocks
 		})
@@ -1516,8 +1467,8 @@ func TestNetworkPreForward_eth_getLogs(t *testing.T) {
 
 	t.Run("latest_fromBlock_and_latest_toBlock_resolved_correctly", func(t *testing.T) {
 		n := new(mockNetwork)
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(1000))
-		n.On("EvmHighestFinalizedBlockNumber", mock.Anything).Return(int64(990)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(1000))
+		n.On("HeadFinalized", mock.Anything).Return(int64(990)).Maybe()
 		n.On("Config").Return(&common.NetworkConfig{
 			Evm: &common.EvmNetworkConfig{GetLogsMaxAllowedRange: 100},
 		})
@@ -1547,12 +1498,12 @@ func TestProjectPreForward_eth_getLogs_UseUpstreamTip(t *testing.T) {
 		})
 		n.On("ProjectId").Return("test")
 		if selected > 0 {
-			n.On("EvmHighestLatestBlockNumber", mock.MatchedBy(func(ctx context.Context) bool {
+			n.On("HeadLatest", mock.MatchedBy(func(ctx context.Context) bool {
 				req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
 				return ok && req != nil && req.Directives() != nil && req.Directives().UseUpstream == "slow"
 			})).Return(selected)
 		}
-		n.On("EvmHighestLatestBlockNumber", mock.Anything).Return(int64(2000)).Maybe()
+		n.On("HeadLatest", mock.Anything).Return(int64(2000)).Maybe()
 		return n
 	}
 	req := func(useUpstream string) *common.NormalizedRequest {
@@ -1696,8 +1647,9 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		u.On("Id").Return("u1").Maybe()
 		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
-		// toBlock=101, upstream says not available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(101)).
+		// toBlock=101, upstream says not available; the network holds no
+		// range wait (rangeHolder), so nothing admits it (spec §6.4 Sites).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(101)).
 			Return(false, nil).
 			Once()
 
@@ -1722,7 +1674,7 @@ func TestUpstreamPreForward_eth_getLogs_BlockHeadTolerance(t *testing.T) {
 		u.On("Config").Return(&common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{}}).Maybe()
 		u.On("EvmStatePoller").Return(poller).Maybe()
 		// toBlock=301 (0x12d), upstream says not available
-		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(301)).
+		u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(301)).
 			Return(false, nil).
 			Once()
 
@@ -1745,7 +1697,22 @@ type fixedPoller struct {
 	finalized int64
 }
 
-func (p *fixedPoller) LatestBlock() int64 { return p.latest }
+func (p *fixedPoller) LatestBlock() int64                                   { return p.latest }
+func (p *fixedPoller) PollLatestBlockNumber(context.Context) (int64, error) { return p.latest, nil }
+func (p *fixedPoller) AskReaching(context.Context, int64, time.Duration, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{Block: p.latest}
+}
+func (p *fixedPoller) Ask(context.Context, common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (p *fixedPoller) AskBackground(common.HeadNeed, time.Duration, time.Time, common.AskReason) common.HeadAnswer {
+	return common.HeadAnswer{}
+}
+func (p *fixedPoller) RefreshFinalized(context.Context, time.Duration) bool { return true }
+func (p *fixedPoller) FinalizedReportAt() time.Time                         { return time.Time{} }
+func (p *fixedPoller) LatestReportAt() time.Time                            { return time.Time{} }
+func (p *fixedPoller) LatestAskAt() time.Time                               { return time.Time{} }
+func (p *fixedPoller) ClockTurn(time.Time)                                  {}
 
 func (p *fixedPoller) FinalizedBlock() int64 { return p.finalized }
 
@@ -1790,7 +1757,7 @@ func TestExecuteGetLogsSubRequests_MergedResponseSizeBudget(t *testing.T) {
 		n := new(mockNetwork)
 		setup(n, 200) // two pieces fit, the third crosses
 
-		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "", "")
 
 		require.Error(t, err)
 		assert.Nil(t, result)
@@ -1808,7 +1775,7 @@ func TestExecuteGetLogsSubRequests_MergedResponseSizeBudget(t *testing.T) {
 		n := new(mockNetwork)
 		setup(n, 0)
 
-		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "")
+		result, _, err := executeGetLogsSubRequests(context.Background(), n, newReq(), subs, "", "")
 
 		require.NoError(t, err)
 		require.NotNil(t, result)
