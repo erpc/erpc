@@ -193,7 +193,7 @@ One knob picks a preset over the check catalog. Each level is a superset of the 
 |---|---|---|
 | `off` | nothing | none |
 | `intrinsic` | self-consistency + cryptographic recompute on the single response | none |
-| `corroborated` | the above + cross-block continuity vs already-observed blocks | none (passive memory) |
+| `corroborated` | the above + cross-block continuity vs already-observed blocks, and the logs gate | none (passive memory), except the logs gate's ask of one other upstream |
 | `authoritative` | the above + force-fetch the canonical block to corroborate | bounded, budgeted |
 
 <ConfigTabs
@@ -271,6 +271,7 @@ Methods column: **block** = `eth_getBlockByNumber`/`eth_getBlockByHash`; **recei
 | `receiptIdentity` | intrinsic | receipt | the returned receipt isn't for the requested transaction |
 | `getLogsFilterSanity` | intrinsic | `eth_getLogs` | a returned log doesn't match the request's own filter/range |
 | `getLogsCompleteness` ※ | corroborated | `eth_getLogs` | logs missing/extra/altered vs the cached canonical receipts for that block |
+| `getLogsEmptyGate` | corroborated | `eth_getLogs` | an empty answer for blocks near the head that the held headers don't prove empty is served only once one other upstream that holds the block agrees, or that upstream's logs are served (the logs gate). Off, the answer is served as it came and the gate sends nothing: no probe, no header lookup, no bloom-trust receipts |
 | `txPinConsistency` ※ | corroborated | txByHash | a mined tx's claimed block coordinates ≠ the committed pin |
 | `parentHashLinkage` ※ | corroborated | `eth_getBlockByNumber` | block N's `parentHash` ≠ the hash observed for N-1 |
 | `hashStability` ※ | corroborated | `eth_getBlockByNumber` | a block number's hash changed from what was observed |
@@ -434,7 +435,7 @@ fields, and the non-functional `upstreams[].integrity` block no longer exist —
 | `budget.maxConcurrent` | int | small | Concurrency cap on in-flight fetches. |
 | `follow.enabled` | bool | `false` | Opens one integrity follow tap per chain tracker at the network's first client request, and keeps it open. It reads the confirmed head like a ws subscription, so source polls run while clients are quiet, and it drives `stateProbe` on each new head. An idle network, with no client request yet, sends no follow polls and no probes. Out of range restarts it after the confirmed head. The window it follows is [`evm.chainTracker`](/config/projects/networks). |
 | `follow.interval` | Duration | `1s` | The pace the follow tap needs heads at. While it is a network's only newHeads demand (no client subscription), the tracker asks upstreams for a newer head, and catches lagging upstreams up, no more often than this; a client tap needs every block and lifts the limit. |
-| `stateProbe.enabled` | bool | `false` | Probes every upstream's state trie on each followed block. Needs `follow.enabled`. |
+| `stateProbe.enabled` | bool | `false` | Probes upstreams' state from the network's first client request: each upstream that gets tag requests at `latest` (the tag-state gate's evidence, which skips an upstream whose `latest` state is stale), and, with `follow.enabled`, every upstream's state trie on each followed block. Off, no probe runs and the tag-state gate skips nothing. |
 | `stateProbe.interval` | Duration | `2s` | Minimum time between probes of one upstream. |
 | `headerMode` | enum | `off` | `off`/`profiles`/`full` — whether/how `X-ERPC-Integrity` may adjust integrity per request. |
 | `profiles.<name>` | object | — | Named settings (`level`/`checks`/`invalidBehavior`/`budget`) a request may select by name. |
@@ -480,7 +481,7 @@ networks: [{ evm: { chainId: 1 }, integrity: { level: "authoritative" } }]`}
 }`}
 />
 
-**4. Cross-block / cache correctness.** `corroborated` adds parent-hash linkage and hash-stability over blocks you've already seen — catching a node serving a block that doesn't link to the chain you were served before. Still no extra upstream calls:
+**4. Cross-block / cache correctness.** `corroborated` adds parent-hash linkage and hash-stability over blocks you've already seen — catching a node serving a block that doesn't link to the chain you were served before. No force-fetch; only the logs gate asks one other upstream before it serves an empty `eth_getLogs` near the head that the headers don't prove empty:
 
 <ConfigTabs path="projects[].networks[].integrity"
   yaml={`integrity:
@@ -488,7 +489,17 @@ networks: [{ evm: { chainId: 1 }, integrity: { level: "authoritative" } }]`}
   ts={`integrity: { level: "corroborated" }`}
 />
 
-**5. Safe rollout — observe before you enforce.** Set everything to `soft-flag` first: violations are recorded (a `WARN` log + the `validation` metrics bucket) but the response is still served, so you can measure your upstreams' data quality without failing traffic. Once it's quiet, flip `finalized` back to `reject`:
+**5. Only the logs gate.** Keep every other check off and still confirm empty `eth_getLogs` answers near the head:
+
+<ConfigTabs path="projects[].networks[].integrity"
+  yaml={`integrity:
+  checks:
+    getLogsEmptyGate:
+      enabled: true`}
+  ts={`integrity: { checks: { getLogsEmptyGate: { enabled: true } } }`}
+/>
+
+**6. Safe rollout — observe before you enforce.** Set everything to `soft-flag` first: violations are recorded (a `WARN` log + the `validation` metrics bucket) but the response is still served, so you can measure your upstreams' data quality without failing traffic. Once it's quiet, flip `finalized` back to `reject`:
 
 <ConfigTabs path="projects[].networks[].integrity"
   yaml={`integrity:
@@ -504,7 +515,7 @@ networks: [{ evm: { chainId: 1 }, integrity: { level: "authoritative" } }]`}
 
 `invalidBehavior` only governs the reorg-sensitive checks (the ※ rows). To soft-flag a *deterministic* check during rollout, give it `onFailure: soft-flag` — e.g. `checks: { bloomMatch: { onFailure: soft-flag } }`.
 
-**6. Non-standard chain — leave it off.** ZK-rollups and chains with custom encodings: the recompute checks already skip what they can't model, but the simplest answer is to not enable the module for that network (it's off by default — this is only needed if you turned it on project-wide):
+**7. Non-standard chain — leave it off.** ZK-rollups and chains with custom encodings: the recompute checks already skip what they can't model, but the simplest answer is to not enable the module for that network (it's off by default — this is only needed if you turned it on project-wide):
 
 <ConfigTabs path="projects[].networks[].integrity"
   yaml={`networks:
@@ -514,7 +525,7 @@ networks: [{ evm: { chainId: 1 }, integrity: { level: "authoritative" } }]`}
   ts={`networks: [{ evm: { chainId: 324 }, integrity: { level: "off" } }]`}
 />
 
-**7. Per-tenant strictness via profiles + header.** Define named presets and let callers pick one per request (without letting them set arbitrary levels):
+**8. Per-tenant strictness via profiles + header.** Define named presets and let callers pick one per request (without letting them set arbitrary levels):
 
 <ConfigTabs path="projects[].networks[].integrity"
   yaml={`integrity:
@@ -534,7 +545,7 @@ networks: [{ evm: { chainId: 1 }, integrity: { level: "authoritative" } }]`}
 X-ERPC-Integrity: strict       # or  ?integrity=strict
 ```
 
-**8. Add or drop a single check around a level.** Levels are presets — fine-tune with `checks`:
+**9. Add or drop a single check around a level.** Levels are presets — fine-tune with `checks`:
 
 <ConfigTabs path="projects[].networks[].integrity"
   yaml={`integrity:
@@ -550,7 +561,7 @@ X-ERPC-Integrity: strict       # or  ?integrity=strict
 
 Enabling an authoritative check (like `receiptVsBlock`) at a lower level turns on its force-fetch — set a `budget` too.
 
-**9. Migrating from the old `validate*` flags.** If your config still sets the deprecated `directiveDefaults.validateLogsBloomMatch: true` (etc.), they're translated into `integrity.checks` automatically at startup — nothing breaks. To make it explicit (recommended), move them into an `integrity` block:
+**10. Migrating from the old `validate*` flags.** If your config still sets the deprecated `directiveDefaults.validateLogsBloomMatch: true` (etc.), they're translated into `integrity.checks` automatically at startup — nothing breaks. To make it explicit (recommended), move them into an `integrity` block:
 
 <ConfigTabs path="projects[].networks[].integrity"
   yaml={`# old (still works, auto-translated at startup):
@@ -622,7 +633,7 @@ integrity:
 |---|---|---|---|
 | `erpc_integrity_violation_total` | counter | project, vendor, network, upstream, category, **check**, **verdict** | A data-integrity check (Layer 2) failed. The `check` label is the rule id and `verdict` is `reject` (response failed over to another upstream) or `soft_flag` (recorded but served). This is how you see *which rule* is failing for which method/network/upstream. Only fires on a violation. |
 | `erpc_integrity_check_total` | counter | …, **check**, **outcome** | Every check evaluation by `outcome` (`pass`/`reject`/`soft_flag`/`off`). Sum across outcomes = total attempts (the rate denominator). |
-| `erpc_integrity_aux_request_total` | counter | …, **kind**, **outcome** | Aux force-fetches the module issues that are *not* part of the user request (`kind` = `canonical_header`/`canonical_receipts`). |
+| `erpc_integrity_aux_request_total` | counter | …, **kind**, **outcome** | Aux requests the module issues that are *not* part of the user request: `kind` = `canonical_header`/`canonical_receipts` (force-fetches), and the logs gate's `logs_probe` (an `eth_getLogs` ask of another holder, or the re-ask), `logs_hash` (its header lookup of a `blockHash`) and `bloom_trust` (receipts fetched to earn or keep bloom trust). A network with integrity off counts none. |
 | `erpc_integrity_check_suspended_total` | counter | project, network, check | A check was suspended for the network (see Suspension above). |
 | `erpc_integrity_saved_total` | counter | project, network, category | Requests the module **saved**: a check rejected a bad response and a retry returned a good one — a wrong/invalid response prevented. |
 | `erpc_integrity_failed_total` | counter | project, network, category, **check** | Requests that **failed** toward the user due to integrity (a check rejected and no good response was found). The `check` is the why. |
