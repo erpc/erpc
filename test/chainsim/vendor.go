@@ -38,6 +38,7 @@ type Faults struct {
 	NullReceipts    bool          // eth_getBlockReceipts answers null
 	ReceiptsDown    bool          // eth_getBlockReceipts answers -32603
 	TxReceiptsDown  bool          // eth_getTransactionReceipt answers -32603
+	ReceiptsLead    time.Duration // eth_getTransactionReceipt answers a canonical block's receipts this long before the vendor serves the block, as a flashblocks node answers preconfirmed receipts; blocks, head and pushes do not move
 	LogsDown        bool          // eth_getLogs answers -32603
 	CapLogs         bool          // eth_getLogs one log short where the bloom and logIndexes hide it (lastLogCovered)
 	TruncReceipts   bool          // receipts without their last 10
@@ -827,6 +828,14 @@ func (v *Vendor) byNumberLocked(n uint64) *Block {
 	return b
 }
 
+// leadsLocked reports whether the vendor answers b's receipts ahead of b
+// itself (ReceiptsLead): b is canonical and its serve time, less the lead,
+// has passed.
+func (v *Vendor) leadsLocked(b *Block) bool {
+	lead := v.faults.ReceiptsLead
+	return lead > 0 && v.chain.canonAtLocked(b.Number) == b && !time.Now().Before(b.MintedAt.Add(v.serveDelayLocked(b)-lead))
+}
+
 // answer serves one JSON-RPC call from the vendor's view and faults.
 func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcError) {
 	v.calls.Add(1)
@@ -994,7 +1003,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			return nil, &rpcError{-32602, "invalid transaction hash"}
 		}
 		tx, ok := c.byTx[h]
-		if !ok || f.NullHeld || v.byNumberLocked(tx.b.Number) != tx.b {
+		if !ok || f.NullHeld || v.byNumberLocked(tx.b.Number) != tx.b && !v.leadsLocked(tx.b) {
 			return nil, nil
 		}
 		return tx.b.Receipt(tx.i), nil

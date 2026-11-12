@@ -2,8 +2,11 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { getBinaryName } from "./platform";
+import { maybePrintStarPrompt } from "./star-prompt";
 
 const binaryPath = path.join(__dirname, "bin", getBinaryName());
+
+maybePrintStarPrompt();
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",

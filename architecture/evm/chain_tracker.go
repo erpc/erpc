@@ -158,10 +158,14 @@ type ChainTracker struct {
 	// credit is the clock's sights and hold waits as last published for
 	// routing on other goroutines (HoldsLikely).
 	credit atomic.Pointer[holdCredit]
-	// nextSight is the clock's target and the earliest likely first sight
-	// of it, as plan last published it for readers on other goroutines
-	// (NextSight).
-	nextSight atomic.Pointer[clockSight]
+	// steps are the view's last viewSteps per-block steps, the time its Head
+	// took to rise by one block (recordStep); tracker goroutine only.
+	// stepMin publishes their minimum and count (MinStep).
+	steps   []time.Duration
+	stepMin atomic.Pointer[viewStep]
+	// provenAbove is the highest block a by-hash answer or cache sighting
+	// showed (prove): data of it was visible (ProvenAbove).
+	provenAbove atomic.Uint64
 	// latestReadAt is when a request last read the lane's latest
 	// (LatestRead), in unix nanoseconds: within W of it the clock runs.
 	// edge, while set, is closed once the clock's first fetch after an
@@ -534,6 +538,9 @@ func (t *ChainTracker) clear() {
 	t.voteAt = make(map[string]time.Time)
 	t.pendingAt = make(map[string]time.Time)
 	t.clock.reset()
+	t.steps = nil
+	t.stepMin.Store(nil)
+	t.provenAbove.Store(0)
 	t.readAhead.Store(0)
 	t.readAheadAt.Store(0)
 	t.settle = nil
@@ -2517,6 +2524,9 @@ func (t *ChainTracker) published(old, s *feedState, pinsMoved bool) {
 	if h != nil {
 		telemetry.GaugeHandle(telemetry.MetricHeadFirmLagBlocks, t.projectId(), t.networkLabel(), t.laneLabel()).Set(float64(h.number - min(s.firm, h.number)))
 	}
+	if h != nil && prev != nil && h.number > prev.number {
+		t.recordStep(s.viewAt.Sub(old.viewAt) / time.Duration(h.number-prev.number))
+	}
 	if h != nil && h != prev {
 		if seen := t.clock.sightOf(h.number); !seen.IsZero() && (prev == nil || h.number > prev.number) {
 			telemetry.ObserverHandle(telemetry.MetricHeadViewLagSeconds, t.projectId(), t.networkLabel(), t.laneLabel()).Observe(time.Since(seen).Seconds())
@@ -3563,14 +3573,37 @@ func (t *ChainTracker) ReachedAt(n uint64) time.Time {
 	return t.reached[i].at
 }
 
-// NextSight is the earliest likely first sight of block n, as the block
-// clock last planned it (plan); zero when its target is not n.
-func (t *ChainTracker) NextSight(n uint64) time.Time {
-	if s := t.nextSight.Load(); s != nil && s.number == n {
-		return s.at
-	}
-	return time.Time{}
+// viewSteps is how many of the view's per-block steps MinStep keeps.
+const viewSteps = 64
+
+type viewStep struct {
+	min time.Duration
+	n   int
 }
+
+// recordStep keeps step, the time the view's Head took per block it rose,
+// among the last viewSteps, and publishes their minimum (MinStep).
+func (t *ChainTracker) recordStep(step time.Duration) {
+	if t.steps = append(t.steps, step); len(t.steps) > viewSteps {
+		t.steps = t.steps[len(t.steps)-viewSteps:]
+	}
+	t.stepMin.Store(&viewStep{min: slices.Min(t.steps), n: len(t.steps)})
+}
+
+// MinStep is the shortest per-block step of the view's Head over its last
+// viewSteps rises, and how many steps it saw; 0, 0 before the first: the
+// next block can come no sooner than recent blocks came.
+func (t *ChainTracker) MinStep() (time.Duration, int) {
+	if s := t.stepMin.Load(); s != nil {
+		return s.min, s.n
+	}
+	return 0, 0
+}
+
+// ProvenAbove is the highest block a by-hash answer or cache sighting
+// showed (Proven, Sighted), 0 before one: data of a block above the view
+// can be visible before the block reaches it (a preconfirmation).
+func (t *ChainTracker) ProvenAbove() uint64 { return t.provenAbove.Load() }
 
 // Tip returns the head now, without waiting.
 func (t *ChainTracker) Tip() (indexer.Cursor, bool) {

@@ -929,9 +929,7 @@ func (t *ChainTracker) runClock() {
 // The k rungs, fastest first, sight at S_k − (k−j)·Δ, Δ the span from
 // the fit's earliest residual to S_k over k, each sent its voter's round
 // trip before. With no rung due, the fastest voter fetches at S_k: the
-// block's one fetch. Every plan publishes the target's earliest likely
-// sight, P plus the fit's earliest residual (NextSight), which a request's
-// Head carries (common.EvmHead.NextAt).
+// block's one fetch.
 func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	c := &t.clock
 	if !c.offSet {
@@ -944,9 +942,7 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	sk := p.Add(time.Duration(c.off * float64(bt)))
 	c.sk = sk
 	_, phase := c.phase(bt)
-	earliest := p.Add(phase[0] - phase[len(phase)/2])
-	t.nextSight.Store(&clockSight{number: c.target, at: earliest})
-	c.delta = max(sk.Sub(earliest), 0)
+	c.delta = max(sk.Sub(p.Add(phase[0]-phase[len(phase)/2])), 0)
 	at := sk.Add(-c.bestRTT(cands))
 	cached := c.pushFed() && c.pushCached
 	if c.pushFed() && !cached {
@@ -1624,10 +1620,12 @@ func (t *ChainTracker) Sighted(n uint64) {
 
 // prove records that block n existed by at (zero: now), held when by
 // answered it by hash, so the target's probe goes once n reaches it
-// (proveTarget).
+// (proveTarget), and raises ProvenAbove to n.
 func (t *ChainTracker) prove(n uint64, held bool, by string, at time.Time) {
 	if at.IsZero() {
 		at = time.Now()
+	}
+	for p := t.provenAbove.Load(); n > p && !t.provenAbove.CompareAndSwap(p, n); p = t.provenAbove.Load() {
 	}
 	t.mb.put(trackerMsg{kind: msgCall, fn: func() {
 		if c := &t.clock; n > c.top() && n > c.proven {
