@@ -2413,7 +2413,7 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 // before a tag is pinned to the Head, or the Head itself in the thin
 // region), upstreams that may hold it (mayHold: known to, or in the thin
 // region most likely to, thinHolds) first. A read of the Head's own block,
-// numbered or by tag (a miss of the cache seed at a fresh Head), takes
+// numbered or by a head tag (readsHeadTag; a miss of the cache seed at a fresh Head), takes
 // those by their measured round trip (byRoundTrip): any holder serves it,
 // so the fastest serves it soonest. With tag, a client read of latest sent
 // as the tag (bn its Head's Latest), only an upstream whose evidence shows
@@ -2423,7 +2423,7 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64, tag bool) []common.Upstream {
 	if n.Architecture() == common.ArchitectureEvm && len(upsList) > 1 && (bn > 0 || evm.ReadsBlock(method)) {
 		head := n.requestHead(ctx, req)
-		headBlock := head.Latest > 0 && (bn == head.Latest || bn == 0 && evm.ReadsBlock(method) && evm.TagBlockNumber(ctx, req, "latest") == head.Latest)
+		headBlock := head.Latest > 0 && (bn == head.Latest || bn == 0 && evm.ReadsBlock(method) && readsHeadTag(ctx, req, head.Latest))
 		var holds func(common.Upstream) bool
 		front, back := upsList, []common.Upstream(nil)
 		if bn > 0 {
@@ -2450,6 +2450,21 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 		upsList = tierUpstreamsByGroup(upsList)
 	}
 	return n.lateLast(upsList)
+}
+
+// readsHeadTag reports whether req's block tag reads the newest head
+// (latestHead): "latest" interpolated to it, or "pending", sent as is and
+// served from it. "finalized", "safe" and "earliest" read an older block,
+// which keeps the policy's order: by round trip a fast upstream that hung
+// finalized reads 2-3 s took them from a policy's first upstream at 30 ms.
+func readsHeadTag(ctx context.Context, req *common.NormalizedRequest, latestHead int64) bool {
+	switch evm.RequestBlockTag(ctx, req) {
+	case "latest":
+		return evm.TagBlockNumber(ctx, req) == latestHead
+	case "pending":
+		return true
+	}
+	return false
 }
 
 // headFamilyMethod is the method whose answers time an upstream's round
@@ -3835,7 +3850,7 @@ func (n *Network) GetFinality(ctx context.Context, req *common.NormalizedRequest
 	// answer is final as that number's is, not realtime as a tag that
 	// reaches upstreams. "latest" stays realtime (#560).
 	if blockRef == "finalized" {
-		if num := evm.TagBlockNumber(ctx, req, blockRef); num > 0 {
+		if num := evm.TagBlockNumber(ctx, req); num > 0 {
 			blockRef, blockNumber = strconv.FormatInt(num, 10), num
 		}
 	}
@@ -5013,7 +5028,7 @@ func (n *Network) routingBlockNumber(ctx context.Context, req *common.Normalized
 		bn, _ := n.chainTracker.HeldNumber(ref)
 		return bn
 	case ref == "latest":
-		if h := n.requestHead(ctx, req); h.Firm > 0 && h.Latest > h.Firm && evm.TagBlockNumber(ctx, req, "latest") == h.Latest {
+		if h := n.requestHead(ctx, req); h.Firm > 0 && h.Latest > h.Firm && evm.TagBlockNumber(ctx, req) == h.Latest {
 			return h.Latest
 		}
 	}

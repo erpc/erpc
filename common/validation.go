@@ -1417,6 +1417,31 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	return nil
 }
 
+// lookupMethodFields resolves a per-method field list with the same
+// exact-first / case-insensitive precedence used at runtime for
+// blockEvidenceFields and ignoreFields. Returns the matched key so callers
+// can cite it in errors.
+func lookupMethodFields(defs map[string][]string, method string) ([]string, string, bool) {
+	if len(defs) == 0 || method == "" {
+		return nil, "", false
+	}
+	if fields, ok := defs[method]; ok {
+		return fields, method, true
+	}
+	var bestKey string
+	var best []string
+	var found bool
+	for k, v := range defs {
+		if !strings.EqualFold(k, method) {
+			continue
+		}
+		if !found || k < bestKey {
+			bestKey, best, found = k, v, true
+		}
+	}
+	return best, bestKey, found
+}
+
 func (c *ConsensusPolicyConfig) Validate() error {
 	if c.MaxParticipants <= 0 {
 		return fmt.Errorf("consensus.maxParticipants must be greater than 0")
@@ -1483,6 +1508,37 @@ func (c *ConsensusPolicyConfig) Validate() error {
 	// at once.
 	if anyWaivable && !haveNeverWaivableFloor {
 		return fmt.Errorf("consensus.requiredParticipants: a policy using waiveAgreementOnMissingData or waiveAgreementOnEmptyOutsideRetention must also keep at least one never-waivable entry with minAgreement > 0 (the waivable quotas cannot be the only floor)")
+	}
+	// An evidence path that is also ignored would let differing block numbers
+	// collapse into one winner group while the waiver reads the block from a
+	// size-selected response. An ignore path that is an ancestor of the
+	// evidence path strips it too (ignoreFields["receipt"] removes
+	// receipt.blockNumber). Method lookup matches runtime methodFields.
+	for method, evidencePaths := range c.BlockEvidenceFields {
+		ignored, ignoreKey, found := lookupMethodFields(c.IgnoreFields, method)
+		if !found {
+			continue
+		}
+		for _, ep := range evidencePaths {
+			for _, ip := range ignored {
+				if ip == ep || strings.HasPrefix(ep, ip+".") {
+					return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is also listed in ignoreFields[%q]: evidence fields must not be ignored or the waiver's block can disagree with the winning group", method, ep, ignoreKey)
+				}
+			}
+		}
+	}
+	// extractFieldValues reads only "result", a flat field of a result object,
+	// or "*.field" over an array result. A nested path resolves to nothing at
+	// runtime and would silently never waive.
+	for method, paths := range c.BlockEvidenceFields {
+		for _, ep := range paths {
+			if ep == "result" || strings.HasPrefix(ep, "*.") {
+				continue
+			}
+			if strings.Contains(ep, ".") {
+				return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is unsupported: use \"result\", a flat field (e.g. \"blockNumber\"), or an array wildcard \"*.field\"", method, ep)
+			}
+		}
 	}
 	// Smoke-compile the custom-policy eval function so a syntactically broken
 	// selector fails at load time rather than falling closed on every request.

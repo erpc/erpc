@@ -158,6 +158,10 @@ type ChainTracker struct {
 	// credit is the clock's sights and hold waits as last published for
 	// routing on other goroutines (HoldsLikely).
 	credit atomic.Pointer[holdCredit]
+	// nextSight is the clock's target and the earliest likely first sight
+	// of it, as plan last published it for readers on other goroutines
+	// (NextSight).
+	nextSight atomic.Pointer[clockSight]
 	// latestReadAt is when a request last read the lane's latest
 	// (LatestRead), in unix nanoseconds: within W of it the clock runs.
 	// edge, while set, is closed once the clock's first fetch after an
@@ -3502,6 +3506,14 @@ func (v View) Head() (head indexer.Cursor, ok bool) {
 	return indexer.Cursor{}, false
 }
 
+// HeadAt is when the view first stood at its Head; zero while it has none.
+func (v View) HeadAt() time.Time {
+	if v.s.viewHead() == nil {
+		return time.Time{}
+	}
+	return v.s.viewAt
+}
+
 // Firm is the view's Firm, 0 while unknown; at most Head.
 func (v View) Firm() uint64 { return v.s.firm }
 
@@ -3549,6 +3561,15 @@ func (t *ChainTracker) ReachedAt(n uint64) time.Time {
 		return time.Time{}
 	}
 	return t.reached[i].at
+}
+
+// NextSight is the earliest likely first sight of block n, as the block
+// clock last planned it (plan); zero when its target is not n.
+func (t *ChainTracker) NextSight(n uint64) time.Time {
+	if s := t.nextSight.Load(); s != nil && s.number == n {
+		return s.at
+	}
+	return time.Time{}
 }
 
 // Tip returns the head now, without waiting.

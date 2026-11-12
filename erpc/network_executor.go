@@ -154,8 +154,8 @@ func (e *networkExecutor) runsConsensus(req *common.NormalizedRequest) bool {
 // opted into empty-outside-retention waiver for this request's method, so a
 // consensus-slot hedge must keep an emptyish result as the slot's vote
 // (feature §7.1.4). The flag is stamped by consensus.executor once the
-// policy for the round is known — only when the request names a concrete
-// block so the waiver can actually prove — before participant hedges run.
+// policy for the round is known — only when the waiver can get a block (the
+// request's, or a hash lookup's answer block) — before participant hedges run.
 func (e *networkExecutor) consensusKeepsEmptyAsSlotVote(req *common.NormalizedRequest) bool {
 	if req == nil {
 		return false
@@ -704,10 +704,11 @@ func (e *networkExecutor) runHedge(
 	// delays, Quantile for adaptive timing, Min/Max for floor/ceiling.
 	// ResolveForRequest looks up per-method latency via the network's
 	// QuantileTracker; returns Base alone when no data is available
-	// (cold start, no quantile, or no network on the request).
-	spec := e.cfg.Hedge.Delay
-	delayFn := func(idx int) time.Duration {
-		return spec.ResolveForRequest(req)
+	// (cold start, no quantile, or no network on the request). Resolved
+	// once, so every fire and settledNull read the same delay.
+	delay := e.cfg.Hedge.Delay.ResolveForRequest(req)
+	delayFn := func(int) time.Duration {
+		return delay
 	}
 	var fireCount atomic.Int32
 	wrapInner := func(hctx context.Context) (*common.NormalizedResponse, error) {
@@ -784,7 +785,7 @@ func (e *networkExecutor) runHedge(
 				kept = true
 				return true
 			}
-			if !e.acceptsEmptyResult(method, r) {
+			if !e.acceptsEmptyResult(method, r) && !e.settledNull(req, consensusSlot, delay) {
 				return false
 			}
 		}
@@ -810,4 +811,25 @@ func (e *networkExecutor) runHedge(
 	return failsafe.RunHedged[*common.NormalizedResponse](
 		ctx, e.cfg.Hedge.MaxCount, delayFn, wrapInner, keep, release, hooks,
 	)
+}
+
+// settledNull reports whether req's empty result ends its hedge race: a
+// lookup whose null only a new block changes (evm.NullUntilMined), outside
+// a consensus slot, answered empty by every upstream it may select, on a
+// Head no block can move before the last hedge would fire, delay times
+// MaxCount (common.EvmHead.Settled, spec §6.4 settled head), whose view
+// has not moved since the request took it. A hedge then asks every
+// upstream again for the answer the first sweep already had; an upstream
+// still in flight in a sibling leg, or one that failed transiently, may
+// hold what the others lack, so the race waits for it.
+func (e *networkExecutor) settledNull(req *common.NormalizedRequest, consensusSlot bool, delay time.Duration) bool {
+	if consensusSlot || !evm.NullUntilMined(req) || !req.EveryUpstreamAnsweredEmpty() {
+		return false
+	}
+	h := req.EvmHead()
+	if h == nil || !h.Settled(time.Now(), delay*time.Duration(e.cfg.Hedge.MaxCount)) {
+		return false
+	}
+	n, ok := req.Network().(*Network)
+	return ok && n.viewStands(req, h.Latest)
 }

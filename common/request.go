@@ -1761,6 +1761,36 @@ func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
 	return selectable > 0
 }
 
+// EveryUpstreamAnsweredEmpty reports whether every upstream this request
+// may select answered empty or with an error no retry changes: a transient
+// error (timeout, 429, 5xx) or an attempt still in flight in a sibling leg
+// is no answer, and that upstream may hold what the rest lack. False with
+// no selectable upstream.
+func (r *NormalizedRequest) EveryUpstreamAnsweredEmpty() bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+
+	selectable := 0
+	for _, upstream := range r.upstreamList {
+		if !r.matchesUseUpstreamLocked(upstream) {
+			continue
+		}
+		selectable++
+		stored, ok := r.ErrorsByUpstream.Load(upstream)
+		if !ok {
+			return false
+		}
+		err, _ := stored.(error)
+		if err == nil || !HasErrorCode(err, ErrCodeEndpointMissingData) && IsRetryableTowardsUpstream(err) {
+			return false
+		}
+	}
+	return selectable > 0
+}
+
 func (r *NormalizedRequest) MarkUpstreamCompleted(ctx context.Context, upstream Upstream, resp *NormalizedResponse, err error) {
 	r.upstreamMutex.Lock()
 	defer r.upstreamMutex.Unlock()

@@ -27,8 +27,10 @@ func PinLatestParams(method string, params []interface{}, height int64) ([]inter
 // as is, u's own polled head, the closest height to the one u evaluated it
 // at. 0 when unknown.
 func LatestSentAs(ctx context.Context, r *common.NormalizedRequest, u common.Upstream) int64 {
-	if n := TagBlockNumber(ctx, r, "latest"); n > 0 {
-		return n
+	if RequestBlockTag(ctx, r) == "latest" {
+		if n := TagBlockNumber(ctx, r); n > 0 {
+			return n
+		}
 	}
 	if eu, ok := u.(common.EvmUpstream); ok {
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {

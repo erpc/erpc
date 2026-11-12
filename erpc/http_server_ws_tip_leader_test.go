@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -312,4 +313,99 @@ func TestHttpServer_GetBlockByNumber_NearTipPrefersTipUpstream(t *testing.T) {
 		"near-tip getBlock must go to the upstream that has the tip")
 	assert.Equal(t, int64(0), laggingHits.Load(),
 		"lagging sibling must not receive the near-tip getBlock")
+}
+
+// Only a head tag reads the Head by round trip (spec §6.4): rpc1, the
+// policy's first, answers block reads in 30 ms; rpc2, last, in 5 ms, but
+// hangs reads of its finalized block 3 s, as a fast upstream did in
+// production. "finalized" and "safe" keep the policy's order and answer
+// from rpc1; "latest" still goes to the faster rpc2.
+func TestHttpServer_GetBlockByNumber_OnlyHeadTagsRouteByRoundTrip(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	const tip, fin = int64(0x22228889), int64(0x22228879)
+	tipHex, finHex := "0x22228889", "0x22228879"
+	tipBody := `{"result":{"number":"0x22228889","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","parentHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","timestamp":"0x6702a8f1"}}`
+	finBody := `{"result":{"number":"0x22228879","hash":"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","parentHash":"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","timestamp":"0x6702a8e1"}}`
+	var hang atomic.Bool
+	clientReads := map[string]*atomic.Int64{"rpc1": {}, "rpc2": {}}
+	for id, rtt := range map[string]time.Duration{"rpc1": 30 * time.Millisecond, "rpc2": 5 * time.Millisecond} {
+		host := id + ".localhost"
+		on := func(r *http.Request, method string) (string, bool) {
+			body := util.SafeReadBody(r)
+			return body, r.URL.Host == host && strings.Contains(body, method)
+		}
+		gock.New("http://" + host).Post("").Persist().
+			Filter(func(r *http.Request) bool { _, ok := on(r, "eth_chainId"); return ok }).
+			Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+		gock.New("http://" + host).Post("").Persist().
+			Filter(func(r *http.Request) bool { _, ok := on(r, "eth_syncing"); return ok }).
+			Reply(200).JSON([]byte(`{"result":false}`))
+		gock.New("http://" + host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				body, ok := on(r, "eth_getBlockByNumber")
+				return ok && (strings.Contains(body, `"latest"`) || strings.Contains(body, `"`+tipHex+`"`))
+			}).
+			Reply(200).Delay(rtt).JSON([]byte(tipBody))
+		gock.New("http://" + host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				body, ok := on(r, "eth_getBlockByNumber")
+				if !ok {
+					return false
+				}
+				// A client's finalized read reaches upstreams as the number,
+				// its safe read as the tag; the poller sends "finalized".
+				client := strings.Contains(body, `"`+finHex+`"`) || strings.Contains(body, `"safe"`)
+				if client && hang.Load() {
+					clientReads[id].Add(1)
+				}
+				return client || strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).Delay(rtt).
+			Map(func(res *http.Response) *http.Response {
+				if id == "rpc2" && hang.Load() {
+					time.Sleep(3 * time.Second)
+				}
+				res.Body = io.NopCloser(strings.NewReader(finBody))
+				res.ContentLength = int64(len(finBody))
+				return res
+			})
+	}
+	sendRequest, shutdown, nw, _ := setupTipLeaderServer(t, &common.EvmNetworkConfig{
+		ChainId:   123,
+		ServedTip: &common.EvmServedTipConfig{Quorum: 1},
+	}, 1, nil)
+	defer shutdown()
+	require.Eventually(t, func() bool {
+		h := servedHead(nw, context.Background())
+		return h.Latest == tip && h.Finalized == fin
+	}, 5*time.Second, 50*time.Millisecond)
+	hang.Store(true)
+
+	read := func(tag string) (upstream, number string, took time.Duration) {
+		start := time.Now()
+		statusCode, headers, body := sendRequest(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["`+tag+`",false]}`, nil, nil)
+		took = time.Since(start)
+		require.Equal(t, http.StatusOK, statusCode, "body=%s", body)
+		var respObject map[string]interface{}
+		require.NoError(t, sonic.UnmarshalString(body, &respObject))
+		result, ok := respObject["result"].(map[string]interface{})
+		require.True(t, ok, "%s: response should have a result object, got: %s", tag, body)
+		number, _ = result["number"].(string)
+		return headers[http.CanonicalHeaderKey("X-ERPC-Upstream")], number, took
+	}
+	for _, tag := range []string{"finalized", "safe"} {
+		upstream, number, took := read(tag)
+		t.Logf("%s: answered by %s in %s", tag, upstream, took)
+		assert.Equal(t, finHex, number, tag)
+		assert.Equal(t, "rpc1", upstream, "%s keeps the policy's order", tag)
+		assert.Less(t, took, 200*time.Millisecond, tag)
+	}
+	assert.Zero(t, clientReads["rpc2"].Load(), "rpc2 gets no finalized or safe read while rpc1 is healthy")
+	assert.Equal(t, int64(2), clientReads["rpc1"].Load())
+
+	upstream, number, took := read("latest")
+	t.Logf("latest: answered by %s in %s", upstream, took)
+	assert.Equal(t, tipHex, number)
+	assert.Equal(t, "rpc2", upstream, "latest goes by round trip, fastest first")
 }
