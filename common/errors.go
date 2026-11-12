@@ -493,6 +493,30 @@ func (e *ErrInvalidRequest) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
+// ErrClientBatchTooLarge rejects a client batch that addresses more requests
+// to one network than its maxClientBatchSize allows. None of the batch runs.
+type ErrClientBatchTooLarge struct{ BaseError }
+
+const ErrCodeClientBatchTooLarge ErrorCode = "ErrClientBatchTooLarge"
+
+var NewErrClientBatchTooLarge = func(networkId string, batchSize, maxBatchSize int) error {
+	return &ErrClientBatchTooLarge{
+		BaseError{
+			Code:    ErrCodeClientBatchTooLarge,
+			Message: fmt.Sprintf("batch of %d requests to network %s exceeds the limit of %d (maxClientBatchSize)", batchSize, networkId, maxBatchSize),
+			Details: map[string]interface{}{
+				"networkId":          networkId,
+				"batchSize":          batchSize,
+				"maxClientBatchSize": maxBatchSize,
+			},
+		},
+	}
+}
+
+func (e *ErrClientBatchTooLarge) ErrorStatusCode() int {
+	return http.StatusBadRequest
+}
+
 type ErrInvalidUrlPath struct{ BaseError }
 
 const ErrCodeInvalidUrlPath ErrorCode = "ErrInvalidUrlPath"

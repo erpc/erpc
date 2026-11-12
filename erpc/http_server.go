@@ -565,6 +565,26 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 		}
 
+		if isBatch && project != nil {
+			if capArch, capErr := clientBatchCapError(httpCtx, project, requests, architecture, chainId); capErr != nil {
+				handleErrorResponse(
+					httpCtx,
+					&lg,
+					&startedAt,
+					nil,
+					capErr,
+					w,
+					encoder,
+					writeFatalError,
+					&common.TRUE,
+					s.executionHeadersMode(),
+					capArch,
+				)
+				parseRequestsSpan.End()
+				return
+			}
+		}
+
 		responses := make([]interface{}, len(requests))
 		// notifications marks valid Solana requests without an "id" member. They
 		// still run, but get no reply (JSON-RPC 2.0 §4.1), which is what Agave
@@ -1752,10 +1772,10 @@ func determineResponseStatusCode(res interface{}, architectureHint ...common.Net
 	// 400 Bad Request - malformed requests. Solana clients expect what Agave
 	// does: HTTP 200 with the -32700/-32600/-32602 error in the body. web3.js
 	// and @solana/kit throw a transport error on 400 and never read the code.
-	case common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest) &&
+	case common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest, common.ErrCodeClientBatchTooLarge) &&
 		isSvmRequest(extractRequest(res), architectureHint...):
 		return http.StatusOK
-	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest):
+	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest, common.ErrCodeClientBatchTooLarge):
 		return http.StatusBadRequest
 	// 401 Unauthorized - authentication failures
 	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
@@ -1833,6 +1853,7 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeAuthUnauthorized,
 			common.ErrCodeAuthRateLimitRuleExceeded,
 			common.ErrCodeJsonRpcRequestUnmarshal,
+			common.ErrCodeClientBatchTooLarge,
 			common.ErrCodeProjectNotFound,
 		) {
 			logger.Debug().Err(err).Object("request", nq).Object("response", respMarshaler).Msg("forward request errored with client-side exception")
@@ -1853,6 +1874,69 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 
 	return resp
+}
+
+// clientBatchCapError reports the first network whose maxClientBatchSize a
+// batch exceeds, counting only the requests addressed to it, with that
+// network's architecture so the reply takes its wire shape. A URL path names
+// one network for the whole batch; without one each request names its own
+// ("networkId"), so a batch spanning networks is held to each network's own
+// limit. Requests whose network does not resolve fail on their own later.
+func clientBatchCapError(ctx context.Context, project *PreparedProject, requests []json.RawMessage, architecture, chainId string) (common.NetworkArchitecture, error) {
+	if architecture != "" && chainId != "" {
+		nw, err := project.GetNetwork(ctx, architecture+":"+chainId)
+		if err != nil {
+			return "", nil
+		}
+		return networkBatchCapError(nw, len(requests))
+	}
+	if !projectHasClientBatchCap(project.Config) {
+		return "", nil
+	}
+	byHint := make(map[string]int)
+	for _, raw := range requests {
+		if hint := common.NewNormalizedRequest(raw).NetworkIdHint(); hint != "" {
+			byHint[hint]++
+		}
+	}
+	// An alias and the canonical id are one network, so count by network.
+	byNetwork := make(map[*Network]int, len(byHint))
+	for hint, n := range byHint {
+		if nw, err := project.GetNetwork(ctx, hint); err == nil {
+			byNetwork[nw] += n
+		}
+	}
+	for nw, n := range byNetwork {
+		if arch, err := networkBatchCapError(nw, n); err != nil {
+			return arch, err
+		}
+	}
+	return "", nil
+}
+
+func networkBatchCapError(nw *Network, batchSize int) (common.NetworkArchitecture, error) {
+	cfg := nw.Config()
+	if cfg == nil || cfg.MaxClientBatchSize == nil || *cfg.MaxClientBatchSize <= 0 || batchSize <= *cfg.MaxClientBatchSize {
+		return "", nil
+	}
+	return nw.Architecture(), common.NewErrClientBatchTooLarge(nw.Id(), batchSize, *cfg.MaxClientBatchSize)
+}
+
+// projectHasClientBatchCap spares batches routed per request the extra
+// envelope parse when no network of the project can carry a limit.
+func projectHasClientBatchCap(cfg *common.ProjectConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.NetworkDefaults != nil && cfg.NetworkDefaults.MaxClientBatchSize != nil && *cfg.NetworkDefaults.MaxClientBatchSize > 0 {
+		return true
+	}
+	for _, n := range cfg.Networks {
+		if n != nil && n.MaxClientBatchSize != nil && *n.MaxClientBatchSize > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // isSvmRequest reports whether a request targets a Solana network. Authentication

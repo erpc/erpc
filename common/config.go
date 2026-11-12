@@ -765,15 +765,16 @@ const (
 // Removed legacy nested UserAgentConfig; use ProjectConfig.UserAgentMode
 
 type NetworkDefaults struct {
-	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe          []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
-	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
-	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
-	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
-	Svm               *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm" tstype:"TsSvmNetworkConfigForDefaults"`
-	Multiplexing      *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
-	CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
-	Failover          *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
+	RateLimitBudget    string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	Failsafe           []*FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
+	SelectionPolicy    *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
+	DirectiveDefaults  *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
+	Evm                *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
+	Svm                *SvmNetworkConfig        `yaml:"svm,omitempty" json:"svm" tstype:"TsSvmNetworkConfigForDefaults"`
+	Multiplexing       *bool                    `yaml:"multiplexing,omitempty" json:"multiplexing"`
+	CacheKeySuffix     string                   `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
+	Failover           *FailoverConfig          `yaml:"failover,omitempty" json:"failover"`
+	MaxClientBatchSize *int                     `yaml:"maxClientBatchSize,omitempty" json:"maxClientBatchSize"`
 }
 
 // FailoverConfig controls per-request escalation to fallback-tier upstreams,
@@ -818,14 +819,15 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 
 	// If that fails, try the old format with single failsafe object
 	type oldNetworkDefaults struct {
-		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
-		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
-		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
-		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
-		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
-		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
-		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
-		Failover          *FailoverConfig          `yaml:"failover,omitempty"`
+		RateLimitBudget    string                   `yaml:"rateLimitBudget,omitempty"`
+		Failsafe           *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		SelectionPolicy    *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
+		DirectiveDefaults  *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
+		Evm                *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		Svm                *SvmNetworkConfig        `yaml:"svm,omitempty"`
+		CacheKeySuffix     string                   `yaml:"cacheKeySuffix,omitempty"`
+		Failover           *FailoverConfig          `yaml:"failover,omitempty"`
+		MaxClientBatchSize *int                     `yaml:"maxClientBatchSize,omitempty"`
 	}
 
 	var old oldNetworkDefaults
@@ -843,6 +845,7 @@ func (n *NetworkDefaults) UnmarshalYAML(unmarshal func(interface{}) error) error
 	n.Evm = old.Evm
 	n.Svm = old.Svm
 	n.Failover = old.Failover
+	n.MaxClientBatchSize = old.MaxClientBatchSize
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
@@ -2719,6 +2722,12 @@ type NetworkConfig struct {
 	// When {networkId}:{suffix} is itself a valid network id, colons in the
 	// network id are escaped; see CachePartitionKey.
 	CacheKeySuffix string `yaml:"cacheKeySuffix,omitempty" json:"cacheKeySuffix"`
+	// MaxClientBatchSize caps how many requests one client JSON-RPC batch may
+	// address to this network. Unset inherits networkDefaults; unset there or
+	// 0 means no limit. An over-limit batch runs none of its requests.
+	// Distinct from upstream jsonRpc.batchMaxSize, which shapes the batches
+	// eRPC itself sends to an upstream.
+	MaxClientBatchSize *int `yaml:"maxClientBatchSize,omitempty" json:"maxClientBatchSize"`
 }
 
 // StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2779,18 +2788,19 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	// If that fails, try the old format with single failsafe object
 	type oldNetworkConfig struct {
-		Architecture      NetworkArchitecture      `yaml:"architecture"`
-		RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty"`
-		Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty"`
-		Evm               *EvmNetworkConfig        `yaml:"evm,omitempty"`
-		Svm               *SvmNetworkConfig        `yaml:"svm,omitempty"`
-		SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
-		DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
-		Alias             string                   `yaml:"alias,omitempty"`
-		Methods           *MethodsConfig           `yaml:"methods,omitempty"`
-		StaticResponses   []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
-		CacheKeySuffix    string                   `yaml:"cacheKeySuffix,omitempty"`
-		Failover          *FailoverConfig          `yaml:"failover,omitempty"`
+		Architecture       NetworkArchitecture      `yaml:"architecture"`
+		RateLimitBudget    string                   `yaml:"rateLimitBudget,omitempty"`
+		Failsafe           *FailsafeConfig          `yaml:"failsafe,omitempty"`
+		Evm                *EvmNetworkConfig        `yaml:"evm,omitempty"`
+		Svm                *SvmNetworkConfig        `yaml:"svm,omitempty"`
+		SelectionPolicy    *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty"`
+		DirectiveDefaults  *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty"`
+		Alias              string                   `yaml:"alias,omitempty"`
+		Methods            *MethodsConfig           `yaml:"methods,omitempty"`
+		StaticResponses    []*StaticResponseConfig  `yaml:"staticResponses,omitempty"`
+		CacheKeySuffix     string                   `yaml:"cacheKeySuffix,omitempty"`
+		Failover           *FailoverConfig          `yaml:"failover,omitempty"`
+		MaxClientBatchSize *int                     `yaml:"maxClientBatchSize,omitempty"`
 	}
 
 	var old oldNetworkConfig
@@ -2812,6 +2822,7 @@ func (n *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	n.StaticResponses = old.StaticResponses
 	n.CacheKeySuffix = old.CacheKeySuffix
 	n.Failover = old.Failover
+	n.MaxClientBatchSize = old.MaxClientBatchSize
 
 	if old.Failsafe != nil {
 		// Ensure MatchMethod has a default value for backward compatibility
