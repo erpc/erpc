@@ -1725,22 +1725,27 @@ func (r *NormalizedRequest) matchesUseUpstreamLocked(upstream Upstream) bool {
 	return err == nil && match
 }
 
-// failedPermanentlyLocked reports whether upstream already answered with an
-// error no retry changes (method ignored, execution exception, etc.).
-// Retryable errors, missing data included, leave it selectable.
+// failedPermanentlyLocked reports whether upstream already gave this request
+// an answer no retry changes: an error not retryable toward it (method
+// ignored, execution exception, etc.), or a permanent missing-data verdict
+// (a skipped slot, a history page that ends at its floor). Missing data is
+// retryable toward other upstreams, but asking the same upstream again in a
+// hedge leg or a retry repeats the same verdict. Other retryable errors,
+// not-yet-available data included, leave it selectable.
 func (r *NormalizedRequest) failedPermanentlyLocked(upstream Upstream) bool {
 	prevErr, exists := r.ErrorsByUpstream.Load(upstream)
 	if !exists {
 		return false
 	}
 	pe, ok := prevErr.(error)
-	return ok && !IsRetryableTowardsUpstream(pe)
+	return ok && (!IsRetryableTowardsUpstream(pe) || IsPermanentlyMissingData(pe))
 }
 
 // AllUpstreamsFailedPermanently reports whether every upstream this request
-// may select has already answered with an error that NextUpstream will not
-// re-select (an execution exception, an unsupported method). A retry or hedge
-// can then draw no upstream at all, so it cannot change the outcome.
+// may select has already given an answer that NextUpstream will not re-select
+// (an execution exception, an unsupported method, a permanent missing-data
+// verdict). A retry or hedge can then draw no upstream at all, so it cannot
+// change the outcome.
 func (r *NormalizedRequest) AllUpstreamsFailedPermanently() bool {
 	if r == nil {
 		return false

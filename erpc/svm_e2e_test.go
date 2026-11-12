@@ -24,6 +24,14 @@ import (
 // project. All upstreams passed in must already carry type:svm + svm.cluster.
 func setupTestSvmNetwork(t *testing.T, ctx context.Context, upstreams []*common.UpstreamConfig) *Network {
 	t.Helper()
+	return setupTestSvmNetworkWithConfig(t, ctx, nil, upstreams)
+}
+
+// setupTestSvmNetworkWithConfig is setupTestSvmNetwork with configure applied to
+// the network config (failsafe, directive defaults), defaulted as config
+// loading does.
+func setupTestSvmNetworkWithConfig(t *testing.T, ctx context.Context, configure func(*common.NetworkConfig), upstreams []*common.UpstreamConfig) *Network {
+	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
@@ -58,6 +66,10 @@ func setupTestSvmNetwork(t *testing.T, ctx context.Context, upstreams []*common.
 			Cluster:    "mainnet-beta",
 			Commitment: "confirmed",
 		},
+	}
+	if configure != nil {
+		configure(networkConfig)
+		require.NoError(t, networkConfig.SetDefaults(upstreams, nil))
 	}
 	network, err := NewNetwork(
 		ctx, &log.Logger, "test", networkConfig,

@@ -23,6 +23,12 @@ func init() {
 // mockSvmMethod registers a persistent reply for `method` on host and returns a
 // counter of how many times the upstream actually answered it.
 func mockSvmMethod(host, method, body string) *atomic.Int64 {
+	return mockSvmMethodDelayed(host, method, body, 0)
+}
+
+// mockSvmMethodDelayed is mockSvmMethod with each answer held for delay, so a
+// network hedge fires while the attempt is in flight.
+func mockSvmMethodDelayed(host, method, body string, delay time.Duration) *atomic.Int64 {
 	var calls atomic.Int64
 	gock.New("http://" + host).
 		Post("").
@@ -32,6 +38,7 @@ func mockSvmMethod(host, method, body string) *atomic.Int64 {
 				strings.Contains(util.SafeReadBody(r), `"method":"`+method+`"`)
 		}).
 		Reply(200).
+		Delay(delay).
 		Map(func(res *http.Response) *http.Response {
 			calls.Add(1)
 			return res
@@ -378,4 +385,130 @@ func TestSvm_Consensus_AllShortSignaturePagesAgreeOnSuccess(t *testing.T) {
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)
 	require.Contains(t, string(jrr.GetResultBytes()), `"sig1"`)
+}
+
+// svmSweepNetwork mirrors a production Solana network: one hedge leg, three
+// network attempts, and retryEmpty on, so a sweep that is not bounded per
+// request shows up as repeat calls to the same upstream.
+func svmSweepNetwork(n *common.NetworkConfig) {
+	retry := func() *common.RetryPolicyConfig {
+		return &common.RetryPolicyConfig{
+			MaxAttempts:       3,
+			Delay:             common.Duration(20 * time.Millisecond),
+			EmptyResultAccept: []string{"getSignaturesForAddress"},
+		}
+	}
+	hedge := func() *common.HedgePolicyConfig {
+		return &common.HedgePolicyConfig{Delay: common.NewStaticDuration(150 * time.Millisecond), MaxCount: 1}
+	}
+	n.Failsafe = []*common.FailsafeConfig{
+		{MatchMethod: "getSignaturesForAddress", Hedge: hedge(), Retry: retry()},
+		{MatchMethod: "*", Hedge: hedge(), Retry: retry()},
+	}
+	n.DirectiveDefaults = &common.DirectiveDefaultsConfig{RetryEmpty: util.BoolPtr(true)}
+}
+
+// A permanent missing-data verdict (a skipped slot, a history page that ends
+// at the upstream's floor) is swept across upstreams once per request: each
+// upstream is asked once, by whichever leg or attempt reaches it first, and
+// the request then ends with the verdict. A not-yet-available block keeps its
+// wait-and-retry.
+func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
+	const (
+		skipped     = `{"jsonrpc":"2.0","id":1,"error":{"code":-32009,"message":"Slot 500 was skipped, or missing in long-term storage"}}`
+		notYetThere = `{"jsonrpc":"2.0","id":1,"error":{"code":-32004,"message":"Block not available for slot 500"}}`
+	)
+	for _, tc := range []struct {
+		name     string
+		method   string
+		params   string
+		bodies   []string // per-upstream body; nil = body for every upstream
+		body     string
+		floors   []int64 // first available slot per upstream; -1 = none observed
+		ignoreAt int     // index of an upstream that ignores the method; -1 = none
+		wantCode int     // client error code; 0 = a served result
+		check    func(t *testing.T, per []int64, total int64)
+	}{
+		{
+			name: "skipped slot", method: "getBlock", params: `[500]`, body: skipped,
+			floors: []int64{-1, -1, -1, -1}, ignoreAt: -1, wantCode: -32009,
+			check: func(t *testing.T, _ []int64, total int64) {
+				require.Equal(t, int64(4), total, "each upstream is asked about a skipped slot once")
+			},
+		},
+		{
+			// An unknown `before` signature: the deepest upstream rejects it,
+			// the two shallower ones answer an empty page, which is a history
+			// sweep verdict because a deeper floor is selected.
+			name: "unknown before signature", method: "getSignaturesForAddress", params: `["addr",{"limit":5,"before":"unknownsig"}]`,
+			bodies: []string{
+				`{"jsonrpc":"2.0","id":1,"error":{"code":-32020,"message":"Transaction unknownsig not found"}}`,
+				`{"jsonrpc":"2.0","id":1,"result":[]}`,
+				`{"jsonrpc":"2.0","id":1,"result":[]}`,
+				`{"jsonrpc":"2.0","id":1,"result":[]}`,
+			},
+			floors: []int64{0, 500, 400, -1}, ignoreAt: 3,
+			check: func(t *testing.T, per []int64, _ int64) {
+				require.Equal(t, int64(1), per[1], "a short page is asked for once")
+				require.Equal(t, int64(1), per[2], "a short page is asked for once")
+			},
+		},
+		{
+			name: "block not yet available", method: "getBlock", params: `[500]`, body: notYetThere,
+			floors: []int64{-1, -1, -1, -1}, ignoreAt: -1, wantCode: -32004,
+			check: func(t *testing.T, _ []int64, total int64) {
+				require.Greater(t, total, int64(4), "a not-yet-available block is retried after a delay")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ids := []string{"rpc1", "rpc2", "rpc3", "rpc4"}
+			calls := make([]*atomic.Int64, len(ids))
+			cfgs := make([]*common.UpstreamConfig, len(ids))
+			for i, id := range ids {
+				host := fmt.Sprintf("svm-sweeponce-%d-%s.localhost", len(tc.name), id)
+				if tc.floors[i] < 0 {
+					util.SetupMocksForSvmStatePoller(host, 1000, 990)
+				} else {
+					util.SetupMocksForSvmStatePollerWithFirstAvailable(host, 1000, 990, 1000, tc.floors[i])
+				}
+				body := tc.body
+				if tc.bodies != nil {
+					body = tc.bodies[i]
+				}
+				calls[i] = mockSvmMethodDelayed(host, tc.method, body, 100*time.Millisecond)
+				cfgs[i] = svmUpstreamConfig(id, host)
+				if i == tc.ignoreAt {
+					cfgs[i].IgnoreMethods = []string{tc.method}
+				}
+			}
+			net := setupTestSvmNetworkWithConfig(t, ctx, svmSweepNetwork, cfgs)
+			net.PinUpstreamOrderForTest(ids...)
+			time.Sleep(300 * time.Millisecond) // let the floor poll land
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + tc.method + `","params":` + tc.params + `}`))
+			resp, err := svmProjectForward(ctx, net, req)
+
+			var total int64
+			per := make([]int64, len(calls))
+			for i, c := range calls {
+				per[i] = c.Load()
+				total += per[i]
+			}
+			t.Logf("upstream calls per upstream: %v (total %d), exec %+v", per, total, req.ExecState().Snapshot())
+			if tc.wantCode == 0 {
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+			} else {
+				require.Error(t, err)
+				require.Equal(t, common.JsonRpcErrorNumber(tc.wantCode), svmClientErrorCode(t, req, err))
+			}
+			tc.check(t, per, total)
+		})
+	}
 }
