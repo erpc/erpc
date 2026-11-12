@@ -356,6 +356,18 @@ func (v *Vendor) ReceiptsOf(h Hash) (calls int, served bool) {
 	return v.receipts[h], v.served[h]
 }
 
+// OpenHeads counts the newHeads subscriptions open on the vendor's
+// sockets now: subscribed and not unsubscribed, on a socket still open.
+func (v *Vendor) OpenHeads() int {
+	v.chain.mu.Lock()
+	defer v.chain.mu.Unlock()
+	n := 0
+	for w := range v.conns {
+		n += len(w.heads)
+	}
+	return n
+}
+
 // Push writes raws, in order, on each of the vendor's newHeads
 // subscriptions at once, past its push queue, as a node that floods its
 // subscribers. It returns how many messages it wrote.

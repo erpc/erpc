@@ -98,7 +98,7 @@ func catalogue() []phaseSpec {
 		{"shared", 9101, []spec{x1(), c1(), c3(), u3(), n5(), k2(), d1(), d2()}},
 		{"r1", 13201, []spec{r1()}},
 		{"upstream", 11301, []spec{u2(), u4(), u5(), u6(), u7(), u13(), u15()}},
-		{"clients", 11601, []spec{d3(), d5(), d6(), d9()}},
+		{"clients", 11601, []spec{d3(), d5(), d6(), d9(), d10()}},
 		{"integrity", 10601, []spec{u8(false), u8(true), u9(), u9Trunc(1), u9Trunc(2), u9Bloom(1), u9Bloom(2), k5()}},
 		{"fetch", 10401, []spec{u1(), c4(), c7(), d8()}},
 		{"fetch-vars", 10501, []spec{u16()}},

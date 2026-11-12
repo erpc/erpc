@@ -19,7 +19,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/test/chainsim"
-	"github.com/erpc/erpc/util"
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
@@ -183,7 +182,7 @@ func newCacheHeadNode(t *testing.T, connector string, ttl time.Duration, follow 
 	bds, bdsAddr := startCacheHeadBds(t, chain, true)
 	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
 		nw.Evm.ServedTip = &common.EvmServedTipConfig{FollowCacheHead: follow}
-	}, sourceUpstream(ws.ID, ws.URL(), nil), sourceUpstream(http1.ID, http1.URL(), util.BoolPtr(true)))
+	}, sourceUpstream(ws.ID, ws.URL(), ""), sourceUpstream(http1.ID, http1.URL(), common.SubscriptionSourceAlways))
 	cfg.Server.WaitBeforeShutdown = common.Duration(0).Ptr()
 	cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: cacheHeadCache(connector, bdsAddr, ttl, true)}
 	for _, opt := range opts {

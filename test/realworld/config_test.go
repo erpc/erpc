@@ -191,17 +191,18 @@ func k3(window int) spec {
 	return sp
 }
 
-// K4: ws-a sets subscriptionSource false: it is no source and never gets a
-// newHeads subscribe. An https upstream is no source at all: poll sources
-// are deleted (the block clock fetches heads), and load refuses
-// subscriptionSource on one (§19 K4; §5.1; §6.8; §16).
+// K4: ws-a sets subscriptionSource off: it is no source and never gets a
+// newHeads subscribe, while baseline clients want heads. An https upstream
+// is no source at all: poll sources are deleted (the block clock fetches
+// heads), and load refuses a subscriptionSource but off on one (§19 K4;
+// §5.1; §6.8; §16).
 func k4() spec {
 	return spec{name: "K4", bound: healthyDelivery,
-		upEvm: map[string]map[string]interface{}{"ws-a": {"subscriptionSource": false}},
+		upEvm: map[string]map[string]interface{}{"ws-a": {"subscriptionSource": "off"}},
 		body: func(s *scenario) {
 			s.blocks(25)
 			if n := s.vendors["ws-a"].Stats().HeadsSubscribes; n > 0 {
-				s.violate(s.name, "%s, subscriptionSource false, got %d newHeads subscribes: a source", s.upstream("ws-a"), n)
+				s.violate(s.name, "%s, subscriptionSource off, got %d newHeads subscribes: a source", s.upstream("ws-a"), n)
 			}
 			s.blocks(25)
 		}}

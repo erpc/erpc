@@ -96,9 +96,10 @@ export type AskReason = string;
 export const AskClock: AskReason = "clock";
 /**
  * AskPoll: the latest part of an upstream's full poll, every
- * statePollerInterval; a clock fetch within the interval meets it,
- * within the interval plus a block, at most two intervals, while the
- * clock has a turn of the upstream planned (ClockTurn).
+ * statePollerInterval; a head the upstream pushed or a clock fetch
+ * within the interval meets it, within the interval plus a block, at
+ * most two intervals, while the clock has a turn of the upstream
+ * planned (ClockTurn).
  */
 export const AskPoll: AskReason = "poll";
 export const AskRefusal: AskReason = "refusal";
@@ -125,6 +126,11 @@ export const AskInflight: AskOutcome = "inflight";
  * AskBackoff: the upstream backs off; nothing was fetched.
  */
 export const AskBackoff: AskOutcome = "backoff";
+/**
+ * AskPushed: a head the upstream pushed within the pace met its
+ * poll's latest part; nothing was fetched.
+ */
+export const AskPushed: AskOutcome = "pushed";
 /**
  * HeadAnswer is what a head Ask gives its caller: the fetch's one
  * outcome, the same for every waiter.
@@ -1212,12 +1218,15 @@ export interface EvmUpstreamConfig {
    */
   pinLatestTag?: boolean;
   /**
-   * SubscriptionSource makes this ws/wss upstream a push source of the chain
-   * tracker: it subscribes newHeads from network init. true on any other
-   * endpoint is refused at load: the block clock fetches every upstream's
-   * head. Unset: true for ws/wss endpoints, false otherwise.
+   * SubscriptionSource sets when this ws/wss upstream pushes newHeads to
+   * the chain tracker: off, onDemand (while a client tap needs every
+   * block: eth_subscribe newHeads or logs, a gRPC block stream; it stops
+   * 60s after the last one ends) or always (from network init). Anything
+   * but off on another endpoint is refused at load: the block clock
+   * fetches every upstream's head. Unset: onDemand for ws/wss endpoints,
+   * off otherwise.
    */
-  subscriptionSource?: boolean;
+  subscriptionSource?: SubscriptionSourceMode;
   /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.
@@ -1305,6 +1314,14 @@ export interface EvmAvailabilityBoundConfig {
   probe?: EvmAvailabilityProbeType;
   updateRate?: Duration;
 }
+/**
+ * SubscriptionSourceMode is when a ws/wss upstream pushes newHeads
+ * (evm.subscriptionSource).
+ */
+export type SubscriptionSourceMode = string;
+export const SubscriptionSourceOff: SubscriptionSourceMode = "off";
+export const SubscriptionSourceOnDemand: SubscriptionSourceMode = "onDemand";
+export const SubscriptionSourceAlways: SubscriptionSourceMode = "always";
 export interface FailsafeConfig {
   matchMethod?: string;
   matchFinality?: DataFinalityState[];
@@ -3066,6 +3083,19 @@ export interface EvmHead {
    */
   ceilingpeak: number /* int64 */;
   ceilingfellat: any /* time.Time */;
+  /**
+   * LatestAt is when the lane's view first stood at Latest; zero when
+   * Latest is not the view's Head (a limit, a guarantee cap, the cache
+   * head's anchor lowered it) or unknown.
+   */
+  latestat: any /* time.Time */;
+  /**
+   * NextAt is the earliest time the lane's next block may come: LatestAt
+   * plus the shorter of half a block and the shortest recent step of the
+   * view; zero while LatestAt is, or too few steps or no block time are
+   * known.
+   */
+  nextat: any /* time.Time */;
 }
 /**
  * HeadRule is the refusal rule's row for block N on a request (spec §6.4).

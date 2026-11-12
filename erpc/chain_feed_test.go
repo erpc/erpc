@@ -953,9 +953,12 @@ func (s *chaosSeed) config() *common.Config {
 	var ups []*common.UpstreamConfig
 	var budgets []*common.RateLimitBudgetConfig
 	for _, v := range s.vendors {
-		var source *bool
+		var source common.SubscriptionSourceMode
 		if !v.WS {
-			source = util.BoolPtr(s.pollSources)
+			source = common.SubscriptionSourceOff
+			if s.pollSources {
+				source = common.SubscriptionSourceAlways
+			}
 		}
 		u := sourceUpstream(v.ID, v.URL(), source)
 		u.Evm.StatePollerInterval = common.Duration(chaosStatePoll)

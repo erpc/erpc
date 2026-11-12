@@ -2130,9 +2130,8 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.TraceFilterAutoSplittingRangeThreshold == 0 && defaults != nil {
 		e.TraceFilterAutoSplittingRangeThreshold = defaults.TraceFilterAutoSplittingRangeThreshold
 	}
-	if e.SubscriptionSource == nil && defaults != nil && defaults.SubscriptionSource != nil {
-		v := *defaults.SubscriptionSource
-		e.SubscriptionSource = &v
+	if e.SubscriptionSource == "" && defaults != nil {
+		e.SubscriptionSource = defaults.SubscriptionSource
 	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {

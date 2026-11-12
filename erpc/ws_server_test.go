@@ -1319,7 +1319,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		chain := newMockChain(0x100, false)
 		a, urlA := newMockWsVendor(t, chain, nil)
 		b, urlB := newMockWsVendor(t, chain, nil)
-		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, nil), sourceUpstream("rpc-b", urlB, nil)))
+		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, ""), sourceUpstream("rpc-b", urlB, "")))
 		defer cleanup()
 		conn := dialWs(t, addr)
 		defer conn.Close()
@@ -1358,7 +1358,7 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		}
 		a, urlA := newMockWsVendor(t, chain, refuse)
 		b, urlB := newMockWsVendor(t, chain, refuse)
-		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, nil), sourceUpstream("rpc-b", urlB, nil)))
+		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, ""), sourceUpstream("rpc-b", urlB, "")))
 		defer cleanup()
 		const subscribe = `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions",{"bogus":true}]}`
 		conn1, conn2 := dialWs(t, addr), dialWs(t, addr)
@@ -1406,7 +1406,8 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		}
 		a, urlA := newMockWsVendor(t, chain, busyOnce)
 		b, urlB := newMockWsVendor(t, chain, busyOnce)
-		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, nil), sourceUpstream("rpc-b", urlB, nil)))
+		always := common.SubscriptionSourceAlways
+		addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", urlA, always), sourceUpstream("rpc-b", urlB, always)))
 		defer cleanup()
 		conn := dialWs(t, addr)
 		defer conn.Close()
@@ -3129,8 +3130,8 @@ func sourcesConfig(network func(nw *common.NetworkConfig), ups ...*common.Upstre
 	}
 }
 
-// sourceUpstream polls at 100ms while it is a poll source.
-func sourceUpstream(id, endpoint string, source *bool) *common.UpstreamConfig {
+// sourceUpstream polls at 100ms; source "" is the endpoint's default.
+func sourceUpstream(id, endpoint string, source common.SubscriptionSourceMode) *common.UpstreamConfig {
 	return &common.UpstreamConfig{
 		Id:       id,
 		Type:     common.UpstreamTypeEvm,
@@ -3231,7 +3232,7 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 	// cordon, a gap past the walk window that only a voter majority links.
 	go chain.run(ctx, time.Second)
 
-	crossedCfg := sourceUpstream("rpc-crossed", crossedSrv.URL, util.BoolPtr(true))
+	crossedCfg := sourceUpstream("rpc-crossed", crossedSrv.URL, common.SubscriptionSourceAlways)
 	// Its own state polls reach it while it is no poll source, cordoned.
 	crossedCfg.Evm.StatePollerInterval = common.Duration(200 * time.Millisecond)
 	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(func(nw *common.NetworkConfig) {
@@ -3239,7 +3240,7 @@ func TestWebSocket_CrossWiredSourceCordonedUntilTwoMatches(t *testing.T) {
 		// The policy drops a cordoned upstream only at its next pass; the
 		// voter rule must not wait for it.
 		nw.SelectionPolicy = &common.SelectionPolicyConfig{EvalInterval: common.Duration(time.Minute)}
-	}, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true)), crossedCfg))
+	}, sourceUpstream("rpc-a", srv.URL, common.SubscriptionSourceAlways), crossedCfg))
 	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
 	prj, err := erpcSrv.erpc.GetProject("test_ws")
 	require.NoError(t, err)
@@ -3323,7 +3324,7 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 	defer stop()
 	go chain.run(ctx, 150*time.Millisecond)
 
-	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", srv.URL, util.BoolPtr(true))))
+	erpcSrv, addr, cancel := startTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-a", srv.URL, common.SubscriptionSourceAlways)))
 	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
 	prj, err := erpcSrv.erpc.GetProject("test_ws")
 	require.NoError(t, err)
@@ -3359,11 +3360,11 @@ func TestWebSocket_PollsStopWhenIdle(t *testing.T) {
 }
 
 // With the WebSocket server off, each project's network subscribes newHeads
-// on its wss upstream at init, and HTTP eth_blockNumber follows the pushes.
-// A wss upstream that registers after its network started votes from its
-// first head: the selection policy takes it in at once, not at its next
-// evalInterval.
-func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
+// at init on its wss upstream with subscriptionSource always, and HTTP
+// eth_blockNumber follows the pushes. A wss upstream that registers after
+// its network started votes from its first head: the selection policy
+// takes it in at once, not at its next evalInterval.
+func TestWebSocket_AlwaysSourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	setupGock()
 	t.Cleanup(util.ResetGock)
 
@@ -3376,11 +3377,12 @@ func TestWebSocket_SourcesSubscribeAtInitWithoutWebSocketServer(t *testing.T) {
 	vendorLate, urlLate := newMockWsVendor(t, chain, func(v *mockWsVendor) { v.staleRPC, v.chainIdHeld = true, held })
 	t.Cleanup(release)
 
-	cfg := sourcesConfig(nil, sourceUpstream("ws-a", urlA, nil), sourceUpstream("ws-joins-late", urlLate, nil))
+	always := common.SubscriptionSourceAlways
+	cfg := sourcesConfig(nil, sourceUpstream("ws-a", urlA, always), sourceUpstream("ws-joins-late", urlLate, always))
 	second := *cfg.Projects[0]
 	second.Id = "test_ws2"
 	second.Networks = []*common.NetworkConfig{{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}}
-	second.Upstreams = []*common.UpstreamConfig{sourceUpstream("ws-b", urlB, nil)}
+	second.Upstreams = []*common.UpstreamConfig{sourceUpstream("ws-b", urlB, always)}
 	cfg.Projects = append(cfg.Projects, &second)
 	cfg.Server.WebSocket = &common.WebSocketServerConfig{Enabled: util.BoolPtr(false)}
 	addr, cleanup := setupTestERPCServer(t, cfg)
@@ -3438,7 +3440,7 @@ func TestWebSocket_RefusedNewHeadsPolled(t *testing.T) {
 	defer stop()
 	go chain.run(ctx, 150*time.Millisecond)
 
-	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-ws", wsURL, nil)))
+	addr, cleanup := setupTestERPCServer(t, sourcesConfig(nil, sourceUpstream("rpc-ws", wsURL, "")))
 	defer cleanup()
 	conn := dialWs(t, addr)
 	defer conn.Close()
