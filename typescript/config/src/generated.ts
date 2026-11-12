@@ -2658,10 +2658,11 @@ export interface IntegritySettings {
    * rejects feed — for the selection policy to act on (e.g. the
    * misbehaviorRateAbove predicate); absence of proof has no effect at all,
    * and ObserveOnly suppresses the misbehavior recording like every other
-   * integrity effect. Requires follow to be enabled (the verified header is
-   * the trust anchor). Off by default. The "latest" tag-state probe behind
-   * the tag-state gate runs on every network from its first client
-   * request, whatever this says.
+   * integrity effect. These pinned probes require follow to be enabled
+   * (the verified header is the trust anchor). Off by default. On, it also
+   * runs, from the network's first client request, the "latest" tag-state
+   * probe behind the tag-state gate, with or without follow; off, no probe
+   * runs and that gate skips no upstream.
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**
@@ -3066,6 +3067,19 @@ export interface EvmHead {
    */
   ceilingpeak: number /* int64 */;
   ceilingfellat: any /* time.Time */;
+  /**
+   * LatestAt is when the lane's view first stood at Latest; zero when
+   * Latest is not the view's Head (a limit, a guarantee cap, the cache
+   * head's anchor lowered it) or unknown.
+   */
+  latestat: any /* time.Time */;
+  /**
+   * NextAt is the earliest time the lane's next block may come: LatestAt
+   * plus the shorter of half a block and the shortest recent step of the
+   * view; zero while LatestAt is, or too few steps or no block time are
+   * known.
+   */
+  nextat: any /* time.Time */;
 }
 /**
  * HeadRule is the refusal rule's row for block N on a request (spec §6.4).
