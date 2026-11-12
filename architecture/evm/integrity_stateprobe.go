@@ -50,8 +50,13 @@ import (
 //     HyperEVM vendors, one froze 31,733 blocks back, another ran ~110 back,
 //     both with a current head. Its answers are the tag-state heads the
 //     tag-state gate reads (spec §6.11, tagStateHead); it needs no follower,
-//     runs from network start on each change of Latest, and probes only
-//     upstreams that get tag requests (probeTagStates).
+//     runs from the network's first client request on each change of
+//     Latest, and probes only upstreams that get tag requests
+//     (probeTagStates).
+//
+// Every probe is integrity's: the prober runs only on a network whose
+// integrity turns stateProbe on, so a network with it off sends none, and
+// its tag-state gate skips nothing.
 //
 // The prober PUBLISHES evidence; it holds no routing authority of its own.
 // A success advances the upstream's state-proven head (monotonic) — pure
@@ -85,8 +90,8 @@ type stateProber struct {
 	view     *ChainTracker // the tracker whose pinned headers anchor the probes
 	interval time.Duration
 	stateCtx stateContext // the network's execution-context call, decided by its first probe
-	// pinnedProbes: integrity follow and stateProbe are on, so followed heads
-	// run the context and proof probes (#1109). The latest probe runs anyway.
+	// pinnedProbes: integrity follow is on beside stateProbe, so followed
+	// heads run the context and proof probes (#1109). The latest probe runs anyway.
 	pinnedProbes bool
 
 	mu        sync.Mutex
@@ -134,9 +139,9 @@ type stateProber struct {
 var stateProbers sync.Map // common.Network -> *stateProber
 
 // startStateProber starts the network's prober, once, at its first client
-// request (ClientRequested). Every EVM network has one then, for the latest
-// probe; cfg is nil unless integrity follow and stateProbe are on, which
-// add the context and proof probes.
+// request (ClientRequested), where integrity turns stateProbe on: the
+// latest probe; cfg is nil unless integrity follow is on too, which adds
+// the context and proof probes.
 func startStateProber(ctx context.Context, n common.Network, v *ChainTracker, cfg *common.IntegrityStateProbeConfig) {
 	interval := stateProbeMinInterval
 	if cfg != nil && cfg.Interval > 0 {

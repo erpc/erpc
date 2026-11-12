@@ -96,6 +96,8 @@ type Check struct {
 	// keeps them (chain tracker spec §6.5 rule 1).
 	History bool
 	// Methods are the lowercased JSON-RPC methods this check applies to.
+	// A check with none is one the network's request path runs, never the
+	// engine (GetLogsEmptyGate); it has no Run.
 	Methods []string
 	// AllowEmptyish opts this check into evaluating emptyish ("[]"/null)
 	// responses, which the engine otherwise short-circuits. For eth_getLogs an
@@ -154,6 +156,20 @@ func HeaderCheckSet(cs CheckSet) CheckSet {
 func (cs CheckSet) ReadsHistory() bool {
 	for _, c := range allChecks {
 		if c.History && cs.For(c.ID).Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// Validates reports whether cs enables a check the engine runs on
+// responses: one that applies to a method.
+func (cs CheckSet) Validates() bool {
+	if len(cs) == 0 {
+		return false
+	}
+	for _, c := range allChecks {
+		if len(c.Methods) > 0 && cs.For(c.ID).Enabled {
 			return true
 		}
 	}

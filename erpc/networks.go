@@ -1536,8 +1536,13 @@ func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 // and the other upstreams whose evidence holds block, the range's toBlock,
 // the hash's number or, when that lookup found none, the block after the
 // head, settle it (logsProbe). A range below the pins, a non-concrete one,
-// and a network without a tracker or pins pass as before, unjudged.
+// and a network without a tracker or pins pass as before, unjudged; so
+// does every answer while req's integrity leaves the check off
+// (evm.LogsGateOn): no verdict, no lookup, no trust check, no probe.
 func (n *Network) logsGate(ctx context.Context, req *common.NormalizedRequest, u common.Upstream) (block int64, maybe bool) {
+	if !evm.LogsGateOn(n, req) {
+		return 0, false
+	}
 	t := n.laneTracker(selectorOf(req))
 	if t == nil {
 		return 0, false
@@ -1622,6 +1627,13 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 	// flight.
 	late, next := false, false
 	t := n.laneTracker(selectorOf(req))
+	// Every ask the probe sends, a holder's leg or the re-ask, is beyond
+	// the client's request, which u answered: an auxiliary request.
+	probe := func(c context.Context, v common.Upstream) (*common.NormalizedResponse, error) {
+		r, err := send(c, v)
+		t.CountAux("logs_probe", "eth_getLogs", block, err == nil && r != nil && !r.IsObjectNull())
+		return r, err
+	}
 	done := func(verdict string, r *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
 		n.countLogsGate(verdict)
 		span.SetAttributes(attribute.String("outcome", verdict), attribute.Int("asked", len(asked)-1))
@@ -1647,14 +1659,14 @@ func (n *Network) logsProbe(ctx context.Context, req *common.NormalizedRequest, 
 			asked[v.Id()] = true
 			out++
 			go func() {
-				r, err := send(ctx, v)
+				r, err := probe(ctx, v)
 				answers <- answer{r, err}
 			}()
 			next = false
 			hedge.Reset(n.logsHedgeDelay(v, w))
 		}
 		if late && out == 0 {
-			r, err := send(ctx, u)
+			r, err := probe(ctx, u)
 			if parent.Err() != nil {
 				return canceled()
 			}

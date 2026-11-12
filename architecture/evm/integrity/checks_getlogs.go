@@ -33,6 +33,14 @@ import (
 // (default 32) is the real bound, this is a guard for misconfigured windows.
 const absentBlockScanCap = 512
 
+// GetLogsEmptyGate is the logs gate's check id (chain tracker spec §6.4
+// logs gate): an upstream's empty eth_getLogs answer for blocks near the
+// head, which the held headers do not prove empty, is confirmed by another
+// upstream that holds the block before it is served. The network's request
+// path runs it, never the engine, so it registers no method: with it off,
+// such an answer is served as it came, and the gate sends nothing.
+const GetLogsEmptyGate = "getLogsEmptyGate"
+
 func init() {
 	register(&Check{
 		ID: "getLogsFilterSanity", Family: FamilyStructural, Class: Deterministic,
@@ -172,6 +180,8 @@ func init() {
 			return done()
 		},
 	})
+
+	register(&Check{ID: GetLogsEmptyGate, Family: FamilyStructural, Class: ReorgSensitive})
 }
 
 // compareBlockLogs cross-references one block's response logs against the

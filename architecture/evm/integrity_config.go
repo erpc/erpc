@@ -95,6 +95,14 @@ func resolveIntegrity(n common.Network, dirs *common.RequestDirectives) (integri
 	return cs, policy, observeOnly, autoCorrect
 }
 
+// LogsGateOn reports whether the logs gate judges req's empty eth_getLogs
+// answers (integrity.GetLogsEmptyGate): n's integrity config, with req's
+// header selector, enables the check. Off, the gate sends nothing.
+func LogsGateOn(n common.Network, req *common.NormalizedRequest) bool {
+	cs, _, _, _ := resolveIntegrity(n, req.Directives())
+	return cs.For(integrity.GetLogsEmptyGate).Enabled
+}
+
 // integrityReadsHistory reports whether a request on a network with cfg may
 // run a check that reads the tracker's history (CheckSet.ReadsHistory): by
 // the configured settings, or by a profile or level its header may select.

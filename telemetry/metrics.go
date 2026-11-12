@@ -693,12 +693,13 @@ var (
 	}, []string{"project", "vendor", "network", "upstream", "category", "check", "outcome"})
 
 	// MetricIntegrityAuxRequest counts auxiliary requests issued by integrity
-	// checks — force-fetches that are NOT part of the user's request (canonical
-	// header/receipts corroboration), by kind and outcome.
+	// checks — upstream requests that are NOT part of the user's request
+	// (canonical header/receipts corroboration, the logs gate's), by kind and
+	// outcome.
 	MetricIntegrityAuxRequest = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "integrity_aux_request_total",
-		Help:      "Total auxiliary (force-fetch) requests issued by integrity checks, by node group, kind (canonical_header/canonical_receipts), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error).",
+		Help:      "Total auxiliary requests issued by integrity checks, beyond the user's request, by node group, kind (canonical_header/canonical_receipts; the logs gate's logs_probe: an eth_getLogs ask of another holder or the re-ask, logs_hash: its header lookup of a blockHash, bloom_trust: a block's receipts fetched to earn or keep bloom trust), the actual method sent, target-block finality (finalized/unfinalized/unknown) and outcome (ok/error).",
 	}, []string{"project", "vendor", "network", "upstream", "group", "kind", "method", "finality", "outcome"})
 
 	// MetricIntegritySaved counts requests the integrity module SAVED: a check
@@ -1031,7 +1032,7 @@ var (
 	MetricLogsEmptyGateTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "logs_empty_gate_total",
-		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: old (the block reached the view head W or more ago; served unjudged), no (headers prove no matching log: an empty block, a zero bloom, or a bloom that misses the filter once receipts proved the network's blooms; served), maybe_alone (the request may select no other upstream, by routing or use-upstream selector, split pieces included; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_reasked (no holder answered within W; the first upstream asked again and its answer served). maybe_agreed, maybe_found and maybe_reasked asked other holders one at a time, the next on an error, a null or the hedge delay.",
+		Help:      "Total empty eth_getLogs answers the logs gate judged, by verdict: old (the block reached the view head W or more ago; served unjudged), no (headers prove no matching log: an empty block, a zero bloom, or a bloom that misses the filter once receipts proved the network's blooms; served), maybe_alone (the request may select no other upstream, by routing or use-upstream selector, split pieces included; served unconfirmed), maybe_agreed (another holder answered empty; served), maybe_found (another holder answered logs; served), maybe_reasked (no holder answered within W; the first upstream asked again and its answer served). maybe_agreed, maybe_found and maybe_reasked asked other holders one at a time, the next on an error, a null or the hedge delay. The gate runs only where integrity enables the getLogsEmptyGate check.",
 	}, []string{"project", "network", "verdict"})
 
 	// MetricHeadAskTotal counts every head Ask (spec §6.8, §17) by its
