@@ -517,6 +517,28 @@ func (e *ErrClientBatchTooLarge) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
+// ErrRequestBodyTooLarge rejects an HTTP request body longer than
+// server.maxRequestBodySize. Reading stops just past the limit; none of it runs.
+type ErrRequestBodyTooLarge struct{ BaseError }
+
+const ErrCodeRequestBodyTooLarge ErrorCode = "ErrRequestBodyTooLarge"
+
+var NewErrRequestBodyTooLarge = func(maxBytes int64) error {
+	return &ErrRequestBodyTooLarge{
+		BaseError{
+			Code:    ErrCodeRequestBodyTooLarge,
+			Message: fmt.Sprintf("request body exceeds the limit of %d bytes (maxRequestBodySize)", maxBytes),
+			Details: map[string]interface{}{
+				"maxRequestBodySize": maxBytes,
+			},
+		},
+	}
+}
+
+func (e *ErrRequestBodyTooLarge) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 type ErrInvalidUrlPath struct{ BaseError }
 
 const ErrCodeInvalidUrlPath ErrorCode = "ErrInvalidUrlPath"

@@ -94,6 +94,9 @@ func (s *ServerConfig) Validate() error {
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
 	}
+	if s.MaxRequestBodySize != nil && *s.MaxRequestBodySize < 0 {
+		return fmt.Errorf("server.maxRequestBodySize must be 0 (no limit) or greater, got %d", *s.MaxRequestBodySize)
+	}
 	if ws := s.WebSocket; ws != nil {
 		if ws.PingInterval == nil || *ws.PingInterval <= 0 {
 			return fmt.Errorf("server.webSocket.pingInterval must be greater than 0")

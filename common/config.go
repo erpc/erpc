@@ -162,6 +162,10 @@ type ServerConfig struct {
 	TrustedIPForwarders []string          `yaml:"trustedIPForwarders,omitempty" json:"trustedIPForwarders"`
 	TrustedIPHeaders    []string          `yaml:"trustedIPHeaders,omitempty" json:"trustedIPHeaders"`
 	ResponseHeaders     map[string]string `yaml:"responseHeaders,omitempty" json:"responseHeaders"`
+	// MaxRequestBodySize caps one HTTP request body in bytes, counted after
+	// gzip decompression (0 = unlimited). An over-limit body gets HTTP 413
+	// and none of it runs.
+	MaxRequestBodySize *int64 `yaml:"maxRequestBodySize,omitempty" json:"maxRequestBodySize"`
 
 	WebSocket *WebSocketServerConfig `yaml:"webSocket,omitempty" json:"webSocket"`
 

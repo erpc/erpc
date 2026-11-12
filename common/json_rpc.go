@@ -1996,8 +1996,8 @@ func TranslateToJsonRpcException(err error) error {
 	}
 	// JSON-RPC 2.0 "Invalid Request": the envelope itself is refused before
 	// any of it runs, so the message names the limit the client crossed.
-	if HasErrorCode(err, ErrCodeClientBatchTooLarge) {
-		msg := "batch too large"
+	if HasErrorCode(err, ErrCodeClientBatchTooLarge, ErrCodeRequestBodyTooLarge) {
+		msg := "request too large"
 		if se, ok := err.(StandardError); ok {
 			msg = se.DeepestMessage()
 		}

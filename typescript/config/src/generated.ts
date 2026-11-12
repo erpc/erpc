@@ -385,6 +385,12 @@ export interface ServerConfig {
   trustedIPForwarders?: string[];
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
+  /**
+   * MaxRequestBodySize caps one HTTP request body in bytes, counted after
+   * gzip decompression (0 = unlimited). An over-limit body gets HTTP 413
+   * and none of it runs.
+   */
+  maxRequestBodySize?: number /* int64 */;
   webSocket?: WebSocketServerConfig;
   /**
    * ExecutionHeaders controls the per-request diagnostic headers

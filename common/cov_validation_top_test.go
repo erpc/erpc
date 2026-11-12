@@ -103,6 +103,8 @@ func TestCovValidation_Server(t *testing.T) {
 		}, ""},
 		{"maxTimeout nil", func(s *ServerConfig) { s.MaxTimeout = nil }, "server.maxTimeout is required"},
 		{"maxTimeout zero", func(s *ServerConfig) { s.MaxTimeout = cvDur(0) }, "server.maxTimeout is required"},
+		{"negative maxRequestBodySize", func(s *ServerConfig) { v := int64(-1); s.MaxRequestBodySize = &v }, "server.maxRequestBodySize must be 0 (no limit) or greater, got -1"},
+		{"zero maxRequestBodySize means no limit", func(s *ServerConfig) { v := int64(0); s.MaxRequestBodySize = &v }, ""},
 		{"empty forwarder", func(s *ServerConfig) { s.TrustedIPForwarders = []string{"  "} }, "server.trustedForwarders contains empty entry"},
 		{"bad CIDR", func(s *ServerConfig) { s.TrustedIPForwarders = []string{"10.0.0.0/99"} }, "server.trustedForwarders entry '10.0.0.0/99' is not a valid CIDR"},
 		{"bad IP", func(s *ServerConfig) { s.TrustedIPForwarders = []string{"not-an-ip"} }, "server.trustedForwarders entry 'not-an-ip' is not a valid IP address"},

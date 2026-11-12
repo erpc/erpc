@@ -1,6 +1,8 @@
 package erpc
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -310,6 +312,53 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 			assert.EqualValues(t, 1, calls.Load(), "an over-limit batch must reach no upstream")
 		})
 	})
+
+	// maxRequestBodySize bounds the body eRPC reads, after gzip
+	// decompression: past it the request gets 413 and runs nothing.
+	t.Run("RequestBodyCap", func(t *testing.T) {
+		calls := countEvmGetBalanceCalls(t)
+		atLimit := getBalanceBatch(3, "")
+		limit := int64(len(atLimit))
+		overLimit := atLimit + " "
+		cfg := clientBatchCapTestConfig()
+		cfg.Server.MaxRequestBodySize = &limit
+		_, _, baseURL, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+		time.Sleep(1500 * time.Millisecond)
+		url := baseURL + "/test_project/evm/123"
+		gz := map[string]string{"Content-Encoding": "gzip"}
+
+		statusCode, respBody := postBody(t, url, atLimit, nil)
+		assert.Equal(t, http.StatusOK, statusCode, "body: %s", respBody)
+		assert.EqualValues(t, 3, calls.Load(), "a body at the limit is served")
+		statusCode, respBody = postRawBody(t, url, bytes.NewReader(gzipBytes(t, atLimit)), gz)
+		assert.Equal(t, http.StatusOK, statusCode, "body: %s", respBody)
+		assert.EqualValues(t, 6, calls.Load(), "a gzip body at the limit is served")
+
+		for _, tc := range []struct {
+			name    string
+			body    []byte
+			headers map[string]string
+		}{
+			{"Plain", []byte(overLimit), nil},
+			// Compressed, the body is under the limit; decompressed it is over.
+			{"Gzip", gzipBytes(t, overLimit), gz},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				statusCode, respBody := postRawBody(t, url, bytes.NewReader(tc.body), tc.headers)
+				assert.Equal(t, http.StatusRequestEntityTooLarge, statusCode, "body: %s", respBody)
+				var obj map[string]interface{}
+				require.NoError(t, common.SonicCfg.Unmarshal([]byte(respBody), &obj), "body: %s", respBody)
+				assert.Contains(t, obj, "id")
+				assert.Nil(t, obj["id"])
+				errObj, ok := obj["error"].(map[string]interface{})
+				require.True(t, ok, "body: %s", respBody)
+				assert.EqualValues(t, common.JsonRpcErrorClientSideException, errObj["code"])
+				assert.Contains(t, errObj["message"], fmt.Sprintf("limit of %d bytes", limit))
+				assert.EqualValues(t, 6, calls.Load(), "an over-limit body must reach no upstream")
+			})
+		}
+	})
 }
 
 // clientBatchCapTestConfig is envelopeTestConfig with upstream batching off,
@@ -318,6 +367,16 @@ func clientBatchCapTestConfig() *common.Config {
 	cfg := envelopeTestConfig()
 	cfg.Projects[0].Upstreams[0].JsonRpc = &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE}
 	return cfg
+}
+
+func gzipBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, err := zw.Write([]byte(s))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
 }
 
 // countEvmGetBalanceCalls answers every eth_getBalance sent to rpc1 and

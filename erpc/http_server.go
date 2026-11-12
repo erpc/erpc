@@ -506,6 +506,16 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			bodyReader = gzReader
 		}
 
+		// Bound the decompressed body: reading stops one byte past the limit,
+		// which is enough to tell an over-limit body from one at the limit.
+		var maxBodySize int64
+		if s.serverCfg.MaxRequestBodySize != nil {
+			maxBodySize = *s.serverCfg.MaxRequestBodySize
+		}
+		if maxBodySize > 0 {
+			bodyReader = io.LimitReader(bodyReader, maxBodySize+1)
+		}
+
 		// Replace the existing body read with our potentially decompressed reader
 		_, readBodySpan := common.StartDetailSpan(httpCtx, "Http.ReadBody")
 		body, cleanup, err := util.ReadAll(bodyReader, 2048)
@@ -514,6 +524,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			defer cleanup()
 		}
 		readBodySpan.End()
+		if err == nil && maxBodySize > 0 && int64(len(body)) > maxBodySize {
+			err = common.NewErrRequestBodyTooLarge(maxBodySize)
+		}
 		if err != nil {
 			common.SetTraceSpanError(readBodySpan, err)
 			handleErrorResponse(
@@ -1777,6 +1790,10 @@ func determineResponseStatusCode(res interface{}, architectureHint ...common.Net
 		return http.StatusOK
 	case common.HasErrorCode(err, common.ErrCodeInvalidUrlPath, common.ErrCodeJsonRpcRequestUnmarshal, common.ErrCodeInvalidRequest, common.ErrCodeClientBatchTooLarge):
 		return http.StatusBadRequest
+	// 413 Content Too Large - the body crossed server.maxRequestBodySize. A
+	// transport limit, not a malformed body, so Solana requests get it too.
+	case common.HasErrorCode(err, common.ErrCodeRequestBodyTooLarge):
+		return http.StatusRequestEntityTooLarge
 	// 401 Unauthorized - authentication failures
 	case common.HasErrorCode(err, common.ErrCodeAuthUnauthorized, common.ErrCodeEndpointUnauthorized):
 		return http.StatusUnauthorized
@@ -1853,6 +1870,7 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeAuthUnauthorized,
 			common.ErrCodeAuthRateLimitRuleExceeded,
 			common.ErrCodeJsonRpcRequestUnmarshal,
+			common.ErrCodeRequestBodyTooLarge,
 			common.ErrCodeClientBatchTooLarge,
 			common.ErrCodeProjectNotFound,
 		) {
