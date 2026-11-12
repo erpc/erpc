@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/test/chainsim"
 	"github.com/erpc/erpc/util"
+	gethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -32,14 +34,17 @@ import (
 // block, and that block's age against the wall clock, the test moves. With
 // numbers it serves the chain's canonical blocks by number up to that head;
 // without, NotFound, as a reader that ingested none of them. A head the chain
-// does not hold (another chain's, say) carries no hash.
+// does not hold (another chain's, say) carries no hash. It serves eth_getLogs
+// by range up to its head and refuses a range past it whole, as Prism does;
+// logRanges records every range asked.
 type cacheHeadBds struct {
 	evm.UnimplementedRPCQueryServiceServer
-	chain   *chainsim.Chain
-	numbers bool
-	mu      sync.Mutex
-	head    uint64
-	age     time.Duration
+	chain     *chainsim.Chain
+	numbers   bool
+	mu        sync.Mutex
+	head      uint64
+	age       time.Duration
+	logRanges [][2]uint64
 }
 
 // startCacheHeadBds serves a cacheHeadBds of chain until the test ends.
@@ -94,9 +99,44 @@ func (s *cacheHeadBds) GetBlockByNumber(_ context.Context, req *evm.GetBlockByNu
 	return &evm.GetBlockResponse{Block: h}, nil
 }
 
+// GetLogs answers an address filter from the chain's canonical logs.
+func (s *cacheHeadBds) GetLogs(_ context.Context, req *evm.GetLogsRequest) (*evm.GetLogsResponse, error) {
+	from, to := req.GetFromBlock(), req.GetToBlock()
+	s.mu.Lock()
+	head := s.head
+	s.logRanges = append(s.logRanges, [2]uint64{from, to})
+	s.mu.Unlock()
+	if to > head {
+		return nil, status.Errorf(codes.OutOfRange, "block range %d..%d exceeds chain tip (%d)", from, to, head)
+	}
+	resp := &evm.GetLogsResponse{}
+	for n := from; n <= to; n++ {
+		for _, l := range s.chain.CanonAt(n).Logs() {
+			if !slices.ContainsFunc(req.GetAddresses(), func(a []byte) bool { return bytes.Equal(a, l.Address.Bytes()) }) {
+				continue
+			}
+			topics := make([][]byte, len(l.Topics))
+			for i, t := range l.Topics {
+				topics[i] = t.Bytes()
+			}
+			resp.Logs = append(resp.Logs, &evm.Log{
+				Address: l.Address.Bytes(), Topics: topics, BlockNumber: l.BlockNumber, BlockHash: l.BlockHash.Bytes(),
+				TransactionHash: l.TxHash.Bytes(), TransactionIndex: uint32(l.TxIndex), LogIndex: uint32(l.LogIndex),
+			})
+		}
+	}
+	return resp, nil
+}
+
+func (s *cacheHeadBds) ranges() [][2]uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.logRanges)
+}
+
 // cacheHeadCache is a cache whose realtime eth_getBlockByNumber policy, with
 // ttl, reads from the BDS reader at addr under connector id; with numbers,
-// unfinalized and finalized blocks are read from it too.
+// unfinalized and finalized blocks and logs are read from it too.
 func cacheHeadCache(id, addr string, ttl time.Duration, numbers bool) *common.CacheConfig {
 	policies := []*common.CachePolicyConfig{{
 		Network: "*", Method: "eth_getBlockByNumber", Finality: common.DataFinalityStateRealtime,
@@ -105,7 +145,7 @@ func cacheHeadCache(id, addr string, ttl time.Duration, numbers bool) *common.Ca
 	if numbers {
 		for _, f := range []common.DataFinalityState{common.DataFinalityStateUnfinalized, common.DataFinalityStateFinalized} {
 			policies = append(policies, &common.CachePolicyConfig{
-				Network: "*", Method: "eth_getBlockByNumber", Finality: f,
+				Network: "*", Method: "eth_getBlockByNumber|eth_getLogs", Finality: f,
 				Connector: id, TTL: common.FixedDuration(time.Minute),
 			})
 		}
@@ -133,7 +173,7 @@ type cacheHeadNode struct {
 	nw    *Network
 }
 
-func newCacheHeadNode(t *testing.T, connector string, ttl time.Duration, follow bool) *cacheHeadNode {
+func newCacheHeadNode(t *testing.T, connector string, ttl time.Duration, follow bool, opts ...func(*common.Config)) *cacheHeadNode {
 	chain := chainsim.NewChain(chainsim.Config{ChainID: 123, BlockTime: time.Second, Seed: 7, History: 20, Halted: true})
 	t.Cleanup(chain.Close)
 	ws, err := chain.AddVendor("ws-a", "vendor-a", true)
@@ -146,6 +186,9 @@ func newCacheHeadNode(t *testing.T, connector string, ttl time.Duration, follow 
 	}, sourceUpstream(ws.ID, ws.URL(), nil), sourceUpstream(http1.ID, http1.URL(), util.BoolPtr(true)))
 	cfg.Server.WaitBeforeShutdown = common.Duration(0).Ptr()
 	cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: cacheHeadCache(connector, bdsAddr, ttl, true)}
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	srv, addr, cancel := startTestERPCServer(t, cfg)
 	n := &cacheHeadNode{t: t, chain: chain, bds: bds, addr: addr}
 	t.Cleanup(func() {
@@ -296,4 +339,61 @@ func TestNetworkCacheHead_OffServesTheView(t *testing.T) {
 	number, hash, _ := n.latestBlock()
 	assert.Equal(t, tip, number)
 	assert.Equal(t, n.chain.CanonAt(tip).Hash.Hex(), hash)
+}
+
+// A log search that runs past the cache's newest block misses the cache
+// whole: Prism refuses it. The cache then serves every block up to its head
+// in one read, and only the blocks above it go to the vendors, though they
+// split at 2 blocks. Below its head the cache is never read again in
+// vendor-sized pieces. Full HTTP server, the real grpc cache connector
+// against an in-process BDS reader, the simulated chain's vendors.
+func TestNetworkCacheHead_GetLogsPastCacheHeadReadsCacheWhole(t *testing.T) {
+	n := newCacheHeadNode(t, "bds-logs", 3*time.Second, false, func(cfg *common.Config) {
+		for _, u := range cfg.Projects[0].Upstreams {
+			u.Evm.GetLogsAutoSplittingRangeThreshold = 2
+		}
+	})
+	tip := n.chain.Tip().Number
+	from, head := tip-16, tip-4
+	n.bds.set(head, 0)
+	n.nw.chainTracker.MarkRead()
+	require.Eventually(t, func() bool { return cacheConnectorHead("bds-logs") == float64(head) }, 10*time.Second, 20*time.Millisecond,
+		"the cache head's poll observes the head")
+
+	filter := chainsim.Filters[0]
+	want := n.chain.CanonicalLogs(filter, from, tip)
+	require.NotEmpty(t, n.chain.CanonicalLogs(filter, from, head), "the cache's part holds logs")
+	require.NotEmpty(t, n.chain.CanonicalLogs(filter, head+1, tip), "the vendors' part holds logs")
+
+	resp, raw := n.post(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s"}]}`,
+		from, tip, filter.Address.Hex()))
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+	var r struct {
+		Result []struct {
+			BlockHash string `json:"blockHash"`
+			LogIndex  string `json:"logIndex"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &r), "body: %s", raw)
+	require.Empty(t, r.Error, "body: %s", raw)
+	got := make(map[chainsim.LogKey]bool, len(r.Result))
+	for _, l := range r.Result {
+		idx, err := strconv.ParseUint(strings.TrimPrefix(l.LogIndex, "0x"), 16, 64)
+		require.NoError(t, err, "body: %s", raw)
+		got[chainsim.LogKey{BlockHash: gethcommon.HexToHash(l.BlockHash), LogIndex: int(idx)}] = true
+	}
+	require.Len(t, r.Result, len(want), "body: %s", raw)
+	for k := range want {
+		assert.True(t, got[k], "log %v is in the answer", k)
+	}
+
+	var below [][2]uint64
+	for _, rg := range n.bds.ranges() {
+		if rg[0] <= head {
+			below = append(below, rg)
+		}
+	}
+	assert.Equal(t, [][2]uint64{{from, tip}, {from, head}}, below,
+		"the cache is read for the whole range, refused, then once up to its head")
 }
