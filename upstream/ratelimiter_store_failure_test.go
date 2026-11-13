@@ -168,6 +168,22 @@ func TestRateLimiterRedis_OverLimitKeyDeniesWithoutRedis(t *testing.T) {
 	require.Equal(t, int64(0), admitted(t, budget, 5, false), "cached over-limit key denies without Redis")
 }
 
+// Raising maxCount in the same window must clear the over-limit freecache.
+// Cache keys exclude the limit value, so without a clear the prior denial
+// would keep rejecting until the window ended.
+func TestRateLimiterRedis_AdjustBudgetIncreaseClearsOverLimitCache(t *testing.T) {
+	m := miniredis.RunT(t)
+	budget := newRedisBudget(t, m.Addr(), nil, perHour(2))
+	require.Equal(t, int64(2), admitted(t, budget, 3, false), "third request is over the limit")
+
+	rules, err := budget.GetRulesByMethod("eth_call")
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	require.NoError(t, budget.AdjustBudget(rules[0], 10))
+
+	require.Equal(t, int64(5), admitted(t, budget, 5, false), "raised limit admits within the new maxCount")
+}
+
 // onFailure: local never scales a credit rule below one call's cost: 600
 // credits × 0.1 is 60, under a 200-credit call, so the local limit is 200.
 func TestRateLimiterRedis_LocalCreditLimitFitsOneCall(t *testing.T) {
