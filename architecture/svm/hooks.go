@@ -884,7 +884,7 @@ func upstreamPostForward_getBlockTimeNull(ctx context.Context, n common.Network,
 	}
 	slot := leadingSlotParam(ctx, r)
 	cfg := n.Config()
-	if slot <= 0 || cfg == nil || cfg.Svm == nil || !common.KnownSvmHistory(cfg.Svm.Chain, cfg.Svm.Cluster).RecordsBlockTime(uint64(slot)) {
+	if slot == 0 || cfg == nil || cfg.Svm == nil || !common.KnownSvmHistory(cfg.Svm.Chain, cfg.Svm.Cluster).RecordsBlockTime(slot) {
 		return nil
 	}
 	sup, ok := u.(common.SvmUpstream)
@@ -895,7 +895,7 @@ func upstreamPostForward_getBlockTimeNull(ctx context.Context, n common.Network,
 	if poller == nil || poller.IsObjectNull() {
 		return nil
 	}
-	if finalized := poller.FinalizedSlot(); finalized <= 0 || slot > finalized {
+	if finalized := poller.FinalizedSlot(); finalized <= 0 || slot > uint64(finalized) {
 		return nil
 	}
 	r.ClearLastValidResponseIf(rs)
