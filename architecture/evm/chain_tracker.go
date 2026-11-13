@@ -900,7 +900,7 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 			t.clock.bound(msg.upstream, 0, true)
 		}
 	}
-	t.clock.saw(h.number, now, from, msg.via, t.BlockTime())
+	t.clock.saw(h.number, now, from, msg.via, t.sampledBlockTime())
 	if msg.vote != voteSource {
 		if len(t.pins) == 0 {
 			t.evict()
@@ -3638,12 +3638,18 @@ func (t *ChainTracker) ReorgWindow() int { return t.window }
 // poller's debounce reads too); health.ColdBlockTime until the first
 // sample, 2 timestamp changes after the first observed header (spec §6.7).
 func (t *ChainTracker) BlockTime() time.Duration {
-	if n, ok := t.network.(interface{ EvmBlockTime() time.Duration }); ok {
-		if bt := n.EvmBlockTime(); bt > 0 {
-			return bt
-		}
+	if bt := t.sampledBlockTime(); bt > 0 {
+		return bt
 	}
 	return health.ColdBlockTime
+}
+
+// sampledBlockTime is the network's block time, 0 before its first sample.
+func (t *ChainTracker) sampledBlockTime() time.Duration {
+	if n, ok := t.network.(interface{ EvmBlockTime() time.Duration }); ok {
+		return n.EvmBlockTime()
+	}
+	return 0
 }
 
 // W is the freshness window (health.FreshnessWindow, spec §1). Hash
