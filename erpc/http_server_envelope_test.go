@@ -337,17 +337,34 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 						assertAgaveParseError(single[0])
 						assert.Zero(t, calls.Load(), "no upstream may be asked")
 
+						// A Solana node parses a batch as one value, so one
+						// unreadable id fails it whole: a single -32700, the
+						// rest of the batch unrun.
 						calls.Store(0)
-						batch := post("[" + item(`-7`) + "," + item(`7`) + "]")
-						require.Len(t, batch, 2)
-						assertAgaveParseError(batch[0])
-						assert.EqualValues(t, 7, batch[1]["id"])
-						assert.Equal(t, "0xfeed", batch[1]["result"], "the valid item is served: %v", batch[1])
-						assert.EqualValues(t, 1, calls.Load(), "only the valid item reaches an upstream")
+						resp, err := http.Post(baseURL+tc.path, "application/json", strings.NewReader("["+item(`-7`)+","+item(`7`)+"]"))
+						require.NoError(t, err)
+						raw, err = io.ReadAll(resp.Body)
+						resp.Body.Close()
+						require.NoError(t, err)
+						assert.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+						var whole map[string]interface{}
+						require.NoError(t, common.SonicCfg.Unmarshal(raw, &whole), "one object, not an array: %s", raw)
+						assertAgaveParseError(whole)
+						assert.Zero(t, calls.Load(), "no item of the batch reaches an upstream")
 					} else {
 						assert.EqualValues(t, -7, single[0]["id"], "body: %s", raw)
 						assert.Equal(t, "0xfeed", single[0]["result"], "body: %s", raw)
 						assert.EqualValues(t, 1, calls.Load(), "the request is forwarded")
+
+						calls.Store(0)
+						batch := post("[" + item(`-7`) + "," + item(`7`) + "]")
+						require.Len(t, batch, 2, "an EVM batch is answered per item")
+						assert.EqualValues(t, -7, batch[0]["id"])
+						assert.Equal(t, "0xfeed", batch[0]["result"])
+						assert.EqualValues(t, 7, batch[1]["id"])
+						// Both items carry the same params, so the multiplexer may
+						// fold them into one upstream call.
+						assert.Positive(t, calls.Load(), "the items are forwarded")
 					}
 				})
 
@@ -368,10 +385,9 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 		}
 	})
 
-	// Empty batch body must stay "[]". The Solana notification path writes an
-	// empty body when every reply was filtered out; that branch must not also
-	// catch len(requests)==0 from "[]", or EVM clients that JSON.parse the
-	// response will throw on a 200 with no body.
+	// An empty batch is answered as each architecture's nodes answer it: EVM
+	// clients JSON.parse "[]", while a Solana node answers HTTP 200 with no
+	// body at all.
 	t.Run("EmptyBatchBodyIsEmptyArray", func(t *testing.T) {
 		util.ResetGock()
 		t.Cleanup(util.ResetGock)
@@ -385,6 +401,27 @@ func TestHttpServer_RequestEnvelope(t *testing.T) {
 		statusCode, _, respBody := sendRequest(`[]`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode, "body: %s", respBody)
 		assert.Equal(t, `[]`, strings.TrimSpace(respBody))
+	})
+
+	t.Run("SvmEmptyBatchHasEmptyBody", func(t *testing.T) {
+		util.ResetGock()
+		t.Cleanup(util.ResetGock)
+		util.SetupMocksForEvmStatePoller()
+		for _, host := range []string{"svm-env-rpc1.localhost", "svm-env-rpc2.localhost"} {
+			util.SetupMocksForSvmStatePoller(host, 1000, 990)
+		}
+
+		_, _, baseURL, shutdown, _ := createServerTestFixtures(svmEnvelopeTestConfig(), t)
+		defer shutdown()
+		time.Sleep(1500 * time.Millisecond)
+
+		resp, err := http.Post(baseURL+"/test_project/svm/mainnet-beta", "application/json", strings.NewReader(`[]`))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, raw)
 	})
 
 	// maxClientBatchSize refuses a whole batch before any of it runs: one

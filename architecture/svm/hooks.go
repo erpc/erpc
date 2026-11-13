@@ -1,13 +1,16 @@
 package svm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -149,13 +152,242 @@ func projectPreForward_negativeId(ctx context.Context, r *common.NormalizedReque
 	if err != nil || rpcReq == nil {
 		return false, nil, nil
 	}
-	if !strings.HasPrefix(strings.TrimSpace(string(rpcReq.IDRawBytes())), "-") {
+	if !idUnreadable(rpcReq.IDRawBytes()) {
 		return false, nil, nil
 	}
 	rpcReq.AnswerIDAsNull()
-	return true, nil, common.NewErrInvalidRequest(
+	return true, nil, parseError()
+}
+
+// idUnreadable reports whether an agave node fails to read the verbatim id
+// bytes: a negative number is neither null, a u64, nor a string.
+func idUnreadable(id []byte) bool {
+	return bytes.HasPrefix(bytes.TrimSpace(id), []byte("-"))
+}
+
+func parseError() error {
+	return common.NewErrInvalidRequest(
 		common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorParseException, "Parse error", nil, nil),
 	)
+}
+
+// BatchParseError returns the error an agave node answers for the whole batch
+// when one element carries an id it cannot read. agave parses a batch as one
+// value, so such an element fails the entire parse: one -32700 with id null,
+// nothing run. It returns nil when every id is readable.
+func BatchParseError(requests []json.RawMessage) error {
+	for _, raw := range requests {
+		var envelope struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if common.SonicCfg.Unmarshal(raw, &envelope) == nil && idUnreadable(envelope.ID) {
+			return parseError()
+		}
+	}
+	return nil
+}
+
+// u64SlotFirstMethods take a u64 slot as params[0].
+var u64SlotFirstMethods = map[string]struct{}{
+	"getBlock":           {},
+	"getBlockTime":       {},
+	"getBlockCommitment": {},
+	"getBlocks":          {},
+	"getBlocksWithLimit": {},
+}
+
+// minContextSlotConfigMethods are the read methods whose config object
+// declares minContextSlot (agave RpcContextConfig and the configs that embed
+// it). Every other method ignores the member, whatever its type, so only
+// these reject a malformed one.
+var minContextSlotConfigMethods = map[string]struct{}{
+	"getAccountInfo":             {},
+	"getBalance":                 {},
+	"getBlockHeight":             {},
+	"getEpochInfo":               {},
+	"getFeeForMessage":           {},
+	"getInflationReward":         {},
+	"getLatestBlockhash":         {},
+	"getMultipleAccounts":        {},
+	"getProgramAccounts":         {},
+	"getSignaturesForAddress":    {},
+	"getSlot":                    {},
+	"getSlotLeader":              {},
+	"getStakeMinimumDelegation":  {},
+	"getTokenAccountsByDelegate": {},
+	"getTokenAccountsByOwner":    {},
+	"getTransactionCount":        {},
+	"isBlockhashValid":           {},
+	"simulateTransaction":        {},
+}
+
+// projectPreForward_u64Params answers, with agave's own -32602, a request whose
+// slot or minContextSlot is not a JSON u64: a float (5.0 and 1e12 included), a
+// negative or out-of-range integer, a string, a bool, null, a map or an
+// array. agave's serde decode rejects such params before the method runs, so
+// every upstream would answer the same; eRPC would instead read 5.0 as slot 5,
+// clamp a big number, or parse a string. A null minContextSlot is agave's
+// "absent" and passes.
+func projectPreForward_u64Params(ctx context.Context, r *common.NormalizedRequest, method string) (bool, *common.NormalizedResponse, error) {
+	_, slotFirst := u64SlotFirstMethods[method]
+	_, mcsConfig := minContextSlotConfigMethods[method]
+	if !slotFirst && !mcsConfig {
+		return false, nil, nil
+	}
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil || rpcReq == nil {
+		return false, nil, nil
+	}
+	rpcReq.RLock()
+	params := exactParams(rpcReq)
+	invalid := ""
+	if slotFirst && len(params) > 0 {
+		_, invalid, _ = agaveU64(params[0])
+	}
+	if mcsConfig && invalid == "" {
+		for _, p := range params {
+			m, ok := p.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if v, present := m["minContextSlot"]; present && v != nil {
+				_, invalid, _ = agaveU64(v)
+				break
+			}
+		}
+	}
+	rpcReq.RUnlock()
+	if invalid == "" {
+		return false, nil, nil
+	}
+	return true, nil, common.NewErrInvalidRequest(
+		common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument, "Invalid params: "+invalid+".", nil, nil),
+	)
+}
+
+// exactParams returns the params with numbers as json.Number, decoded from
+// the client's bytes, when Params lost a number's literal form (see
+// JsonRpcRequest.ParamsLiteral); otherwise Params itself. The caller holds
+// the request's read lock.
+func exactParams(rpcReq *common.JsonRpcRequest) []interface{} {
+	lit := rpcReq.ParamsLiteral()
+	if lit == nil {
+		return rpcReq.Params
+	}
+	dec := json.NewDecoder(bytes.NewReader(lit))
+	dec.UseNumber()
+	var params []interface{}
+	if dec.Decode(&params) != nil {
+		return rpcReq.Params
+	}
+	return params
+}
+
+// agaveU64 decodes v the way agave's serde_json decodes a u64. ok reports a
+// valid u64; otherwise invalid is serde's phrase for what v is, or empty when
+// v has no agave equivalent (a float literal outside the f64 range).
+func agaveU64(v interface{}) (slot uint64, invalid string, ok bool) {
+	const want = ", expected u64"
+	switch n := v.(type) {
+	case json.Number:
+		s := n.String()
+		if !strings.ContainsAny(s, ".eE") {
+			// serde_json reads an integer literal as u64, else i64, else f64;
+			// "-0" is the f64 -0.0.
+			if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+				return u, "", true
+			}
+			if i, err := strconv.ParseInt(s, 10, 64); err == nil && i != 0 {
+				return 0, fmt.Sprintf("invalid value: integer `%d`%s", i, want), false
+			}
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, "", false
+		}
+		return 0, "invalid type: floating point `" + agaveFloat(f) + "`" + want, false
+	case float64:
+		// Params keeps a float64 only for a non-negative integer literal of at
+		// most 15 digits; anything else arrives as json.Number above.
+		if n >= 0 && n == math.Trunc(n) && n < math.MaxUint64 {
+			return uint64(n), "", true
+		}
+		return 0, "invalid type: floating point `" + agaveFloat(n) + "`" + want, false
+	case int64:
+		if n < 0 {
+			return 0, fmt.Sprintf("invalid value: integer `%d`%s", n, want), false
+		}
+		return uint64(n), "", true
+	case int:
+		if n < 0 {
+			return 0, fmt.Sprintf("invalid value: integer `%d`%s", n, want), false
+		}
+		return uint64(n), "", true
+	case uint64:
+		return n, "", true
+	case string:
+		return 0, "invalid type: string " + rustDebugString(n) + want, false
+	case bool:
+		return 0, fmt.Sprintf("invalid type: boolean `%t`%s", n, want), false
+	case nil:
+		return 0, "invalid type: null" + want, false
+	case map[string]interface{}:
+		return 0, "invalid type: map" + want, false
+	case []interface{}:
+		return 0, "invalid type: sequence" + want, false
+	}
+	return 0, "", false
+}
+
+// agaveFloat prints f as serde's error messages do: shortest round-trip
+// digits, positional with a ".0" for decimal exponents -5..15, else
+// scientific with an unpadded signed exponent (1e+16, 1.5e-6).
+func agaveFloat(f float64) string {
+	sci := strconv.FormatFloat(f, 'e', -1, 64)
+	mant, expText, _ := strings.Cut(sci, "e")
+	exp, _ := strconv.Atoi(expText)
+	if exp < -5 || exp > 15 {
+		if exp < 0 {
+			return mant + "e-" + strconv.Itoa(-exp)
+		}
+		return mant + "e+" + strconv.Itoa(exp)
+	}
+	s := strconv.FormatFloat(f, 'f', -1, 64)
+	if !strings.Contains(s, ".") {
+		s += ".0"
+	}
+	return s
+}
+
+// rustDebugString quotes s as Rust's `{:?}` does, which is how serde names an
+// unexpected string.
+func rustDebugString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, c := range s {
+		switch c {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case 0:
+			b.WriteString(`\0`)
+		default:
+			if unicode.IsGraphic(c) {
+				b.WriteRune(c)
+			} else {
+				fmt.Fprintf(&b, `\u{%x}`, c)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // projectPreForward_getGenesisHash short-circuits getGenesisHash using the
@@ -570,7 +802,7 @@ func toInt64(v interface{}) (int64, bool) {
 // most once per state-poller debounce, while the live confirmed head advances
 // ~1 slot per 400ms — so a caller that just learned the head from
 // getSlot(confirmed) is routinely 1..N slots above the snapshot. Measured on
-// staging (debounce 2s): ~30 false -32014/min at the head, always 1-2 slots
+// staging (debounce 2s): ~30 false rejects/min at the head, always 1-2 slots
 // ahead of the tip. The guard therefore allows a staleness margin above the
 // snapshot (see tipStalenessMargin) — within it the request forwards
 // (the pool almost certainly indexed the slot since the last poll; the serving
@@ -584,19 +816,18 @@ func toInt64(v interface{}) (int64, bool) {
 // upstream could serve.
 func networkPreForward_getBlock(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	slot := leadingSlotParam(ctx, r)
-	tip, beyond := beyondPoolTip(ctx, n, slot, effectiveCommitment(ctx, n, r), tipStalenessMargin(n))
-	if !beyond {
+	if _, beyond := beyondPoolTip(ctx, n, slot, effectiveCommitment(ctx, n, r), tipStalenessMargin(n)); !beyond {
 		return false, nil, nil
 	}
 
-	// Wrap with ErrJsonRpcExceptionInternal(-32014) so TranslateToJsonRpcException
-	// preserves the wire code. Without this, the guard returns -32603 to clients;
-	// Solana clients only map -32004/-32014 to BlockNotAvailableException (wait-retry).
+	// agave's own answer for a slot above what it can serve, so a client cannot
+	// tell the local answer from a node's: -32004 (RpcCustomError::
+	// BlockNotAvailable), which Solana clients read as wait-and-retry.
 	return true, nil, common.NewErrEndpointMissingData(
 		common.NewErrJsonRpcExceptionInternal(
-			svmCodeBlockStatusNotAvail,
-			common.JsonRpcErrorMissingData,
-			fmt.Sprintf("slot %d not yet available from provider pool (tip: %d)", slot, tip),
+			svmCodeBlockNotAvailable,
+			common.JsonRpcErrorNumber(svmCodeBlockNotAvailable),
+			fmt.Sprintf("Block not available for slot %d", slot),
 			nil, nil,
 		),
 		nil,
@@ -653,7 +884,7 @@ func networkPreForward_minContextSlot(ctx context.Context, n common.Network, r *
 	if mcs <= 0 {
 		return false, nil, nil
 	}
-	tip, beyond := beyondPoolTip(ctx, n, mcs, effectiveCommitment(ctx, n, r), maxRetryableSlotDistance)
+	tip, beyond := beyondPoolTip(ctx, n, uint64(mcs), effectiveCommitment(ctx, n, r), maxRetryableSlotDistance)
 	if !beyond {
 		return false, nil, nil
 	}
@@ -671,20 +902,21 @@ func networkPreForward_minContextSlot(ctx context.Context, n common.Network, r *
 	)
 }
 
-// leadingSlotParam returns the slot in params[0], or 0 when absent or not a
-// positive number.
-func leadingSlotParam(ctx context.Context, r *common.NormalizedRequest) int64 {
+// leadingSlotParam returns the slot in params[0] exactly as the client sent
+// it, u64 range included, or 0 when absent or not a u64.
+func leadingSlotParam(ctx context.Context, r *common.NormalizedRequest) uint64 {
 	rpcReq, err := r.JsonRpcRequest(ctx)
 	if err != nil || rpcReq == nil {
 		return 0
 	}
 	rpcReq.RLock()
 	defer rpcReq.RUnlock()
-	if len(rpcReq.Params) == 0 {
+	params := exactParams(rpcReq)
+	if len(params) == 0 {
 		return 0
 	}
-	slot, ok := toInt64(rpcReq.Params[0])
-	if !ok || slot <= 0 {
+	slot, _, ok := agaveU64(params[0])
+	if !ok {
 		return 0
 	}
 	return slot
@@ -697,8 +929,8 @@ func leadingSlotParam(ctx context.Context, r *common.NormalizedRequest) int64 {
 // guard picks its margin. It fails open — reports false — when
 // svm.enforceBlockAvailability is off, the slot is not positive, or the indexed
 // frontier is unknown.
-func beyondPoolTip(ctx context.Context, n common.Network, slot int64, commitment string, margin int64) (int64, bool) {
-	if slot <= 0 {
+func beyondPoolTip(ctx context.Context, n common.Network, slot uint64, commitment string, margin int64) (int64, bool) {
+	if slot == 0 {
 		return 0, false
 	}
 	svmNet, ok := n.(common.SvmNetwork)
@@ -731,11 +963,9 @@ func beyondPoolTip(ctx context.Context, n common.Network, slot int64, commitment
 		}
 	}
 
-	// Overflow-safe form of `slot <= tip + margin`: a hostile or bogus
-	// upstream tip near math.MaxInt64 would wrap that addition negative and turn
-	// the guard into a reject-everything gate. Subtracting from slot instead
-	// cannot wrap — slot is > 0 and every guard's margin is a small positive.
-	return tip, slot-margin > tip
+	// Overflow-safe form of `slot > tip + margin`: a hostile or bogus upstream
+	// tip near math.MaxInt64 must not wrap the addition. tip is positive here.
+	return tip, slot > uint64(tip) && slot-uint64(tip) > uint64(margin)
 }
 
 // tipStalenessMargin returns the slot tolerance the getBlock guard adds on top

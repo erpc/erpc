@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -598,6 +599,35 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 		}
 
+		// A Solana node answers a batch as one parsed value: "[]" gets HTTP
+		// 200 with no body, and an element whose id it cannot read fails the
+		// whole batch with one -32700. EVM nodes answer per element.
+		if isBatch && architecture == string(common.ArchitectureSvm) {
+			if len(requests) == 0 {
+				w.WriteHeader(http.StatusOK)
+				common.EnrichHTTPServerSpan(httpCtx, http.StatusOK, nil)
+				parseRequestsSpan.End()
+				return
+			}
+			if perr := svm.BatchParseError(requests); perr != nil {
+				handleErrorResponse(
+					httpCtx,
+					&lg,
+					&startedAt,
+					nil,
+					perr,
+					w,
+					encoder,
+					writeFatalError,
+					s.serverCfg.IncludeErrorDetails,
+					s.executionHeadersMode(),
+					common.ArchitectureSvm,
+				)
+				parseRequestsSpan.End()
+				return
+			}
+		}
+
 		responses := make([]interface{}, len(requests))
 		// notifications marks valid Solana requests without an "id" member. They
 		// still run, but get no reply (JSON-RPC 2.0 §4.1), which is what Agave
@@ -887,8 +917,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		// Notifications get no entry; a request of only notifications gets an
-		// empty body. An empty batch ("[]") still has len(responses)==0 and
-		// must keep writing "[]" via the isBatch branch below.
+		// empty body. An EVM empty batch ("[]") still has len(responses)==0
+		// and must keep writing "[]" via the isBatch branch below.
 		replies := responses
 		if slices.Contains(notifications, true) {
 			replies = make([]interface{}, 0, len(responses))

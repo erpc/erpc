@@ -1039,7 +1039,7 @@ func TestNetworkPreForwardGetBlock_SlotBeyondStalenessMargin_ShortCircuits(t *te
 		if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			t.Fatalf("%s: expected ErrEndpointMissingData, got %T: %v", method, err, err)
 		}
-		// Verify wire code is -32014 so Solana clients map it to BlockNotAvailableException.
+		// Verify wire code is -32004 so Solana clients map it to BlockNotAvailableException.
 		// Without ErrJsonRpcExceptionInternal in the chain, TranslateToJsonRpcException
 		// falls through to -32603 (ServerSideException) which Solana clients don't handle.
 		if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
@@ -1117,7 +1117,7 @@ func TestNetworkPreForwardGetBlock_FinalizedCommitment_BoundedByFinalizedTip(t *
 			t.Fatalf("%s: expected ErrEndpointMissingData, got %T: %v", method, err, err)
 		}
 		if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
-			t.Fatalf("%s: guard error must carry ErrJsonRpcExceptionInternal for the -32014 wire code, got %T: %v", method, err, err)
+			t.Fatalf("%s: guard error must carry ErrJsonRpcExceptionInternal for the -32004 wire code, got %T: %v", method, err, err)
 		}
 	}
 }
@@ -1340,12 +1340,12 @@ func TestNetworkPreForwardGetBlock_UnpinnedCommitment_BoundedByFinalizedTip(t *t
 				t.Fatalf("%s%s: expected ErrEndpointMissingData, got %T: %v", method, params, err, err)
 			}
 			if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
-				t.Fatalf("%s%s: guard error must carry ErrJsonRpcExceptionInternal for the -32014 wire code", method, params)
+				t.Fatalf("%s%s: guard error must carry ErrJsonRpcExceptionInternal for the -32004 wire code", method, params)
 			}
-			// The reported bound must be the finalized tip, not the indexed one:
-			// the message is what an operator debugs a -32014 from.
-			if msg := err.Error(); !strings.Contains(msg, "tip: 1000") {
-				t.Fatalf("%s%s: expected the finalized tip in the error message, got %q", method, params, msg)
+			// Slot 1030 is below the indexed tip 1060, so firing here proves
+			// the finalized tip bounds it. The message is agave's own.
+			if msg := err.Error(); !strings.Contains(msg, "Block not available for slot 1030") {
+				t.Fatalf("%s%s: expected agave's -32004 message, got %q", method, params, msg)
 			}
 		}
 		// At and just above the finalized tip (inside the margin) it still forwards.
@@ -1364,7 +1364,7 @@ func TestNetworkPreForwardGetBlock_UnpinnedCommitment_BoundedByFinalizedTip(t *t
 // the LEADING upstream's finalized root. With roots skewed 1000/1000/1100 the
 // majority tip is 1000, and bounding by it nulls out ~100 slots the third
 // upstream is already holding — turning a servable request into a
-// client-visible -32014.
+// client-visible -32004.
 func TestNetworkPreForwardGetBlock_FinalizedBoundIsPoolMaxNotMajority(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
@@ -1380,14 +1380,13 @@ func TestNetworkPreForwardGetBlock_FinalizedBoundIsPoolMaxNotMajority(t *testing
 			t.Fatalf("slot %d is at or below the leading upstream's root 1100 (+margin 2): expected pass-through, got handled=%v err=%v", slot, handled, err)
 		}
 	}
-	// Beyond the leading root + margin the guard still fires, and reports the
-	// max as the bound.
+	// Beyond the leading root + margin the guard still fires.
 	handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1103]`))
 	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 		t.Fatalf("slot 1103 beyond root 1100 + margin 2: expected short-circuit, got handled=%v err=%v", handled, err)
 	}
-	if msg := err.Error(); !strings.Contains(msg, "tip: 1100") {
-		t.Fatalf("expected the pool-max finalized tip in the error message, got %q", msg)
+	if msg := err.Error(); !strings.Contains(msg, "Block not available for slot 1103") {
+		t.Fatalf("expected agave's -32004 message, got %q", msg)
 	}
 }
 
