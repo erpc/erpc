@@ -425,8 +425,10 @@ func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
 		bodies   []string // per-upstream body; nil = body for every upstream
 		body     string
 		floors   []int64 // first available slot per upstream; -1 = none observed
+		tip      int64   // pool's processed slot, finalized 10 below; 0 = 1000
 		ignoreAt int     // index of an upstream that ignores the method; -1 = none
 		wantCode int     // client error code; 0 = a served result
+		result   string  // served result when wantCode is 0; "" = []
 		check    func(t *testing.T, per []int64, total int64)
 	}{
 		{
@@ -461,6 +463,29 @@ func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
 				require.Greater(t, total, int64(4), "a not-yet-available block is retried after a delay")
 			},
 		},
+		{
+			// One provider answers null for a skipped slot where the others
+			// answer agave's skip errors. The null is that provider's missing
+			// data, not the request's answer, and nobody is asked twice.
+			name: "getBlockTime null for a skipped slot", method: "getBlockTime", params: `[400000000]`, tip: 400_001_000,
+			bodies: []string{
+				`{"jsonrpc":"2.0","id":1,"result":null}`,
+				`{"jsonrpc":"2.0","id":1,"error":{"code":-32009,"message":"Slot 400000000 was skipped, or missing in long-term storage"}}`,
+				`{"jsonrpc":"2.0","id":1,"error":{"code":-32007,"message":"Slot 400000000 was skipped, or missing due to ledger jump to recent snapshot"}}`,
+				`{"jsonrpc":"2.0","id":1,"error":{"code":-32009,"message":"Slot 400000000 was skipped, or missing in long-term storage"}}`,
+			},
+			floors: []int64{-1, -1, -1, -1}, ignoreAt: -1, wantCode: -32009,
+			check: func(t *testing.T, per []int64, _ int64) {
+				require.Equal(t, []int64{1, 1, 1, 1}, per, "each upstream is asked about a skipped slot once")
+			},
+		},
+		{
+			// Before mainnet-beta recorded block times, null is agave's answer
+			// and reaches the client.
+			name: "getBlockTime null before recorded times", method: "getBlockTime", params: `[500]`,
+			body:   `{"jsonrpc":"2.0","id":1,"result":null}`,
+			floors: []int64{-1, -1, -1, -1}, ignoreAt: -1, result: "null",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			util.ResetGock()
@@ -473,10 +498,14 @@ func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
 			cfgs := make([]*common.UpstreamConfig, len(ids))
 			for i, id := range ids {
 				host := fmt.Sprintf("svm-sweeponce-%d-%s.localhost", len(tc.name), id)
+				tip := tc.tip
+				if tip == 0 {
+					tip = 1000
+				}
 				if tc.floors[i] < 0 {
-					util.SetupMocksForSvmStatePoller(host, 1000, 990)
+					util.SetupMocksForSvmStatePoller(host, tip, tip-10)
 				} else {
-					util.SetupMocksForSvmStatePollerWithFirstAvailable(host, 1000, 990, 1000, tc.floors[i])
+					util.SetupMocksForSvmStatePollerWithFirstAvailable(host, tip, tip-10, tip, tc.floors[i])
 				}
 				body := tc.body
 				if tc.bodies != nil {
@@ -507,12 +536,18 @@ func TestSvm_PermanentMissingData_SweepsEachUpstreamOnce(t *testing.T) {
 				require.NotNil(t, resp)
 				jrr, jerr := resp.JsonRpcResponse()
 				require.NoError(t, jerr)
-				require.Equal(t, "[]", string(jrr.GetResultBytes()))
+				want := tc.result
+				if want == "" {
+					want = "[]"
+				}
+				require.Equal(t, want, string(jrr.GetResultBytes()))
 			} else {
 				require.Error(t, err)
 				require.Equal(t, common.JsonRpcErrorNumber(tc.wantCode), svmClientErrorCode(t, req, err))
 			}
-			tc.check(t, per, total)
+			if tc.check != nil {
+				tc.check(t, per, total)
+			}
 		})
 	}
 }
