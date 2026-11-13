@@ -2387,10 +2387,11 @@ func (n *Network) RunsConsensus(ctx context.Context, req *common.NormalizedReque
 
 // selectionOrder is the selection policy's order of the upstreams for req:
 // the engine's order, or registration order until its first tick, without
-// upstreams whose method config excludes the method.
+// upstreams whose method config excludes the method. A client read of
+// finalized block numbers takes the held ranking (heldOrder).
 func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequest, method string) []common.Upstream {
 	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
-	var upsList []common.Upstream
+	var upsList, held []common.Upstream
 	if n.policyEngine != nil {
 		// Pass the request's actual finality so per-finality slots
 		// (when EvalPerFinality is on) resolve to the bucket-specific
@@ -2409,7 +2410,7 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
 			}
 		}
-		upsList = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
+		upsList, held = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
 	}
 	if len(upsList) == 0 {
 		// Cold-start fallback: serve the raw registration order until the
@@ -2417,6 +2418,9 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 			upsList = append(upsList, u)
 		}
+	}
+	if held != nil {
+		upsList = n.heldOrder(ctx, req, upsList, held)
 	}
 	// Enforce method eligibility at selection time: an upstream whose
 	// ignoreMethods/allowMethods config (including entries added by
@@ -2444,6 +2448,47 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 	}
 	upstreamSpan.End()
 	return upsList
+}
+
+// heldOrder serves a client read of finalized block numbers by the held
+// ranking (the selection policy run again with lag read as 0 for frozen
+// upstreams, see Tracker.IsHeadFrozen): held's order, keeping each upstream
+// of ups and adding a frozen one only if it is frozen now, not syncing, not
+// on a minority fork, and has finalized the highest block req names; then
+// every upstream of ups held lacks. ups unchanged when req does not qualify
+// or no frozen upstream joins, so a request never has fewer upstreams.
+// Consensus keeps its participants.
+func (n *Network) heldOrder(ctx context.Context, req *common.NormalizedRequest, ups, held []common.Upstream) []common.Upstream {
+	if n.cfg.Architecture != common.ArchitectureEvm || req.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
+		return ups
+	}
+	bn, ok := common.EvmRequestedBlockNumber(ctx, req)
+	if !ok || bn <= 0 || bn > n.EvmHead(ctx, req).Finalized || n.RunsConsensus(ctx, req) {
+		return ups
+	}
+	list, added := make([]common.Upstream, 0, len(held)+len(ups)), false
+	for _, u := range held {
+		if slices.Contains(ups, u) {
+			list = append(list, u)
+			continue
+		}
+		eu, ok := u.(common.EvmUpstream)
+		if ok && n.metricsTracker.IsHeadFrozen(u) &&
+			eu.EvmSyncingState() != common.EvmSyncingStateSyncing &&
+			!n.isForkDemoted(u) &&
+			bn <= eu.EvmEffectiveFinalizedBlock() {
+			list, added = append(list, u), true
+		}
+	}
+	if !added {
+		return ups
+	}
+	for _, u := range ups {
+		if !slices.Contains(list, u) {
+			list = append(list, u)
+		}
+	}
+	return list
 }
 
 // preferUpstreams reorders ups by hints only, every upstream staying

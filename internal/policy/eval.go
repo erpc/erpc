@@ -56,6 +56,9 @@ type healthTracker interface {
 	// operator or automatic, wildcard shadowing the method — independent
 	// of which metrics bucket the slot reads.
 	CordonedReason(up common.Upstream, method string) (string, bool)
+	// IsHeadFrozen: the upstream's head is benched, unchanged for its stall
+	// window, and it still answers; the held ranking reads its lag as 0.
+	IsHeadFrozen(up common.Upstream) bool
 }
 
 // readUpstreamMetrics builds the JS-visible metrics object for one upstream.

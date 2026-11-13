@@ -402,7 +402,8 @@ func (e *Engine) UpstreamsChanged(networkID string) {
 // is the SAME backing array the slot stores atomically — callers MUST
 // treat it as read-only.
 func (e *Engine) GetOrdered(networkID, method, finality string) []common.Upstream {
-	return e.getOrdered(networkID, method, finality, nil)
+	ordered, _ := e.getOrdered(networkID, method, finality, nil)
+	return ordered
 }
 
 // GetOrderedInLane is GetOrdered scoped to a block-availability lane.
@@ -415,11 +416,16 @@ func (e *Engine) GetOrdered(networkID, method, finality string) []common.Upstrea
 // keyed by that set: an upstream that cannot serve the range is absent
 // from the pool (capability), and per-lane health/exclusion state is kept
 // separate from other lanes.
-func (e *Engine) GetOrderedInLane(networkID, method, finality string, laneUpstreamIDs []string) []common.Upstream {
+//
+// `held` is the held ranking of the same tick (Slot.heldRun), nil when
+// that slot ran none. A slot that has not ticked yet borrows the
+// wildcard's tip ranking only: the wildcard's held ranking ranks another
+// pool. Both slices are read-only.
+func (e *Engine) GetOrderedInLane(networkID, method, finality string, laneUpstreamIDs []string) (ordered, held []common.Upstream) {
 	return e.getOrdered(networkID, method, finality, laneUpstreamIDs)
 }
 
-func (e *Engine) getOrdered(networkID, method, finality string, laneIDs []string) []common.Upstream {
+func (e *Engine) getOrdered(networkID, method, finality string, laneIDs []string) (ordered, held []common.Upstream) {
 	slot, wildcard := e.lookupSlotWithFallback(networkID, method, finality, laneIDs)
 	// Refresh both slots' idle timestamps — a request hitting THIS
 	// (method, finality) keeps both the narrow slot AND the wildcard
@@ -427,17 +433,29 @@ func (e *Engine) getOrdered(networkID, method, finality string, laneIDs []string
 	nowMs := time.Now().UnixMilli()
 	if slot != nil {
 		slot.lastAccessedAtMs.Store(nowMs)
-		if ordered := slot.cache.Load(); ordered != nil && len(*ordered) > 0 {
-			return slot.methodBlocks.Load().filter(*ordered, method)
+		if r := slot.cache.Load(); r != nil && len(r.tip) > 0 {
+			return slot.methodBlocks.Load().filter(r.tip, method), r.heldFor(method)
 		}
 	}
 	if wildcard != nil {
 		wildcard.lastAccessedAtMs.Store(nowMs)
-		if ordered := wildcard.cache.Load(); ordered != nil {
-			return wildcard.methodBlocks.Load().filter(*ordered, method)
+		if r := wildcard.cache.Load(); r != nil {
+			ordered = wildcard.methodBlocks.Load().filter(r.tip, method)
+			if slot == wildcard {
+				held = r.heldFor(method)
+			}
+			return ordered, held
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+// heldFor is the held ranking without the upstreams it blocked for method.
+func (r *ranking) heldFor(method string) []common.Upstream {
+	if r.held == nil {
+		return nil
+	}
+	return r.heldBlocks.filter(r.held, method)
 }
 
 // LastEvalAt returns the wall-clock timestamp of the slot's most recent

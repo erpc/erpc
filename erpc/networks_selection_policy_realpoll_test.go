@@ -59,32 +59,39 @@ type realPollFixture struct {
 	// pollEvery is the upstream's statePollerInterval; zero keeps background
 	// polling off (1h) so tests drive polls explicitly.
 	pollEvery time.Duration
+	// pollsFail, while it holds true, makes the upstream's latest and
+	// finalized polls answer a server error.
+	pollsFail *atomic.Bool
 }
 
 // mockPollerHostWithLatest mocks one upstream host's state-poller RPCs with a
 // caller-chosen latest/finalized height. The REAL poller fetches these over
 // gock, so each upstream ends up with a genuine, distinct head tip — and thus
 // a real block-head-lag — rather than the test injecting the lag directly.
-func mockPollerHostWithLatest(host string, latest, finalized int64) {
+// While pollsFail (nil: never) holds true, the head polls answer a 503.
+func mockPollerHostWithLatest(host string, latest, finalized int64, pollsFail *atomic.Bool) {
 	hx := func(n int64) string { return fmt.Sprintf("0x%x", n) }
+	answers := func() bool { return pollsFail == nil || !pollsFail.Load() }
+	headPoll := func(r *http.Request, tag string) bool {
+		b := util.SafeReadBody(r)
+		return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, tag)
+	}
 	gock.New(host).Post("").Persist().
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_chainId") }).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x7b"}`)) // chainId 123
 	gock.New(host).Post("").Persist().
-		Filter(func(r *http.Request) bool {
-			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
-		}).
+		Filter(func(r *http.Request) bool { return answers() && headPoll(r, "latest") }).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hx(latest) + `","timestamp":"0x6702a8f0"}}`))
 	gock.New(host).Post("").Persist().
-		Filter(func(r *http.Request) bool {
-			b := util.SafeReadBody(r)
-			return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "finalized")
-		}).
+		Filter(func(r *http.Request) bool { return answers() && headPoll(r, "finalized") }).
 		Reply(200).
 		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hx(finalized) + `","timestamp":"0x6702a8e0"}}`))
+	gock.New(host).Post("").Persist().
+		Filter(func(r *http.Request) bool { return headPoll(r, "latest") || headPoll(r, "finalized") }).
+		Reply(503).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"unavailable"}}`))
 	gock.New(host).Post("").Persist().
 		Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).
 		Reply(200).
@@ -108,7 +115,7 @@ func setupRealPollLagNetwork(t *testing.T, ctx context.Context, fixtures []realP
 		if finalized < 1 {
 			finalized = 1
 		}
-		mockPollerHostWithLatest(host, f.latest, finalized)
+		mockPollerHostWithLatest(host, f.latest, finalized, f.pollsFail)
 		pollEvery := f.pollEvery
 		if pollEvery == 0 {
 			pollEvery = time.Hour
@@ -291,6 +298,109 @@ func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
 
 	assert.Equal(t, 0, gockHits(upstreamHostFromID("frozen")),
 		"frozen upstream must receive zero traffic — excluded by the lag predicate")
+}
+
+// TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks: a node whose
+// head froze far behind the tip but that still answers its polls holds every
+// block up to its own finalized one. The tip ranking keeps excluding it; a
+// client read of finalized block numbers it holds reaches it by the held
+// ranking. A block above its own finalized one, a read of latest, and a node
+// whose polls stopped answering never reach it.
+func TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Tip nodes at 1000 (finalized 990); two nodes at 100 (finalized 90).
+	var deadFails atomic.Bool
+	network := setupRealPollLagNetwork(t, ctx, []realPollFixture{
+		{id: "tip-a", latest: 1000},
+		{id: "tip-b", latest: 1000},
+		{id: "tip-c", latest: 1000},
+		{id: "frozen-archive", latest: 100},
+		{id: "dead-archive", latest: 100, pollsFail: &deadFails},
+	})
+	deadFails.Store(true)
+
+	tr := network.metricsTracker
+	var nowNs atomic.Int64
+	nowNs.Store(time.Now().UnixNano())
+	tr.SetClockForTest(func() time.Time { return time.Unix(0, nowNs.Load()) })
+	tips := []common.Upstream{upstreamByID(t, network, "tip-a"), upstreamByID(t, network, "tip-b"), upstreamByID(t, network, "tip-c")}
+	frozen, dead := upstreamByID(t, network, "frozen-archive"), upstreamByID(t, network, "dead-archive")
+
+	// Every fetch cadence is the 1h poll interval, so the stall window is 3h.
+	// For 3h20m the tip moves a block every 10 minutes; the frozen node
+	// answers each poll at 100, the dead node's polls fail.
+	for i := int64(1); i <= 20; i++ {
+		nowNs.Add(int64(10 * time.Minute))
+		for _, u := range tips {
+			tr.SetLatestBlockNumber(u, 1000+i, 0)
+		}
+		_, err := frozen.(common.EvmUpstream).EvmStatePoller().PollLatestBlockNumber(ctx)
+		require.NoError(t, err)
+		_, _ = dead.(common.EvmUpstream).EvmStatePoller().PollLatestBlockNumber(ctx)
+	}
+	require.True(t, tr.IsHeadBenched(frozen), "the frozen node stayed behind peers that kept moving")
+	require.True(t, tr.IsHeadBenched(dead), "the dead node stayed behind peers that kept moving")
+	policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+	// (e) The tip ranking still excludes both.
+	_, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
+	assert.Contains(t, excluded, "frozen-archive", "the tip ranking keeps excluding the frozen node")
+	assert.Contains(t, excluded, "dead-archive")
+
+	block := func(n int64) string {
+		return fmt.Sprintf(`{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a000"}`, n, n, n-1)
+	}
+	var frozenCalls, deadCalls atomic.Int64
+	for _, hex := range []string{"0x32", "0x5f"} {
+		for _, u := range tips {
+			gock.New(upstreamHostFromID(u.Id())).Post("").Persist().
+				Filter(func(r *http.Request) bool {
+					b := util.SafeReadBody(r)
+					return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"`+hex+`"`)
+				}).
+				Reply(503).
+				JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"unavailable"}}`))
+		}
+	}
+	mockGetBlockByNumberAt("0x32", block(50), &frozenCalls, "frozen-archive")
+	mockGetBlockByNumberAt("0x5f", block(95), &frozenCalls, "frozen-archive")
+	mockGetBlockByNumberAt("0x32", block(50), &deadCalls, "dead-archive")
+	mockGetBlockByNumberAt("0x5f", block(95), &deadCalls, "dead-archive")
+	for _, u := range tips {
+		mockClean(t, upstreamHostFromID(u.Id()), "eth_getBalance", "0xaaa")
+	}
+	mockMethodAnswer("eth_getBalance", `"0xfff"`, &frozenCalls, "frozen-archive")
+	mockMethodAnswer("eth_getBalance", `"0xfff"`, &deadCalls, "dead-archive")
+	forward := func(body string) (*common.NormalizedResponse, error) {
+		return network.Forward(ctx, common.NewNormalizedRequest([]byte(body)))
+	}
+
+	// (a) Block 50, at or below the network's and the frozen node's own
+	// finalized block: every tip node fails, the frozen node serves it.
+	resp, err := forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x32",false]}`)
+	require.NoError(t, err, "a finalized block the frozen node holds must reach it when every tip node fails")
+	jrr, err := resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"number":"0x32"`)
+	assert.EqualValues(t, 1, frozenCalls.Load(), "the frozen node served block 50")
+
+	// (b) Block 95 is above the frozen node's own finalized block 90.
+	frozenCalls.Store(0)
+	_, _ = forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x5f",false]}`)
+	assert.EqualValues(t, 0, frozenCalls.Load(), "a block above the frozen node's own finalized block never reaches it")
+
+	// (c) A read of latest keeps the tip ranking.
+	_, err = forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, frozenCalls.Load(), "a read of latest never reaches the frozen node")
+
+	// (d) A node whose polls stopped answering is not frozen.
+	assert.EqualValues(t, 0, deadCalls.Load(), "a node that stopped answering gets no request")
 }
 
 // TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded guards the other

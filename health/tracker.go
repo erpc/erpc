@@ -103,6 +103,13 @@ type NetworkMetadata struct {
 	// only; guarded by the network entry's headMu.
 	headReport      headReport
 	finalizedReport headReport
+	// frozenFrom is when the head will have stood unchanged for its stall
+	// window (headChangedAt + stallAfter, set at each evaluateHeadBench);
+	// aliveUntil is two fetch cadences after the last head report. Unix
+	// nanoseconds on the tracker clock, read lock-free by IsHeadFrozen. On
+	// upstream entries only.
+	frozenFrom atomic.Int64
+	aliveUntil atomic.Int64
 	// hashVote is this upstream's newest hash vote's number (spec §6.3): a
 	// header this instance received by push or fetched with cache reads
 	// skipped; 0 before the first. Written under the network entry's
@@ -1934,6 +1941,7 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		ref = 0
 	}
 	for _, u := range reporters {
+		u.meta.frozenFrom.Store(u.meta.headChangedAt.Add(u.stallAfter).UnixNano())
 		head := u.meta.evmLatestBlockNumber.Load()
 		behind := head > 0 && (numberBehind(u, changed, ref, now, blockTime) || headIsBehind(u, reporters, now, blockTime))
 		switch {
@@ -2135,6 +2143,24 @@ func (t *Tracker) IsHeadBenched(ups common.Upstream) bool {
 		return v.(*NetworkMetadata).headBenched.Load()
 	}
 	return false
+}
+
+// IsHeadFrozen reports whether the upstream's head is frozen: benched, unchanged
+// for its stall window, and reported within two fetch cadences, so the node
+// still answers. It reads the clock now, so a node that stops answering
+// leaves at once. A push source with no new head reports nothing, so it is
+// not frozen.
+func (t *Tracker) IsHeadFrozen(ups common.Upstream) bool {
+	v, ok := t.metadata.Load(metadataKey{ups, ups.NetworkId()})
+	if !ok {
+		return false
+	}
+	m := v.(*NetworkMetadata)
+	if !m.headBenched.Load() {
+		return false
+	}
+	now := t.now().UnixNano()
+	return now >= m.frozenFrom.Load() && now <= m.aliveUntil.Load()
 }
 
 // RecordHashVote makes number ups's newest hash vote (spec §6.3). Its hash
@@ -2568,6 +2594,7 @@ func (t *Tracker) setLatestBlockNumber(upstream common.Upstream, blockNumber int
 	// network made beyond its last report (headReport).
 	now, blockTime := t.now(), time.Duration(ntwMeta.evmBlockTime.Load())
 	upsMeta.headReport.reported(now, ntwBn)
+	upsMeta.aliveUntil.Store(now.Add(2 * fetchCadence(upstream, upsMeta, blockTime)).UnixNano())
 	// Ages are set for the reporter and for reporters whose hash age started
 	// or ended; every reporter's, which run with time, once a second.
 	allAges := now.Sub(ntwMeta.agesAt) >= reportAgesEvery
