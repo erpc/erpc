@@ -1290,6 +1290,24 @@ func (r *NormalizedRequest) Validate() error {
 		return NewErrInvalidRequest(fmt.Errorf("method is required"))
 	}
 
+	// JSON-RPC 2.0 §4: an id is a string, a number, or null. Answer any other
+	// id as an Invalid Request here, before routing, so it reaches no
+	// upstream instead of failing late on every one of them.
+	if jrq, err := r.resolveJsonRpc(); err == nil && jrq != nil {
+		jrq.RLock()
+		invalid := jrq.idInvalid
+		jrq.RUnlock()
+		if invalid {
+			return NewErrInvalidRequest(NewErrJsonRpcExceptionInternal(
+				0,
+				JsonRpcErrorClientSideException,
+				"invalid request: id must be a string, number, or null",
+				nil,
+				nil,
+			))
+		}
+	}
+
 	return nil
 }
 

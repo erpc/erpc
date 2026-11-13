@@ -325,12 +325,17 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// --- Unparseable upstream response ----------------------------------------
 	//
 	// -32700 is NOT the caller's fault here and must not sit with the client
-	// errors above. eRPC serializes the outbound request itself, so a parse
-	// error never means "the caller sent bad JSON" — it means eRPC could not
-	// parse what THIS upstream sent back (the parse layer synthesizes -32700 for
-	// any unparseable body). That is an upstream fault, so it stays retryable
-	// and the request can fail over to a healthy node. The failing-status case
-	// is intercepted earlier and classified from the status instead.
+	// errors above. eRPC rebuilds the outbound body itself, so it is valid
+	// JSON, and the one member it copies from the caller that a Solana node
+	// may fail to parse, the id, is screened first: a negative integer id is
+	// answered locally (projectPreForward_negativeId), and any id above the
+	// int64 range reaches the upstream as a random int64. So an upstream
+	// -32700 means that node failed to read a request others can read, or
+	// eRPC could not parse what THIS upstream sent back (the parse layer
+	// synthesizes -32700 for any unparseable body). Both are upstream faults,
+	// so it stays retryable and the request can fail over to a healthy node.
+	// The failing-status case is intercepted earlier and classified from the
+	// status instead.
 	case svmCodeParseError:
 		return common.NewErrEndpointServerSideException(
 			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorServerSideException), msg, nil, details),
