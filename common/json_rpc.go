@@ -1238,7 +1238,54 @@ type JsonRpcRequest struct {
 	// upstream: the outbound body is rebuilt from the four JSON-RPC members.
 	networkId string
 
+	// paramsLiteral keeps the verbatim "params" bytes, but only when the body
+	// holds a number whose literal form the float64 decode of Params loses: a
+	// fraction or exponent (470000000.0 decodes like 470000000), a minus sign,
+	// or more than 15 digits. It is the request as the client sent it; params
+	// rewrites never update it.
+	paramsLiteral []byte
+
 	cacheHash atomic.Value
+}
+
+// ParamsLiteral returns the "params" bytes as the client sent them when a
+// number there lost its literal form in the float64 decode of Params, else
+// nil. An architecture whose nodes tell 5 from 5.0, or need integers above
+// 2^53 exactly, decodes these bytes instead of reading Params.
+func (r *JsonRpcRequest) ParamsLiteral() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.paramsLiteral
+}
+
+// hasLossyNumber reports whether data holds a JSON number that a float64
+// decode does not carry literally: one with a fraction, an exponent or a minus
+// sign, or with more than 15 digits. It scans bytes only, so the common
+// request pays no allocation.
+func hasLossyNumber(data []byte) bool {
+	for i := 0; i < len(data); i++ {
+		switch c := data[i]; {
+		case c == '"':
+			for i++; i < len(data) && data[i] != '"'; i++ {
+				if data[i] == '\\' {
+					i++
+				}
+			}
+		case c == '-':
+			return true
+		case c >= '0' && c <= '9':
+			j := i
+			for j < len(data) && data[j] >= '0' && data[j] <= '9' {
+				j++
+			}
+			if j-i > 15 || (j < len(data) && (data[j] == '.' || data[j] == 'e' || data[j] == 'E')) {
+				return true
+			}
+			i = j - 1
+		}
+	}
+	return false
 }
 
 // NetworkIdHint returns the "networkId" member carried in the request body, or
@@ -1325,13 +1372,14 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	}
 
 	clone := &JsonRpcRequest{
-		JSONRPC:     r.JSONRPC,
-		ID:          r.ID,
-		Method:      r.Method,
-		Params:      clonedParams,
-		idAbsent:    r.idAbsent,
-		idInvalid:   r.idInvalid,
-		idNullReply: r.idNullReply,
+		JSONRPC:       r.JSONRPC,
+		ID:            r.ID,
+		Method:        r.Method,
+		Params:        clonedParams,
+		idAbsent:      r.idAbsent,
+		idInvalid:     r.idInvalid,
+		idNullReply:   r.idNullReply,
+		paramsLiteral: r.paramsLiteral,
 	}
 	// Carry idRaw forward so the cloned request still round-trips its id
 	// byte-for-byte through normalizeResponse. Without this, the clone falls
@@ -1478,6 +1526,14 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	r.Method = aux.Method.value
 	r.networkId, _ = aux.NetworkID.(string)
 	r.idAbsent = aux.ID == nil
+	if r.Params != nil && hasLossyNumber(data) {
+		lit := &struct {
+			Params json.RawMessage `json:"params"`
+		}{}
+		if SonicCfg.Unmarshal(data, lit) == nil {
+			r.paramsLiteral = lit.Params
+		}
+	}
 
 	if aux.ID != nil {
 		var id interface{}

@@ -25,6 +25,9 @@ func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, ne
 	if err != nil {
 		return false, nil, err
 	}
+	if handled, resp, perr := projectPreForward_u64Params(ctx, req, method); handled {
+		return handled, resp, perr
+	}
 	switch method {
 	case "getGenesisHash":
 		if handled, resp, gerr := projectPreForward_getGenesisHash(ctx, network, req); handled || gerr != nil {
