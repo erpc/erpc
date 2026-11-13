@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -530,6 +531,59 @@ func TestSvm_CacheHit_ServedFromCacheOnSecondRequest(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(jrr2.GetResultBytes()), "cached-block-42",
 		"second identical request must be served from cache")
+}
+
+// TestSvm_ConfigLessRead_ReachesUpstreamWithConfig: some providers answer
+// -32602 "missing value for required argument 1" to getBlock/getTransaction
+// sent without the optional config object, so eRPC never forwards those
+// config-less. With no network default it appends `{}` (agave's defaults);
+// with one it appends the commitment, as before. The mock matches only the
+// expected params, so a config-less forward fails the request.
+func TestSvm_ConfigLessRead_ReachesUpstreamWithConfig(t *testing.T) {
+	cases := []struct {
+		name, commitment, method, params, wantParams string
+	}{
+		{"getBlock/no-default", "", "getBlock", `[42]`, `"params":[42,{}]`},
+		{"getTransaction/no-default", "", "getTransaction", `["sig1"]`, `"params":["sig1",{}]`},
+		{"getBlock/default", "finalized", "getBlock", `[42]`, `"params":[42,{"commitment":"finalized"}]`},
+		{"getTransaction/default", "finalized", "getTransaction", `["sig1"]`, `"params":["sig1",{"commitment":"finalized"}]`},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			host := fmt.Sprintf("svm-configless-%d.localhost", i)
+			util.SetupMocksForSvmStatePoller(host, 1000, 990)
+
+			var sent string
+			gock.New("http://" + host).
+				Post("").
+				Times(1).
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					if r.URL.Host != host || !strings.Contains(body, `"method":"`+tc.method+`"`) {
+						return false
+					}
+					sent = body
+					return strings.Contains(body, tc.wantParams)
+				}).
+				Reply(200).
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":{"answered":true}}`)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			net, _ := setupTestSvmNetworkWithCommitment(t, ctx, tc.commitment, []*common.UpstreamConfig{
+				svmUpstreamConfig("rpc1", host),
+			})
+
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, tc.method, tc.params)
+			resp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest([]byte(body)))
+			require.NoError(t, err, "upstream saw %s", sent)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Contains(t, string(jrr.GetResultBytes()), `"answered":true`, "upstream saw %s", sent)
+		})
+	}
 }
 
 // TestSvm_MixedProjectWithEvm verifies that a single PreparedProject can route

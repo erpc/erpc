@@ -1,6 +1,7 @@
 package svm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -138,6 +139,23 @@ func clampCommitmentForMethod(method, commitment string) string {
 	return commitment
 }
 
+// emptyConfigMethods are read methods whose trailing config object some
+// providers treat as required: sent without it they answer -32602 "Invalid
+// params" ("missing value for required argument 1"), while agave treats it as
+// optional. Measured per method against agave and such a provider, config
+// omitted vs `{}`; getTransaction is rejected only for signatures outside the
+// provider's recent window, so a recent one does not show it. For each, agave's
+// config is a struct of all-optional fields, so `{}` decodes to exactly agave's
+// defaults and changes no answer. Methods whose agave config is a bare
+// CommitmentConfig (getInflationGovernor, getMinimumBalanceForRentExemption,
+// getTokenAccountBalance, getTokenSupply, getTokenLargestAccounts) must stay
+// out: agave answers `{}` with -32602 "missing field `commitment`".
+var emptyConfigMethods = map[string]struct{}{
+	"getBlock":           {},
+	"getProgramAccounts": {},
+	"getTransaction":     {},
+}
+
 // projectPreForward_negativeId answers a negative integer request id the way a
 // Solana node does. Agave reads an id as null, a u64, or a string, so a
 // negative id fails to parse there and every node answers -32700 "Parse
@@ -206,11 +224,18 @@ func projectPreForward_getGenesisHash(ctx context.Context, n common.Network, r *
 // getBlock and friends). Injecting an unaccepted level would turn a valid
 // request into an upstream -32602. Clamping, rather than skipping injection,
 // is the deliberate choice; the rationale is on clampCommitmentForMethod.
+//
+// When nothing is pinned (no valid network default), the commitment is left to
+// the node, but an emptyConfigMethods request without a config object still
+// gets `{}` (see appendEmptyConfig).
 func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
 	commitment, action, idx := resolveCommitment(ctx, n, r)
+	if action == commitmentSkip {
+		appendEmptyConfig(ctx, r)
+		return false, nil, nil
+	}
 	if action != commitmentSet && action != commitmentAppend {
-		// explicit (already set), or skip (non-injectable / legacy non-object
-		// slot / missing args / no valid default) → leave the request untouched.
+		// explicit: the caller's config object already carries a commitment.
 		return false, nil, nil
 	}
 
@@ -234,6 +259,33 @@ func networkPreForward_injectCommitment(ctx context.Context, n common.Network, r
 		rpcReq.InvalidateCacheHash()
 	}
 	return false, nil, nil
+}
+
+// appendEmptyConfig gives an emptyConfigMethods request that carries no config
+// object an empty one, at the method's options index, so a provider that
+// requires the object answers like agave. It runs where commitment injection
+// would have appended, before the cache read, and invalidates the CacheHash, so
+// `[slot]` and `[slot, {}]` share one cache entry. A legacy non-object in the
+// slot or missing positional args leave the request untouched.
+func appendEmptyConfig(ctx context.Context, r *common.NormalizedRequest) {
+	method, err := r.Method()
+	if err != nil {
+		return
+	}
+	if _, ok := emptyConfigMethods[method]; !ok {
+		return
+	}
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil {
+		return
+	}
+	rpcReq.Lock()
+	defer rpcReq.Unlock()
+	if len(rpcReq.Params) != commitmentOptionsIndex[method] {
+		return
+	}
+	rpcReq.Params = append(rpcReq.Params, map[string]interface{}{})
+	rpcReq.InvalidateCacheHash()
 }
 
 // commitmentAction is the mutation resolveCommitment prescribes for the
@@ -631,6 +683,47 @@ func networkPreForward_getBlockTime(ctx context.Context, n common.Network, r *co
 			nil, nil,
 		),
 		nil,
+	)
+}
+
+// upstreamPostForward_getBlockTimeNull turns an upstream's null getBlockTime
+// for a slot at or below its finalized slot into that upstream's permanent
+// missing data, with agave's -32009. agave answers null only for slots before
+// the cluster recorded block times (common.SvmHistory.RecordsBlockTime); for a
+// rooted slot it lacks it answers -32007 or -32009, while some providers
+// answer null. Kept, that null is the request's last valid response: the
+// empty-result retries ask its upstream again, and it outranks the skip error
+// of every other upstream. Above the upstream's finalized slot a null keeps
+// the empty-result path, since the block may still land.
+func upstreamPostForward_getBlockTimeNull(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) error {
+	if common.IsConsensusSlot(ctx) || rs == nil {
+		return nil
+	}
+	jrr, err := rs.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil || !bytes.Equal(bytes.TrimSpace(jrr.GetResultBytes()), []byte("null")) {
+		return nil
+	}
+	slot := leadingSlotParam(ctx, r)
+	cfg := n.Config()
+	if slot <= 0 || cfg == nil || cfg.Svm == nil || !common.KnownSvmHistory(cfg.Svm.Chain, cfg.Svm.Cluster).RecordsBlockTime(uint64(slot)) {
+		return nil
+	}
+	sup, ok := u.(common.SvmUpstream)
+	if !ok {
+		return nil
+	}
+	poller := sup.SvmStatePoller()
+	if poller == nil || poller.IsObjectNull() {
+		return nil
+	}
+	if finalized := poller.FinalizedSlot(); finalized <= 0 || slot > finalized {
+		return nil
+	}
+	r.ClearLastValidResponseIf(rs)
+	return newSweptSkipMissingData(
+		svmCodeLongTermStorageSlotSkipped,
+		fmt.Sprintf("Slot %d was skipped, or missing in long-term storage", slot),
+		nil, u,
 	)
 }
 
