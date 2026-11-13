@@ -957,6 +957,85 @@ func TestCovPoller_Ask(t *testing.T) {
 		assert.Equal(t, cadence, p.backoff())
 	})
 
+	t.Run("a benched upstream's polls that bring no new head back off; a new head ends it", func(t *testing.T) {
+		prevMax := AskMaxBackoff.Load()
+		AskMaxBackoff.Store(100 * time.Millisecond)
+		t.Cleanup(func() { AskMaxBackoff.Store(prevMax) })
+		var head atomic.Int64
+		var moving atomic.Bool
+		head.Store(100)
+		var tags sync.Map
+		fetched := func(tag string) int64 {
+			n, _ := tags.LoadOrStore(tag, new(atomic.Int64))
+			return n.(*atomic.Int64).Load()
+		}
+		p, up, ctx := covPollerNew(t, "frozen-archive", func(method string, params []interface{}) (*common.NormalizedResponse, error) {
+			tag := covPollerBlockTag(params)
+			n, _ := tags.LoadOrStore(tag, new(atomic.Int64))
+			n.(*atomic.Int64).Add(1)
+			if tag == "latest" && moving.Load() {
+				return covPollerBlock(head.Add(1)), nil
+			}
+			return covPollerBlocks(head.Load(), 90)(method, params)
+		})
+		const cadence = 10 * time.Millisecond
+		covPollerDebounce(p, cadence)
+		start := time.Now()
+		var clock atomic.Int64
+		p.tracker.SetClockForTest(func() time.Time { return start.Add(time.Duration(clock.Load())) })
+		idleAsks := promUtil.ToFloat64(telemetry.MetricHeadAskTotal.WithLabelValues("test", p.netLabel(), string(common.AskClock), "idle"))
+
+		// Every round Asks the head as the block clock does and polls
+		// finalized; it counts the node's fetches of each.
+		var outcomes map[common.AskOutcome]int
+		poll := func(d time.Duration) (latest, finalized int64) {
+			l0, f0 := fetched("latest"), fetched("finalized")
+			outcomes = map[common.AskOutcome]int{}
+			for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(time.Millisecond) {
+				outcomes[p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskClock).Outcome]++
+				_, err := p.PollFinalizedBlockNumber(ctx)
+				require.NoError(t, err)
+			}
+			return fetched("latest") - l0, fetched("finalized") - f0
+		}
+		const window = 500 * time.Millisecond
+		atCadence := int64(window / (cadence + time.Millisecond))
+
+		latest, finalized := poll(window)
+		assert.Greater(t, latest, atCadence/2, "an upstream not benched keeps its cadence with an unchanged head")
+		assert.Greater(t, finalized, atCadence/2)
+		assert.False(t, p.HeadBackingOff())
+		assert.Equal(t, cadence, p.backoff(), "no idle streak without a bench")
+
+		// A peer moves for longer than the stall window while the node's
+		// head stays at 100: the tracker benches it.
+		peer := &covPollerUpstream{cfg: &common.UpstreamConfig{Id: "rpc-a", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}}, calls: map[string]int{}}
+		p.tracker.SetLatestBlockNumber(peer, 100, 1_700_000_100)
+		for n := int64(101); !p.tracker.IsHeadBenched(up); n++ {
+			require.Less(t, n, int64(400), "a head stuck behind a moving peer is benched")
+			clock.Add(int64(time.Second))
+			p.tracker.SetLatestBlockNumber(peer, n, 1_700_000_000+n)
+		}
+
+		latest, finalized = poll(window)
+		assert.Less(t, latest, atCadence/4, "a benched node whose head stays is fetched far less often than its cadence")
+		assert.Less(t, finalized, atCadence/4, "the finalized poll waits as long")
+		assert.Positive(t, outcomes[common.AskBackoff], "callers read an idle wait as a backoff")
+		p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskClock)
+		assert.True(t, p.HeadBackingOff(), "the block clock skips it while it waits")
+		assert.Equal(t, AskMaxBackoff.Load(), p.BackedOffCadence(), "the bench reads the idle wait")
+		assert.Greater(t, promUtil.ToFloat64(telemetry.MetricHeadAskTotal.WithLabelValues("test", p.netLabel(), string(common.AskClock), "idle")), idleAsks,
+			"the ask metric tells an idle wait from a failure backoff")
+
+		// The node moves again: it is fetched at most one backoff later,
+		// and the first new head ends the wait.
+		moving.Store(true)
+		latest, _ = poll(window)
+		assert.Greater(t, latest, atCadence/3, "a node that moves again is fetched at its cadence")
+		assert.Equal(t, cadence, p.backoff())
+		assert.False(t, p.HeadBackingOff())
+	})
+
 	t.Run("a panic fails every waiter, debounces one cadence, never backs off", func(t *testing.T) {
 		release := make(chan struct{})
 		var panicking sync.Mutex
