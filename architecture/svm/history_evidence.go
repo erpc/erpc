@@ -46,11 +46,15 @@ func (svmHistoryEvidence) RequestedBlock(ctx context.Context, req *common.Normal
 	return end, true
 }
 
-// CorroboratedHead is the network's majority latest slot: SvmHighestLatestSlot
-// always picks with a strict-majority quorum.
+// CorroboratedHead is the network's latest slot, trusted only while
+// svm.servedTip.quorum is "majority" (the default): a lower quorum lets one
+// upstream's report set SvmHighestLatestSlot.
 func (svmHistoryEvidence) CorroboratedHead(ctx context.Context, req *common.NormalizedRequest) int64 {
 	sn, ok := req.Network().(common.SvmNetwork)
 	if !ok {
+		return 0
+	}
+	if cfg := sn.Config(); cfg != nil && cfg.Svm.ServedTipQuorum() != common.ServedTipQuorumMajority {
 		return 0
 	}
 	return sn.SvmHighestLatestSlot(ctx)
