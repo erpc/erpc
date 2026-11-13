@@ -428,10 +428,9 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 
 	// byPassMethodExclusion=true: onRequest already dropped upstreams
 	// whose method config excludes the method or cannot be evaluated
-	// for it; the bypass lets the
-	// probe reach an upstream the rest of Forward's skip checks would
-	// stop, so it can prove (or disprove) itself. isHedgeAttempt=false
-	// — probes are not hedge fan-outs.
+	// for it. The bypass lets the probe reach an upstream that the rest
+	// of Forward's skip checks would stop, so it can prove (or disprove)
+	// itself. isHedgeAttempt=false: probes are not hedge fan-outs.
 	_, err := u.Forward(ctx, req, true, false)
 	duration := time.Since(start)
 
