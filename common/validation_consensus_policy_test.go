@@ -448,3 +448,37 @@ func TestConsensusPolicy_ExtendsWithNestedSelectorRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not itself define customPolicy or policies")
 }
+
+func TestConsensusPolicyValidate_BlockEvidenceFieldsPaths(t *testing.T) {
+	t.Run("accepts result, flat field, and flat array wildcard", func(t *testing.T) {
+		c := validConsensusBase()
+		c.BlockEvidenceFields = map[string][]string{
+			"eth_getTransactionReceipt": {"blockNumber"},
+			"eth_blockNumber":           {"result"},
+			"eth_getLogs":               {"*.blockNumber"},
+		}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("rejects nested object path", func(t *testing.T) {
+		c := validConsensusBase()
+		c.BlockEvidenceFields = map[string][]string{
+			"eth_getTransactionReceipt": {"receipt.blockNumber"},
+		}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported")
+		assert.Contains(t, err.Error(), "receipt.blockNumber")
+	})
+
+	t.Run("rejects nested path after array wildcard", func(t *testing.T) {
+		c := validConsensusBase()
+		c.BlockEvidenceFields = map[string][]string{
+			"eth_getBlockReceipts": {"*.receipt.blockNumber"},
+		}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported")
+		assert.Contains(t, err.Error(), "*.receipt.blockNumber")
+	})
+}
