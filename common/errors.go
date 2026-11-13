@@ -493,6 +493,52 @@ func (e *ErrInvalidRequest) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
+// ErrClientBatchTooLarge rejects a client batch that addresses more requests
+// to one network than its maxClientBatchSize allows. None of the batch runs.
+type ErrClientBatchTooLarge struct{ BaseError }
+
+const ErrCodeClientBatchTooLarge ErrorCode = "ErrClientBatchTooLarge"
+
+var NewErrClientBatchTooLarge = func(networkId string, batchSize, maxBatchSize int) error {
+	return &ErrClientBatchTooLarge{
+		BaseError{
+			Code:    ErrCodeClientBatchTooLarge,
+			Message: fmt.Sprintf("batch of %d requests to network %s exceeds the limit of %d (maxClientBatchSize)", batchSize, networkId, maxBatchSize),
+			Details: map[string]interface{}{
+				"networkId":          networkId,
+				"batchSize":          batchSize,
+				"maxClientBatchSize": maxBatchSize,
+			},
+		},
+	}
+}
+
+func (e *ErrClientBatchTooLarge) ErrorStatusCode() int {
+	return http.StatusBadRequest
+}
+
+// ErrRequestBodyTooLarge rejects an HTTP request body longer than
+// server.maxRequestBodySize. Reading stops just past the limit; none of it runs.
+type ErrRequestBodyTooLarge struct{ BaseError }
+
+const ErrCodeRequestBodyTooLarge ErrorCode = "ErrRequestBodyTooLarge"
+
+var NewErrRequestBodyTooLarge = func(maxBytes int64) error {
+	return &ErrRequestBodyTooLarge{
+		BaseError{
+			Code:    ErrCodeRequestBodyTooLarge,
+			Message: fmt.Sprintf("request body exceeds the limit of %d bytes (maxRequestBodySize)", maxBytes),
+			Details: map[string]interface{}{
+				"maxRequestBodySize": maxBytes,
+			},
+		},
+	}
+}
+
+func (e *ErrRequestBodyTooLarge) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 type ErrInvalidUrlPath struct{ BaseError }
 
 const ErrCodeInvalidUrlPath ErrorCode = "ErrInvalidUrlPath"

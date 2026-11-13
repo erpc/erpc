@@ -385,6 +385,12 @@ export interface ServerConfig {
   trustedIPForwarders?: string[];
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
+  /**
+   * MaxRequestBodySize caps one HTTP request body in bytes, counted after
+   * gzip decompression (0 = unlimited). An over-limit body gets HTTP 413
+   * and none of it runs.
+   */
+  maxRequestBodySize?: number /* int64 */;
   webSocket?: WebSocketServerConfig;
   /**
    * ExecutionHeaders controls the per-request diagnostic headers
@@ -899,6 +905,7 @@ export interface NetworkDefaults {
   multiplexing?: boolean;
   cacheKeySuffix?: string;
   failover?: FailoverConfig;
+  maxClientBatchSize?: number /* int */;
 }
 /**
  * FailoverConfig controls per-request escalation to fallback-tier upstreams,
@@ -1771,6 +1778,14 @@ export interface NetworkConfig {
    * network id are escaped; see CachePartitionKey.
    */
   cacheKeySuffix?: string;
+  /**
+   * MaxClientBatchSize caps how many requests one client JSON-RPC batch may
+   * address to this network. Unset inherits networkDefaults; unset there or
+   * 0 means no limit. An over-limit batch runs none of its requests.
+   * Distinct from upstream jsonRpc.batchMaxSize, which shapes the batches
+   * eRPC itself sends to an upstream.
+   */
+  maxClientBatchSize?: number /* int */;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific

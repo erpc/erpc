@@ -173,6 +173,7 @@ func TestCovValidation_Network(t *testing.T) {
 		{"unknown budget", func(n *NetworkConfig) { n.RateLimitBudget = "nope" }, "network.*.rateLimitBudget 'nope' does not exist in config.rateLimiters"},
 		{"bad alias", func(n *NetworkConfig) { n.Alias = "eth main" }, "network.*.alias 'eth main' must contain only alphanumeric characters, dash, or underscore"},
 		{"bad cacheKeySuffix", func(n *NetworkConfig) { n.CacheKeySuffix = "a/b" }, "network.*.cacheKeySuffix 'a/b' must contain only alphanumeric characters, dash, or underscore"},
+		{"negative maxClientBatchSize", func(n *NetworkConfig) { v := -1; n.MaxClientBatchSize = &v }, "network.*.maxClientBatchSize must be 0 (no limit) or greater, got -1"},
 		{"nil static response", func(n *NetworkConfig) { n.StaticResponses = append(n.StaticResponses, nil) }, "network.*.staticResponses[1]: entry is nil"},
 		{"static response without method", func(n *NetworkConfig) { n.StaticResponses[0].Method = "" }, "network.*.staticResponses[0]: method is required"},
 		{"static response without response", func(n *NetworkConfig) { n.StaticResponses[0].Response = nil }, "network.*.staticResponses[0]: response is required"},
