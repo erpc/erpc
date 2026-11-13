@@ -602,9 +602,9 @@ func (i *Initializer) Status() *InitializerStatus {
 func (i *Initializer) Errors() error {
 	var errs []error
 	i.tasks.Range(func(key, value interface{}) bool {
-		t := value.(*BootstrapTask)
-		if t.Error() != nil {
-			errs = append(errs, t.Error().Err)
+		// One load: a retry can clear lastErr between two Error() calls.
+		if te := value.(*BootstrapTask).Error(); te != nil {
+			errs = append(errs, te.Err)
 		}
 		return true
 	})
