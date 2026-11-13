@@ -20,7 +20,8 @@ import (
 // round trip before it returned. A trailing voter asked for a new block
 // answers the one before: a voter that does not trail (lead) fetched the
 // new block with a fetch sent the trail before it, whose vote arrives at
-// the next Ask; asked again, the trailing voter has the block.
+// the next Ask; asked again, the trailing voter has the block. A timed
+// chain (mintEvery) mints its blocks on a clock instead.
 type clockNet struct {
 	*servedChain
 	ups   []common.Upstream
@@ -32,6 +33,12 @@ type clockNet struct {
 	top   uint64
 	owed  *owedVote
 	asks  map[string]int // clock Asks per voter
+	// A timed chain's: block k is minted at t0 + k·mint; heads counts
+	// the view heads, came each block's first answer.
+	mint  time.Duration
+	t0    time.Time
+	heads int
+	came  map[uint64]time.Time
 }
 
 type owedVote struct {
@@ -76,7 +83,48 @@ func newClockNet(t *testing.T, id string, voters ...laneVoter) *clockNet {
 }
 
 func (n *clockNet) EvmAllUpstreams(context.Context) []common.Upstream { return n.ups }
-func (n *clockNet) EvmBlockTime() time.Duration                       { return 500 * time.Millisecond }
+
+// EvmBlockTime is 500 ms; a timed chain's is unknown (0) until its third
+// view head, the network's first block time sample (spec §6.7).
+func (n *clockNet) EvmBlockTime() time.Duration {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	switch {
+	case n.mint == 0:
+		return 500 * time.Millisecond
+	case n.heads < 3:
+		return 0
+	}
+	return n.mint
+}
+
+func (n *clockNet) EvmViewHeadMoved(int64, int64) {
+	n.mu.Lock()
+	n.heads++
+	n.mu.Unlock()
+}
+
+// mintEvery makes the chain timed: block 1 is minted now and one more
+// every bt, and each Ask answers the newest block minted.
+func (n *clockNet) mintEvery(bt time.Duration) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.mint, n.t0, n.came = bt, time.Now().Add(-bt), map[uint64]time.Time{}
+}
+
+// mintedAt is when a timed chain minted block k.
+func (n *clockNet) mintedAt(k uint64) time.Time {
+	return n.t0.Add(time.Duration(k) * n.mint)
+}
+
+// lag is how long after its mint a timed chain's block k first came in an
+// answer; ok false when it never did.
+func (n *clockNet) lag(k uint64) (time.Duration, bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	at, ok := n.came[k]
+	return at.Sub(n.mintedAt(k)), ok
+}
 
 func (n *clockNet) EvmHashVoters(string, time.Duration) HashVoters {
 	var ids []string
@@ -102,6 +150,17 @@ func (n *clockNet) EvmAskHead(_ context.Context, id string, _ common.HeadNeed, _
 	n.mu.Lock()
 	if reason == common.AskClock {
 		n.asks[id]++
+	}
+	if n.mint > 0 {
+		now := time.Now()
+		num := uint64(now.Sub(n.t0) / n.mint)
+		for k := n.top + 1; k <= num; k++ {
+			n.came[k] = now
+		}
+		n.top = max(n.top, num)
+		n.mu.Unlock()
+		raw := n.vote(id, num, sent)
+		return common.HeadAnswer{Outcome: common.AskFetched, At: sent, Next: sent.Add(time.Hour), Header: askedHeader(raw)}
 	}
 	owed := n.owed
 	n.owed = nil
@@ -191,4 +250,32 @@ func TestBlockClockTarget(t *testing.T) {
 		assert.GreaterOrEqual(t, got["node-b"], 10, "the voter that does not trail takes them: %v", got)
 		assert.LessOrEqual(t, n.early(), 2.0, "early answers stop with the trailing target: %v", got)
 	})
+}
+
+// A cold instance reads the block time as health.ColdBlockTime (1 s)
+// until the network's first sample (spec §6.7). Under eth_blockNumber
+// reads from the start, each block after the sample comes within a block
+// of its mint. Laid under 1 s, each first sight of a 3 s chain came two
+// slots late, and the sample put the next fetch three blocks out (#1426:
+// 12 s blocks, 145 s).
+func TestBlockClockColdStart(t *testing.T) {
+	const bt = 3 * time.Second
+	n := newClockNet(t, "evm:clock-cold",
+		laneVoter{id: "node-a", interval: 30 * time.Second, rtt: 30 * time.Millisecond},
+		laneVoter{id: "node-b", interval: 30 * time.Second, rtt: 30 * time.Millisecond},
+	)
+	n.mintEvery(bt)
+	const last = 5
+	for end := n.mintedAt(last).Add(bt); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		n.c.LatestRead(t.Context(), true)
+		if _, ok := n.lag(last); ok {
+			break
+		}
+	}
+	require.Equal(t, bt, n.EvmBlockTime(), "the block time was sampled")
+	for k := uint64(4); k <= last; k++ {
+		lag, ok := n.lag(k)
+		require.True(t, ok, "block %d never came: the clock fetched nothing after the sample", k)
+		assert.Less(t, lag, bt, "block %d came %v after its mint", k, lag)
+	}
 }

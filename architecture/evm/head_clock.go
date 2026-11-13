@@ -298,8 +298,12 @@ func (c *headClock) reset() {
 // chain, whose first tail answers a gap and a round trip after S_k:
 // P20-flash, 8.5% of the blocks' probes early, 1.053 head fetches per
 // block. A sight a block or more after its predicted sight comes that
-// many slots later: the slots between were missed. Each open fetch answer
-// below number is decided (answered).
+// many slots later: the slots between were missed. bt is the sampled
+// block time, 0 before the first sample: no slot is missed then, and
+// every sight is a phase point. Laid under ColdBlockTime instead, each
+// block of a 12 s chain came 11 slots late, and the sample put the next
+// fetch 145 s out (#1426). Each open fetch answer below number is
+// decided (answered).
 func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		c.confirmed(number, at, from, via, bt)
