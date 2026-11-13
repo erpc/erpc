@@ -2126,6 +2126,28 @@ func (n *Network) SvmHighestFinalizedSlotMax(ctx context.Context) int64 {
 	return maxSlot
 }
 
+// SvmHighestLatestSlotMax returns the MAX latest (processed) slot across SVM
+// upstreams, harvested context.slot answers included. The availability guards
+// read it next to SvmHighestIndexedSlot: a slot an upstream answered at is
+// proof that upstream holds it, often seconds before the next shred-insert
+// poll. Zero means UNKNOWN. Same MAX rationale as SvmHighestFinalizedSlotMax.
+func (n *Network) SvmHighestLatestSlotMax(ctx context.Context) int64 {
+	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestLatestSlotMax")
+	defer span.End()
+	var maxSlot int64
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
+		sp := u.SvmStatePoller()
+		if sp == nil || sp.IsObjectNull() {
+			continue
+		}
+		if slot := sp.LatestSlot(); slot > maxSlot {
+			maxSlot = slot
+		}
+	}
+	span.SetAttributes(attribute.Int64("highest_latest_slot_max", maxSlot))
+	return maxSlot
+}
+
 // SvmEnforceBlockAvailability reports whether the networkPreForward_getBlock
 // guard is enabled. Defaults to true when unconfigured.
 func (n *Network) SvmEnforceBlockAvailability() bool {
