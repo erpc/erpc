@@ -82,6 +82,7 @@ func NewERPC(
 	if err != nil {
 		return nil, err
 	}
+	projectRegistry.SetLogClientIP(cfg.Server != nil && cfg.Server.LogClientIP != nil && *cfg.Server.LogClientIP)
 
 	var adminAuthRegistry *auth.AuthRegistry
 	if cfg.Admin != nil && cfg.Admin.Auth != nil {

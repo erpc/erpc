@@ -69,6 +69,8 @@ type ProjectsRegistry struct {
 	// closure variables + module-level helpers live in the same scope
 	// as the `evalFunc` arrow functions the user wrote.
 	userScript *sobek.Program
+	// logClientIP is server.logClientIp, handed to every project (SetLogClientIP).
+	logClientIP bool
 }
 
 func NewProjectsRegistry(
@@ -105,6 +107,15 @@ func NewProjectsRegistry(
 	}
 
 	return reg, nil
+}
+
+// SetLogClientIP turns the caller's IP in the proxy logs on or off for every
+// project, registered or yet to be (server.logClientIp). Call it before serving.
+func (r *ProjectsRegistry) SetLogClientIP(on bool) {
+	r.logClientIP = on
+	for _, p := range r.preparedProjects {
+		p.logClientIP = on
+	}
 }
 
 func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) {
@@ -247,6 +258,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			pp.strategyDirectiveMatchers[pattern] = matcher
 		}
 	}
+	pp.logClientIP = r.logClientIP
 	r.preparedProjects[prjCfg.Id] = pp
 
 	r.logger.Info().Msgf("registered project %s", prjCfg.Id)
