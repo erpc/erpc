@@ -496,22 +496,65 @@ func TestNetworkPreForward_InjectCommitment_InvalidatesCacheHash(t *testing.T) {
 	}
 }
 
+// Without a network default nothing is pinned, but an emptyConfigMethods
+// request with no config object still gets `{}` — agave's defaults — so a
+// provider that requires the object answers like agave, and `[slot]` keys the
+// cache like `[slot, {}]`. Every other shape stays as sent.
 func TestNetworkPreForward_InjectCommitment_NoopWithoutNetworkDefault(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{
 		Architecture: common.ArchitectureSvm,
 		Svm:          &common.SvmNetworkConfig{}, // no commitment set
 	}}
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`))
-
-	_, _, err := networkPreForward_injectCommitment(context.Background(), net, req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	inject := func(method, params string) *common.JsonRpcRequest {
+		t.Helper()
+		req := common.NewNormalizedRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params)))
+		jrq, err := req.JsonRpcRequest(context.Background())
+		if err != nil {
+			t.Fatalf("JsonRpcRequest: %v", err)
+		}
+		if _, err := jrq.CacheHash(context.Background()); err != nil { // prime the memoized hash
+			t.Fatalf("CacheHash: %v", err)
+		}
+		if _, _, err := networkPreForward_injectCommitment(context.Background(), net, req); err != nil {
+			t.Fatalf("%s: unexpected error: %v", method, err)
+		}
+		return jrq
 	}
 
-	jrq, _ := req.JsonRpcRequest(context.Background())
-	if len(jrq.Params) != 1 {
-		t.Fatalf("no network default → no injection; got %d params", len(jrq.Params))
+	for _, tc := range []struct {
+		method, params, want string
+	}{
+		{"getAccountInfo", `["pubkey"]`, `["pubkey"]`},
+		{"getTransaction", `["sig"]`, `["sig",{}]`},
+		{"getBlock", `[123]`, `[123,{}]`},
+		{"getProgramAccounts", `["program"]`, `["program",{}]`},
+		{"getBlock", `[123,{"encoding":"json"}]`, `[123,{"encoding":"json"}]`},
+		{"getBlock", `[123,"base64"]`, `[123,"base64"]`},
+		{"getBlock", `[]`, `[]`},
+		// agave's config here is a bare CommitmentConfig: `{}` is -32602 "missing field `commitment`".
+		{"getTokenSupply", `["mint"]`, `["mint"]`},
+	} {
+		got, err := json.Marshal(inject(tc.method, tc.params).Params)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s %s: params = %s, want %s", tc.method, tc.params, got, tc.want)
+		}
+	}
+
+	bare, err := inject("getBlock", `[123]`).CacheHash(context.Background())
+	if err != nil {
+		t.Fatalf("CacheHash: %v", err)
+	}
+	withEmpty, err := inject("getBlock", `[123,{}]`).CacheHash(context.Background())
+	if err != nil {
+		t.Fatalf("CacheHash: %v", err)
+	}
+	if bare != withEmpty {
+		t.Errorf("getBlock [123] and [123,{}] must share one cache key, got %q vs %q", bare, withEmpty)
 	}
 }
 
