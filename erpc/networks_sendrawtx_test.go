@@ -2701,29 +2701,36 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		return refusals
 	}
 
-	t.Run("NonceTooHighFromLaggingUpstreamFailsOverToFreshUpstream", func(t *testing.T) {
-		util.ResetGock()
-		t.Cleanup(util.ResetGock)
-		util.SetupMocksForEvmStatePoller()
-		refusals := mockLaggingAndFreshUpstreams("rpc1", []string{"rpc2"}, 0)
+	for _, tc := range []struct {
+		name     string
+		failsafe []*common.FailsafeConfig
+	}{
+		// The sweep itself must fail over: a project that sets no network
+		// failsafe has no retry round to fall back on.
+		{"NoNetworkRetry", nil},
+		{"NetworkRetry", []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}}}},
+	} {
+		t.Run("NonceTooHighFromLaggingUpstreamFailsOverToFreshUpstream/"+tc.name, func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			util.SetupMocksForEvmStatePoller()
+			refusals := mockLaggingAndFreshUpstreams("rpc1", []string{"rpc2"}, 0)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		network := setupTwoUpstreamNetworkForSkip(t, ctx, nil, nil, nil, nil,
-			[]*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{MaxAttempts: 3}}},
-			nil, nil,
-		)
-		t.Cleanup(cancel)
+			ctx, cancel := context.WithCancel(context.Background())
+			network := setupTwoUpstreamNetworkForSkip(t, ctx, nil, nil, nil, nil, tc.failsafe, nil, nil)
+			t.Cleanup(cancel)
 
-		for range 4 {
-			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
-			resp, err := network.Forward(ctx, req)
-			require.NoError(t, err, "a fresh upstream accepts the transaction")
-			jrr, err := resp.JsonRpcResponse()
-			require.NoError(t, err)
-			assert.Equal(t, `"`+acceptedTxHash+`"`, string(jrr.GetResultBytes()))
-		}
-		assert.Positive(t, refusals.Load(), "the lagging upstream must be asked at least once")
-	})
+			for range 4 {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+				resp, err := network.Forward(ctx, req)
+				require.NoError(t, err, "a fresh upstream accepts the transaction")
+				jrr, err := resp.JsonRpcResponse()
+				require.NoError(t, err)
+				assert.Equal(t, `"`+acceptedTxHash+`"`, string(jrr.GetResultBytes()))
+			}
+			assert.Positive(t, refusals.Load(), "the lagging upstream must be asked at least once")
+		})
+	}
 
 	t.Run("NonceTooHighFromLaggingUpstreamDoesNotEndBroadcast", func(t *testing.T) {
 		util.ResetGock()

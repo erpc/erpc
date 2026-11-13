@@ -248,13 +248,7 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 		return false
 	}
 	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-		// Check retryableTowardNetwork bool on the StandardError details.
-		if se, ok := err.(common.StandardError); ok {
-			if retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && retryable {
-				return true
-			}
-		}
-		return false
+		return common.IsRetryableExecutionException(err)
 	}
 	if req != nil {
 		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {

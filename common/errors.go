@@ -2693,6 +2693,22 @@ func IsRetryableTowardNetwork(err error) bool {
 	return true
 }
 
+// IsRetryableExecutionException reports whether err is an execution exception
+// its normalizer marked WithRetryableTowardNetwork(true): a verdict only as
+// fresh as the node's state (eth_sendRawTransaction "nonce too high"), so
+// another upstream may still accept the request.
+func IsRetryableExecutionException(err error) bool {
+	if !HasErrorCode(err, ErrCodeEndpointExecutionException) {
+		return false
+	}
+	se, ok := err.(StandardError)
+	if !ok {
+		return false
+	}
+	retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool)
+	return ok && retryable
+}
+
 // isUpstreamMethodVerdict reports whether err's single-cause chain says the
 // upstream does not serve the method (-32601 or ignoreMethods). Alone it
 // stays retryable toward the network, so a sweep moves on to an upstream
