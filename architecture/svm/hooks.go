@@ -1,6 +1,7 @@
 package svm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -631,6 +632,47 @@ func networkPreForward_getBlockTime(ctx context.Context, n common.Network, r *co
 			nil, nil,
 		),
 		nil,
+	)
+}
+
+// upstreamPostForward_getBlockTimeNull turns an upstream's null getBlockTime
+// for a slot at or below its finalized slot into that upstream's permanent
+// missing data, with agave's -32009. agave answers null only for slots before
+// the cluster recorded block times (common.SvmHistory.RecordsBlockTime); for a
+// rooted slot it lacks it answers -32007 or -32009, while some providers
+// answer null. Kept, that null is the request's last valid response: the
+// empty-result retries ask its upstream again, and it outranks the skip error
+// of every other upstream. Above the upstream's finalized slot a null keeps
+// the empty-result path, since the block may still land.
+func upstreamPostForward_getBlockTimeNull(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) error {
+	if common.IsConsensusSlot(ctx) || rs == nil {
+		return nil
+	}
+	jrr, err := rs.JsonRpcResponse(ctx)
+	if err != nil || jrr == nil || jrr.Error != nil || !bytes.Equal(bytes.TrimSpace(jrr.GetResultBytes()), []byte("null")) {
+		return nil
+	}
+	slot := leadingSlotParam(ctx, r)
+	cfg := n.Config()
+	if slot <= 0 || cfg == nil || cfg.Svm == nil || !common.KnownSvmHistory(cfg.Svm.Chain, cfg.Svm.Cluster).RecordsBlockTime(uint64(slot)) {
+		return nil
+	}
+	sup, ok := u.(common.SvmUpstream)
+	if !ok {
+		return nil
+	}
+	poller := sup.SvmStatePoller()
+	if poller == nil || poller.IsObjectNull() {
+		return nil
+	}
+	if finalized := poller.FinalizedSlot(); finalized <= 0 || slot > finalized {
+		return nil
+	}
+	r.ClearLastValidResponseIf(rs)
+	return newSweptSkipMissingData(
+		svmCodeLongTermStorageSlotSkipped,
+		fmt.Sprintf("Slot %d was skipped, or missing in long-term storage", slot),
+		nil, u,
 	)
 }
 
