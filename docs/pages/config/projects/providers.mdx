@@ -247,7 +247,7 @@ Static map of 56 chains (exported `BlockPiNetworkNames`). URL: `https://{netName
 
 #### chainstack
 
-Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes/` with `Authorization: Bearer {apiKey}` and optional filter params; chain ids discovered by `eth_chainId` probe per node (concurrency-limited, semaphore 10, 10 s client timeout). Cache key includes all filter values so providers sharing an apiKey but different filters get separate snapshots. Missing `apiKey` → `(false, nil)` (silent skip). Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching running node; upstream endpoint = `https_endpoint + "/" + auth_key`; id suffix `-<nodeID>`. Node decode is intentionally lenient: each node is decoded individually from the paginated response and malformed nodes (type mismatches, missing fields) are skipped rather than failing the entire refresh. OwnsUpstream: scheme prefixes or `.core.chainstack.com`.
+Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes/` with `Authorization: Bearer {apiKey}` and optional filter params; chain ids discovered by `eth_chainId` probe per node (concurrency-limited, semaphore 10, 10 s client timeout). Cache key includes all filter values so providers sharing an apiKey but different filters get separate snapshots. Missing `apiKey` → `(false, nil)` (silent skip). Cold cache → `ErrRemoteCacheCold`. GenerateConfigs fans out one upstream per matching running node; upstream endpoint = `https_endpoint + "/" + auth_key`; id suffix `-<nodeID>`. With `multichainToken` set, the [Multichain API](https://docs.chainstack.com/docs/multichain-api) token replaces the node's `auth_key` segment in `https_endpoint`; if `https_endpoint` lacks the key, endpoint = `<scheme>://<host>/<multichainToken>` + its path. Nodes not attached to the multichain endpoint answer HTTP 401. Node decode is intentionally lenient: each node is decoded individually from the paginated response and malformed nodes (type mismatches, missing fields) are skipped rather than failing the entire refresh. OwnsUpstream: scheme prefixes or `.core.chainstack.com`.
 
 | key | required | default |
 |---|---|---|
@@ -258,8 +258,18 @@ Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes
 | `region` | no | `""` |
 | `provider` | no | `""` |
 | `type` | no | `""` |
+| `multichainToken` | no | `""` |
 
-<SourceLink file="thirdparty/chainstack.go" lines="51-429" />
+```yaml
+providers:
+  - vendor: chainstack
+    settings:
+      apiKey: ${CHAINSTACK_API_KEY}
+      multichainToken: ${CHAINSTACK_MULTICHAIN_TOKEN} # mt_…
+# shorthand: chainstack://<apiKey>?multichainToken=<mt_token>
+```
+
+<SourceLink file="thirdparty/chainstack.go" lines="51-468" />
 
 #### conduit
 
