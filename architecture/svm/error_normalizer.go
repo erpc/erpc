@@ -63,6 +63,11 @@ const (
 	svmCodeEpochRewardsPeriodActive   = -32017 // EpochRewardsPeriodActive: epoch-global condition, identical on every node
 	svmCodeSlotNotEpochBoundary       = -32018 // SlotNotEpochBoundary: caller-supplied slot invalid for this query
 	svmCodeLongTermStorageUnreachable = -32019 // LongTermStorageUnreachable: this node's bigtable backend is down
+
+	// svmCodeSignatureNotFound is not an agave code: some vendor proxies answer
+	// getSignaturesForAddress with it when the `before`/`until` cursor is
+	// unknown to them, where agave returns an empty page.
+	svmCodeSignatureNotFound = -32020
 )
 
 func (e *JsonRpcErrorExtractor) Extract(
@@ -325,17 +330,38 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// --- Unparseable upstream response ----------------------------------------
 	//
 	// -32700 is NOT the caller's fault here and must not sit with the client
-	// errors above. eRPC serializes the outbound request itself, so a parse
-	// error never means "the caller sent bad JSON" — it means eRPC could not
-	// parse what THIS upstream sent back (the parse layer synthesizes -32700 for
-	// any unparseable body). That is an upstream fault, so it stays retryable
-	// and the request can fail over to a healthy node. The failing-status case
-	// is intercepted earlier and classified from the status instead.
+	// errors above. eRPC rebuilds the outbound body itself, so it is valid
+	// JSON, and the one member it copies from the caller that a Solana node
+	// may fail to parse, the id, is screened first: a negative integer id is
+	// answered locally (projectPreForward_negativeId), and any id above the
+	// int64 range reaches the upstream as a random int64. So an upstream
+	// -32700 means that node failed to read a request others can read, or
+	// eRPC could not parse what THIS upstream sent back (the parse layer
+	// synthesizes -32700 for any unparseable body). Both are upstream faults,
+	// so it stays retryable and the request can fail over to a healthy node.
+	// The failing-status case is intercepted earlier and classified from the
+	// status instead.
 	case svmCodeParseError:
 		return common.NewErrEndpointServerSideException(
 			common.NewErrJsonRpcExceptionInternal(code, wireCode(common.JsonRpcErrorServerSideException), msg, nil, details),
 			details, resp.StatusCode,
 		)
+
+	// --- History cursor unknown to this upstream (sweep once) ------------------
+	//
+	// -32020 on getSignaturesForAddress: this upstream does not know the
+	// `before`/`until` signature. Agave answers an empty page there, so this is
+	// the upstream's own history verdict, like a page that ends at its floor:
+	// another upstream may hold the signature, so it stays retryable across
+	// upstreams, and it is permanent, so no hedge leg or retry asks this
+	// upstream again within the request. Other methods take the unknown-code
+	// default below.
+	case svmCodeSignatureNotFound:
+		if nr != nil && nr.Request() != nil {
+			if method, _ := nr.Request().Method(); method == "getSignaturesForAddress" {
+				return newSweptSkipMissingData(code, msg, details, upstream)
+			}
+		}
 
 	// --- Chain-state condition (non-retryable, not the caller's fault) --------
 	//
@@ -427,13 +453,14 @@ func isRateLimitMessage(lowerMsg string) bool {
 	return false
 }
 
-// newSweptSkipMissingData builds a MissingData error for a slot the node reports
-// as skipped, lost to a ledger jump (-32007), or absent from its long-term
-// storage (-32009). It stays retryable across
-// upstreams (the default) — a ledger jump is node-local, so another provider may
-// still hold the slot and the sweep tries them all — but is marked permanent: a
-// skipped slot never materializes, so once every provider has been tried the
-// network layer must not run a time-delayed re-sweep. The raw code reaches the
+// newSweptSkipMissingData builds a MissingData error for an answer that holds
+// for this upstream only and never changes by waiting: a slot the node reports
+// as skipped, lost to a ledger jump (-32007), absent from its long-term storage
+// (-32009), or a history cursor it does not know (-32020). It stays retryable
+// across upstreams (the default) — another provider may still hold the data
+// and the sweep tries them all — but is marked permanent: waiting changes
+// nothing, so no hedge leg or retry asks the same upstream again and the
+// network layer does not run a time-delayed re-sweep. The raw code reaches the
 // caller.
 func newSweptSkipMissingData(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
 	err := common.NewErrEndpointMissingData(

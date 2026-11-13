@@ -385,6 +385,12 @@ export interface ServerConfig {
   trustedIPForwarders?: string[];
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
+  /**
+   * MaxRequestBodySize caps one HTTP request body in bytes, counted after
+   * gzip decompression (0 = unlimited). An over-limit body gets HTTP 413
+   * and none of it runs.
+   */
+  maxRequestBodySize?: number /* int64 */;
   webSocket?: WebSocketServerConfig;
   /**
    * ExecutionHeaders controls the per-request diagnostic headers
@@ -899,6 +905,7 @@ export interface NetworkDefaults {
   multiplexing?: boolean;
   cacheKeySuffix?: string;
   failover?: FailoverConfig;
+  maxClientBatchSize?: number /* int */;
 }
 /**
  * FailoverConfig controls per-request escalation to fallback-tier upstreams,
@@ -1771,6 +1778,14 @@ export interface NetworkConfig {
    * network id are escaped; see CachePartitionKey.
    */
   cacheKeySuffix?: string;
+  /**
+   * MaxClientBatchSize caps how many requests one client JSON-RPC batch may
+   * address to this network. Unset inherits networkDefaults; unset there or
+   * 0 means no limit. An over-limit batch runs none of its requests.
+   * Distinct from upstream jsonRpc.batchMaxSize, which shapes the batches
+   * eRPC itself sends to an upstream.
+   */
+  maxClientBatchSize?: number /* int */;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2175,15 +2190,17 @@ export interface EvmServedTipConfig {
   guaranteedFor?: string[];
   /**
    * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-   * (the second-highest live head) the pick may fall before it is treated as
-   * a poisoned ballot rather than as reality. While a pick is below that
-   * bound the network keeps serving its last corroborated pick (in-process,
-   * for at most one minute, then it fails open and serves the pick as
-   * computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
-   * rollback tolerance the state poller and health tracker apply to a
-   * retreating head, so all three layers agree on what counts as a genuine
-   * deep correction. -1 disables the regression guard entirely; no other
-   * negative value is accepted.
+   * (the second-highest live head) the finalized pick may fall before it is
+   * treated as a poisoned ballot rather than as reality. While a pick is
+   * below that bound the network keeps serving its last corroborated pick
+   * (in-process, for at most one minute, then it fails open and serves the
+   * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) - the
+   * same rollback tolerance the state poller and health tracker apply to a
+   * retreating head - widened to twice the lane's typical finality step
+   * (the lower median of its last eight finalized advances), so a chain
+   * that finalizes in larger batches does not hold when one voter lags a
+   * batch. -1 disables the regression guard entirely; no other negative
+   * value is accepted.
    */
   maxRegressionBlocks?: number /* int64 */;
   /**
@@ -2675,10 +2692,11 @@ export interface IntegritySettings {
    * rejects feed — for the selection policy to act on (e.g. the
    * misbehaviorRateAbove predicate); absence of proof has no effect at all,
    * and ObserveOnly suppresses the misbehavior recording like every other
-   * integrity effect. Requires follow to be enabled (the verified header is
-   * the trust anchor). Off by default. The "latest" tag-state probe behind
-   * the tag-state gate runs on every network from its first client
-   * request, whatever this says.
+   * integrity effect. These pinned probes require follow to be enabled
+   * (the verified header is the trust anchor). Off by default. On, it also
+   * runs, from the network's first client request, the "latest" tag-state
+   * probe behind the tag-state gate, with or without follow; off, no probe
+   * runs and that gate skips no upstream.
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**

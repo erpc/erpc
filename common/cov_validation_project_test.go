@@ -74,6 +74,7 @@ func TestCovValidation_Project(t *testing.T) {
 			p.UpstreamDefaults.Failsafe[1].MatchCommitment = []string{"confirmed"}
 		}, "project.*.upstreamDefaults: failsafe.matchCommitment is only supported for network-level failsafe"},
 		{"networkDefaults bad suffix", func(p *ProjectConfig) { p.NetworkDefaults.CacheKeySuffix = "v2!" }, "networkDefaults.cacheKeySuffix 'v2!' must contain only alphanumeric characters"},
+		{"networkDefaults negative maxClientBatchSize", func(p *ProjectConfig) { p.NetworkDefaults.MaxClientBatchSize = util.IntPtr(-1) }, "networkDefaults.maxClientBatchSize must be 0 (no limit) or greater, got -1"},
 		{"invalid network", func(p *ProjectConfig) { p.Networks[1].Architecture = "" }, "network.*.architecture is required"},
 		{"duplicate network id", func(p *ProjectConfig) { p.Networks[1].Evm.ChainId = 1 }, "project.*.networks.*.id must be unique, 'evm:1' is duplicated"},
 		{"duplicate alias", func(p *ProjectConfig) { p.Networks[1].Alias = "eth" }, "project.*.networks.*.alias must be unique, 'eth' is duplicated"},

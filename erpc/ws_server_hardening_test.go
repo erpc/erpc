@@ -474,6 +474,50 @@ func TestWebSocket_ErrorShapes(t *testing.T) {
 		require.NotNil(t, resp["error"])
 		assert.EqualValues(t, common.JsonRpcErrorClientSideException, resp["error"].(map[string]interface{})["code"])
 	})
+
+	// The HTTP rule holds per message: a bool, object, or array id is an
+	// Invalid Request answered with a null id.
+	t.Run("NonScalarIdIsInvalidRequest", func(t *testing.T) {
+		for _, id := range []string{`true`, `{"a":1}`, `[1]`} {
+			resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":`+id+`,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+			require.NotNil(t, resp["error"], "id %s: %v", id, resp)
+			assert.EqualValues(t, common.JsonRpcErrorClientSideException, resp["error"].(map[string]interface{})["code"], "id %s", id)
+			gotID, hasID := resp["id"]
+			assert.True(t, hasID, "id %s: reply must carry an id member", id)
+			assert.Nil(t, gotID, "id %s", id)
+		}
+	})
+}
+
+// maxClientBatchSize holds on a WebSocket connection as over HTTP: an
+// over-limit batch gets one -32600 error and reaches no upstream.
+func TestWebSocket_ClientBatchCap(t *testing.T) {
+	calls := countEvmGetBalanceCalls(t)
+	cfg := standardWsConfig("")
+	cfg.Projects[0].Networks[0].MaxClientBatchSize = util.IntPtr(2)
+	cfg.Projects[0].Upstreams = cfg.Projects[0].Upstreams[:1]
+	cfg.Projects[0].Upstreams[0].JsonRpc = &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(getBalanceBatch(2, ""))))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(string(msg), "["), "a batch at the limit is served, got %s", msg)
+	assert.EqualValues(t, 2, calls.Load())
+
+	resp := sendAndReceive(t, conn, getBalanceBatch(3, ""))
+	assert.Contains(t, resp, "id")
+	assert.Nil(t, resp["id"])
+	require.NotNil(t, resp["error"], "got %v", resp)
+	errObj := resp["error"].(map[string]interface{})
+	assert.EqualValues(t, common.JsonRpcErrorClientSideException, errObj["code"])
+	assert.Contains(t, errObj["message"], "batch of 3 requests")
+	assert.Contains(t, errObj["message"], "limit of 2")
+	assert.EqualValues(t, 2, calls.Load(), "an over-limit batch must reach no upstream")
 }
 
 // A WebSocket connection is bound to one network, so a path that doesn't

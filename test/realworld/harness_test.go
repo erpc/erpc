@@ -999,7 +999,9 @@ type netSpec struct {
 	prism string
 	ups   []upSpec
 	// integrityOff are pods whose config leaves integrity off (K5);
-	// checks are integrity checks enabled beyond the level's.
+	// checks are integrity checks enabled beyond the level's, or alone,
+	// with no level, when integrity is off. Old pods get none: the old
+	// image may not know their ids.
 	integrityOff []int
 	checks       []string
 }
@@ -1053,15 +1055,18 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 				evm[k] = v
 			}
 			nw := m{"architecture": "evm", "evm": evm}
+			integ := m{}
 			if n.integrity && !slices.Contains(n.integrityOff, p.idx) {
-				integ := m{"level": "authoritative"}
-				if len(n.checks) > 0 {
-					cs := m{}
-					for _, id := range n.checks {
-						cs[id] = m{"enabled": true}
-					}
-					integ["checks"] = cs
+				integ["level"] = "authoritative"
+			}
+			if len(n.checks) > 0 && !p.old && (len(integ) > 0 || !n.integrity) {
+				cs := m{}
+				for _, id := range n.checks {
+					cs[id] = m{"enabled": true}
 				}
+				integ["checks"] = cs
+			}
+			if len(integ) > 0 {
 				nw["integrity"] = integ
 			}
 			for k, v := range n.extra {

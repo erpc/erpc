@@ -438,6 +438,13 @@ func (wsc *WsConnection) handleBatch(ctx context.Context, raw []byte, startedAt 
 		wsc.writeError(int(common.JsonRpcErrorClientSideException), "invalid request: empty batch")
 		return
 	}
+	// The connection is bound to one network, so its limit covers the batch.
+	if nw, err := wsc.project.GetNetwork(ctx, wsc.networkId); err == nil {
+		if _, capErr := networkBatchCapError(nw, len(requests)); capErr != nil {
+			wsc.writeError(int(common.JsonRpcErrorClientSideException), capErr.(common.StandardError).DeepestMessage())
+			return
+		}
+	}
 
 	responses := make([]interface{}, len(requests))
 	notifications := make([]bool, len(requests))

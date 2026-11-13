@@ -138,6 +138,26 @@ func clampCommitmentForMethod(method, commitment string) string {
 	return commitment
 }
 
+// projectPreForward_negativeId answers a negative integer request id the way a
+// Solana node does. Agave reads an id as null, a u64, or a string, so a
+// negative id fails to parse there and every node answers -32700 "Parse
+// error" with id null (HTTP 200), whatever the method. That reply depends on
+// the id alone, so it is given here and the request asks no upstream; EVM
+// nodes accept any number as an id, so the rule is SVM-only.
+func projectPreForward_negativeId(ctx context.Context, r *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	rpcReq, err := r.JsonRpcRequest(ctx)
+	if err != nil || rpcReq == nil {
+		return false, nil, nil
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(rpcReq.IDRawBytes())), "-") {
+		return false, nil, nil
+	}
+	rpcReq.AnswerIDAsNull()
+	return true, nil, common.NewErrInvalidRequest(
+		common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorParseException, "Parse error", nil, nil),
+	)
+}
+
 // projectPreForward_getGenesisHash short-circuits getGenesisHash using the
 // hardcoded table — cluster genesis hashes are immutable, so we never need an
 // upstream round-trip. Mirrors EVM's eth_chainId short-circuit.

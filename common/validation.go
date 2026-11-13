@@ -94,6 +94,9 @@ func (s *ServerConfig) Validate() error {
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
 	}
+	if s.MaxRequestBodySize != nil && *s.MaxRequestBodySize < 0 {
+		return fmt.Errorf("server.maxRequestBodySize must be 0 (no limit) or greater, got %d", *s.MaxRequestBodySize)
+	}
 	if ws := s.WebSocket; ws != nil {
 		if ws.PingInterval == nil || *ws.PingInterval <= 0 {
 			return fmt.Errorf("server.webSocket.pingInterval must be greater than 0")
@@ -1934,6 +1937,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if err := validateCacheKeySuffix("network.*.cacheKeySuffix", n.CacheKeySuffix); err != nil {
 		return err
 	}
+	if n.MaxClientBatchSize != nil && *n.MaxClientBatchSize < 0 {
+		return fmt.Errorf("network.*.maxClientBatchSize must be 0 (no limit) or greater, got %d", *n.MaxClientBatchSize)
+	}
 	for i, sr := range n.StaticResponses {
 		if err := sr.Validate(); err != nil {
 			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
@@ -1948,6 +1954,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 func (n *NetworkDefaults) Validate() error {
 	if n == nil {
 		return nil
+	}
+	if n.MaxClientBatchSize != nil && *n.MaxClientBatchSize < 0 {
+		return fmt.Errorf("networkDefaults.maxClientBatchSize must be 0 (no limit) or greater, got %d", *n.MaxClientBatchSize)
 	}
 	return validateCacheKeySuffix("networkDefaults.cacheKeySuffix", n.CacheKeySuffix)
 }

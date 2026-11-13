@@ -131,11 +131,13 @@ func TestNormalizeResponse_NullIDEchoIsSolanaOnly(t *testing.T) {
 }
 
 // TestNormalizeResponse_IDLossyRejected pins that a numeric request id which
-// cannot be represented losslessly as int64 is rejected at parse time rather
+// is not an integer in the int64 or u64 range is rejected at parse time rather
 // than silently truncated/clamped into a different internal id (issue #869).
 // eRPC represents numeric request ids as int64 internally and echoes them to
 // upstreams, so a lossy id would corrupt the upstream-facing request and could
-// collapse distinct client ids onto the same internal id.
+// collapse distinct client ids onto the same internal id. An integer above the
+// int64 range, up to the u64 maximum, is carried instead: the upstream sees a
+// random int64 and the client gets its own id bytes back.
 func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
 	ctx := context.Background()
 	network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
@@ -144,9 +146,9 @@ func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
 		`3.14`,                       // fractional
 		`1e20`,                       // exponent, out of int64 range
 		`9.3e18`,                     // exponent within magnitude but not an exact int
-		`9223372036854775808`,        // MaxInt64 + 1
-		`18446744073709551614`,       // near uint64 max
-		`99999999999999999999999999`, // far beyond int64
+		`18446744073709551616`,       // u64 max + 1
+		`-9223372036854775809`,       // MinInt64 - 1
+		`99999999999999999999999999`, // far beyond u64
 	}
 
 	for _, idJSON := range lossy {
@@ -160,6 +162,27 @@ func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
 			err := network.normalizeResponse(ctx, req, resp)
 			require.Error(t, err, "lossy id %s must be rejected, not silently converted", idJSON)
 			assert.Contains(t, err.Error(), "cannot be represented as a 64-bit integer")
+		})
+	}
+
+	for _, idJSON := range []string{`9223372036854775808`, `18446744073709551615`} {
+		t.Run("carried/"+idJSON, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":` + idJSON + `}`)
+			req := common.NewNormalizedRequest(body)
+			jrq, err := req.JsonRpcRequest()
+			require.NoError(t, err)
+			_, isInt := jrq.ID.(int64)
+			assert.True(t, isInt, "the upstream-facing id is an int64, got %T", jrq.ID)
+
+			jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`"0x1"`), nil)
+			resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+			require.NoError(t, network.normalizeResponse(ctx, req, resp))
+			out, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			var wire bytes.Buffer
+			_, err = out.WriteTo(&wire)
+			require.NoError(t, err)
+			assert.Contains(t, wire.String(), `"id":`+idJSON+`,`, "the client gets its own id bytes back")
 		})
 	}
 }
