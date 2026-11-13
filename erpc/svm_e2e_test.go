@@ -1026,6 +1026,14 @@ func setupTestSvmNetworkFinalized(t *testing.T, ctx context.Context, upstreams [
 // of every SDK call that omits the field.
 func setupTestSvmNetworkWithCommitment(t *testing.T, ctx context.Context, commitment string, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
 	t.Helper()
+	return setupTestSvmNetworkWithConfig(t, ctx, &common.SvmNetworkConfig{
+		Cluster:    "mainnet-beta",
+		Commitment: commitment,
+	}, upstreams)
+}
+
+func setupTestSvmNetworkWithConfig(t *testing.T, ctx context.Context, svmCfg *common.SvmNetworkConfig, upstreams []*common.UpstreamConfig) (*Network, *upstream.UpstreamsRegistry) {
+	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
@@ -1055,10 +1063,7 @@ func setupTestSvmNetworkWithCommitment(t *testing.T, ctx context.Context, commit
 
 	networkConfig := &common.NetworkConfig{
 		Architecture: common.ArchitectureSvm,
-		Svm: &common.SvmNetworkConfig{
-			Cluster:    "mainnet-beta",
-			Commitment: commitment,
-		},
+		Svm:          svmCfg,
 	}
 	network, err := NewNetwork(
 		ctx, &log.Logger, "test", networkConfig,

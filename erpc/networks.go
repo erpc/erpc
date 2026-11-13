@@ -2045,25 +2045,26 @@ func (n *Network) servedTipMaxRegressionBlocks() int64 {
 	return common.DefaultToleratedBlockHeadRollback
 }
 
-// SvmHighestLatestSlot returns the majority-vote latest slot across SVM
-// upstreams. Uses common.PickServedTip with a strict-majority quorum so a single
-// fast/rogue upstream cannot inflate the served tip.
+// SvmHighestLatestSlot returns the served latest slot across SVM upstreams:
+// common.PickServedTip at svm.servedTip.quorum. The default, a strict
+// majority, keeps a single fast/rogue upstream from inflating the served tip.
 func (n *Network) SvmHighestLatestSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestLatestSlot")
 	defer span.End()
-	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, false), common.ServedTipQuorumMajority)
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, false), n.svmServedTipQuorum())
 	span.SetAttributes(attribute.Int64("highest_latest_slot", pick.Tip))
 	return pick.Tip
 }
 
-// SvmHighestFinalizedSlot is the finalized-slot counterpart: the MAJORITY tip.
+// SvmHighestFinalizedSlot is the finalized-slot counterpart, at the same
+// quorum (majority by default).
 // Used by the slot-lag consensus filter as the reference "pool leader" value
 // and by networkPostForward_getSlot to advertise a head to clients. Rejection
 // gates want SvmHighestFinalizedSlotMax instead.
 func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlot")
 	defer span.End()
-	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, true), common.ServedTipQuorumMajority)
+	pick := common.PickServedTip(n.gatherSvmTipInputs(ctx, true), n.svmServedTipQuorum())
 	span.SetAttributes(attribute.Int64("highest_finalized_slot", pick.Tip))
 	return pick.Tip
 }
@@ -2085,6 +2086,15 @@ func (n *Network) SvmHighestFinalizedSlot(ctx context.Context) int64 {
 // Reads the pollers directly rather than through gatherSvmTipInputs: a MAX
 // needs no sorting, and this runs on the pre-forward path of every getBlock, so
 // it must not allocate a slice per request.
+// svmServedTipQuorum is the quorum for the SVM served-tip ballots:
+// networks[*].svm.servedTip.quorum, majority when unset.
+func (n *Network) svmServedTipQuorum() common.ServedTipQuorum {
+	if n.cfg == nil {
+		return common.ServedTipQuorumMajority
+	}
+	return n.cfg.Svm.ServedTipQuorum()
+}
+
 func (n *Network) SvmHighestFinalizedSlotMax(ctx context.Context) int64 {
 	_, span := common.StartDetailSpan(ctx, "Network.SvmHighestFinalizedSlotMax")
 	defer span.End()

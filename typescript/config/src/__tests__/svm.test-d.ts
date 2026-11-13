@@ -80,6 +80,8 @@ const _realisticSvmConfig = createConfig({
             maxFinalizedSlotLag: 0,
             // Opt out of the getBlock slot-availability guard.
             enforceBlockAvailability: false,
+            // Advertise the highest slot any upstream reports.
+            servedTip: { quorum: 1 },
           },
         },
         {
@@ -118,6 +120,7 @@ const _sharedNetwork: SvmNetworkConfig = {
   statePollerDebounce: 400,
   maxFinalizedSlotLag: 0,
   enforceBlockAvailability: false,
+  servedTip: { quorum: "majority" },
 };
 
 const _sharedUpstream: SvmUpstreamConfig = {
@@ -185,6 +188,21 @@ createConfig({
           architecture: "svm",
           // @ts-expect-error — maxFinalizedSlotLag is a number of slots, not a duration
           svm: { cluster: "mainnet-beta", maxFinalizedSlotLag: "100ms" },
+        },
+      ],
+    },
+  ],
+});
+
+createConfig({
+  projects: [
+    {
+      id: "bad-quorum-type",
+      networks: [
+        {
+          architecture: "svm",
+          // @ts-expect-error — quorum is a count or "majority", not any string
+          svm: { cluster: "mainnet-beta", servedTip: { quorum: "half" } },
         },
       ],
     },

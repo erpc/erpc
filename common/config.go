@@ -2950,6 +2950,31 @@ type SvmNetworkConfig struct {
 	// Set to false to disable the guard when ShredInsertSlot tracking is
 	// unavailable or unreliable on a given deployment.
 	EnforceBlockAvailability *bool `yaml:"enforceBlockAvailability,omitempty" json:"enforceBlockAvailability,omitempty"`
+
+	// ServedTip configures how the network derives the latest/finalized slot
+	// it advertises (getSlot, the slot-lag consensus reference) from its
+	// upstreams. See SvmServedTipConfig.
+	ServedTip *SvmServedTipConfig `yaml:"servedTip,omitempty" json:"servedTip,omitempty"`
+}
+
+// SvmServedTipConfig controls the served-tip ballot over the SVM state
+// pollers' latest and finalized slots.
+type SvmServedTipConfig struct {
+	// Quorum is how many upstreams must already report a slot before it is
+	// advertised: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+	// keeps the SVM default, "majority" (unlike evm.servedTip.quorum, whose
+	// default is 2). 1 advertises the highest slot any upstream reports, so
+	// one fresh upstream is not held back by slower ones.
+	Quorum ServedTipQuorum `yaml:"quorum,omitempty" json:"quorum,omitempty" tstype:"number | 'majority'"`
+}
+
+// ServedTipQuorum is the SVM network's served-tip quorum; unset is
+// ServedTipQuorumMajority. Nil-receiver safe.
+func (s *SvmNetworkConfig) ServedTipQuorum() ServedTipQuorum {
+	if s == nil || s.ServedTip == nil || s.ServedTip.Quorum == 0 {
+		return ServedTipQuorumMajority
+	}
+	return s.ServedTip.Quorum
 }
 
 // SvmUpstreamConfig carries per-upstream SVM settings.
