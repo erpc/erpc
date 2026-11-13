@@ -2081,6 +2081,11 @@ func (s *SvmNetworkConfig) Validate() error {
 	if s.MaxFinalizedSlotLag != nil && *s.MaxFinalizedSlotLag < 0 {
 		return fmt.Errorf("network.*.svm.maxFinalizedSlotLag must be greater than or equal to 0 (0 disables the lag filter)")
 	}
+	if s.ServedTip != nil {
+		if q := s.ServedTip.Quorum; q < 0 && q != ServedTipQuorumMajority {
+			return fmt.Errorf("network.*.svm.servedTip.quorum must be an integer >= 1 or \"majority\"")
+		}
+	}
 	return nil
 }
 

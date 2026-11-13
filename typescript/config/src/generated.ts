@@ -1912,6 +1912,26 @@ export interface SvmNetworkConfig {
    * unavailable or unreliable on a given deployment.
    */
   enforceBlockAvailability?: boolean;
+  /**
+   * ServedTip configures how the network derives the latest/finalized slot
+   * it advertises (getSlot, the slot-lag consensus reference) from its
+   * upstreams. See SvmServedTipConfig.
+   */
+  servedTip?: SvmServedTipConfig;
+}
+/**
+ * SvmServedTipConfig controls the served-tip ballot over the SVM state
+ * pollers' latest and finalized slots.
+ */
+export interface SvmServedTipConfig {
+  /**
+   * Quorum is how many upstreams must already report a slot before it is
+   * advertised: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+   * keeps the SVM default, "majority" (unlike evm.servedTip.quorum, whose
+   * default is 2). 1 advertises the highest slot any upstream reports, so
+   * one fresh upstream is not held back by slower ones.
+   */
+  quorum?: number | 'majority';
 }
 /**
  * SvmUpstreamConfig carries per-upstream SVM settings.

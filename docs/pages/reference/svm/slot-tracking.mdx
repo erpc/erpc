@@ -162,7 +162,7 @@ The floor is chosen **per commitment**, and never exceeds the tip for the commit
 
 | Effective commitment | Floor |
 |---|---|
-| `finalized` | `min(finalizedTip, indexedTip)`; when the indexed tip is unknown, `finalizedTip − 32`. **Clamped from both directions** — stale values are raised, values above the floor are capped down. `finalizedTip` here is the **majority** tip, because this value is advertised to clients and a lone rogue upstream must not inflate it. |
+| `finalized` | `min(finalizedTip, indexedTip)`; when the indexed tip is unknown, `finalizedTip − 32`. **Clamped from both directions** — stale values are raised, values above the floor are capped down. `finalizedTip` here is the served tip at `svm.servedTip.quorum` — the **majority** by default, because this value is advertised to clients and a lone rogue upstream must not inflate it. |
 | `confirmed` | **Passed through uncorrected.** |
 | `processed` | The processed tip (`LatestSlot()`). Stale values are raised only; a value above the tip is left alone. |
 
@@ -216,6 +216,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 | `networks[*].svm.skipProcessedSlotProbe` | `bool` | `false` (poll) | When `true`, skips `getSlot(processed)` and lets the finalized probe double-feed `LatestSlot`. **Only safe on ~1-slot-finality chains** (Alpenglow); on a ~32-slot-gap chain (TowerBFT) it shifts the shred-lag cordon and availability windows by that gap. Propagated from `networkDefaults.svm` when set `true`. |
 | `networks[*].svm.maxFinalizedSlotLag` | `*int64` | `100` slots (≈40 s) | Consensus-scoped only: applied when a consensus policy is active **and** the request's resolved finality is `Finalized`. **Tri-state** — omit for the 100-slot default, `0` to **disable** the filter entirely, `>0` for that value. |
 | `networks[*].svm.enforceBlockAvailability` | `*bool` | `true` | Gates the `getBlock`/`getConfirmedBlock` availability guard **and** declared `svm.blockAvailability` windows. Set `false` when shred-insert tracking is unavailable or unreliable on a deployment. |
+| `networks[*].svm.servedTip.quorum` | `int` \| `"majority"` | unset → `"majority"` | Quorum for the served latest/finalized tip (`SvmHighestLatestSlot` / `SvmHighestFinalizedSlot`). `1` follows the most advanced upstream; the guards' MAX bounds (`SvmHighestFinalizedSlotMax`, the indexed frontier) are unchanged. |
 
 `maxFinalizedSlotLag` is a pointer precisely so an explicit `0` is distinguishable from "unset": a plain integer would collapse those two cases and make the documented disable switch unreachable. The `100` default is materialized in exactly one place (`SetDefaults`) so every reader downstream can simply test `lag != nil && *lag > 0`.
 
@@ -276,7 +277,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 }]`}
 />
 
-**3. Raise debounce on an archive-only upstream without slowing tip peers.** Tip-excluded archive vendors still pay the full poll fan-out at the network debounce unless overridden. Set a longer gate on that upstream alone; siblings that omit the field keep the network value. Prefer this over `upstreamDefaults.svm.statePollerDebounce` so tip peers stay tight. Note: `blockAvailability` tip-exclusion does **not** remove the archive from the majority served-tip ballot — the served tip needs `floor(N/2)+1` votes, so whenever slow upstreams are at least half of the SVM pollers (e.g. one tip + one archive, or two tip + two archives) a 5s archive can advertise a ~12-slot-stale head. Keep fresh tip peers a strict majority of the pollers (or accept the lag). The `getBlock` guard margin stays on the network debounce; the indexed frontier is MAX so one slow peer is fine:
+**3. Raise debounce on an archive-only upstream without slowing tip peers.** Tip-excluded archive vendors still pay the full poll fan-out at the network debounce unless overridden. Set a longer gate on that upstream alone; siblings that omit the field keep the network value. Prefer this over `upstreamDefaults.svm.statePollerDebounce` so tip peers stay tight. Note: `blockAvailability` tip-exclusion does **not** remove the archive from the majority served-tip ballot — the served tip needs `floor(N/2)+1` votes, so whenever slow upstreams are at least half of the SVM pollers (e.g. one tip + one archive, or two tip + two archives) a 5s archive can advertise a ~12-slot-stale head. Keep fresh tip peers a strict majority of the pollers, accept the lag, or set `svm.servedTip.quorum: 1` to follow the freshest upstream. The `getBlock` guard margin stays on the network debounce; the indexed frontier is MAX so one slow peer is fine:
 
 <ConfigTabs
   path="projects[].upstreams[]"
@@ -407,7 +408,7 @@ The filter is defensive throughout: an upstream with no state poller is **includ
 1. **`svm.maxFinalizedSlotLag: 0` disables the filter — it does not mean "zero tolerance".** Omitting the key gives the 100-slot default; `0` turns filtering off entirely.
 2. **`MaxShredInsertSlotLagThreshold` (100) is not configurable.** It is a compile-time constant governing per-upstream health, distinct from the `maxFinalizedSlotLag` config key despite the shared default value.
 3. **`statePollerDebounce` does not change the ticker period.** The ticker is pinned at 400 ms; the setting gates the fan-out. Setting it below 400 ms therefore has no effect. Per-upstream `0` / omit inherits the network gate — it does **not** disable the poller (disabling the SVM state poller is out of scope).
-4. **Per-upstream debounce does not change `tipStalenessMargin`.** The margin still reads `networks[*].svm.statePollerDebounce`. The indexed frontier is MAX across shred snapshots, so one slow peer next to a fresh tip peer does not false-reject head `getBlock`s. It *does* when every poller feeding the frontier is slower than the network gate (wholesale `upstreamDefaults.svm.statePollerDebounce`, or the only tip peer is cold/cordoned). Separately: every poller still votes in the majority served tip — `blockAvailability` tip-exclusion is routing-only — so whenever slow pollers are ≥ half the pool (e.g. 1+1 or 2+2) the advertised head can follow them.
+4. **Per-upstream debounce does not change `tipStalenessMargin`.** The margin still reads `networks[*].svm.statePollerDebounce`. The indexed frontier is MAX across shred snapshots, so one slow peer next to a fresh tip peer does not false-reject head `getBlock`s. It *does* when every poller feeding the frontier is slower than the network gate (wholesale `upstreamDefaults.svm.statePollerDebounce`, or the only tip peer is cold/cordoned). Separately: every poller still votes in the majority served tip — `blockAvailability` tip-exclusion is routing-only — so whenever slow pollers are ≥ half the pool (e.g. 1+1 or 2+2) the advertised head can follow them, unless `svm.servedTip.quorum` is lowered.
 5. **There is no Prometheus metric for ingestion lag.** It is logged (`shredInsertSlotLag` on the cordon WARN) and it drives cordoning, but no gauge exposes it. Alert on `erpc_upstream_cordoned` and read the `reason` label.
 6. **`getSlot` at `confirmed` is not corrected**, so a client polling `getSlot(confirmed)` across pods can still observe the value move backwards. Use `processed` or `finalized` if monotonicity matters more than the confirmed contract.
 7. **A `finalized` `getSlot` answer can be *lower* than what the upstream returned.** That is the indexing-lag cap doing its job — the raw consensus tip is not yet fetchable via `getBlock`.
@@ -466,6 +467,7 @@ The SVM poller feeds the shared health tracker, so the standard upstream gauges 
 - <SourceLink file="common/config.go" lines="2863-2874" label="common/config.go — network statePollerDebounce, skipProcessedSlotProbe, maxFinalizedSlotLag, enforceBlockAvailability" />
 - <SourceLink file="common/config.go" lines="2918-2923" label="common/config.go — upstreams[*].svm.statePollerDebounce" />
 - <SourceLink file="common/defaults.go" lines="2579-2606" label="common/defaults.go — mergeSvmNetworkDefaults (incl. skipProcessedSlotProbe) and SvmNetworkConfig.SetDefaults" />
+- <SourceLink file="erpc/networks.go" lines="2048-2097" label="erpc/networks.go — SvmHighestLatestSlot / SvmHighestFinalizedSlot at svm.servedTip.quorum" />
 
 ### Related pages
 
