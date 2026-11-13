@@ -250,7 +250,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].routing.scoreMultipliers[].overall` | `*float64` | unset = 1 | Scales the upstream's final score. `2` = twice as preferred. |
 | `upstreams[*].routing.scoreMultipliers[].errorRate` / `respLatency` / `throttledRate` / `blockHeadLag` / `finalizationLag` / `misbehaviors` | `*float64` | unset = inherit preset | Per-dimension weight overrides for `sortByScore`. `0` removes contribution. |
 | `upstreams[*].routing.scoreLatencyQuantile` | float64 | `0` → policy default p70 | Which response-time quantile feeds the score. |
-| `upstreams[*].routing.probe` | `"on"` \| `"off"` | `""` → `on` | `off` opts this upstream out of probe-excluded shadow-mirror traffic. |
+| `upstreams[*].routing.probe` | `"on"` \| `"off"` | `""` → `on` | `off` opts this upstream out of probe-excluded shadow-mirror traffic. Other values are rejected at config load; use `"off"`, not the YAML boolean `false`. |
 | `upstreams[*].evm.chainId` | int64 | `0` → auto-detected via `eth_chainId` at bootstrap | Mismatch against detected value is **fatal** (no retry). Must be `0` for vendor-shorthand endpoints. |
 | `upstreams[*].evm.statePollerInterval` | Duration | `30s` (<SourceLink file="common/defaults.go" lines="1718-1724" />) | Background latest/finalized poll cadence. Non-zero required. |
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` → inferred from chain block time | Minimum spacing between forced polls. |
@@ -958,7 +958,12 @@ SVM upstream gets its own slot/health poller automatically:
     the upstream omits its `svm` block; per-field copy of `blockAvailability` when the
     upstream has a partial `svm` block and left the field unset. Copies are deep — two
     upstreams must not alias the same pointer. (<SourceLink file="common/defaults.go" lines="1850-1877" />)
-
+28. **`routing.probe` is a string enum, not a boolean.** Set `probe: "off"` to
+    disable shadow probing. An omitted or empty value retains the default `on`
+    behavior. Values such as `false`, `true`, or `disabled` fail config validation
+    with the invalid value and upstream ID (or project `upstreamDefaults` context).
+    The same validation applies to provider overrides and provider-only projects'
+    upstream defaults. See [`common/validation_routing_test.go`](https://github.com/erpc/erpc/blob/main/common/validation_routing_test.go).
 
 ### Observability
 
