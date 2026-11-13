@@ -63,11 +63,7 @@ const (
 	svmCodeEpochRewardsPeriodActive   = -32017 // EpochRewardsPeriodActive: epoch-global condition, identical on every node
 	svmCodeSlotNotEpochBoundary       = -32018 // SlotNotEpochBoundary: caller-supplied slot invalid for this query
 	svmCodeLongTermStorageUnreachable = -32019 // LongTermStorageUnreachable: this node's bigtable backend is down
-
-	// svmCodeSignatureNotFound is not an agave code: some vendor proxies answer
-	// getSignaturesForAddress with it when the `before`/`until` cursor is
-	// unknown to them, where agave returns an empty page.
-	svmCodeSignatureNotFound = -32020
+	svmCodeFilterTxNotFound           = -32020 // FilterTransactionNotFound: getSignaturesForAddress `before`/`until` signature unknown to this node (agave 4.1+; older nodes answer an empty page)
 )
 
 func (e *JsonRpcErrorExtractor) Extract(
@@ -350,13 +346,13 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// --- History cursor unknown to this upstream (sweep once) ------------------
 	//
 	// -32020 on getSignaturesForAddress: this upstream does not know the
-	// `before`/`until` signature. Agave answers an empty page there, so this is
-	// the upstream's own history verdict, like a page that ends at its floor:
+	// `before`/`until` signature (agave 4.1+; older agave answers an empty page
+	// there). It is the upstream's own history verdict, like a page that ends at its floor:
 	// another upstream may hold the signature, so it stays retryable across
 	// upstreams, and it is permanent, so no hedge leg or retry asks this
 	// upstream again within the request. Other methods take the unknown-code
 	// default below.
-	case svmCodeSignatureNotFound:
+	case svmCodeFilterTxNotFound:
 		if nr != nil && nr.Request() != nil {
 			if method, _ := nr.Request().Method(); method == "getSignaturesForAddress" {
 				return newSweptSkipMissingData(code, msg, details, upstream)
