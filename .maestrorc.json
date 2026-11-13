@@ -7,6 +7,9 @@
   "planning": {
     "enabled": true
   },
+  "review": {
+    "external_prs": true
+  },
   "security": {
     "trusted_author_associations": ["OWNER", "MEMBER", "COLLABORATOR"],
     "expose_issue_in_github": false
