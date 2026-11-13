@@ -538,7 +538,7 @@ var (
 	MetricSelectionProbeSkipped = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "selection_probe_skipped_total",
-		Help:      "Probe candidates that were skipped before firing. reason ∈ {write_method, opt_out, sampled_out, max_concurrent, no_method}. `write_method` and `opt_out` are safety/policy gates; `sampled_out` and `max_concurrent` are throughput controls.",
+		Help:      "Probe candidates that were skipped before firing. reason ∈ {write_method, opt_out, method_ignored, sampled_out, max_concurrent, no_method}. `write_method`, `opt_out` and `method_ignored` are safety/policy gates; `sampled_out` and `max_concurrent` are throughput controls.",
 	}, []string{"network", "reason"})
 
 	MetricSelectionProbeDropped = DefineCounter(prometheus.CounterOpts{

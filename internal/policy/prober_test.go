@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,10 @@ type stubProbeUpstream struct {
 	// hold a probe in-flight to assert the inflight counter is
 	// enforced.
 	blockUntil chan struct{}
+	// ignore holds ignoreMethods patterns ShouldHandleMethod applies;
+	// handleErr, when set, is the error it returns instead.
+	ignore    []string
+	handleErr error
 }
 
 func (s *stubProbeUpstream) Id() string           { return s.id }
@@ -48,10 +53,20 @@ func (s *stubProbeUpstream) Forward(ctx context.Context, nq *common.NormalizedRe
 	}
 	return nil, nil
 }
-func (s *stubProbeUpstream) Cordon(method, reason string)                   {}
-func (s *stubProbeUpstream) Uncordon(method, reason string)                 {}
-func (s *stubProbeUpstream) IgnoreMethod(method string)                     {}
-func (s *stubProbeUpstream) ShouldHandleMethod(method string) (bool, error) { return true, nil }
+func (s *stubProbeUpstream) Cordon(method, reason string)   {}
+func (s *stubProbeUpstream) Uncordon(method, reason string) {}
+func (s *stubProbeUpstream) IgnoreMethod(method string)     {}
+func (s *stubProbeUpstream) ShouldHandleMethod(method string) (bool, error) {
+	if s.handleErr != nil {
+		return false, s.handleErr
+	}
+	for _, m := range s.ignore {
+		if match, _ := common.WildcardMatch(m, method); match {
+			return false, nil
+		}
+	}
+	return true, nil
+}
 
 // stubEngine implements the narrow proberDeps interface so we can
 // drive the prober without standing up a full Engine.
@@ -169,6 +184,36 @@ func TestProber_HonorsRoutingProbeOff(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	assert.Equal(t, int64(0), dead.calls.Load(),
 		"opted-out upstream (routing.probe=off) must receive zero probe traffic")
+}
+
+// TestProber_HonorsIgnoreMethods: an upstream whose ignoreMethods
+// excludes a method never receives probes for it. Routing never sends
+// it that method, so a probe proves nothing; and the operator excluded
+// it on purpose. Other methods still reach the upstream, and a
+// matcher error is not a verdict, so the probe still fires.
+func TestProber_HonorsIgnoreMethods(t *testing.T) {
+	deps := &stubEngine{}
+	ignoring := &stubProbeUpstream{id: "ignoring", ignore: []string{"txpool_*"}}
+	broken := &stubProbeUpstream{id: "broken", handleErr: errors.New("bad pattern")}
+	deps.setExcluded("evm:1", []common.Upstream{ignoring, broken})
+
+	p, _ := newTestProber(t, deps, &ProbeConfig{
+		SampleRate:    1.0,
+		MaxConcurrent: 4,
+		Timeout:       5 * time.Second,
+	})
+	defer p.Stop()
+
+	p.Publish(makeProbeReq(t, "txpool_content"))
+	assert.Equal(t, int64(1), waitForCalls(broken, 1, time.Second),
+		"a matcher error must not block the probe")
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, int64(0), ignoring.calls.Load(),
+		"an upstream must not receive probes for a method its ignoreMethods excludes")
+
+	p.Publish(makeProbeReq(t, "eth_getBalance"))
+	assert.Equal(t, int64(1), waitForCalls(ignoring, 1, time.Second),
+		"methods the upstream serves must still be probed")
 }
 
 // TestProber_RespectsMaxConcurrent — with maxConcurrent=2 and a stub
