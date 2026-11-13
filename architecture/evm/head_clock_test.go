@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -269,10 +270,10 @@ func TestBlockClockTarget(t *testing.T) {
 // A cold instance reads the block time as health.ColdBlockTime (1 s)
 // until the network's first sample (spec §6.7). Under eth_blockNumber
 // reads from the start, each block after the sample comes within a block
-// of its mint. Laid and planned by the cold 1 s, a 3 s chain's first
-// sights came two slots late and the sample put the next fetch three
-// blocks out; a 0.25 s chain's plans went seconds out (#1426: 12 s
-// blocks, 145 s).
+// of its mint, plus the cold 1 s while a fetch planned before the sample
+// stands. Laid and spaced by the cold 1 s, a 3 s chain's first sights
+// came two slots late and the sample put the next fetch three blocks out;
+// a 0.25 s chain's plans went seconds out (#1426: 12 s blocks, 145 s).
 func TestBlockClockColdStart(t *testing.T) {
 	for _, tc := range []struct {
 		bt     time.Duration
@@ -301,7 +302,11 @@ func TestBlockClockColdStart(t *testing.T) {
 			for k := last - tc.blocks + 1; k <= last; k++ {
 				lag, ok := n.lag(k)
 				require.True(t, ok, "block %d never came: the clock fetched nothing after the sample", k)
-				assert.Less(t, lag, tc.bt, "block %d came %v after its mint", k, lag)
+				bound := tc.bt + health.ColdBlockTime
+				if k == last {
+					bound = tc.bt
+				}
+				assert.Less(t, lag, bound, "block %d came %v after its mint", k, lag)
 			}
 		})
 	}

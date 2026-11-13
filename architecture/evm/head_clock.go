@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/telemetry"
 )
 
@@ -176,8 +175,7 @@ type clockFire struct {
 	// rung (a ladder rung before the last), probe (the ladder's last rung,
 	// S_k, or the block's one fire), retry (a tail rung, or a fire whose
 	// delay doubles), vote (a turn sent at the target's sight), catch_up,
-	// guarantee, holder, edge (the idle edge's), cold (before any sight,
-	// then the cold cadence until the block time is sampled, coldPoll),
+	// guarantee, holder, edge (the idle edge's), cold (before any sight),
 	// held (a by-hash proof's block fetched by number from the voter that
 	// answered it, proveTarget), ahead (the shared early fetch of a block
 	// reads wait for: the target by number, aheadProbe). Only a rung's,
@@ -301,10 +299,12 @@ func (c *headClock) reset() {
 // P20-flash, 8.5% of the blocks' probes early, 1.053 head fetches per
 // block. A sight a block or more after its predicted sight comes that
 // many slots later: the slots between were missed. bt is the sampled
-// block time, 0 before the first sample: no slot is missed then, and
-// every sight is a phase point. Laid by the cold 1 s instead, each first
-// sight of a 12 s chain came 11 slots late (#1426). Each open fetch
-// answer below number is decided (answered).
+// block time, 0 before the first sample: no slot is missed then, every
+// sight is a phase point, and the fit keeps only the newest, as no block
+// time spaces its points. Laid and spaced by the cold 1 s instead, a 12
+// s chain's first sights came 11 slots late and a 0.25 s chain's plans
+// went 2, 7, then 28 s out (#1426). Each open fetch answer below number
+// is decided (answered).
 func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt time.Duration) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		c.confirmed(number, at, from, via, bt)
@@ -335,6 +335,9 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 	}
 	s.onTime = pushed && (!c.pushLane || bt <= 0 || !at.After(c.predictSlot(s.slot, bt).Add(c.pushLate(bt))))
 	if c.phasePoint(s, bt) {
+		if bt <= 0 {
+			c.fit = c.fit[:0]
+		}
 		c.fit = appendSight(c.fit, s)
 	}
 	c.pushLane = c.pushLane || pushed
@@ -805,8 +808,7 @@ func (t *ChainTracker) readDemand() time.Duration { return 2 * t.W() }
 // then the next fire is its hedge. An idle edge whose fetch is out or due
 // fires at once and not as a rung; once answered, the clock runs as usual
 // while the edge waits for the view. A target a by-hash answer proved
-// takes its probe at once (proveTarget). Before the network's first
-// block time sample the clock runs no ladder (coldPoll).
+// takes its probe at once (proveTarget).
 func (t *ChainTracker) runClock() {
 	c := &t.clock
 	defer t.publishCredit()
@@ -910,10 +912,6 @@ func (t *ChainTracker) runClock() {
 		}
 		return
 	}
-	if t.sampledBlockTime() == 0 {
-		t.coldPoll(cands, now)
-		return
-	}
 	if !c.planned {
 		t.plan(cands, bt, pace)
 	}
@@ -922,30 +920,6 @@ func (t *ChainTracker) runClock() {
 	t.climb(cands, now, bt)
 	if !wake.IsZero() && (c.nextAt.IsZero() || wake.Before(c.nextAt)) {
 		c.nextAt = wake
-	}
-}
-
-// coldPoll is the clock before the network's first block time sample
-// (spec §6.7): with no block time there is no phase to plan by, so the
-// fastest free voter is fetched one ColdBlockTime after the last fire or
-// first sight, whichever came later. Planned by the cold 1 s instead, a
-// 12 s chain's fetch after the sample went 145 s out and a 0.25 s
-// chain's plans 2, 7, then 28 s out (#1426).
-func (t *ChainTracker) coldPoll(cands []clockCandidate, now time.Time) {
-	c := &t.clock
-	at := c.lastFire
-	if top := c.sights[len(c.sights)-1].at; top.After(at) {
-		at = top
-	}
-	if at = at.Add(health.ColdBlockTime); now.Before(at) {
-		c.nextAt = at
-		return
-	}
-	if cand, ok := c.fastest(cands); ok {
-		c.out = t.fire(cand.id, now, "cold")
-	}
-	if c.out == nil {
-		c.nextAt = now.Add(health.ColdBlockTime)
 	}
 }
 
