@@ -2,7 +2,6 @@ package policy
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +9,8 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,10 +26,10 @@ type stubProbeUpstream struct {
 	// hold a probe in-flight to assert the inflight counter is
 	// enforced.
 	blockUntil chan struct{}
-	// ignore holds ignoreMethods patterns ShouldHandleMethod applies;
-	// handleErr, when set, is the error it returns instead.
-	ignore    []string
-	handleErr error
+	// ignore holds ignoreMethods patterns ShouldHandleMethod applies
+	// with common.WildcardMatch, returning its error as the upstream
+	// does.
+	ignore []string
 }
 
 func (s *stubProbeUpstream) Id() string           { return s.id }
@@ -57,11 +58,12 @@ func (s *stubProbeUpstream) Cordon(method, reason string)   {}
 func (s *stubProbeUpstream) Uncordon(method, reason string) {}
 func (s *stubProbeUpstream) IgnoreMethod(method string)     {}
 func (s *stubProbeUpstream) ShouldHandleMethod(method string) (bool, error) {
-	if s.handleErr != nil {
-		return false, s.handleErr
-	}
 	for _, m := range s.ignore {
-		if match, _ := common.WildcardMatch(m, method); match {
+		match, err := common.WildcardMatch(m, method)
+		if err != nil {
+			return false, err
+		}
+		if match {
 			return false, nil
 		}
 	}
@@ -187,15 +189,14 @@ func TestProber_HonorsRoutingProbeOff(t *testing.T) {
 }
 
 // TestProber_HonorsIgnoreMethods: an upstream whose ignoreMethods
-// excludes a method never receives probes for it. Routing never sends
-// it that method, so a probe proves nothing; and the operator excluded
-// it on purpose. Other methods still reach the upstream, and a
-// matcher error is not a verdict, so the probe still fires.
+// excludes a method never receives probes for it. Forward would skip
+// it for that method, so real traffic never reaches it and a probe
+// proves nothing. Other methods still reach the upstream.
 func TestProber_HonorsIgnoreMethods(t *testing.T) {
+	const network = "evm:1"
 	deps := &stubEngine{}
 	ignoring := &stubProbeUpstream{id: "ignoring", ignore: []string{"txpool_*"}}
-	broken := &stubProbeUpstream{id: "broken", handleErr: errors.New("bad pattern")}
-	deps.setExcluded("evm:1", []common.Upstream{ignoring, broken})
+	deps.setExcluded(network, []common.Upstream{ignoring})
 
 	p, _ := newTestProber(t, deps, &ProbeConfig{
 		SampleRate:    1.0,
@@ -204,16 +205,47 @@ func TestProber_HonorsIgnoreMethods(t *testing.T) {
 	})
 	defer p.Stop()
 
+	before := probeSkipped(network, "method_ignored")
 	p.Publish(makeProbeReq(t, "txpool_content"))
-	assert.Equal(t, int64(1), waitForCalls(broken, 1, time.Second),
-		"a matcher error must not block the probe")
-	time.Sleep(150 * time.Millisecond)
+	require.Eventually(t, func() bool { return probeSkipped(network, "method_ignored") == before+1 },
+		time.Second, 5*time.Millisecond)
 	assert.Equal(t, int64(0), ignoring.calls.Load(),
 		"an upstream must not receive probes for a method its ignoreMethods excludes")
 
 	p.Publish(makeProbeReq(t, "eth_getBalance"))
 	assert.Equal(t, int64(1), waitForCalls(ignoring, 1, time.Second),
 		"methods the upstream serves must still be probed")
+}
+
+// TestProber_SkipsOnMethodCheckError: a malformed ignoreMethods
+// pattern makes ShouldHandleMethod error. Forward's shouldSkip rejects
+// the upstream on that error, so real traffic never reaches it; the
+// probe, which bypasses shouldSkip, must not reach it either.
+func TestProber_SkipsOnMethodCheckError(t *testing.T) {
+	const network = "evm:1"
+	deps := &stubEngine{}
+	broken := &stubProbeUpstream{id: "broken", ignore: []string{"(eth_*"}}
+	deps.setExcluded(network, []common.Upstream{broken})
+	_, matchErr := broken.ShouldHandleMethod("eth_getBalance")
+	require.Error(t, matchErr, "the test needs a pattern the matcher rejects")
+
+	p, _ := newTestProber(t, deps, &ProbeConfig{
+		SampleRate:    1.0,
+		MaxConcurrent: 4,
+		Timeout:       5 * time.Second,
+	})
+	defer p.Stop()
+
+	before := probeSkipped(network, "method_check_error")
+	p.Publish(makeProbeReq(t, "eth_getBalance"))
+	require.Eventually(t, func() bool { return probeSkipped(network, "method_check_error") == before+1 },
+		time.Second, 5*time.Millisecond)
+	assert.Equal(t, int64(0), broken.calls.Load(),
+		"a method check error must skip the probe, as Forward skips the upstream")
+}
+
+func probeSkipped(network, reason string) float64 {
+	return testutil.ToFloat64(telemetry.MetricSelectionProbeSkipped.WithLabelValues(network, reason))
 }
 
 // TestProber_RespectsMaxConcurrent — with maxConcurrent=2 and a stub

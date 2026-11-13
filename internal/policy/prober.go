@@ -218,10 +218,14 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 	}
 
 	for _, u := range excluded {
-		// Routing never sends u a method its ignoreMethods/allowMethods
-		// exclude, so a probe for it proves nothing. A matcher error is
-		// not a verdict: the probe fires, as routing keeps u eligible.
-		if handle, err := u.ShouldHandleMethod(method); err == nil && !handle {
+		// Forward's shouldSkip rejects u when its ignoreMethods/allowMethods
+		// exclude the method or cannot be evaluated for it (a malformed
+		// pattern), so real traffic never reaches u for it. The probe
+		// bypasses shouldSkip, so it must skip u here too.
+		if handle, err := u.ShouldHandleMethod(method); err != nil {
+			telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "method_check_error").Inc()
+			continue
+		} else if !handle {
 			telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "method_ignored").Inc()
 			continue
 		}
@@ -423,7 +427,8 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 	p.tracker.RecordUpstreamRequest(u, method, finality)
 
 	// byPassMethodExclusion=true: onRequest already dropped upstreams
-	// whose method config excludes the method; the bypass lets the
+	// whose method config excludes the method or cannot be evaluated
+	// for it; the bypass lets the
 	// probe reach an upstream the rest of Forward's skip checks would
 	// stop, so it can prove (or disprove) itself. isHedgeAttempt=false
 	// — probes are not hedge fan-outs.
