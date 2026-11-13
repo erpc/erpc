@@ -1008,14 +1008,21 @@ func TestCovPoller_Ask(t *testing.T) {
 		assert.Equal(t, cadence, p.backoff(), "no idle streak without a bench")
 
 		// A peer moves for longer than the stall window while the node's
-		// head stays at 100: the tracker benches it.
+		// head stays at 100: the tracker benches it. The peer then leads by
+		// far more than the node moves below, so the node stays benched.
 		peer := &covPollerUpstream{cfg: &common.UpstreamConfig{Id: "rpc-a", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}}, calls: map[string]int{}}
 		p.tracker.SetLatestBlockNumber(peer, 100, 1_700_000_100)
-		for n := int64(101); !p.tracker.IsHeadBenched(up); n++ {
-			require.Less(t, n, int64(400), "a head stuck behind a moving peer is benched")
+		top := int64(100)
+		for !p.tracker.IsHeadBenched(up) {
+			require.Less(t, top, int64(400), "a head stuck behind a moving peer is benched")
+			top++
 			clock.Add(int64(time.Second))
-			p.tracker.SetLatestBlockNumber(peer, n, 1_700_000_000+n)
+			p.tracker.SetLatestBlockNumber(peer, top, 1_700_000_000+top)
 		}
+		top += 500
+		clock.Add(int64(time.Second))
+		p.tracker.SetLatestBlockNumber(peer, top, 1_700_000_000+top)
+		require.True(t, p.tracker.IsHeadBenched(up))
 
 		latest, finalized = poll(window)
 		assert.Less(t, latest, atCadence/4, "a benched node whose head stays is fetched far less often than its cadence")
@@ -1028,12 +1035,32 @@ func TestCovPoller_Ask(t *testing.T) {
 			"the ask metric tells an idle wait from a failure backoff")
 
 		// The node moves again: it is fetched at most one backoff later,
-		// and the first new head ends the wait.
+		// and the first new head ends the wait while it is still benched.
 		moving.Store(true)
+		moved := fetched("latest")
+		for deadline := time.Now().Add(time.Second); fetched("latest") == moved; time.Sleep(time.Millisecond) {
+			require.True(t, time.Now().Before(deadline), "a node that moves again is fetched within one backoff")
+			p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskClock)
+		}
+		require.True(t, p.tracker.IsHeadBenched(up), "still benched: the new head alone ends the wait")
+		assert.Equal(t, cadence, p.backoff())
 		latest, _ = poll(window)
 		assert.Greater(t, latest, atCadence/3, "a node that moves again is fetched at its cadence")
 		assert.Equal(t, cadence, p.backoff())
 		assert.False(t, p.HeadBackingOff())
+
+		// It stops again and waits; then it reaches the peer and rejoins:
+		// the cleared bench ends the wait at once, with no fetch.
+		moving.Store(false)
+		poll(window)
+		p.Ask(ctx, common.HeadNeedHash, 0, time.Time{}, common.AskClock)
+		require.True(t, p.HeadBackingOff())
+		before := fetched("latest")
+		p.tracker.SetLatestBlockNumber(up, top, 1_700_000_000+top)
+		require.False(t, p.tracker.IsHeadBenched(up), "a head that reached the peer rejoins")
+		assert.False(t, p.HeadBackingOff(), "a cleared bench ends the idle wait")
+		assert.Equal(t, cadence, p.backoff())
+		assert.Equal(t, before, fetched("latest"))
 	})
 
 	t.Run("a panic fails every waiter, debounces one cadence, never backs off", func(t *testing.T) {
