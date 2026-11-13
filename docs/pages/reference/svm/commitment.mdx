@@ -122,6 +122,8 @@ Use `IsFinalizedCommitment` semantics when reasoning about which upstream can se
 | options slot holds a non-object (legacy `getBlock(slot, "base64")` encoding form) | `""`, injection skipped — a valid request shape is never corrupted |
 | required positional args missing (including `getBlocks` with no start slot) | `""`, injection skipped |
 
+**Config-less reads get `{}` when nothing is pinned.** Some providers treat the optional config object of `getBlock`, `getTransaction` and `getProgramAccounts` as required, and answer a request without it with `-32602` "Invalid params" (`missing value for required argument 1`). With no network default, eRPC appends `{}` to such a request (e.g. `getBlock [slot]` becomes `[slot, {}]`). Agave's config for these methods has only optional fields, so `{}` means exactly agave's defaults, and `[slot]` and `[slot, {}]` share one cache key. Methods whose config is a bare commitment object (`getTokenSupply`, `getInflationGovernor`, …) never get `{}`: agave answers it with `-32602` "missing field `commitment`".
+
 **Injection runs at the project layer, before the cache read.** Despite the hook's name it is invoked from `HandleProjectPreForward`, ahead of the network-layer cache lookup, and it invalidates the memoized `CacheHash` so the cache keys on the rewritten body. Running it after the cache read would key every request on its pre-injection params and produce a permanent cache miss.
 
 **Options-index table.** Solana puts the config object at a different param position per method, so injection is table-driven:
