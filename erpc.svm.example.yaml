@@ -67,9 +67,9 @@ projects:
               jitter: 100ms
           # sendTransaction / sendRawTransaction are automatically marked
           # non-retryable at the architecture layer — adding retry here would
-          # be ignored for those methods. Authoritative skip verdicts
-          # (-32009 "missing in long-term storage") are likewise terminal and
-          # exempt from cross-upstream retries.
+          # be ignored for those methods. Skipped-slot verdicts (-32007,
+          # -32009 "missing in long-term storage") ask each upstream once per
+          # request: no hedge leg or retry asks the same upstream again.
         # Optional: a consensus policy fans reads out to several upstreams and
         # compares answers. SVM responses carrying the RpcResponse envelope
         # ({context:{slot,apiVersion},value:…}) are compared on their VALUE —
