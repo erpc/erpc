@@ -784,7 +784,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_selection_position` | Gauge | `project, network, method, upstream` | Every tick; `0`=primary, `1+`=runner-up, `-1`=excluded. |
-| `erpc_selection_held_position` | Gauge | `project, network, method, upstream` | Ticks that ran the held ranking; `0`=primary, `1+`=runner-up, `-1`=excluded. Series deleted while the slot runs no held ranking. |
+| `erpc_selection_held_position` | Gauge | `project, network, method, finality, upstream` | Ticks that ran the held ranking; `0`=primary, `1+`=runner-up, `-1`=excluded. `finality` is the slot's (`*` unless `evalScope` splits by finality). Full-pool slots only: lane slots (`evalPerBoundary`) set none. Series deleted while the slot runs no held ranking, and when the slot stops. |
 | `erpc_selection_score` | Gauge | `project, network, method, upstream` | Every tick; value is `u.score` from `sortByScore`. |
 | `erpc_selection_eligible_upstreams` | Gauge | `project, network, method` | Every successful tick; count of in-rotation upstreams. |
 | `erpc_selection_eval_duration_seconds` | Histogram | `project, network, method` | Every tick; JS eval wall-clock time. |

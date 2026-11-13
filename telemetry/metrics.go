@@ -425,8 +425,8 @@ var (
 	MetricSelectionHeldPosition = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "selection_held_position",
-		Help:      "Held-ranking position for an upstream (finalized block reads on a network with a frozen upstream): 0 = primary, 1+ = runner-up, -1 = excluded; absent while the slot runs no held ranking.",
-	}, []string{"project", "network", "method", "upstream"})
+		Help:      "Held-ranking position for an upstream (finalized block reads on a network with a frozen upstream): 0 = primary, 1+ = runner-up, -1 = excluded; absent while the slot runs no held ranking. finality is the slot's (\"*\" unless evalScope splits by finality).",
+	}, []string{"project", "network", "method", "finality", "upstream"})
 
 	MetricSelectionRejectionTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",

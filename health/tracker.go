@@ -1941,7 +1941,13 @@ func (t *Tracker) evaluateHeadBench(ntwMeta *NetworkMetadata, changed *NetworkMe
 		ref = 0
 	}
 	for _, u := range reporters {
-		u.meta.frozenFrom.Store(u.meta.headChangedAt.Add(u.stallAfter).UnixNano())
+		// A hash-vote reporter with no head yet has no change time; it is
+		// never benched, so 0 only keeps the conversion defined.
+		var frozenFrom int64
+		if !u.meta.headChangedAt.IsZero() {
+			frozenFrom = u.meta.headChangedAt.Add(u.stallAfter).UnixNano()
+		}
+		u.meta.frozenFrom.Store(frozenFrom)
 		head := u.meta.evmLatestBlockNumber.Load()
 		behind := head > 0 && (numberBehind(u, changed, ref, now, blockTime) || headIsBehind(u, reporters, now, blockTime))
 		switch {

@@ -345,34 +345,56 @@ func TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks(t *testing.T
 	}
 	require.True(t, tr.IsHeadBenched(frozen), "the frozen node stayed behind peers that kept moving")
 	require.True(t, tr.IsHeadBenched(dead), "the dead node stayed behind peers that kept moving")
+	require.True(t, tr.IsHeadFrozen(frozen), "benched, unchanged for its stall window, and still answering")
+	require.False(t, tr.IsHeadFrozen(dead), "its last answer is older than two fetch cadences")
 	policy.TickForTest(network.policyEngine, network.networkId, "*")
 
-	// (e) The tip ranking still excludes both.
+	// (e) The tip ranking still excludes both; the held ranking ran.
 	_, excluded := policy.LatestDecisionOutputForTest(network.policyEngine, network.networkId, "*")
 	assert.Contains(t, excluded, "frozen-archive", "the tip ranking keeps excluding the frozen node")
 	assert.Contains(t, excluded, "dead-archive")
+	decisions := network.policyEngine.RecentDecisions(network.networkId, "*", "*", 1)
+	require.Len(t, decisions, 1)
+	require.NotNil(t, decisions[0].Output.HeldOrder, "a tick with a frozen upstream runs the held ranking")
+	assert.Contains(t, decisions[0].Output.HeldOrder, "frozen-archive")
+	assert.NotContains(t, decisions[0].Output.HeldOrder, "dead-archive")
 
 	block := func(n int64) string {
 		return fmt.Sprintf(`{"number":"0x%x","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x6702a000"}`, n, n, n-1)
 	}
-	var frozenCalls, deadCalls atomic.Int64
-	for _, hex := range []string{"0x32", "0x5f"} {
-		for _, u := range tips {
-			gock.New(upstreamHostFromID(u.Id())).Post("").Persist().
-				Filter(func(r *http.Request) bool {
-					b := util.SafeReadBody(r)
-					return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, `"`+hex+`"`)
-				}).
-				Reply(503).
-				JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"unavailable"}}`))
-		}
+	// fail makes id answer a retryable 503 to requests naming all of parts.
+	fail := func(id string, calls *atomic.Int64, parts ...string) {
+		gock.New(upstreamHostFromID(id)).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != id+".localhost" {
+					return false
+				}
+				b := util.SafeReadBody(r)
+				for _, p := range parts {
+					if !strings.Contains(b, p) {
+						return false
+					}
+				}
+				if calls != nil {
+					calls.Add(1)
+				}
+				return true
+			}).
+			Reply(503).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"unavailable"}}`))
 	}
+	var frozenCalls, deadCalls atomic.Int64
+	for _, u := range tips {
+		for _, hex := range []string{"0x32", "0x5f", "0x28"} {
+			fail(u.Id(), nil, "eth_getBlockByNumber", `"`+hex+`"`)
+		}
+		fail(u.Id(), nil, "eth_getBalance")
+	}
+	fail("frozen-archive", &frozenCalls, "eth_getBlockByNumber", `"0x28"`)
 	mockGetBlockByNumberAt("0x32", block(50), &frozenCalls, "frozen-archive")
 	mockGetBlockByNumberAt("0x5f", block(95), &frozenCalls, "frozen-archive")
-	mockGetBlockByNumberAt("0x32", block(50), &deadCalls, "dead-archive")
-	mockGetBlockByNumberAt("0x5f", block(95), &deadCalls, "dead-archive")
-	for _, u := range tips {
-		mockClean(t, upstreamHostFromID(u.Id()), "eth_getBalance", "0xaaa")
+	for n, hex := range map[int64]string{50: "0x32", 95: "0x5f", 40: "0x28"} {
+		mockGetBlockByNumberAt(hex, block(n), &deadCalls, "dead-archive")
 	}
 	mockMethodAnswer("eth_getBalance", `"0xfff"`, &frozenCalls, "frozen-archive")
 	mockMethodAnswer("eth_getBalance", `"0xfff"`, &deadCalls, "dead-archive")
@@ -394,12 +416,17 @@ func TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks(t *testing.T
 	_, _ = forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x5f",false]}`)
 	assert.EqualValues(t, 0, frozenCalls.Load(), "a block above the frozen node's own finalized block never reaches it")
 
-	// (c) A read of latest keeps the tip ranking.
+	// (c) A read of latest keeps the tip ranking, even when every tip node fails.
 	_, err = forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xabc","latest"]}`)
-	require.NoError(t, err)
+	require.Error(t, err, "only the failing tip nodes serve a read of latest")
 	assert.EqualValues(t, 0, frozenCalls.Load(), "a read of latest never reaches the frozen node")
 
-	// (d) A node whose polls stopped answering is not frozen.
+	// (d) Block 40, which both archives hold: the tip nodes and the frozen
+	// node fail, and the node whose polls stopped answering is not frozen,
+	// so it is never tried.
+	_, err = forward(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x28",false]}`)
+	require.Error(t, err, "no upstream left that is frozen or at the tip")
+	assert.GreaterOrEqual(t, frozenCalls.Load(), int64(1), "the frozen node was tried for block 40")
 	assert.EqualValues(t, 0, deadCalls.Load(), "a node that stopped answering gets no request")
 }
 

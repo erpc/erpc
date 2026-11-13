@@ -96,7 +96,8 @@ type Slot struct {
 	// after 3 consecutive failures. (Hookup deferred to Phase 5.15.)
 	consecutiveFails int
 	// heldGauged is the upstream IDs the last tick set
-	// `selection_held_position` for. Touched only inside tickOnce.
+	// `selection_held_position` for. Touched only inside tickOnce and,
+	// once the ticker goroutine has exited, stop.
 	heldGauged []string
 
 	// Test-only overrides applied inside tickOnce after buildEvalContext.
@@ -215,6 +216,7 @@ func (s *Slot) refresh() <-chan struct{} {
 func (s *Slot) stop() {
 	s.stopOnce.Do(func() { close(s.stopCh) })
 	s.wg.Wait()
+	s.emitHeldPositions(nil, nil)
 }
 
 // decisionsRingSize bounds the slot's in-memory decision history.
@@ -425,7 +427,7 @@ func (s *Slot) tickOnce() {
 // exclusion or metric. Its sticky primary starts as the tip ranking's.
 func (s *Slot) heldRun(ups []common.Upstream, metrics, acrossMethods map[string]UpstreamMetrics, byMethod map[string]map[string]UpstreamMetrics, evalCtx EvalContext, tipOrder []string, start time.Time) (order []string, held []common.Upstream, blocks *methodBlockIndex) {
 	var frozen map[string]struct{}
-	if f := parseFinality(s.finality); f != common.DataFinalityStateRealtime && f != common.DataFinalityStateUnfinalized {
+	if f := parseFinality(evalCtx.Finality); f != common.DataFinalityStateRealtime && f != common.DataFinalityStateUnfinalized {
 		for _, u := range ups {
 			if s.engine.tracker.IsHeadFrozen(u) {
 				if frozen == nil {
@@ -489,8 +491,12 @@ func withoutFrozenLag(m map[string]UpstreamMetrics, frozen map[string]struct{}) 
 // emitHeldPositions sets `selection_held_position` for each upstream of a
 // tick that ran the held ranking (order non-nil), -1 for those it excluded,
 // and deletes the series the tick did not set, so the gauge is absent while
-// the slot runs no held ranking.
+// the slot runs no held ranking or has stopped. Lane slots emit nothing:
+// their series would collide with the full-pool slot's.
 func (s *Slot) emitHeldPositions(ups []common.Upstream, order []string) {
+	if s.boundary != "*" {
+		return
+	}
 	project := s.engine.projectID
 	var gauged []string
 	if order != nil {
@@ -504,13 +510,13 @@ func (s *Slot) emitHeldPositions(ups []common.Upstream, order []string) {
 			if !ok {
 				p = -1
 			}
-			telemetry.MetricSelectionHeldPosition.WithLabelValues(project, s.networkLabel, s.method, u.Id()).Set(float64(p))
+			telemetry.MetricSelectionHeldPosition.WithLabelValues(project, s.networkLabel, s.method, s.finality, u.Id()).Set(float64(p))
 			gauged = append(gauged, u.Id())
 		}
 	}
 	for _, id := range s.heldGauged {
 		if !slices.Contains(gauged, id) {
-			telemetry.MetricSelectionHeldPosition.DeleteLabelValues(project, s.networkLabel, s.method, id)
+			telemetry.MetricSelectionHeldPosition.DeleteLabelValues(project, s.networkLabel, s.method, s.finality, id)
 		}
 	}
 	s.heldGauged = gauged
