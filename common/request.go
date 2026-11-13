@@ -1117,9 +1117,9 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		e.Object("jsonRpc", jrq)
 	} else if r.body != nil {
 		if IsSemiValidJson(r.body) {
-			e.RawJSON("body", r.body)
+			e.RawJSON("json_body", r.body)
 		} else {
-			e.Str("body", string(r.body))
+			e.Str("raw_body", string(r.body))
 		}
 	}
 }
