@@ -1901,15 +1901,18 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 // ("networkId"), so a batch spanning networks is held to each network's own
 // limit. Requests whose network does not resolve fail on their own later.
 func clientBatchCapError(ctx context.Context, project *PreparedProject, requests []json.RawMessage, architecture, chainId string) (common.NetworkArchitecture, error) {
+	// Skip before GetNetwork: that call lazily bootstraps the network and runs
+	// before AuthenticateConsumer on the HTTP path. Deployments without a cap
+	// must keep the old ordering (auth first).
+	if !projectHasClientBatchCap(project.Config) {
+		return "", nil
+	}
 	if architecture != "" && chainId != "" {
 		nw, err := project.GetNetwork(ctx, architecture+":"+chainId)
 		if err != nil {
 			return "", nil
 		}
 		return networkBatchCapError(nw, len(requests))
-	}
-	if !projectHasClientBatchCap(project.Config) {
-		return "", nil
 	}
 	byHint := make(map[string]int)
 	for _, raw := range requests {
@@ -1940,8 +1943,8 @@ func networkBatchCapError(nw *Network, batchSize int) (common.NetworkArchitectur
 	return nw.Architecture(), common.NewErrClientBatchTooLarge(nw.Id(), batchSize, *cfg.MaxClientBatchSize)
 }
 
-// projectHasClientBatchCap spares batches routed per request the extra
-// envelope parse when no network of the project can carry a limit.
+// projectHasClientBatchCap spares GetNetwork (and, for path-less batches, the
+// extra envelope parse) when no network of the project can carry a limit.
 func projectHasClientBatchCap(cfg *common.ProjectConfig) bool {
 	if cfg == nil {
 		return false
