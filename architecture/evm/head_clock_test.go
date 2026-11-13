@@ -34,11 +34,13 @@ type clockNet struct {
 	owed  *owedVote
 	asks  map[string]int // clock Asks per voter
 	// A timed chain's: block k is minted at t0 + k·mint; heads counts
-	// the view heads, came each block's first answer.
-	mint  time.Duration
-	t0    time.Time
-	heads int
-	came  map[uint64]time.Time
+	// the view heads, sampled is the third, the block time's first
+	// sample, and came each block's first answer.
+	mint    time.Duration
+	t0      time.Time
+	heads   int
+	sampled uint64
+	came    map[uint64]time.Time
 }
 
 type owedVote struct {
@@ -92,20 +94,31 @@ func (n *clockNet) EvmBlockTime() time.Duration {
 	switch {
 	case n.mint == 0:
 		return 500 * time.Millisecond
-	case n.heads < 3:
+	case n.sampled == 0:
 		return 0
 	}
 	return n.mint
 }
 
-func (n *clockNet) EvmViewHeadMoved(int64, int64) {
+func (n *clockNet) EvmViewHeadMoved(number, _ int64) {
 	n.mu.Lock()
-	n.heads++
-	n.mu.Unlock()
+	defer n.mu.Unlock()
+	if n.heads++; n.heads == 3 {
+		n.sampled = uint64(number)
+	}
+}
+
+// sampledAt is the view head the block time was first sampled at, 0
+// before.
+func (n *clockNet) sampledAt() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.sampled
 }
 
 // mintEvery makes the chain timed: block 1 is minted now and one more
-// every bt, and each Ask answers the newest block minted.
+// every bt, each Ask answers the newest block minted, and every block it
+// reached is served by number and hash.
 func (n *clockNet) mintEvery(bt time.Duration) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -156,6 +169,7 @@ func (n *clockNet) EvmAskHead(_ context.Context, id string, _ common.HeadNeed, _
 		num := uint64(now.Sub(n.t0) / n.mint)
 		for k := n.top + 1; k <= num; k++ {
 			n.came[k] = now
+			n.serve(k, testHash("c", k), testHeader(k, testHash("c", k), testHash("c", k-1)))
 		}
 		n.top = max(n.top, num)
 		n.mu.Unlock()
@@ -255,27 +269,40 @@ func TestBlockClockTarget(t *testing.T) {
 // A cold instance reads the block time as health.ColdBlockTime (1 s)
 // until the network's first sample (spec §6.7). Under eth_blockNumber
 // reads from the start, each block after the sample comes within a block
-// of its mint. Laid under 1 s, each first sight of a 3 s chain came two
-// slots late, and the sample put the next fetch three blocks out (#1426:
-// 12 s blocks, 145 s).
+// of its mint. Laid and planned by the cold 1 s, a 3 s chain's first
+// sights came two slots late and the sample put the next fetch three
+// blocks out; a 0.25 s chain's plans went seconds out (#1426: 12 s
+// blocks, 145 s).
 func TestBlockClockColdStart(t *testing.T) {
-	const bt = 3 * time.Second
-	n := newClockNet(t, "evm:clock-cold",
-		laneVoter{id: "node-a", interval: 30 * time.Second, rtt: 30 * time.Millisecond},
-		laneVoter{id: "node-b", interval: 30 * time.Second, rtt: 30 * time.Millisecond},
-	)
-	n.mintEvery(bt)
-	const last = 5
-	for end := n.mintedAt(last).Add(bt); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		n.c.LatestRead(t.Context(), true)
-		if _, ok := n.lag(last); ok {
-			break
-		}
-	}
-	require.Equal(t, bt, n.EvmBlockTime(), "the block time was sampled")
-	for k := uint64(4); k <= last; k++ {
-		lag, ok := n.lag(k)
-		require.True(t, ok, "block %d never came: the clock fetched nothing after the sample", k)
-		assert.Less(t, lag, bt, "block %d came %v after its mint", k, lag)
+	for _, tc := range []struct {
+		bt     time.Duration
+		blocks uint64 // checked after the sample
+	}{
+		{3 * time.Second, 2},
+		{250 * time.Millisecond, 8},
+	} {
+		t.Run(tc.bt.String()+" blocks", func(t *testing.T) {
+			n := newClockNet(t, "evm:clock-cold-"+tc.bt.String(),
+				laneVoter{id: "node-a", interval: 30 * time.Second, rtt: 30 * time.Millisecond},
+				laneVoter{id: "node-b", interval: 30 * time.Second, rtt: 30 * time.Millisecond},
+			)
+			n.mintEvery(tc.bt)
+			var last uint64
+			for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+				n.c.LatestRead(t.Context(), true)
+				if s := n.sampledAt(); s > 0 {
+					last = s + tc.blocks
+					if _, ok := n.lag(last); ok {
+						break
+					}
+				}
+			}
+			require.NotZero(t, last, "the block time was sampled")
+			for k := last - tc.blocks + 1; k <= last; k++ {
+				lag, ok := n.lag(k)
+				require.True(t, ok, "block %d never came: the clock fetched nothing after the sample", k)
+				assert.Less(t, lag, tc.bt, "block %d came %v after its mint", k, lag)
+			}
+		})
 	}
 }
