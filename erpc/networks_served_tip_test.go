@@ -967,7 +967,7 @@ func TestServedTip_RegressionGuard_AHoldNeverLowersTheTip(t *testing.T) {
 	// The ballot's own corroborated head is 10_000, so a pick of 5_000 trips the
 	// guard — but the memory (100) is far below the pick.
 	served := network.guardServedTipRegression("latest", "all", &anchor,
-		common.ServedTipPick{Tip: 5_000, Freshest: 10_000, Max: 10_000}, true)
+		common.ServedTipPick{Tip: 5_000, Freshest: 10_000, Max: 10_000}, true, network.servedTipMaxRegressionBlocks(nil))
 
 	assert.GreaterOrEqual(t, served, int64(5_000),
 		"a hold must never serve a block LOWER than the pick it was suppressing")
@@ -994,11 +994,12 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 
 	var anchor servedTipAnchor
 	ballot := common.ServedTipPick{Tip: 10_000, Freshest: 10_000, Max: 10_000}
-	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "all", &anchor, ballot, true),
+	tolerance := network.servedTipMaxRegressionBlocks(nil)
+	require.Equal(t, int64(10_000), network.guardServedTipRegression("latest", "all", &anchor, ballot, true, tolerance),
 		"arm the guard first; that evaluation is the one allowed to allocate")
 
 	allocs := testing.AllocsPerRun(200, func() {
-		network.guardServedTipRegression("latest", "all", &anchor, ballot, true)
+		network.guardServedTipRegression("latest", "all", &anchor, ballot, true, tolerance)
 	})
 	assert.Zero(t, allocs, "the throttled healthy path must not allocate at all")
 
@@ -1006,7 +1007,7 @@ func TestServedTip_RegressionGuard_HealthyPathDoesNotAllocate(t *testing.T) {
 	// refreshed again.
 	advance(2 * time.Second)
 	before := anchor.lastGoodAt.Load()
-	network.guardServedTipRegression("latest", "all", &anchor, ballot, true)
+	network.guardServedTipRegression("latest", "all", &anchor, ballot, true, tolerance)
 	assert.NotEqual(t, before, anchor.lastGoodAt.Load(), "the TTL clock still advances")
 }
 
@@ -1714,6 +1715,86 @@ func TestServedTip_Finalized_RegressionGuardHolds(t *testing.T) {
 	assert.Equal(t, int64(1_002_400), servedHead(network, ctx).Finalized,
 		"the guard protects the finalized axis exactly as it protects latest")
 	assert.Equal(t, before+1, servedTipRegressionCount(network, "finalized", "held"))
+}
+
+// A chain that finalizes in batches larger than the default tolerance (base
+// on 11-09 15:11 UTC: alchemy at finalized 55,226,063, blockpi and spectrum
+// one batch of 1,924 above; horizen steps 1,482 blocks) must not trip the
+// guard when a voter of the leading pair leaves: the drop to the lagging pair
+// is one finality step, which the lane learned from its own advances. A pick
+// 53M blocks below (the celo incident) still holds.
+func TestServedTip_Finalized_BatchFinalityLagDoesNotHold(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	advance := pinServedTipClock(t)
+
+	for _, c := range []struct {
+		chain        string
+		behind, step int64
+	}{
+		{chain: "base", behind: 55_226_063, step: 1_924},
+		{chain: "horizen", behind: 31_700_233 - 1_482, step: 1_482},
+	} {
+		ahead := c.behind + c.step
+		// The lane learns the step as the served finalized advances one batch
+		// at a time, three batches, each held longer than the guard's window
+		// (base takes about an hour a batch).
+		learn := func(t *testing.T, network *Network, ups []*upstream.Upstream) {
+			t.Helper()
+			for fin := c.behind - 2*c.step; fin <= ahead; fin += c.step {
+				for _, u := range ups {
+					setServedTipFinalized(t, u, fin)
+				}
+				require.Equal(t, fin, servedHead(network, ctx).Finalized)
+				advance(servedTipRegressionTTL + time.Second)
+				require.Equal(t, fin, servedHead(network, ctx).Finalized)
+			}
+			require.Equal(t, 2*c.step, network.servedTipMaxRegressionBlocks(&network.servedTipAll),
+				"precondition: the lane learned twice its finality step as the tolerance")
+		}
+		setup := func(t *testing.T) (*Network, []*upstream.Upstream) {
+			return setupServedTipNetworkWith(t, ctx, []servedTipFixture{
+				{id: "u1", chainID: 123, latestBlock: c.behind + 20_000},
+				{id: "u2", chainID: 123, latestBlock: c.behind + 20_000},
+				{id: "u3", chainID: 123, latestBlock: c.behind + 20_000},
+				{id: "u4", chainID: 123, latestBlock: c.behind + 20_000},
+			}, nil)
+		}
+
+		t.Run(c.chain+": a voter one batch behind does not hold", func(t *testing.T) {
+			network, ups := setup(t)
+			learn(t, network, ups[:2])
+			for _, u := range ups[2:] {
+				setServedTipFinalized(t, u, c.behind)
+			}
+			require.Equal(t, ahead, servedHead(network, ctx).Finalized, "quorum 2: the leading pair defines the finalized tip")
+
+			held := servedTipRegressionCount(network, "finalized", "held")
+			network.PinUpstreamOrderForTest("u1", "u3", "u4")
+			assert.Equal(t, ahead, servedHead(network, ctx).Finalized,
+				"the pick drops one batch, and u1 still reports the served block: the finalized floor holds it")
+			assert.Equal(t, held, servedTipRegressionCount(network, "finalized", "held"),
+				"a drop of one finality step is the chain, not a poisoned ballot")
+		})
+
+		t.Run(c.chain+": a pick far below still holds", func(t *testing.T) {
+			network, ups := setup(t)
+			learn(t, network, ups[:2])
+			for _, u := range ups[2:] {
+				setServedTipFinalized(t, u, max(1, c.behind-53_000_000))
+			}
+			require.Equal(t, ahead, servedHead(network, ctx).Finalized, "quorum 2: the leading pair defines the finalized tip")
+
+			held := servedTipRegressionCount(network, "finalized", "held")
+			network.PinUpstreamOrderForTest("u1", "u3", "u4")
+			assert.Equal(t, ahead, servedHead(network, ctx).Finalized, "the guard serves the last corroborated finalized tip")
+			assert.Equal(t, held+1, servedTipRegressionCount(network, "finalized", "held"))
+		})
+	}
 }
 
 // Finalized is irreversible, so the served finalized tip must not step back

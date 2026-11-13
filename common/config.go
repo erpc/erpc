@@ -3245,15 +3245,17 @@ type EvmServedTipConfig struct {
 	GuaranteedFor []string `yaml:"guaranteedFor,omitempty" json:"guaranteedFor,omitempty"`
 
 	// MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-	// (the second-highest live head) the pick may fall before it is treated as
-	// a poisoned ballot rather than as reality. While a pick is below that
-	// bound the network keeps serving its last corroborated pick (in-process,
-	// for at most one minute, then it fails open and serves the pick as
-	// computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
-	// rollback tolerance the state poller and health tracker apply to a
-	// retreating head, so all three layers agree on what counts as a genuine
-	// deep correction. -1 disables the regression guard entirely; no other
-	// negative value is accepted.
+	// (the second-highest live head) the finalized pick may fall before it is
+	// treated as a poisoned ballot rather than as reality. While a pick is
+	// below that bound the network keeps serving its last corroborated pick
+	// (in-process, for at most one minute, then it fails open and serves the
+	// pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) - the
+	// same rollback tolerance the state poller and health tracker apply to a
+	// retreating head - widened to twice the lane's typical finality step
+	// (the lower median of its last eight finalized advances), so a chain
+	// that finalizes in larger batches does not hold when one voter lags a
+	// batch. -1 disables the regression guard entirely; no other negative
+	// value is accepted.
 	MaxRegressionBlocks int64 `yaml:"maxRegressionBlocks,omitempty" json:"maxRegressionBlocks,omitempty"`
 
 	// FollowCacheHead lowers the "latest" a network-wide read takes to the

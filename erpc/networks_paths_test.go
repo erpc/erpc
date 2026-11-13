@@ -326,11 +326,31 @@ func TestNetworksPaths_BareNetworkAccessors(t *testing.T) {
 		n.cfg.Evm.MaxRetryableBlockDistance = i64(7)
 		assert.Equal(t, int64(7), n.maxRetryableBlockDistance())
 
-		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks())
-		n.cfg.Evm.ServedTip = &common.EvmServedTipConfig{MaxRegressionBlocks: -1}
-		assert.Equal(t, int64(-1), n.servedTipMaxRegressionBlocks())
+		l := &servedTipLane{}
+		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks(l), "no finality step learned yet")
+		l.learnFinalizedStep(53_000_000, 0)
+		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks(l),
+			"one advance, perhaps the recovery from a poisoned pick, is not yet a step")
+		for _, step := range []int64{1_914, 5_907, 705} {
+			l.learnFinalizedStep(step, 0)
+		}
+		assert.Equal(t, int64(2*1_914), n.servedTipMaxRegressionBlocks(l), "twice the lower median: the outliers on both sides do not set it")
+		for range len(l.finalizedSteps) {
+			l.learnFinalizedStep(1_482, 0)
+		}
+		assert.Equal(t, int64(2*1_482), n.servedTipMaxRegressionBlocks(l), "a step older than the last eight is forgotten")
+		small := &servedTipLane{}
+		small.learnFinalizedStep(32, 0)
+		small.learnFinalizedStep(32, 0)
+		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks(small), "a small step never narrows the default")
+
+		n.cfg.Evm.ServedTip = &common.EvmServedTipConfig{MaxRegressionBlocks: 500}
+		assert.Equal(t, int64(500), n.servedTipMaxRegressionBlocks(l), "an explicit value wins over the learned one")
+		n.cfg.Evm.ServedTip.MaxRegressionBlocks = -1
+		assert.Equal(t, int64(-1), n.servedTipMaxRegressionBlocks(l))
+		assert.Equal(t, int64(2*1_482), n.finalizedFloorTolerance(l), "the guard is off, the floor keeps the learned tolerance")
 		n.cfg.Evm.ServedTip.MaxRegressionBlocks = 0
-		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks())
+		assert.Equal(t, int64(common.DefaultToleratedBlockHeadRollback), n.servedTipMaxRegressionBlocks(nil))
 	})
 
 	t.Run("SvmEnforceBlockAvailabilityDefaultsOn", func(t *testing.T) {
