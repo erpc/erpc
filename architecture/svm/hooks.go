@@ -188,6 +188,23 @@ func parseError() error {
 	)
 }
 
+// MethodPing is the keepalive web3.js and @solana/kit send, without an id,
+// every 5 s on a subscription socket. Agave has no such method.
+const MethodPing = "ping"
+
+// projectPreForward_ping answers ping the way a Solana node does: -32601
+// "Method not found" (HTTP 200). A vendor asked instead bills the call and
+// may answer in its own shape (one returns that error object as a result),
+// so the request asks no upstream.
+func projectPreForward_ping(method string) (bool, *common.NormalizedResponse, error) {
+	if method != MethodPing {
+		return false, nil, nil
+	}
+	return true, nil, common.NewErrInvalidRequest(
+		common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorUnsupportedException, "Method not found", nil, nil),
+	)
+}
+
 // BatchParseError returns the error an agave node answers for the whole batch
 // when one element carries an id it cannot read. agave parses a batch as one
 // value, so such an element fails the entire parse: one -32700 with id null,

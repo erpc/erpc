@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
@@ -296,7 +297,10 @@ func (wsc *WsConnection) handleMessage(raw []byte) {
 
 	out, notification, open := wsc.handleRequest(ctx, raw, &startedAt, false)
 	if notification {
-		wsc.writeMeteringOnly(wsc.costBlock(ctx, []interface{}{out}))
+		// nil: a dropped keepalive, which ran nothing to meter.
+		if out != nil {
+			wsc.writeMeteringOnly(wsc.costBlock(ctx, []interface{}{out}))
+		}
 		if r, ok := out.(*common.NormalizedResponse); ok {
 			go r.Release()
 		}
@@ -376,6 +380,12 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	}
 
 	method, _ := nq.Method()
+	// Agave drops a Solana client's id-less keepalive ping unrun and
+	// unanswered, so it is not metered here either.
+	if notification && wsc.architecture == common.ArchitectureSvm && method == svm.MethodPing {
+		common.EndRequestSpan(requestCtx, nil, nil)
+		return nil, notification, nil
+	}
 	allowed, err := isMethodAllowed(project, method)
 	if err != nil {
 		return fail(err, &common.TRUE), notification, nil
@@ -468,8 +478,15 @@ func (wsc *WsConnection) handleBatch(ctx context.Context, raw []byte, startedAt 
 			replies = append(replies, resp)
 		}
 	}
-	// Costs cover notifications too, as on HTTP: they ran.
-	costs := wsc.costBlock(ctx, responses)
+	// Costs cover notifications too, as on HTTP: they ran. A dropped
+	// keepalive (nil) did not.
+	ran := make([]interface{}, 0, len(responses))
+	for _, resp := range responses {
+		if resp != nil {
+			ran = append(ran, resp)
+		}
+	}
+	costs := wsc.costBlock(ctx, ran)
 	if len(replies) > 0 {
 		wsc.writeBatchResponse(costs, replies)
 	} else {
