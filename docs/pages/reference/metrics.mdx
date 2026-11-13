@@ -451,6 +451,7 @@ One chain tracker per network follows the canonical chain from source headers an
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_selection_position` | gauge | project, network, method, upstream | Tick output: 0=primary, 1+=runner-up, −1=excluded. |
+| `erpc_selection_held_position` | gauge | project, network, method, finality, upstream | Held-ranking output (the policy run again with lag read as 0 for frozen upstreams; serves client reads of finalized block numbers): 0=primary, 1+=runner-up, −1=excluded. `finality` is the slot's (`*` unless `evalScope` splits by finality). Full-pool slots only; lane slots set none. Set only on ticks of a slot with a frozen upstream; the series are deleted on the first tick without one and when the slot stops. |
 | `erpc_selection_score` | gauge | project, network, method, upstream | Per-upstream `sortByScore` score (lower=better). Absent for upstreams that bypassed scoring. |
 | `erpc_selection_eligible_upstreams` | gauge | project, network, method | Count of upstreams returned by most recent tick. |
 | `erpc_selection_rejection_total` | counter | project, network, method, upstream, step | Tick rejected upstream at a std-lib step. |

@@ -49,7 +49,7 @@ func OverrideOrderForTest(e *Engine, networkID string, ids ...string) {
 			ordered = append(ordered, u)
 		}
 	}
-	slot.cache.Store(&ordered)
+	slot.cache.Store(&ranking{tip: ordered})
 }
 
 // OverrideAllForTest applies OverrideOrderForTest to EVERY network this
@@ -120,7 +120,7 @@ func WalkSlotsForTest(e *Engine, fn func(network, method, finality string, cache
 	for k, s := range e.slots {
 		cacheLen := -1
 		if c := s.cache.Load(); c != nil {
-			cacheLen = len(*c)
+			cacheLen = len(c.tip)
 		}
 		fn(k.network, k.method, k.finality, cacheLen)
 	}
@@ -163,6 +163,8 @@ func ResetSlotStateForTest(e *Engine, networkID, method string) {
 	slot.previousExcluded = nil
 	slot.excludedSince = make(map[string]int64)
 	slot.lastSwitchAt = nil
+	slot.heldPreviousOrder = nil
+	slot.heldLastSwitchAt = nil
 	slot.mu.Unlock()
 }
 

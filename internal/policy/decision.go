@@ -71,6 +71,12 @@ type DecisionOutput struct {
 	// MethodBlocks[upstreamID][method] is what `blockMethods` recorded:
 	// the upstream stays in Order but is skipped for that method.
 	MethodBlocks map[string]map[string]MethodBlock
+
+	// HeldOrder is the held ranking of the same tick: the eval run again
+	// with lag read as 0 for frozen upstreams (Tracker.IsHeadFrozen). Nil
+	// when the slot ran none: no frozen upstream, a realtime or unfinalized
+	// slot, or a failed run.
+	HeldOrder []string
 }
 
 // ExcludedUpstream explains why an upstream was dropped this tick.

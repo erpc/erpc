@@ -188,6 +188,26 @@ Behind without a break for its stall window (`headStallAfter`), `max(30s, 3 × m
 - **Boundary:** rejoin needs the benched head to reach the bar at one report. A node that always trails the second-highest head by a block or two rejoins late; until then it serves traffic while its lag stays under the policy threshold, but does not vote.
 - **Boundary:** a bench changes the ballots at once, but routing leaves the benched upstream at the selection policy's next evaluation (`evalInterval`, 15s by default). Until then a request for the new `latest` can reach it; without a configured availability bound nothing gates it, so its missing-data error is retried on another upstream.
 
+#### Frozen vs benched
+
+A **frozen** upstream is a benched one that still answers: it holds every block up to its own finalized one, so the selection policy's [held ranking](/config/projects/selection-policies) lets it serve client reads of those finalized block numbers while the lag rule keeps it out of everything else. `Tracker.IsHeadFrozen` reads three facts from atomics each time it is called, so it never waits for another evaluation:
+
+- **Benched** (above).
+- **Head unchanged for its stall window:** at least `headStallAfter` since its stored head last changed. `evaluateHeadBench` stores `headChangedAt + headStallAfter` for every reporter, so a frozen node that moves again stops being frozen at once and needs a full stall window more.
+- **Still answers:** its last head report is at most twice its fetch cadence old (the backed-off cadence `headStallAfter` uses). Every answered local `eth_getBlockByNumber("latest")` poll reports, also when the number did not change, so each instance sees it on its own polls.
+
+| | Benched | Frozen |
+|---|---|---|
+| Head | stayed behind peers that kept moving | benched, and unchanged for its stall window |
+| Answers polls | any (a dead node is benched too) | a report within 2 × fetch cadence |
+| Served-tip ballots, lag reference | left out | left out |
+| Tip ranking (`blockNumberLagAbove`) | excluded by its lag | excluded by its lag |
+| Client reads of finalized block numbers | never | by the held ranking, up to its own finalized block |
+
+- **Boundary:** a node whose polls fail, are refused or time out stops being frozen two fetch cadences after its last answer; until then it may still be tried, and its failure is retried on the next upstream.
+- **Boundary:** a push (WebSocket) source reports only new heads; a stalled one reports nothing, so it is not frozen.
+- **Boundary:** a node that moves, however slowly, is never frozen: a replay far behind the tip stays out of every request.
+
 #### Regression guard
 
 `finalized` axis only. When a pick falls more than `maxRegressionBlocks` below the corroborated evidence — the second-highest live head, or the last live-corroborated pick — the lane serves its last corroborated pick instead, never above the highest live head (`guardServedTipRegression`). Unset (`0`), the tolerance is 1024 widened to twice the lane's typical finality step: the lower median of its last eight finalized advances, once two were seen. A chain that finalizes in batches (base: median 1,914 blocks a step) thus does not hold when one voter lags a batch; an explicit value is used as configured. It holds for at most 1 minute, then fails open and serves the pick as computed. In-process only; selectors without a lane get no guard; `-1` disables it. Each transition increments `erpc_network_served_tip_regression_total`. `latest` needs no guard: its view moves back only when the pins move.
@@ -451,7 +471,7 @@ Served-tip and bench metrics (`erpc_network_served_tip_*`, `erpc_upstream_head_b
 - [`erpc/network_intake.go`](https://github.com/erpc/erpc/blob/main/erpc/network_intake.go) — `voterSet`, `tipVoterRank`
 - [`erpc/network_head.go`](https://github.com/erpc/erpc/blob/main/erpc/network_head.go) — `EvmHead`, `EvmLaneHead`, `computeHead`, `markLanes`, `refreshDirtyHeads`
 - [`architecture/evm/eth_blockNumber.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/eth_blockNumber.go) — `eth_blockNumber` pre-forward answer and post-forward pin
-- [`health/tracker.go:L1428-L1664`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1428-L1664) — `corroboratedNetworkHead`, `headStallAfter`, `evaluateHeadBench`, `movedSinceBench`, `headIsBehind`, `benchPlausibleLead`, `IsHeadBenched`
+- [`health/tracker.go:L1428-L1664`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1428-L1664) — `corroboratedNetworkHead`, `headStallAfter`, `evaluateHeadBench`, `movedSinceBench`, `headIsBehind`, `benchPlausibleLead`, `IsHeadBenched`, `IsHeadFrozen`
 - [`health/tracker.go:L1666-L1918`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1666-L1918) — `SetLatestBlockNumber`, EMA update (`updateBlockTimeSample`, `sampleBlockTime`), `BlockHeadLag` computation
 - [`health/tracker.go:L1937-L2033`](https://github.com/erpc/erpc/blob/main/health/tracker.go#L1937-L2033) — `SetFinalizedBlockNumber`, `rederiveNetworkFinalized`, `FinalizationLag` computation
 - [`common/defaults.go:L1718-L1977`](https://github.com/erpc/erpc/blob/main/common/defaults.go#L1718-L1977) — `DefaultEvmFinalityDepth=1024`, `DefaultDynamicBlockTimeDebounceMultiplier=0.7`

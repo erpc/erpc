@@ -218,6 +218,15 @@ The default `evalScope: "network"` creates one slot per network. Setting `evalSc
 
 `blockHeadLag` and `finalizationLag` are atomic point-in-time state, not rolling counters. They persist across window rotations and stay non-zero until the upstream catches up to the network tip. `blockHeadLagSeconds` and `finalizationLagSeconds` multiply the block count by the tracker's EMA-estimated block time (alpha 0.1, minimum 3 samples before publishing). Until the EMA is warm, both seconds fields are `0` — pair `blockSecondsLagAbove` with `blockNumberLagAbove` for cold-start coverage.
 
+**Held ranking (frozen upstreams).** A lag rule such as `blockNumberLagAbove(16)` drops an upstream whose head stopped far behind, for every request, also for old blocks it still holds. When a slot's upstreams include a **frozen** one (its head is benched, unchanged for its stall window, and it still answers its head polls; see [Block tracking](/reference/evm/block-tracking)), the tick runs the eval a second time:
+- **When it runs:** only in a tick with at least one frozen upstream, and only in a slot whose finality is not `realtime` or `unfinalized`. With no frozen upstream, nothing runs and the request path pays one nil check.
+- **What it reads:** a copy of the tick's metric snapshot with `blockHeadLag`, `finalizationLag`, `blockHeadLagSeconds` and `finalizationLagSeconds` set to `0` for the frozen upstreams only (`u.metrics` and `u.metricsAcrossMethods`). Every other rule (errors, latency, throttle, cordon, tiers, multipliers, `blockMethods`) acts as in the tip run, so the other upstreams keep their order.
+- **Its state:** its own previous order and last primary switch on the slot; its sticky primary starts as the tip ranking's. It passes no shared sticky register, so `stickyPrimary({scope})` falls back to slot-local state.
+- **What it never changes:** the tip ranking (`GetOrdered`, `erpc_selection_position`), the excluded set and probes, `excludedSince`, the shared sticky register, the decision metrics, and upstream-change notifications. The tip and held rankings are published in one atomic value, so a request never pairs one tick's tip ranking with another tick's held ranking.
+- **Which requests use it:** an EVM client request (not eRPC's own tracker fetches) without consensus, whose block parameters are all numbers (`EvmRequestedBlockNumber`: no tag, hash or omitted range bound; methods configured `finalized` or `realtime` never qualify), and whose highest block is at or below the request Head's `Finalized`. The list is the held ranking's order: each upstream of the tip list keeps its place in it, and a held-only upstream joins only if, at request time, it is still frozen, not `eth_syncing`, not on a minority fork, and its own finalized block (lowered by a configured `upper` bound) is at or above the requested block. Every tip-list upstream the held ranking lacks follows. When no upstream joins, the tip list is used unchanged, so a request never has fewer upstreams than the tip list gives it.
+- A lane slot (`evalPerBoundary`) or a narrow slot that has not ticked yet serves the wildcard's tip ranking and no held ranking.
+- Code: [`internal/policy/slot.go:heldRun`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go), [`erpc/networks.go:heldOrder`](https://github.com/erpc/erpc/blob/main/erpc/networks.go); covered by `TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks`.
+
 **The default policy chain.** Omitting `evalFunc` applies the production-hardened default embedded at compile time:
 
 ```js
@@ -768,11 +777,14 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 
 16. **Idle slot eviction sweep runs every 1 minute.** The engine's `sweepIdleSlots` fires every `engineSweepInterval = 1 minute`. A narrow slot with `idleEvictionAfter = 1 h` may persist for up to 1 h + 1 min after its last access. The health tracker's own idle eviction threshold is separate and shorter: `DefaultIdleEvictionAfter = 30 minutes` for per-`(upstream, method, finality)` metric entries. [`internal/policy/engine.go:engineSweepInterval:L208`](https://github.com/erpc/erpc/blob/main/internal/policy/engine.go#L208)
 
+17. **A lag-excluded frozen upstream still serves finalized block numbers.** `erpc_selection_position` stays `-1` for it (the tip ranking excludes it), while `erpc_selection_held_position` shows its place in the held ranking. It serves only requests whose highest block is at or below both the network's finalized block and its own; `latest`, tags, hashes, blocks above its own finalized block and consensus requests never reach it. A node whose polls stop answering stops joining requests once two fetch cadences pass, with no tick needed: the frozen check runs per request. [`erpc/networks_selection_policy_realpoll_test.go:TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks`](https://github.com/erpc/erpc/blob/main/erpc/networks_selection_policy_realpoll_test.go)
+
 ### Observability
 
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_selection_position` | Gauge | `project, network, method, upstream` | Every tick; `0`=primary, `1+`=runner-up, `-1`=excluded. |
+| `erpc_selection_held_position` | Gauge | `project, network, method, finality, upstream` | Ticks that ran the held ranking; `0`=primary, `1+`=runner-up, `-1`=excluded. `finality` is the slot's (`*` unless `evalScope` splits by finality). Full-pool slots only: lane slots (`evalPerBoundary`) set none. Series deleted while the slot runs no held ranking, and when the slot stops. |
 | `erpc_selection_score` | Gauge | `project, network, method, upstream` | Every tick; value is `u.score` from `sortByScore`. |
 | `erpc_selection_eligible_upstreams` | Gauge | `project, network, method` | Every successful tick; count of in-rotation upstreams. |
 | `erpc_selection_eval_duration_seconds` | Histogram | `project, network, method` | Every tick; JS eval wall-clock time. |
