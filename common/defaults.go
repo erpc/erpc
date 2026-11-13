@@ -2381,6 +2381,18 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.ShortCircuitFutureBlocks == nil && defaults.Evm.ShortCircuitFutureBlocks != nil {
 				n.Evm.ShortCircuitFutureBlocks = defaults.Evm.ShortCircuitFutureBlocks
 			}
+			if n.Evm.EnforceBlockAvailability == nil && defaults.Evm.EnforceBlockAvailability != nil {
+				n.Evm.EnforceBlockAvailability = defaults.Evm.EnforceBlockAvailability
+			}
+			if n.Evm.MaxRetryableBlockDistance == nil && defaults.Evm.MaxRetryableBlockDistance != nil {
+				n.Evm.MaxRetryableBlockDistance = defaults.Evm.MaxRetryableBlockDistance
+			}
+			if n.Evm.MarkEmptyAsErrorMethods == nil && defaults.Evm.MarkEmptyAsErrorMethods != nil {
+				n.Evm.MarkEmptyAsErrorMethods = append([]string(nil), defaults.Evm.MarkEmptyAsErrorMethods...)
+			}
+			if n.Evm.IdempotentTransactionBroadcast == nil && defaults.Evm.IdempotentTransactionBroadcast != nil {
+				n.Evm.IdempotentTransactionBroadcast = defaults.Evm.IdempotentTransactionBroadcast
+			}
 			for method, on := range defaults.Evm.LocalAnswers {
 				if _, set := n.Evm.LocalAnswers[method]; !set {
 					if n.Evm.LocalAnswers == nil {
