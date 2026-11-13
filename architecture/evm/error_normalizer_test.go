@@ -2,6 +2,7 @@ package evm
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -717,35 +718,39 @@ func TestExtractJsonRpcError_InvalidChainID(t *testing.T) {
 		"reth": "invalid chain ID",
 		"geth": "invalid sender: invalid chain id for signer: have 1 want 137",
 	}
+	// Include -32003: that code alone matches the generic "transaction rejected"
+	// branch, which would wrongly mark eth_sendRawTransaction retryable.
+	codes := []int{
+		int(common.JsonRpcErrorCallException),
+		int(common.JsonRpcErrorTransactionRejected),
+	}
 	for client, msg := range messages {
-		for _, method := range []string{"eth_estimateGas", "eth_call", "eth_sendRawTransaction"} {
-			client, msg, method := client, msg, method
-			t.Run(client+"/"+method, func(t *testing.T) {
-				t.Parallel()
+		for _, code := range codes {
+			for _, method := range []string{"eth_estimateGas", "eth_call", "eth_sendRawTransaction"} {
+				client, msg, code, method := client, msg, code, method
+				t.Run(fmt.Sprintf("%s/code=%d/%s", client, code, method), func(t *testing.T) {
+					t.Parallel()
 
-				req := common.NewNormalizedRequest([]byte(
-					`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
-				nr := common.NewNormalizedResponse().WithRequest(req)
+					req := common.NewNormalizedRequest([]byte(
+						`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
+					nr := common.NewNormalizedResponse().WithRequest(req)
 
-				r := &http.Response{StatusCode: 200, Header: http.Header{}}
-				jrErr := common.NewErrJsonRpcExceptionExternal(
-					int(common.JsonRpcErrorCallException),
-					msg,
-					"",
-				)
-				jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
+					r := &http.Response{StatusCode: 200, Header: http.Header{}}
+					jrErr := common.NewErrJsonRpcExceptionExternal(code, msg, "")
+					jr := common.MustNewJsonRpcResponse(1, nil, jrErr)
 
-				err := ExtractJsonRpcError(r, nr, jr, nil)
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-					t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
-				}
-				if common.IsRetryableTowardNetwork(err) {
-					t.Fatalf("invalid chain ID must be non-retryable toward network (method=%s)", method)
-				}
-			})
+					err := ExtractJsonRpcError(r, nr, jr, nil)
+					if err == nil {
+						t.Fatalf("expected error, got nil")
+					}
+					if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+						t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+					}
+					if common.IsRetryableTowardNetwork(err) {
+						t.Fatalf("invalid chain ID must be non-retryable toward network (method=%s code=%d)", method, code)
+					}
+				})
+			}
 		}
 	}
 }
@@ -759,27 +764,35 @@ func TestExtractJsonRpcError_InvalidChainID(t *testing.T) {
 func TestExtractJsonRpcError_ExceedsBlockGasLimit(t *testing.T) {
 	t.Parallel()
 
-	for _, method := range []string{"eth_sendRawTransaction", "eth_estimateGas"} {
-		method := method
-		t.Run(method, func(t *testing.T) {
-			t.Parallel()
+	// Include -32003: that code alone matches the generic "transaction rejected"
+	// branch, which would wrongly mark eth_sendRawTransaction retryable.
+	codes := []int{
+		int(common.JsonRpcErrorCallException),       // -32000
+		int(common.JsonRpcErrorTransactionRejected), // -32003
+	}
+	for _, code := range codes {
+		for _, method := range []string{"eth_sendRawTransaction", "eth_estimateGas"} {
+			code, method := code, method
+			t.Run(fmt.Sprintf("code=%d/%s", code, method), func(t *testing.T) {
+				t.Parallel()
 
-			req := common.NewNormalizedRequest([]byte(
-				`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
-			nr := common.NewNormalizedResponse().WithRequest(req)
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
+				nr := common.NewNormalizedResponse().WithRequest(req)
 
-			r := &http.Response{StatusCode: 200, Header: http.Header{}}
-			jr := common.MustNewJsonRpcResponse(1, nil,
-				common.NewErrJsonRpcExceptionExternal(-32000, "exceeds block gas limit", ""))
+				r := &http.Response{StatusCode: 200, Header: http.Header{}}
+				jr := common.MustNewJsonRpcResponse(1, nil,
+					common.NewErrJsonRpcExceptionExternal(code, "exceeds block gas limit", ""))
 
-			err := ExtractJsonRpcError(r, nr, jr, nil)
-			if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-				t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
-			}
-			if common.IsRetryableTowardNetwork(err) {
-				t.Fatalf("exceeds block gas limit must be non-retryable toward network (method=%s)", method)
-			}
-		})
+				err := ExtractJsonRpcError(r, nr, jr, nil)
+				if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+					t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+				}
+				if common.IsRetryableTowardNetwork(err) {
+					t.Fatalf("exceeds block gas limit must be non-retryable toward network (method=%s code=%d)", method, code)
+				}
+			})
+		}
 	}
 }
 
