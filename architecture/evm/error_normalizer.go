@@ -488,15 +488,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 			// The verdict is only as fresh as the node's head: an upstream that
 			// has not applied the sender's last mined transaction sees the
-			// correct next nonce as a gap. Keep eth_sendRawTransaction failover
-			// so an up-to-date upstream can accept it; the upstream that refused
-			// is not asked again.
-			if nr != nil && nr.Request() != nil {
-				if m, _ := nr.Request().Method(); strings.EqualFold(m, "eth_sendRawTransaction") {
-					if re, ok := execErr.(common.RetryableError); ok {
-						return re.WithRetryableTowardNetwork(true)
-					}
-				}
+			// correct next nonce as a gap, for a send and for an eth_call or
+			// eth_estimateGas that sets the nonce. Keep failover so an
+			// up-to-date upstream can answer; the upstream that refused is not
+			// asked again.
+			if re, ok := execErr.(common.RetryableError); ok {
+				return re.WithRetryableTowardNetwork(true)
 			}
 			return execErr
 		}

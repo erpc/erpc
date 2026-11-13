@@ -2732,52 +2732,69 @@ func TestNetwork_SendRawTransaction_FireAndForget(t *testing.T) {
 		})
 	}
 
-	t.Run("NonceTooHighFromLaggingUpstreamDoesNotEndBroadcast", func(t *testing.T) {
-		util.ResetGock()
-		t.Cleanup(util.ResetGock)
-		util.SetupMocksForEvmStatePoller()
-		ids := []string{"rpc1", "rpc2", "rpc3", "rpc4"}
-		// The lagging upstream answers first, so the consensus round sees its
-		// refusal before any acceptance.
-		refusals := mockLaggingAndFreshUpstreams("rpc1", ids[1:], 150*time.Millisecond)
-		var upstreamConfigs []*common.UpstreamConfig
-		for _, id := range ids {
-			upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
-				Type:     common.UpstreamTypeEvm,
-				Id:       id,
-				Endpoint: "http://" + id + ".localhost",
-				Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	for _, tc := range []struct {
+		name     string
+		failsafe *common.FailsafeConfig
+	}{
+		{"ProductionBroadcast", &common.FailsafeConfig{
+			MatchMethod: "eth_sendRawTransaction",
+			Hedge: &common.HedgePolicyConfig{
+				MaxCount: 2,
+				Delay:    common.NewStaticDuration(500 * time.Millisecond),
+			},
+			Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    sendBroadcastParticipants,
+				AgreementThreshold: 1,
+				FireAndForget:      true,
+			},
+		}},
+		// With no retry or hedge, the refusal alone meets the agreement
+		// threshold; it must not end the round while acceptances are pending.
+		{"ConsensusOnly", &common.FailsafeConfig{
+			MatchMethod: "eth_sendRawTransaction",
+			Consensus: &common.ConsensusPolicyConfig{
+				MaxParticipants:    4,
+				AgreementThreshold: 1,
+				FireAndForget:      true,
+			},
+		}},
+	} {
+		t.Run("NonceTooHighFromLaggingUpstreamDoesNotEndBroadcast/"+tc.name, func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			util.SetupMocksForEvmStatePoller()
+			ids := []string{"rpc1", "rpc2", "rpc3", "rpc4"}
+			// The lagging upstream answers first, so the consensus round sees its
+			// refusal before any acceptance.
+			refusals := mockLaggingAndFreshUpstreams("rpc1", ids[1:], 150*time.Millisecond)
+			var upstreamConfigs []*common.UpstreamConfig
+			for _, id := range ids {
+				upstreamConfigs = append(upstreamConfigs, &common.UpstreamConfig{
+					Type:     common.UpstreamTypeEvm,
+					Id:       id,
+					Endpoint: "http://" + id + ".localhost",
+					Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+				})
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				Failsafe:     []*common.FailsafeConfig{tc.failsafe},
 			})
-		}
+			t.Cleanup(cancel)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		network := setupSendRawTxNetwork(t, ctx, upstreamConfigs, &common.NetworkConfig{
-			Architecture: common.ArchitectureEvm,
-			Evm:          &common.EvmNetworkConfig{ChainId: 123},
-			Failsafe: []*common.FailsafeConfig{{
-				MatchMethod: "eth_sendRawTransaction",
-				Hedge: &common.HedgePolicyConfig{
-					MaxCount: 2,
-					Delay:    common.NewStaticDuration(500 * time.Millisecond),
-				},
-				Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
-				Consensus: &common.ConsensusPolicyConfig{
-					MaxParticipants:    sendBroadcastParticipants,
-					AgreementThreshold: 1,
-					FireAndForget:      true,
-				},
-			}},
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
+			resp, err := network.Forward(ctx, req)
+			require.NoError(t, err, "fresh upstreams accept the transaction")
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Equal(t, `"`+acceptedTxHash+`"`, string(jrr.GetResultBytes()))
+			assert.Positive(t, refusals.Load(), "the lagging upstream must be asked")
 		})
-		t.Cleanup(cancel)
-
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["` + sampleSignedTx + `"]}`))
-		resp, err := network.Forward(ctx, req)
-		require.NoError(t, err, "fresh upstreams accept the transaction")
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Equal(t, `"`+acceptedTxHash+`"`, string(jrr.GetResultBytes()))
-		assert.Positive(t, refusals.Load(), "the lagging upstream must be asked")
-	})
+	}
 }
 
 // sendBroadcastParticipants is the consensus fan-out of the production
