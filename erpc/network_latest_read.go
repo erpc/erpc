@@ -18,8 +18,9 @@ const latestReadWait = 50 * time.Millisecond
 // the "latest" tag (spec §6.4 client read): a client's
 // eth_getBlockByNumber(latest) (evm.LatestBlockRead) on a network with a
 // tracker, without a consensus policy, whose slots would compare answers
-// of different blocks, and whose Head the cache anchor did not lower
-// (EvmHead.Anchored): the tag's answer would pass that Latest.
+// of different blocks, and whose Head does not follow the cache's fresh
+// head (EvmHead.Anchored): the cache serves such a read, and the tag's
+// answer could pass its Latest. A stale cache head is a cache far behind.
 func (n *Network) tagsLatestRead(ctx context.Context, req *common.NormalizedRequest, consensus bool) bool {
 	if consensus || n.chainTracker == nil {
 		return false

@@ -83,20 +83,26 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	return h
 }
 
-// anchorHead is h, a network-wide read's Head, with Latest lowered to the
-// cache's fresh head (evm.servedTip.followCacheHead, evm.CacheHead.Clamp
-// against the latest last served): Latest takes the view's pin at that
+// anchorHead is h, a network-wide read's Head, anchored to the cache's
+// fresh head (evm.servedTip.followCacheHead, evm.CacheHead.Clamp against
+// the latest last served): Anchored, so the read is served from the cache
+// or by number, never sent as the tag (tagsLatestRead), and Latest lowered
+// to the clamp when it is below: Latest takes the view's pin at that
 // number, its hash, and Finalized and Firm stay at or below it, as
-// viewHead does for a limit; Anchored marks it, so the read is not sent
-// as the tag (tagsLatestRead). Only the read Head: headFor, the view, pins,
-// intake, hash votes, the block clock, the refusal ceiling and every
-// stream stay on the tracker's own head.
+// viewHead does for a limit. h as is while the cache's head is stale. Only
+// the read Head: headFor, the view, pins, intake, hash votes, the block
+// clock, the refusal ceiling and every stream stay on the tracker's own
+// head.
 func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
-	latest := n.cacheHead.Clamp(h.Latest, n.servedLatest.Load())
-	if latest >= h.Latest {
+	latest, fresh := n.cacheHead.Clamp(h.Latest, n.servedLatest.Load())
+	if !fresh {
 		return h
 	}
 	a := *h
+	a.Anchored = true
+	if latest >= h.Latest {
+		return &a
+	}
 	c, pinned := indexer.Cursor{}, false
 	if t := n.laneTracker(""); t != nil {
 		c, pinned = t.View().PinAt(uint64(latest))
@@ -104,7 +110,7 @@ func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
 	if !pinned {
 		c = indexer.Cursor{Number: uint64(latest)}
 	}
-	a.Latest, a.LatestHash, a.Anchored = latest, c.Hash, true
+	a.Latest, a.LatestHash = latest, c.Hash
 	a.LatestAt, a.NextAt = time.Time{}, time.Time{}
 	a.Firm = min(a.Firm, latest)
 	a.Finalized = min(a.Finalized, latest)

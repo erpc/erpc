@@ -83,9 +83,10 @@ type EvmHead struct {
 	// Latest is not the view's Head (a limit, a guarantee cap, the cache
 	// head's anchor lowered it) or unknown.
 	LatestAt time.Time
-	// Anchored is set when the cache head's anchor lowered Latest below
-	// the view's (evm.servedTip.followCacheHead): a read of latest then
-	// serves the cache's block, never an upstream's answer to the tag.
+	// Anchored is set when the read follows the cache's fresh head
+	// (evm.servedTip.followCacheHead): Latest is at most that head, and a
+	// read of latest is served from the cache or by number, never sent to
+	// an upstream as the tag. Unset with no cache head, or a stale one.
 	Anchored bool
 	// NextAt is the earliest time the lane's next block may come: LatestAt
 	// plus the shorter of half a block and the shortest recent step of the
