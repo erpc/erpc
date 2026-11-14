@@ -2,9 +2,11 @@ package evm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	bdscommon "github.com/blockchain-data-standards/manifesto/common"
@@ -16,6 +18,52 @@ import (
 
 func init() {
 	_ = (&bdscommon.ErrorDetails{}).ProtoReflect().Descriptor()
+}
+
+// ErrNullRound is the cause eRPC gives an upstream's answer that the
+// height it was asked has no block: a Filecoin null round. Lotus answers
+// it with code 12, "requested epoch was a null round (N)", data N; a
+// future epoch is code 1 and no null round. The answer reaches clients as
+// the upstream sent it; this cause is the one place that recognises it, so
+// no reader matches its text (NullRoundOf).
+type ErrNullRound struct{ Epoch uint64 }
+
+func (e *ErrNullRound) Error() string { return fmt.Sprintf("epoch %d is a null round", e.Epoch) }
+
+// NullRoundOf is the epoch an upstream answered is a null round, through
+// any wrapping, a sweep's per-upstream errors included.
+func NullRoundOf(err error) (uint64, bool) {
+	var nr *ErrNullRound
+	if errors.As(err, &nr) {
+		return nr.Epoch, true
+	}
+	return 0, false
+}
+
+// lotusNullRound is Lotus's code for a null round (ErrNullRound).
+const lotusNullRound common.JsonRpcErrorNumber = 12
+
+// nullRoundEpoch recognises Lotus's null-round answer: its code, its
+// message, and the epoch in its data, else in its message.
+func nullRoundEpoch(code common.JsonRpcErrorNumber, err *common.ErrJsonRpcExceptionExternal) (uint64, bool) {
+	if code != lotusNullRound || !strings.HasPrefix(err.Message, "requested epoch was a null round") {
+		return 0, false
+	}
+	switch d := err.Data.(type) {
+	case float64:
+		if d >= 0 && d == float64(uint64(d)) {
+			return uint64(d), true
+		}
+	case json.Number:
+		if n, perr := strconv.ParseUint(string(d), 10, 64); perr == nil {
+			return n, true
+		}
+	}
+	var n uint64
+	if _, serr := fmt.Sscanf(err.Message, "requested epoch was a null round (%d)", &n); serr == nil {
+		return n, true
+	}
+	return 0, false
 }
 
 // reth prints a revert as Debug text in the message and sends no "data" field.
@@ -70,6 +118,14 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				// Add the data as string to the message for text-based checks below
 				msg += " Data: " + fmt.Sprintf("%v", err.Data)
 			}
+		}
+
+		if epoch, ok := nullRoundEpoch(code, err); ok {
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(int(code), code, err.Message, &ErrNullRound{Epoch: epoch}, details),
+				nil,
+				r.StatusCode,
+			)
 		}
 
 		//----------------------------------------------------------------
