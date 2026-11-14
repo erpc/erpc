@@ -493,10 +493,8 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			return ""
 		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-			if se, ok := err.(common.StandardError); ok {
-				if retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && retryable {
-					return "execution_exception_retryable"
-				}
+			if common.IsRetryableExecutionException(err) {
+				return "execution_exception_retryable"
 			}
 			return ""
 		}

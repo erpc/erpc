@@ -3474,8 +3474,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				// Deterministic errors: client faults and execution reverts are the
-				// same on every upstream — no point trying others.
-				if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				// same on every upstream — no point trying others. An execution
+				// exception marked retryable toward the network is only as fresh
+				// as this node's state, so the sweep asks the next upstream even
+				// when no network retry policy is configured.
+				if common.IsClientError(err) ||
+					(common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) && !common.IsRetryableExecutionException(err)) {
 					common.SetTraceSpanError(loopSpan, err)
 					loopSpan.End()
 					return nil, err
