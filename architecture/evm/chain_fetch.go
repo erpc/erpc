@@ -387,6 +387,14 @@ func (s *fetchScheduler) pumpLocked() {
 	}
 }
 
+// classShare is class c's share of the limit now: fetchSlots, halved by
+// capacity refusals.
+func (s *fetchScheduler) classShare(c fetchClass) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.share[c]
+}
+
 // mayStartLocked: within the limit and the class's share, and leaving one
 // slot for every other class with none in flight, whether or not it has
 // work yet. A busy class so holds at most fetchSlots-(fetchClasses-1).

@@ -1347,6 +1347,9 @@ func (t *ChainTracker) join(nd *node) {
 				blocks++
 			}
 			e.walk = max(e.walk, walk.walk-blocks)
+			if e.ahead == nil {
+				e.ahead = walk.ahead
+			}
 		}
 	}
 }

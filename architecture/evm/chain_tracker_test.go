@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1499,6 +1500,183 @@ func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
 	assert.Equal(t, 5, net.forkAsks(), "c's refresh at its fork point already ran")
 	v, _ := c.HashAt(10)
 	assert.Equal(t, testHash("0", 10), v, "the refreshed votes keep the pins")
+}
+
+// pendingHeights are the numbers above floor whose by-number header fetch
+// the scheduler holds, queued or in flight, and those of them still
+// queued, each ascending.
+func pendingHeights(s *fetchScheduler, floor uint64) (all, queued []uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, r := range s.pending {
+		var params []any
+		if k.method != "eth_getBlockByNumber" || json.Unmarshal([]byte(k.params), &params) != nil || len(params) == 0 {
+			continue
+		}
+		ref, _ := params[0].(string)
+		if n, err := strconv.ParseUint(strings.TrimPrefix(ref, "0x"), 16, 64); err == nil && n > floor {
+			all = append(all, n)
+			if !r.started {
+				queued = append(queued, n)
+			}
+		}
+	}
+	slices.Sort(all)
+	slices.Sort(queued)
+	return all, queued
+}
+
+// walkGap pins a1..a20 on voters a and b, serves a21..a<top>, holds every
+// fetch of the gap's heights, and has both voters vote a<top>: a vote
+// whose walk the gap keeps waiting.
+func walkGap(t *testing.T, id string, window int, top uint64) (*servedChain, *ChainTracker) {
+	t.Helper()
+	net := newServedChain(t, id)
+	c := newChainTracker(t.Context(), net, window, time.Hour, "", "", "", nil, newFetchScheduler(t.Context(), net))
+	t.Cleanup(c.Want(indexer.ReadOpts{}))
+	voteChain(t, c, "a", "a", 1, 20, testHash("f", 0))
+	voteChain(t, c, "b", "a", 1, 20, testHash("f", 0))
+	for n := uint64(21); n <= top; n++ {
+		net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+		if n < top {
+			net.hold(fmt.Sprintf("0x%x", n))
+		}
+	}
+	vote := testHeader(top, testHash("a", top), testHash("a", top-1))
+	c.Observe("a", vote, true)
+	c.Observe("b", vote, true)
+	c.Sync(t.Context())
+	return net, c
+}
+
+// A walk fetches the heights it lacks together (spec §6.5 rule 1, §8),
+// links them top-down, and fetches no height twice.
+func TestChainTracker_WalkAhead(t *testing.T) {
+	heights := func(from, to uint64) (hs []uint64) {
+		for n := from; n <= to; n++ {
+			hs = append(hs, n)
+		}
+		return hs
+	}
+	ref := func(n uint64) string { return fmt.Sprintf("0x%x", n) }
+
+	t.Run("a walk step asks the heights below it at once", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			window int
+			top    uint64
+			want   []uint64
+		}{
+			{"down to the highest held header", 32, 26, heights(21, 25)},
+			{"at most the walk's remaining blocks", 4, 30, heights(26, 29)},
+			{"at most class 1's share", 64, 60, heights(60-uint64(fetchSlots), 59)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, c := walkGap(t, "evm:walk-ahead", tc.window, tc.top)
+				// Every pending height but fill's of block 0, below the pins.
+				all, _ := pendingHeights(c.fetch, 0)
+				assert.Equal(t, tc.want, all)
+			})
+		}
+	})
+
+	t.Run("a step takes its height's answered fetch and sends no second", func(t *testing.T) {
+		ctx := t.Context()
+		net, c := walkGap(t, "evm:walk-reuse", 32, 26)
+		for n := uint64(21); n <= 24; n++ {
+			net.release(ref(n))
+		}
+		require.Eventually(t, func() bool { all, _ := pendingHeights(c.fetch, 20); return slices.Equal(all, []uint64{25}) },
+			5*time.Second, 5*time.Millisecond, "21-24 answer while the walk waits on 25")
+		net.release(ref(25))
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, _ := c.HashAt(26)
+			return v == testHash("a", 26)
+		}, 5*time.Second, 5*time.Millisecond, "the walk links the gap and the votes move")
+		for n := uint64(21); n <= 25; n++ {
+			assert.Len(t, net.askedOf(ref(n)), 1, "height %d fetched once", n)
+		}
+	})
+
+	t.Run("a by-number answer that does not link is fetched by hash", func(t *testing.T) {
+		ctx := t.Context()
+		net, c := walkGap(t, "evm:walk-mismatch", 32, 26)
+		net.mu.Lock()
+		net.blocks[ref(24)] = testHeader(24, testHash("e", 24), testHash("a", 23))
+		net.mu.Unlock()
+		for n := uint64(21); n <= 25; n++ {
+			net.release(ref(n))
+		}
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, _ := c.HashAt(26)
+			return v == testHash("a", 26)
+		}, 5*time.Second, 5*time.Millisecond, "the walk links the gap")
+		v, _ := c.HashAt(24)
+		assert.Equal(t, testHash("a", 24), v, "the block 25 names is pinned, not the number's answer")
+		assert.Len(t, net.askedOf(testHash("a", 24)), 1, "24 is fetched by hash once")
+	})
+
+	t.Run("fetches the walk will not reach are left", func(t *testing.T) {
+		slots := fetchSlots
+		fetchSlots = 4
+		t.Cleanup(func() { fetchSlots = slots })
+		ctx := t.Context()
+		net, c := walkGap(t, "evm:walk-left", 32, 30)
+		all, queued := pendingHeights(c.fetch, 20)
+		require.Equal(t, heights(26, 29), all, "the step and 3 more")
+		require.Len(t, queued, 2, "a share of 4 starts 2 of one class while the others are idle")
+		// Both voters vote on the pins' branch again: no vote waits on
+		// the walk, which ends at its next step.
+		voteChain(t, c, "a", "a", 21, 21, testHash("a", 20))
+		voteChain(t, c, "b", "a", 21, 21, testHash("a", 20))
+		net.release(ref(29))
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			_, held := c.HeldNumber(testHash("a", 29))
+			return held
+		}, 5*time.Second, 5*time.Millisecond, "29 answers")
+		c.Sync(ctx)
+		// The step's slot starts the higher queued fetch as it frees; the
+		// lower one is still queued when the walk ends, and goes with it.
+		all, _ = pendingHeights(c.fetch, 20)
+		assert.NotContains(t, all, queued[0], "the queued fetch is left")
+		assert.Empty(t, net.askedOf(ref(queued[0])), "the queued fetch never went")
+	})
+
+	t.Run("a height known to be a null round is not asked", func(t *testing.T) {
+		ctx := t.Context()
+		net := newServedChain(t, "evm:walk-null")
+		c := newChainTracker(t.Context(), net, 32, time.Hour, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		voteChain(t, c, "a", "a", 1, 20, testHash("f", 0))
+		voteChain(t, c, "b", "a", 1, 20, testHash("f", 0))
+		onTracker(c, func() { c.nullRound(23) })
+		parent := testHash("a", 20)
+		for _, n := range []uint64{21, 22, 24, 25, 26} {
+			net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), parent))
+			parent = testHash("a", n)
+			if n < 26 {
+				net.hold(ref(n))
+			}
+		}
+		vote := testHeader(26, testHash("a", 26), testHash("a", 25))
+		c.Observe("a", vote, true)
+		c.Observe("b", vote, true)
+		c.Sync(ctx)
+		all, _ := pendingHeights(c.fetch, 20)
+		assert.Equal(t, []uint64{21, 22, 24, 25}, all, "the walk asks around the null round")
+		for _, n := range []uint64{21, 22, 24, 25} {
+			net.release(ref(n))
+		}
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, _ := c.HashAt(26)
+			return v == testHash("a", 26)
+		}, 5*time.Second, 5*time.Millisecond, "24 links to 22 across the null round")
+		assert.Empty(t, net.askedOf(ref(23)), "23 is never asked")
+	})
 }
 
 // null makes the chain answer each height in ns as Lotus answers a null
