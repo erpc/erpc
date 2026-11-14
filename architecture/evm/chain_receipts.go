@@ -1462,22 +1462,18 @@ func (t *ChainTracker) logsHeadOf(s *feedState) indexer.Cursor {
 		return indexer.Cursor{}
 	}
 	head := s.head()
-	lo := s.base
+	lo := 0
 	if head.number > uint64(t.window) {
-		lo = max(lo, head.number-uint64(t.window))
+		lo, _ = position(s.pins, head.number-uint64(t.window))
 	}
-	if send.number < lo {
+	if lo > s.view {
 		return send.cursor()
 	}
-	logs := s.pinAt(lo)
-	if lo > s.base {
-		logs = s.pinAt(lo - 1)
-	}
-	for n := lo; n <= send.number; n++ {
-		p := s.pinAt(n)
+	logs := s.pins[max(lo-1, 0)]
+	for i, p := range s.pins[lo : s.view+1] {
 		if t.feedNeeds(p) && t.heldReceiptsOf(p.hash) == nil {
-			if n == lo && lo == s.base {
-				return indexer.Cursor{Number: p.number - min(p.number, 1), Hash: p.parentHash}
+			if i == 0 && lo == 0 {
+				return s.parentOf(0)
 			}
 			return logs.cursor()
 		}

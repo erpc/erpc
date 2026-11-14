@@ -79,6 +79,9 @@ func (f laneFeed) Read(ctx context.Context, c indexer.Cursor, o indexer.ReadOpts
 		case len(b.Reverted) > 0:
 			fork := b.Reverted[len(b.Reverted)-1]
 			b.Applied, b.Next = nil, indexer.Cursor{Number: fork.Number - 1, Hash: fork.ParentHash}
+			if t := f.nw.chainTracker; t != nil {
+				b.Next = t.ParentCursor(fork)
+			}
 			return b, nil
 		}
 		// MarkRead again before the demand's W ends.

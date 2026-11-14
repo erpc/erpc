@@ -454,10 +454,10 @@ func (p votePath) moves(sh evm.SourceHeader) bool {
 				return false
 			}
 			other = true
+		case l.parent == cur.Hash:
+			// sh is the parent of a link: an ancestor, across null rounds too.
+			return false
 		case l.cur.Number == cur.Number+1:
-			if l.parent == cur.Hash {
-				return false
-			}
 			other = true
 		case l.cur.Number+1 == cur.Number:
 			other = other || l.cur.Hash != parent
@@ -473,7 +473,9 @@ func (p votePath) with(sh evm.SourceHeader) votePath {
 	cur, parent := sh.Cursor(), sh.Parent()
 	i, _ := slices.BinarySearchFunc(p, cur.Number, func(l voteLink, n uint64) int { return cmp.Compare(l.cur.Number, n) })
 	p = p[:i]
-	if n := len(p); n > 0 && p[n-1].cur.Number+1 == cur.Number && p[n-1].cur.Hash != parent {
+	if j := slices.IndexFunc(p, func(l voteLink) bool { return l.cur.Hash == parent }); j >= 0 {
+		p = p[:j+1]
+	} else if n := len(p); n > 0 && p[n-1].cur.Number+1 == cur.Number && p[n-1].cur.Hash != parent {
 		p = p[:n-1]
 	}
 	p = append(p, voteLink{cur, parent, sh.Timestamp()})

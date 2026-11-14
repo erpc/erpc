@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,12 +62,15 @@ func (logOnlyNetwork) Label() string                 { return "" }
 func (logOnlyNetwork) Config() *common.NetworkConfig { return nil }
 
 // servedChain serves header fetches by number and by hash from the blocks
-// it was given; a fetch of a held ref waits until the ref is released.
-// Sources a and b, of two vendors, are its hash voters.
+// it was given; a fetch of a held ref waits until the ref is released, and
+// a ref with an error answers it. Sources a and b, of two vendors, are its
+// hash voters.
 type servedChain struct {
 	mockNetwork
 	mu      sync.Mutex
 	blocks  map[string]json.RawMessage // number or hash -> header
+	errs    map[string]error           // number or hash -> the upstream's error
+	asked   []string                   // every ref fetched, in order
 	gates   map[string]chan struct{}
 	refuse  map[string]int // ref -> answers left refused for capacity
 	fetches atomic.Int32
@@ -73,7 +78,7 @@ type servedChain struct {
 }
 
 func newServedChain(t testing.TB, id string) *servedChain {
-	n := &servedChain{blocks: map[string]json.RawMessage{}, gates: map[string]chan struct{}{}, refuse: map[string]int{}}
+	n := &servedChain{blocks: map[string]json.RawMessage{}, errs: map[string]error{}, gates: map[string]chan struct{}{}, refuse: map[string]int{}}
 	n.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n.fetches.Add(1)
@@ -93,11 +98,15 @@ func newServedChain(t testing.TB, id string) *servedChain {
 				}
 			}
 			n.mu.Lock()
-			body, refused := n.blocks[ref], n.refuse[ref] > 0
+			n.asked = append(n.asked, ref)
+			body, refused, answer := n.blocks[ref], n.refuse[ref] > 0, n.errs[ref]
 			if refused {
 				n.refuse[ref]--
 			}
 			n.mu.Unlock()
+			if answer != nil {
+				return nil, answer
+			}
 			if refused {
 				return nil, common.NewErrUpstreamsExhaustedWithCause(common.NewErrEndpointCapacityExceeded(errors.New("vendor-a: 429")))
 			}
@@ -1490,4 +1499,170 @@ func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
 	assert.Equal(t, 5, net.forkAsks(), "c's refresh at its fork point already ran")
 	v, _ := c.HashAt(10)
 	assert.Equal(t, testHash("0", 10), v, "the refreshed votes keep the pins")
+}
+
+// null makes the chain answer each height in ns as Lotus answers a null
+// round.
+func (n *servedChain) null(t testing.TB, ns ...uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, x := range ns {
+		n.errs[fmt.Sprintf("0x%x", x)] = lotusNull(t, x)
+	}
+}
+
+// askedOf is every fetch of refs, in order.
+func (n *servedChain) askedOf(refs ...string) []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var out []string
+	for _, r := range n.asked {
+		if slices.Contains(refs, r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// onTracker runs fn on the tracker's goroutine and waits for it.
+func onTracker(c *ChainTracker, fn func()) {
+	done := make(chan struct{})
+	c.mb.put(trackerMsg{kind: msgCall, fn: func() { fn(); close(done) }})
+	<-done
+}
+
+func TestNullRounds_Links(t *testing.T) {
+	cases := []struct {
+		name  string
+		p, h  uint64
+		nulls nullRounds
+		links bool
+	}{
+		{"the next height", 10, 11, nil, true},
+		{"across one null round", 9, 11, nullRounds{10}, true},
+		{"across two null rounds", 8, 11, nullRounds{9, 10}, true},
+		{"a height between not known to be null", 8, 11, nullRounds{10}, false},
+		{"no null round between", 8, 11, nil, false},
+		// One fork's node answered null at p's own height; the block another
+		// branch holds there is still h's parent.
+		{"a null round at p's own height", 10, 11, nullRounds{10}, true},
+		{"a null round at p's height and between", 9, 11, nullRounds{9, 10}, true},
+		{"null rounds outside the gap", 9, 11, nullRounds{5, 10, 11, 12}, true},
+		{"a parent at h's height", 11, 11, nullRounds{10}, false},
+		{"a parent above h", 12, 11, nil, false},
+		// U12: a voter's tip header under a number 30M ahead.
+		{"a header far ahead of its held parent", 21, 30_000_021, nullRounds{22, 23, 24}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.nulls.links(&chainHeader{number: tc.p}, &chainHeader{number: tc.h})
+			assert.Equal(t, tc.links, got)
+		})
+	}
+}
+
+func TestPosition(t *testing.T) {
+	run := func(ns ...uint64) []*chainHeader {
+		out := make([]*chainHeader, len(ns))
+		for i, n := range ns {
+			out[i] = &chainHeader{number: n}
+		}
+		return out
+	}
+	dense := run(10, 11, 12, 13, 14)
+	gapped := run(10, 11, 13, 16, 17) // 12, 14 and 15 are null rounds
+	cases := []struct {
+		name string
+		run  []*chainHeader
+		n    uint64
+		i    int
+		ok   bool
+	}{
+		{"dense: the first", dense, 10, 0, true},
+		{"dense: inside", dense, 12, 2, true},
+		{"dense: the last", dense, 14, 4, true},
+		{"dense: below", dense, 9, 0, false},
+		{"dense: above", dense, 15, 5, false},
+		{"gapped: below the gap", gapped, 11, 1, true},
+		{"gapped: a null height", gapped, 12, 2, false},
+		{"gapped: above one null round", gapped, 13, 2, true},
+		{"gapped: inside two null rounds", gapped, 15, 3, false},
+		{"gapped: above two null rounds", gapped, 16, 3, true},
+		{"gapped: the last", gapped, 17, 4, true},
+		{"empty", nil, 10, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			i, ok := position(tc.run, tc.n)
+			assert.Equal(t, tc.i, i, "index")
+			assert.Equal(t, tc.ok, ok, "found")
+		})
+	}
+}
+
+// A vote whose held parent sits more than one height below it asks its
+// sender the heights between, one at a time from the top (spec §6.5 rule
+// 1, §19 U12).
+func TestChainTracker_NullRoundProbe(t *testing.T) {
+	ctx := context.Background()
+	newTracker := func(t *testing.T, id string) (*servedChain, *ChainTracker) {
+		net := newServedChain(t, id)
+		c := newChainTracker(t.Context(), net, 16, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+		voteChain(t, c, "b", "a", 1, 10, testHash("f", 0))
+		return net, c
+	}
+
+	t.Run("links across null rounds, asked from the top", func(t *testing.T) {
+		net, c := newTracker(t, "evm:null-probe")
+		net.null(t, 11, 12)
+		h13 := testHeader(13, testHash("a", 13), testHash("a", 10))
+		c.Observe("a", h13, true)
+		c.Observe("b", h13, true)
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, ok := c.HashAt(13)
+			return ok && v == testHash("a", 13)
+		}, 5*time.Second, 10*time.Millisecond, "13 links to 10 across 11 and 12")
+		assert.Equal(t, []string{"0xc", "0xb"}, net.askedOf("0xb", "0xc"), "each height asked once, from the top")
+		v, ok := c.HashAt(10)
+		require.True(t, ok)
+		assert.Equal(t, testHash("a", 10), v)
+	})
+
+	t.Run("a block between ends the probe; the header asks nothing again", func(t *testing.T) {
+		net, c := newTracker(t, "evm:null-probe-block")
+		net.null(t, 12)
+		net.serve(11, testHash("c", 11), testHeader(11, testHash("c", 11), testHash("a", 10)))
+		bogus := testHash("d", 13)
+		c.Observe("a", testHeader(13, bogus, testHash("a", 10)), true)
+		require.Eventually(t, func() bool {
+			var judged bool
+			onTracker(c, func() { _, judged = c.notGaps[[32]byte(gethcommon.HexToHash(bogus))] })
+			return judged
+		}, 5*time.Second, 10*time.Millisecond, "the probe judges 13 no gap of null rounds")
+		assert.Equal(t, []string{"0xc", "0xb"}, net.askedOf("0xb", "0xc"))
+		_, ok := c.HashAt(13)
+		assert.False(t, ok, "13 does not link to 10")
+
+		c.Observe("a", testHeader(13, bogus, testHash("a", 10)), true)
+		c.Sync(ctx)
+		assert.Equal(t, []string{"0xc", "0xb"}, net.askedOf("0xb", "0xc"), "the judged header's next vote asks nothing")
+
+		// The window moves past both: the null round and the judgment go.
+		voteChain(t, c, "a", "a", 11, 60, testHash("a", 10))
+		voteChain(t, c, "b", "a", 60, 60, testHash("a", 59))
+		var nulls nullRounds
+		var judged int
+		lowest := uint64(math.MaxUint64)
+		onTracker(c, func() {
+			nulls, judged = c.nulls, len(c.notGaps)
+			for r := range c.exts {
+				lowest = min(lowest, r.h.number)
+			}
+		})
+		require.Greater(t, lowest, uint64(12+16), "the lowest root leaves 12 a window below")
+		assert.Empty(t, nulls, "null rounds below the window are pruned")
+		assert.Zero(t, judged, "judged headers below the window are pruned")
+	})
 }

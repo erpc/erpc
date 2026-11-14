@@ -229,12 +229,13 @@ func (hc *headerChain) apply(n uint64, h, parent hash) applied {
 	case !hc.started:
 		hc.restart(n, h)
 		return appliedStart
-	case n == hc.last+1 && hc.m[hc.last] == parent:
+	case n > hc.last && hc.m[hc.last] == parent:
+		// A gap a parentHash link spans is null rounds (chainsim.NullRounds).
 		hc.m[n], hc.last = h, n
 		return appliedNext
 	case n <= hc.last && hc.m[n] == h:
 		return appliedDuplicate
-	case n <= hc.last && (n <= hc.segStart || hc.m[n-1] == parent):
+	case n <= hc.last && (n <= hc.segStart || hc.holdsBelow(n, parent)):
 		for k := n; k <= hc.last; k++ {
 			delete(hc.m, k)
 		}
@@ -249,6 +250,16 @@ func (hc *headerChain) apply(n uint64, h, parent hash) applied {
 	}
 	hc.restart(n, h)
 	return appliedUnlinked
+}
+
+// holdsBelow reports whether the chain holds parent below n.
+func (hc *headerChain) holdsBelow(n uint64, parent hash) bool {
+	for k, h := range hc.m {
+		if k < n && h == parent {
+			return true
+		}
+	}
+	return false
 }
 
 func (hc *headerChain) restart(n uint64, h hash) {
