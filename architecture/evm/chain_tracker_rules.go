@@ -453,32 +453,39 @@ func (t *ChainTracker) nullRound(n uint64) {
 }
 
 // pruneNulls forgets the null rounds more than reorgWindow below every
-// held root: no header the window holds can link across them any more.
+// held root, where no header the window holds can link across them any
+// more, and the headers judged no null-round gap below the window.
 func (t *ChainTracker) pruneNulls() {
-	if len(t.nulls) == 0 {
-		return
-	}
 	lo := uint64(0)
 	for r := range t.exts {
 		if lo == 0 || r.h.number < lo {
 			lo = r.h.number
 		}
 	}
-	if lo > uint64(t.window) {
+	if len(t.nulls) > 0 && lo > uint64(t.window) {
 		t.nulls = t.nulls.from(lo - uint64(t.window))
+	}
+	if ref := t.windowRef(); ref != nil {
+		for hash, n := range t.notGaps {
+			if n+uint64(t.window) < ref.number {
+				delete(t.notGaps, hash)
+			}
+		}
 	}
 }
 
 // probeGap is rule 1 for vote msg whose held parent p sits more than one
-// height below it: its sender is asked each height between not known to
-// be a null round, by number. Once every one answered a null round the
-// vote is handled again and links; any other answer drops it, as a
-// parent under a number far below its child is dropped (§19 U12). A gap
-// wider than reorgWindow is dropped at once. Votes for the same header
-// wait on one probe.
+// height below it: its sender is asked the heights between not known to be
+// null rounds, one at a time from the top, by number. Once every one
+// answered a null round the vote is handled again and links; the first
+// other answer ends the probe and drops it, as a parent under a number far
+// below its child is dropped (§19 U12), and the header's later votes ask
+// nothing (notGaps, kept while the window holds its height). A gap wider
+// than reorgWindow is dropped at once. Votes for the same header wait on
+// one probe.
 func (t *ChainTracker) probeGap(msg trackerMsg, p *chainHeader) {
 	h := msg.hdr
-	if h.number <= p.number || h.number-p.number > uint64(t.window) || !t.canFetch() {
+	if _, judged := t.notGaps[h.hash]; judged || h.number <= p.number || h.number-p.number > uint64(t.window) || !t.canFetch() {
 		return
 	}
 	if waiting, ok := t.gaps[h.hash]; ok {
@@ -486,28 +493,36 @@ func (t *ChainTracker) probeGap(msg trackerMsg, p *chainHeader) {
 		return
 	}
 	t.gaps[h.hash] = []trackerMsg{msg}
-	for n := p.number + 1; n < h.number; n++ {
-		if t.nulls.has(n) {
-			continue
-		}
-		t.submitHeader(t.headerSpec(classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), msg.upstream, false), func(_ *chainHeader, err error) {
-			msgs, ok := t.gaps[h.hash]
-			if !ok {
-				return
-			}
-			if epoch, null := NullRoundOf(err); !null || epoch != n {
-				delete(t.gaps, h.hash)
-				return
-			}
-			t.nullRound(n)
-			if t.nulls.links(p, h) {
-				delete(t.gaps, h.hash)
-				for _, m := range msgs {
-					t.handleHeader(m)
-				}
-			}
-		})
+	t.probeNext(h, p, msg.upstream)
+}
+
+// probeNext asks sender the highest height between p and h not known to be
+// a null round, or, with none left, hands h's waiting votes back.
+func (t *ChainTracker) probeNext(h, p *chainHeader, sender string) {
+	n := t.nulls.below(h.number)
+	for n > p.number && t.nulls.has(n) {
+		n--
 	}
+	if n <= p.number {
+		msgs := t.gaps[h.hash]
+		delete(t.gaps, h.hash)
+		for _, m := range msgs {
+			t.handleHeader(m)
+		}
+		return
+	}
+	t.submitHeader(t.headerSpec(classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), sender, false), func(_ *chainHeader, err error) {
+		if _, ok := t.gaps[h.hash]; !ok {
+			return
+		}
+		if epoch, null := NullRoundOf(err); !null || epoch != n {
+			delete(t.gaps, h.hash)
+			t.notGaps[h.hash] = h.number
+			return
+		}
+		t.nullRound(n)
+		t.probeNext(h, p, sender)
+	})
 }
 
 // againstNumber reports whether a by-number fetch's outcome is evidence

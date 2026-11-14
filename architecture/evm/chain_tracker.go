@@ -139,10 +139,12 @@ type ChainTracker struct {
 	// nulls are the null rounds upstreams answered, for as long as the
 	// window holds the heights around them (pruneNulls); gaps are the votes
 	// whose held parent sits below the heights a probe asks (probeGap), by
-	// the vote's hash.
-	nulls nullRounds
-	gaps  map[[32]byte][]trackerMsg
-	votes map[string]*node // source upstream id -> its vote
+	// the vote's hash; notGaps are the votes a probe found no gap of null
+	// rounds under, by hash, with their number.
+	nulls   nullRounds
+	gaps    map[[32]byte][]trackerMsg
+	notGaps map[[32]byte]uint64
+	votes   map[string]*node // source upstream id -> its vote
 	// finals is each upstream's newest finalized evidence (finalThrough).
 	finals map[string]finalEvidence
 	// rewindDue holds the voters without a fresh hash vote on the new pins
@@ -317,11 +319,17 @@ func (nr nullRounds) below(n uint64) uint64 {
 }
 
 // links reports whether p may be h's parent by number: one below it, or
-// lower with every height between a null round. Without that evidence a
-// header naming a held parent under a number further up stays out (§19
-// U12).
+// lower with every height strictly between a null round. p's own height
+// never matters: a null round one fork's node answered does not stop the
+// block another branch holds there. Without that evidence a header naming
+// a held parent under a number further up stays out (§19 U12).
 func (nr nullRounds) links(p, h *chainHeader) bool {
-	return p.number < h.number && nr.below(h.number) == p.number
+	if p.number >= h.number {
+		return false
+	}
+	lo, _ := slices.BinarySearch(nr, p.number+1)
+	hi, _ := slices.BinarySearch(nr, h.number)
+	return uint64(hi-lo) == h.number-p.number-1
 }
 
 // with is nr with n.
@@ -610,6 +618,7 @@ func (t *ChainTracker) Wait() {
 func (t *ChainTracker) clear() {
 	t.nodes = make(map[[32]byte]*node)
 	t.waiting = make(map[[32]byte][]*node)
+	t.notGaps = make(map[[32]byte]uint64)
 	t.heights, t.forks = make(map[uint64][]*node), make(map[uint64]struct{})
 	t.odd = make(map[*node]struct{})
 	t.spine.cut(t.spine.len() - 1)
@@ -1331,7 +1340,13 @@ func (t *ChainTracker) join(nd *node) {
 		r := t.rootOf(nd)
 		if e := t.exts[r]; e != nil && !e.atBase && !e.capped && r != t.pinRoot() {
 			e.sender, e.walked = walk.sender, true
-			e.walk = max(e.walk, walk.walk-int(h.number+1-r.h.number))
+			// The walk's credit is in blocks: those from r up to the root
+			// that joined, null rounds not counted.
+			blocks := 1
+			for x := nd; x != r && x != nil; x = x.parent {
+				blocks++
+			}
+			e.walk = max(e.walk, walk.walk-blocks)
 		}
 	}
 }
