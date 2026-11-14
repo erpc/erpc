@@ -311,3 +311,94 @@ func TestBlockClockColdStart(t *testing.T) {
 		})
 	}
 }
+
+// edgeNet is a lane of one voter with 500 ms blocks whose head Asks wait
+// until answer closes, then answer block 10 over the 4 blocks the pins
+// lack, which the walk links: an idle edge's fetch slower than its hedge,
+// with no other voter to hedge it with.
+type edgeNet struct {
+	*servedChain
+	ups    []common.Upstream
+	c      *ChainTracker
+	answer chan struct{}
+}
+
+func (n *edgeNet) EvmAllUpstreams(context.Context) []common.Upstream { return n.ups }
+
+func (n *edgeNet) EvmBlockTime() time.Duration { return 500 * time.Millisecond }
+
+func (n *edgeNet) EvmHashVoters(string, time.Duration) HashVoters {
+	return HashVoters{Voters: []string{"node-a"}, Hash: []string{"node-a"}, Need: 1}
+}
+
+func (n *edgeNet) EvmAskHead(ctx context.Context, id string, _ common.HeadNeed, _ time.Duration, _ time.Time, _ common.AskReason) common.HeadAnswer {
+	sent := time.Now()
+	select {
+	case <-n.answer:
+	case <-ctx.Done():
+		return common.HeadAnswer{Outcome: common.AskFetched, Err: ctx.Err()}
+	}
+	for k := uint64(6); k <= 10; k++ {
+		n.serve(k, testHash("c", k), testHeader(k, testHash("c", k), testHash("c", k-1)))
+	}
+	raw := testHeader(10, testHash("c", 10), testHash("c", 9))
+	if h, err := parseChainHeader(raw); err == nil {
+		n.c.observeSource(id, h, sent, HeaderPolled)
+	}
+	return common.HeadAnswer{Outcome: common.AskFetched, At: sent, Next: sent.Add(time.Hour), Header: askedHeader(raw)}
+}
+
+// The idle edge's fetch ends the edge only by its answer (spec §6.8): its
+// hedge, with the one voter busy, left the edge open, so the read waits
+// for the head the fetch brings, at most W. Ended at the hedge, the read
+// served the view from before the idle spell.
+func TestIdleEdgeWaitsForItsHedgedFetch(t *testing.T) {
+	w := health.FreshnessWindow(500 * time.Millisecond)
+	// The walk's fetch of 9 answers this long after the edge's answer:
+	// the edge's head reaches the view only then.
+	const walk = 200 * time.Millisecond
+	for _, tc := range []struct {
+		name   string
+		answer time.Duration // 0: never within the read
+		head   uint64
+		from   time.Duration
+		to     time.Duration
+	}{
+		{"ends once the view reaches the fetch's answer", time.Second, 10, time.Second + walk, w},
+		{"ends at W without one", 0, 5, w, w + time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &edgeNet{servedChain: newServedChain(t, "evm:edge-hedge"), answer: make(chan struct{})}
+			u := common.NewFakeUpstream("node-a", common.WithEvmStatePoller(common.NewFakeEvmStatePoller(0, 0)))
+			u.Config().Evm = &common.EvmUpstreamConfig{StatePollerInterval: common.Duration(30 * time.Second)}
+			n.ups = []common.Upstream{u}
+			n.c = newChainTracker(t.Context(), n, 32, 0, "", "", "", nil, newFetchScheduler(t.Context(), n))
+			t.Cleanup(func() {
+				select {
+				case <-n.answer:
+				default:
+					close(n.answer)
+				}
+			})
+			for k := uint64(1); k <= 5; k++ {
+				h, err := parseChainHeader(testHeader(k, testHash("c", k), testHash("c", k-1)))
+				require.NoError(t, err)
+				n.c.observeSource("node-a", h, time.Now(), HeaderPolled)
+			}
+			n.c.Sync(t.Context())
+			require.Equal(t, uint64(5), n.c.state.Load().viewHead().number)
+
+			if tc.answer > 0 {
+				n.hold("0x9")
+				time.AfterFunc(tc.answer, func() { close(n.answer) })
+				time.AfterFunc(tc.answer+walk, func() { n.release("0x9") })
+			}
+			start := time.Now()
+			n.c.LatestRead(t.Context(), false)
+			took := time.Since(start)
+			assert.GreaterOrEqual(t, took, tc.from, "the read waits for the edge")
+			assert.Less(t, took, tc.to)
+			assert.Equal(t, tc.head, n.c.state.Load().viewHead().number, "the view the read serves")
+		})
+	}
+}
