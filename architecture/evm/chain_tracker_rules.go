@@ -64,10 +64,11 @@ func vendorsOf(ups []common.Upstream) int {
 // extension walks or fills one held root downward (§6 rules 1 and 2, §8):
 // by number, each answer checked against the parentHash of the block above,
 // and a mismatch fetched by hash. A walk takes class 1 and at most
-// reorgWindow blocks; fill takes class 3 and runs until the root joins
-// another tree, reaches the window base, or names a parent one full by-hash
-// sweep finds on no upstream. Below reorgWindow blocks under the head, fill
-// waits for demand (fillsBelow) without ending.
+// reorgWindow blocks, and asks the heights below its step together
+// (ahead); fill takes class 3, one fetch per root, and runs until the root
+// joins another tree, reaches the window base, or names a parent one full
+// by-hash sweep finds on no upstream. Below reorgWindow blocks under the
+// head, fill waits for demand (fillsBelow) without ending.
 type extension struct {
 	sender string // the voter a walk asks by hash; "" sweeps
 	walk   int    // blocks left to walk; 0 fills
@@ -79,6 +80,18 @@ type extension struct {
 	// goes on once the tree holds the pins, or while a Read waits on fill
 	// in it (fillRoots).
 	capped bool
+	ahead  *walkAhead // the walk's by-number fetches below its step; nil fills
+}
+
+// walkAhead is a walk's by-number fetches below the height its step asks,
+// carried with the walk as its root moves down: the fetch of each height
+// asked, until the walk reaches it, and the lowest height asked. A step
+// takes its height's fetch, done or not, so an answer is held only when
+// the walk reaches it and it links as the step's own answer would; the
+// fetches the walk passes or never reaches are left.
+type walkAhead struct {
+	out map[uint64]*fetchWaiter
+	low uint64
 }
 
 // canFetch: a tracker without a network to sweep never walks or fills;
@@ -404,8 +417,7 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 	if e.byHash {
 		method, ref, upstream = "eth_getBlockByHash", fmt.Sprintf("0x%x", want), e.sender
 	}
-	e.busy = true
-	t.submitHeader(t.headerSpec(class, method, ref, upstream, false), func(h *chainHeader, err error) {
+	done := func(h *chainHeader, err error) {
 		if t.exts[r] != e {
 			return
 		}
@@ -428,7 +440,68 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 			// the root is final (spec §6.5 rule 2), never asked again.
 			e.atBase, t.treesDirty = true, true
 		}
-	})
+	}
+	e.busy = true
+	if e.walk == 0 {
+		e.ahead.leave(0)
+		e.ahead = nil
+	} else if !e.byHash {
+		defer t.askAhead(e, r.h.number-1)
+		if w := e.ahead.take(r.h.number - 1); w != nil {
+			t.awaitHeader(w, done)
+			return
+		}
+	}
+	t.submitHeader(t.headerSpec(class, method, ref, upstream, false), done)
+}
+
+// take returns the fetch of height n, if asked, and leaves the fetches
+// above n, which the walk passed.
+func (a *walkAhead) take(n uint64) *fetchWaiter {
+	if a == nil {
+		return nil
+	}
+	w := a.out[n]
+	delete(a.out, n)
+	a.leave(n + 1)
+	return w
+}
+
+// leave drops the fetches of height from and above; a queued one drops
+// with its last waiter.
+func (a *walkAhead) leave(from uint64) {
+	if a == nil {
+		return
+	}
+	for k, w := range a.out {
+		if k >= from {
+			w.leave()
+			delete(a.out, k)
+		}
+	}
+}
+
+// askAhead submits, beside walk e's step at height n, by-number fetches of
+// the heights below n the walk will need (spec §6.5 rule 1): down to, not
+// including, the highest held header below n, at most the walk's
+// remaining blocks and class 1's share of the scheduler's limit counted
+// with the step. A height asked before is not asked again.
+func (t *ChainTracker) askAhead(e *extension, n uint64) {
+	if e.ahead == nil {
+		e.ahead = &walkAhead{out: make(map[uint64]*fetchWaiter), low: n}
+	}
+	a := e.ahead
+	if a.low > n {
+		a.low = n
+	}
+	span := uint64(min(e.walk, t.fetch.classShare(classHead)))
+	if span > n+1 {
+		span = n + 1
+	}
+	for floor := n + 1 - span; a.low > floor && len(t.heights[a.low-1]) == 0; {
+		a.low--
+		a.out[a.low] = t.fetch.submit(nil, t.headerSpec(classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", a.low), "", false))
+	}
 }
 
 // againstNumber reports whether a by-number fetch's outcome is evidence
@@ -467,7 +540,7 @@ func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) {
 		return
 	}
 	if ne := t.exts[p]; ne != nil {
-		ne.sender, ne.walked = e.sender, e.walked
+		ne.sender, ne.walked, ne.ahead = e.sender, e.walked, e.ahead
 		ne.walk = max(0, e.walk-1)
 	}
 }
@@ -475,7 +548,11 @@ func (t *ChainTracker) extended(r *node, e *extension, h *chainHeader) {
 // submitHeader queues a tracker-owned header fetch; the tracker waits on it
 // and done runs on the tracker's goroutine with the answer.
 func (t *ChainTracker) submitHeader(spec fetchSpec, done func(h *chainHeader, err error)) {
-	w := t.fetch.submit(nil, spec)
+	t.awaitHeader(t.fetch.submit(nil, spec), done)
+}
+
+// awaitHeader runs done on the tracker's goroutine with w's answer.
+func (t *ChainTracker) awaitHeader(w *fetchWaiter, done func(h *chainHeader, err error)) {
 	t.fetch.bg.Go(func() {
 		res := w.wait(t.ctx)
 		h, _ := res.val.(*chainHeader)

@@ -1230,6 +1230,9 @@ func (t *ChainTracker) hold(h *chainHeader) *node {
 		if e := t.exts[r]; e != nil && !e.atBase && !e.capped && r != t.pinRoot() {
 			e.sender, e.walked = walk.sender, true
 			e.walk = max(e.walk, walk.walk-int(h.number+1-r.h.number))
+			if e.ahead == nil {
+				e.ahead = walk.ahead
+			}
 		}
 	}
 	t.capOrphans(h.number, nd)
