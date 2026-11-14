@@ -25,6 +25,9 @@ func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, ne
 	if err != nil {
 		return false, nil, err
 	}
+	if handled, resp, perr := projectPreForward_ping(method); handled {
+		return handled, resp, perr
+	}
 	if handled, resp, perr := projectPreForward_u64Params(ctx, req, method); handled {
 		return handled, resp, perr
 	}
