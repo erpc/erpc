@@ -87,7 +87,8 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 // cache's fresh head (evm.servedTip.followCacheHead, evm.CacheHead.Clamp
 // against the latest last served): Latest takes the view's pin at that
 // number, its hash, and Finalized and Firm stay at or below it, as
-// viewHead does for a limit. Only the read Head: headFor, the view, pins,
+// viewHead does for a limit; Anchored marks it, so the read is not sent
+// as the tag (tagsLatestRead). Only the read Head: headFor, the view, pins,
 // intake, hash votes, the block clock, the refusal ceiling and every
 // stream stay on the tracker's own head.
 func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
@@ -103,7 +104,7 @@ func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
 	if !pinned {
 		c = indexer.Cursor{Number: uint64(latest)}
 	}
-	a.Latest, a.LatestHash = latest, c.Hash
+	a.Latest, a.LatestHash, a.Anchored = latest, c.Hash, true
 	a.LatestAt, a.NextAt = time.Time{}, time.Time{}
 	a.Firm = min(a.Firm, latest)
 	a.Finalized = min(a.Finalized, latest)

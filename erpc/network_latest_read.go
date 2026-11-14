@@ -18,14 +18,14 @@ const latestReadWait = 50 * time.Millisecond
 // the "latest" tag (spec §6.4 client read): a client's
 // eth_getBlockByNumber(latest) (evm.LatestBlockRead) on a network with a
 // tracker, without a consensus policy, whose slots would compare answers
-// of different blocks, and without the cache anchor, whose Latest may
-// trail the view's.
+// of different blocks, and whose Head the cache anchor did not lower
+// (EvmHead.Anchored): the tag's answer would pass that Latest.
 func (n *Network) tagsLatestRead(ctx context.Context, req *common.NormalizedRequest, consensus bool) bool {
-	if consensus || n.chainTracker == nil || n.followsCacheHead() {
+	if consensus || n.chainTracker == nil {
 		return false
 	}
 	read, _ := evm.LatestBlockRead(ctx, req)
-	return read
+	return read && !n.requestHead(ctx, req).Anchored
 }
 
 // latestRead is one attempt of a client read of latest sent as the tag:

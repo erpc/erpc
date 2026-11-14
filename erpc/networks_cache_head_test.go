@@ -255,10 +255,23 @@ func (n *cacheHeadNode) latestBlock() (uint64, string, string) {
 	return v, r.Result.Hash, resp.Header.Get("X-ERPC-Cache")
 }
 
+// tagReads counts the node's client reads of latest that reached an
+// upstream as the tag (spec §6.4 client read) and ended in one of outcomes.
+func (n *cacheHeadNode) tagReads(outcomes ...string) float64 {
+	var sum float64
+	for _, o := range outcomes {
+		sum += testutil.ToFloat64(telemetry.MetricChainTrackerLatestReadTotal.WithLabelValues(n.nw.projectId, n.nw.Label(), o))
+	}
+	return sum
+}
+
 // The Latest a network-wide read takes follows a fresh cache head down, and
 // the block it names is read from the cache; a stale head falls back to the
 // view; a fresh head far below the Latest served holds it there for one TTL,
 // then lets go; a head ahead never raises it (evm.servedTip.followCacheHead).
+// A read of latest the anchor lowered never goes to an upstream as the tag,
+// whose answer would pass that Latest; every other read of latest does, with
+// the flag set too: a stale head, a network without a head-aware cache.
 // Full HTTP server, the real chain tracker on a simulated chain's vendors,
 // the real grpc cache connector against an in-process BDS reader.
 func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
@@ -284,14 +297,16 @@ func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
 	assert.Equal(t, tip, view.Number, "the view stays at the tracker's head")
 
 	// 2. The cache head is 10s old, past the 3s TTL: reads take the view's
-	// head, read from the vendors.
+	// head, read from the vendors as the tag.
 	n.bds.set(tip-2, 10*time.Second)
 	require.Eventually(t, func() bool { return n.blockNumber() == tip }, 10*time.Second, 50*time.Millisecond,
 		"a stale cache head does not anchor")
+	tagged := n.tagReads("served")
 	number, hash, cache = n.latestBlock()
 	assert.Equal(t, tip, number)
 	assert.Equal(t, n.chain.CanonAt(tip).Hash.Hex(), hash)
 	assert.NotEqual(t, "HIT", cache, "the cache lacks the view's head")
+	assert.Greater(t, n.tagReads("served"), tagged, "a read the anchor left at the view's head reaches a vendor as the tag, and its answer is served")
 
 	// 3. A fresh head far below the Latest served (another chain's, say):
 	// Latest neither drops nor follows the chain for one TTL, then lets go.
@@ -306,6 +321,11 @@ func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
 	if got := n.blockNumber(); time.Since(held) < ttl {
 		assert.Equal(t, tip, got, "Latest holds at the value served while the hold lasts")
 	}
+	sent := n.tagReads("served", "head", "failed")
+	if number, _, _ := n.latestBlock(); time.Since(held) < ttl {
+		assert.Equal(t, tip, number, "the held Latest's block, though the vendors' tag answers tip+2")
+		assert.Equal(t, sent, n.tagReads("served", "head", "failed"), "a read the anchor lowered is never sent as the tag")
+	}
 	require.Eventually(t, func() bool { return n.blockNumber() == tip+2 }, ttl+5*time.Second, 20*time.Millisecond,
 		"the hold lets go once the cache does not catch up within its TTL")
 	assert.GreaterOrEqual(t, time.Since(held), ttl, "the hold lasts one TTL")
@@ -318,6 +338,17 @@ func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
 	number, hash, _ = n.latestBlock()
 	assert.Equal(t, tip+2, number)
 	assert.Equal(t, n.chain.CanonAt(tip+2).Hash.Hex(), hash)
+
+	// 5. The flag on a network without a head-aware cache anchors nothing:
+	// its reads of latest reach the vendors as the tag.
+	bare := newCacheHeadNode(t, "bds-bare", ttl, true, func(cfg *common.Config) { cfg.Database = nil })
+	require.Nil(t, bare.nw.cacheHead, "no cache, no anchor")
+	bareTip := bare.chain.Tip().Number
+	tagged = bare.tagReads("served")
+	number, hash, _ = bare.latestBlock()
+	assert.Equal(t, bareTip, number)
+	assert.Equal(t, bare.chain.CanonAt(bareTip).Hash.Hex(), hash)
+	assert.Greater(t, bare.tagReads("served"), tagged, "the read reaches a vendor as the tag, and its answer is served")
 }
 
 // Without evm.servedTip.followCacheHead the same cache anchors nothing: its
