@@ -74,6 +74,10 @@ type Network struct {
 	// forkDemoted are the voters on a minority fork (EvmForkDemoted): no
 	// number vote, last in routing. nil while none is.
 	forkDemoted atomic.Pointer[[]string]
+	// forked is, per voter whose hash vote is off the pins, the number of
+	// its newest pinned ancestor (EvmVotesForked): it holds no pinned block
+	// above it (mayHold). nil while no vote is off.
+	forked atomic.Pointer[map[string]int64]
 	// hashStale are the sources whose hash age exceeds W, or whose socket
 	// closed (setHashStale): tried after the rest, before forkDemoted. nil
 	// while none is.
@@ -4950,8 +4954,12 @@ func (n *Network) splitHolders(ups []common.Upstream, bn, credit int64, holds fu
 // mayHold reports whether u may hold block bn, the one predicate routing
 // and the availability gate read (spec §6.4): its reachedHead reaches bn,
 // or, when holds is set, holds says so (thinHolds). An upstream with no
-// known head may hold any block.
+// known head may hold any block; one whose hash vote left the pins holds
+// none above its fork point, however high its branch runs (EvmVotesForked).
 func (n *Network) mayHold(u common.Upstream, bn, credit int64, holds func(common.Upstream) bool) bool {
+	if at, ok := n.forkPoint(u); ok && bn > at {
+		return false
+	}
 	head := n.reachedHead(u, credit)
 	return head <= 0 || common.EvmHeadReaches(u, head, bn) || holds != nil && holds(u)
 }
