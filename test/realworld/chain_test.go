@@ -743,10 +743,10 @@ const (
 // Then the fork case: c20Forked alone serves a fork where height e was a
 // null round, so it answers e with code 12, while the other vendors serve
 // the canonical block at e. The canonical chain wins: latest stays within
-// c20Behind of the canonical head, a read of e by number answers the
-// canonical block, and every tap gets the canonical blocks from e−1 on, in
-// order, no fork block among them (§6.5 rules 1 and 2, View; §9; §10.1;
-// §19 C20).
+// c20Behind of the canonical head, reads by number of e and the heights
+// above it answer the canonical blocks, and every tap gets the canonical
+// blocks from e−1 on, in order, no fork block among them (§6.5 rules 1
+// and 2, View; §9; §10.1; §19 C20).
 func c20() spec {
 	return spec{name: "C20", bound: healthyDelivery, sim: chainsim.Config{Lotus: true}, body: func(s *scenario) {
 		s.blocks(20)
@@ -795,9 +795,14 @@ func c20() spec {
 		nulls = append(nulls, e)
 		s.logf("%s on a fork where %d was a null round; the canonical chain has %d %s", s.upstream(c20Forked), e, e, short(canon.Hash))
 		s.blocks(c20ForkBlocks)
+		// The fork's block above its null round names e−1, so a pod that
+		// let the null at e stop canonical e+1 from linking serves the fork.
 		for pod := range s.h.pods {
-			if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(e), false); s.blockOf(got) != canon {
-				s.violate(s.name, "pod-%d: block %d by number answered %s, not the canonical %s", pod+1, e, got, short(canon.Hash))
+			for n := e; n <= e+c20ForkBlocks/2; n++ {
+				want := s.chain.CanonAt(n)
+				if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(n), false); s.blockOf(got) != want {
+					s.violate(s.name, "pod-%d: block %d by number answered %s, not the canonical %s", pod+1, n, got, short(want.Hash))
+				}
 			}
 		}
 		s.chain.EndFork(f)
