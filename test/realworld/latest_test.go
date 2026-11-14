@@ -70,10 +70,10 @@ var p13Pair = p13Shape{"P13", 600 * time.Millisecond, []time.Duration{80 * time.
 	[]string{"eth_getBlockByNumber", "eth_blockNumber"}, 0}
 
 // p13Lone: a 0.5s chain with one HTTP upstream 250 ms away, the default
-// full poll and reorgWindow, read every 17 s, as LightLink in production:
+// full poll and reorgWindow, read every 17 s, as LightLink's public RPC:
 // the clock stops 2 W after a read, so each read finds about 26 heights
 // the pins lack, which one walk fetch a round trip linked 8 of within W
-// (26 blocks behind, served 14 s old, each read W long).
+// (df07357e: 40 blocks behind, served 17.5 s old, each read 2.5 s).
 var p13Lone = p13Shape{"P13-lone", 500 * time.Millisecond, []time.Duration{250 * time.Millisecond}, "30s", 17 * time.Second, 12,
 	[]string{"eth_getBlockByNumber"}, 32}
 
