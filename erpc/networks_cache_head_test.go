@@ -255,10 +255,34 @@ func (n *cacheHeadNode) latestBlock() (uint64, string, string) {
 	return v, r.Result.Hash, resp.Header.Get("X-ERPC-Cache")
 }
 
+// tagReads counts the node's client reads of latest that reached an
+// upstream as the tag (spec §6.4 client read) and ended in one of outcomes.
+func (n *cacheHeadNode) tagReads(outcomes ...string) float64 {
+	var sum float64
+	for _, o := range outcomes {
+		sum += testutil.ToFloat64(telemetry.MetricChainTrackerLatestReadTotal.WithLabelValues(n.nw.projectId, n.nw.Label(), o))
+	}
+	return sum
+}
+
+// tagsRead reports whether a client read of latest sent now goes to the
+// upstreams as the tag once the cache misses: the Head it takes, its tag
+// interpolated, and Forward's decision (tagsLatestRead).
+func (n *cacheHeadNode) tagsRead() bool {
+	ctx := context.Background()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+	req.SetNetwork(n.nw)
+	n.nw.requestHead(ctx, req)
+	require.NoError(n.t, n.nw.prepareRequest(ctx, req))
+	return n.nw.tagsLatestRead(ctx, req, false)
+}
+
 // The Latest a network-wide read takes follows a fresh cache head down, and
 // the block it names is read from the cache; a stale head falls back to the
 // view; a fresh head far below the Latest served holds it there for one TTL,
 // then lets go; a head ahead never raises it (evm.servedTip.followCacheHead).
+// A read the anchor holds below the view is never sent to an upstream as
+// the tag, whose answer would pass that Latest.
 // Full HTTP server, the real chain tracker on a simulated chain's vendors,
 // the real grpc cache connector against an in-process BDS reader.
 func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
@@ -306,6 +330,11 @@ func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
 	if got := n.blockNumber(); time.Since(held) < ttl {
 		assert.Equal(t, tip, got, "Latest holds at the value served while the hold lasts")
 	}
+	sent := n.tagReads("served", "head", "failed")
+	if number, _, _ := n.latestBlock(); time.Since(held) < ttl {
+		assert.Equal(t, tip, number, "the held Latest's block, though the vendors' tag answers tip+2")
+		assert.Equal(t, sent, n.tagReads("served", "head", "failed"), "a read the anchor lowered is never sent as the tag")
+	}
 	require.Eventually(t, func() bool { return n.blockNumber() == tip+2 }, ttl+5*time.Second, 20*time.Millisecond,
 		"the hold lets go once the cache does not catch up within its TTL")
 	assert.GreaterOrEqual(t, time.Since(held), ttl, "the hold lasts one TTL")
@@ -318,6 +347,75 @@ func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
 	number, hash, _ = n.latestBlock()
 	assert.Equal(t, tip+2, number)
 	assert.Equal(t, n.chain.CanonAt(tip+2).Hash.Hex(), hash)
+}
+
+// A read of latest goes to the vendors as the tag, each answer that
+// vendor's poll of latest, only where the cache cannot serve it: a network
+// without a head-aware cache, or whose cache head is past its TTL (a cache
+// far behind). A fresh cache head, level with the view or below it, serves
+// the read from the cache and sends no tag (evm.servedTip.followCacheHead).
+func TestNetworkCacheHead_TagsLatestReadOnlyWithoutFreshCacheHead(t *testing.T) {
+	const ttl = 3 * time.Second
+	for i, tc := range []struct {
+		name    string
+		noCache bool
+		behind  uint64        // the cache head's distance below the view's
+		age     time.Duration // the cache head's age
+		tag     bool
+		served  uint64 // the block served, below the view's
+	}{
+		{name: "no cache head", noCache: true, tag: true},
+		{name: "stale cache head", behind: 2, age: 10 * time.Second, tag: true},
+		{name: "fresh cache head level with the view"},
+		{name: "fresh cache head below the view", behind: 2, served: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts []func(*common.Config)
+			if tc.noCache {
+				opts = append(opts, func(cfg *common.Config) { cfg.Database = nil })
+			}
+			// Its own connector id per run: the head gauge outlives a node.
+			connector := fmt.Sprintf("bds-tag-%d-%d", i, time.Now().UnixNano())
+			n := newCacheHeadNode(t, connector, ttl, true, opts...)
+			// The view walks the blocks it sees come, so it pins the cache
+			// head's block below its own: an anchored Latest with a hash.
+			// A reader's demand runs the block clock that fetches them.
+			for range tc.behind {
+				n.chain.Append(chainsim.KindEmpty, func(map[string]json.RawMessage) {})
+			}
+			tip := n.chain.Tip().Number
+			require.Eventually(t, func() bool {
+				n.nw.chainTracker.MarkRead()
+				h, ok := n.nw.chainTracker.View().Head()
+				return ok && h.Number == tip
+			}, 15*time.Second, 20*time.Millisecond, "the view reaches %d", tip)
+			if tc.noCache {
+				require.Nil(t, n.nw.cacheHead, "no cache, no cache head")
+			} else {
+				n.bds.set(tip-tc.behind, tc.age)
+				n.nw.chainTracker.MarkRead()
+				require.Eventually(t, func() bool { return cacheConnectorHead(connector) == float64(tip-tc.behind) }, 10*time.Second, 20*time.Millisecond,
+					"the cache head's poll observes the head")
+			}
+			if tc.behind > 0 {
+				_, pinned := n.nw.chainTracker.View().PinAt(tip - tc.behind)
+				require.True(t, pinned, "the view pins the cache head's block")
+			}
+			assert.Equal(t, tc.tag, n.tagsRead(), "a read of latest that misses the cache goes as the tag")
+
+			sent := n.tagReads("served", "head", "failed")
+			number, hash, cache := n.latestBlock()
+			assert.Equal(t, tip-tc.served, number)
+			assert.Equal(t, n.chain.CanonAt(tip-tc.served).Hash.Hex(), hash)
+			if tc.tag {
+				assert.NotEqual(t, "HIT", cache, "the cache lacks the view's head")
+				assert.Greater(t, n.tagReads("served"), sent, "the read reaches a vendor as the tag, and its answer is served")
+			} else {
+				assert.Equal(t, "HIT", cache, "the fresh cache head's block is read from the cache")
+				assert.Equal(t, sent, n.tagReads("served", "head", "failed"), "no read is sent as the tag")
+			}
+		})
+	}
 }
 
 // Without evm.servedTip.followCacheHead the same cache anchors nothing: its

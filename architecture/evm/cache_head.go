@@ -83,21 +83,22 @@ func (a *CacheHead) fresh(now time.Time) (int64, bool) {
 // most one TTL. A cache that does not catch up within its own bound, one that
 // reports another chain say, then stops anchoring until it goes stale or
 // reaches the served value, so it cannot freeze latest. It never raises tip,
-// and an unknown tip (<= 0) stays unknown. Nil-safe: a network without the
-// anchor pays one comparison.
-func (a *CacheHead) Clamp(tip, served int64) int64 {
+// and an unknown tip (<= 0) stays unknown. fresh reports whether the cache's
+// head is within the guard's age, whatever its number. Nil-safe: a network
+// without the anchor pays one comparison.
+func (a *CacheHead) Clamp(tip, served int64) (latest int64, fresh bool) {
 	if a == nil || tip <= 0 {
-		return tip
+		return tip, false
 	}
 	now := time.Now()
 	number, ok := a.fresh(now)
 	if !ok || number >= tip {
 		a.endHold()
-		return tip
+		return tip, ok
 	}
 	if number >= served {
 		a.endHold()
-		return number
+		return number, true
 	}
 	since := a.heldSince.Load()
 	if since == nil {
@@ -105,9 +106,9 @@ func (a *CacheHead) Clamp(tip, served int64) int64 {
 		start := now
 		a.heldSince.CompareAndSwap(nil, &start)
 	} else if now.Sub(*since) > a.ttl() {
-		return tip
+		return tip, true
 	}
-	return min(tip, served)
+	return min(tip, served), true
 }
 
 func (a *CacheHead) endHold() {
