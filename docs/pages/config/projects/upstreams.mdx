@@ -250,7 +250,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].routing.scoreMultipliers[].overall` | `*float64` | unset = 1 | Scales the upstream's final score. `2` = twice as preferred. |
 | `upstreams[*].routing.scoreMultipliers[].errorRate` / `respLatency` / `throttledRate` / `blockHeadLag` / `finalizationLag` / `misbehaviors` | `*float64` | unset = inherit preset | Per-dimension weight overrides for `sortByScore`. `0` removes contribution. |
 | `upstreams[*].routing.scoreLatencyQuantile` | float64 | `0` → policy default p70 | Which response-time quantile feeds the score. |
-| `upstreams[*].routing.probe` | `"on"` \| `"off"` | `""` → `on` | `off` opts this upstream out of probe-excluded shadow-mirror traffic. |
+| `upstreams[*].routing.probe` | `"on"` \| `"off"` | `""` → `on` | `off` opts this upstream out of probe-excluded shadow-mirror traffic. Any other value fails config load, including a YAML boolean (`probe: false`). |
 | `upstreams[*].evm.chainId` | int64 | `0` → auto-detected via `eth_chainId` at bootstrap | Mismatch against detected value is **fatal** (no retry). Must be `0` for vendor-shorthand endpoints. |
 | `upstreams[*].evm.statePollerInterval` | Duration | `30s` (<SourceLink file="common/defaults.go" lines="1718-1724" />) | Background latest/finalized poll cadence. Non-zero required. |
 | `upstreams[*].evm.statePollerDebounce` | Duration | `0` → inferred from chain block time | Minimum spacing between forced polls. |
