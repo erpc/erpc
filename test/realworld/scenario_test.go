@@ -465,7 +465,7 @@ func (s *scenario) watchStalls() {
 		for _, c := range taps {
 			pod, since, last, ok := c.silence()
 			if ok && last > 0 {
-				next := s.chain.CanonAt(last + 1)
+				next := s.chain.CanonAfter(last)
 				if next == nil {
 					continue
 				}
@@ -1149,9 +1149,13 @@ func (s *scenario) judgeChain(name string, hc *headerChain, tip *chainsim.Block)
 		return
 	}
 	for n := hc.segStart; n <= tip.Number; n++ {
-		want := s.chain.CanonAt(n).Hash
-		if got, ok := hc.m[n]; !ok || got != want {
-			s.violate(name, "final chain at %d is %s, canonical %s", n, short(got), short(want))
+		got, ok := hc.m[n]
+		b := s.chain.CanonAt(n)
+		switch {
+		case b == nil && ok:
+			s.violate(name, "final chain holds %s at %d, a null round", short(got), n)
+		case b != nil && (!ok || got != b.Hash):
+			s.violate(name, "final chain at %d is %s, canonical %s", n, short(got), short(b.Hash))
 		}
 	}
 }
@@ -1201,7 +1205,7 @@ func (s *scenario) judgeDelivery(c *clientBase, stalls bool) []time.Duration {
 		}
 		// The tap waits from the later of its last block and the first
 		// header of the block after it.
-		next := s.chain.CanonAt(ds[i-1].number + 1)
+		next := s.chain.CanonAfter(ds[i-1].number)
 		if next == nil {
 			continue
 		}

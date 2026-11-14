@@ -1392,11 +1392,11 @@ func (t *ChainTracker) holderVoters(cands []clockCandidate) []clockCandidate {
 		return nil
 	}
 	top := b.backs[len(b.backs)-1].i
-	pin := s.pinAt(b.base + uint64(top))
 	lacks := max(b.need, 1) - (len(b.backs) - b.atLeast(top))
-	if b.served >= top || pin == nil || lacks <= 0 {
+	if b.served >= top || top >= len(b.pins) || lacks <= 0 {
 		return nil
 	}
+	pin := b.pins[top]
 	seen := t.clock.sightOf(pin.number)
 	if seen.IsZero() {
 		return nil

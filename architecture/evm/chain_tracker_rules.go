@@ -402,18 +402,20 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 		return
 	}
 	// The parent is no newer than r: when even r's time puts its height
-	// outside the window, the parent is outside too.
-	if t.outside(e, r, &chainHeader{number: r.h.number - 1, timestamp: r.h.timestamp}, uncapped) {
+	// outside the window, the parent is outside too. It is at the height
+	// below r that is no known null round.
+	below := t.nulls.below(r.h.number)
+	if t.outside(e, r, &chainHeader{number: below, timestamp: r.h.timestamp}, uncapped) {
 		return
 	}
 	class := classFill
 	if e.walk > 0 {
 		class = classHead
-	} else if !t.fillsBelow(r.h.number - 1) {
+	} else if !t.fillsBelow(below) {
 		return
 	}
 	want := r.h.parentHash
-	method, ref, upstream := "eth_getBlockByNumber", fmt.Sprintf("0x%x", r.h.number-1), ""
+	method, ref, upstream := "eth_getBlockByNumber", fmt.Sprintf("0x%x", below), ""
 	if e.byHash {
 		method, ref, upstream = "eth_getBlockByHash", fmt.Sprintf("0x%x", want), e.sender
 	}
@@ -422,13 +424,18 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 			return
 		}
 		e.busy = false
+		epoch, null := NullRoundOf(err)
 		switch {
-		case err == nil && h.hash == want && h.number+1 == r.h.number:
+		case err == nil && h.hash == want && t.nulls.links(h, r.h):
 			t.extended(r, e, h)
 		case err == nil && h.hash == want:
 			// The parent's hash under another number: no answer joins this
 			// root, so its extension ends and it stays a root.
 			e.atBase, e.walk, t.treesDirty = true, 0, true
+		case !e.byHash && null && epoch == below:
+			// No block at that height: the next step asks the one below it,
+			// and the parent links across the null rounds.
+			t.nullRound(below)
 		case !e.byHash && againstNumber(err):
 			e.byHash = true
 		case e.byHash && e.walk > 0:
@@ -446,8 +453,8 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 		e.ahead.leave(0)
 		e.ahead = nil
 	} else if !e.byHash {
-		defer t.askAhead(e, r.h.number-1)
-		if w := e.ahead.take(r.h.number - 1); w != nil {
+		defer t.askAhead(e, below)
+		if w := e.ahead.take(below); w != nil {
 			t.awaitHeader(w, done)
 			return
 		}
@@ -485,7 +492,8 @@ func (a *walkAhead) leave(from uint64) {
 // the heights below n the walk will need (spec §6.5 rule 1): down to, not
 // including, the highest held header below n, at most the walk's
 // remaining blocks and class 1's share of the scheduler's limit counted
-// with the step. A height asked before is not asked again.
+// with the step. A height asked before, or known to be a null round, is
+// not asked.
 func (t *ChainTracker) askAhead(e *extension, n uint64) {
 	if e.ahead == nil {
 		e.ahead = &walkAhead{out: make(map[uint64]*fetchWaiter), low: n}
@@ -499,9 +507,97 @@ func (t *ChainTracker) askAhead(e *extension, n uint64) {
 		span = n + 1
 	}
 	for floor := n + 1 - span; a.low > floor && len(t.heights[a.low-1]) == 0; {
-		a.low--
-		a.out[a.low] = t.fetch.submit(nil, t.headerSpec(classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", a.low), "", false))
+		if a.low--; !t.nulls.has(a.low) {
+			a.out[a.low] = t.fetch.submit(nil, t.headerSpec(classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", a.low), "", false))
+		}
 	}
+}
+
+// nullRound records that height n has no block: roots waiting on a held
+// parent below it may link now.
+func (t *ChainTracker) nullRound(n uint64) {
+	if t.nulls.has(n) {
+		return
+	}
+	t.nulls = t.nulls.with(n)
+	for ph := range t.waiting {
+		if p := t.nodes[ph]; p != nil {
+			t.join(p)
+		}
+	}
+}
+
+// pruneNulls forgets the null rounds more than reorgWindow below every
+// held root, where no header the window holds can link across them any
+// more, and the headers judged no null-round gap below the window.
+func (t *ChainTracker) pruneNulls() {
+	lo := uint64(0)
+	for r := range t.exts {
+		if lo == 0 || r.h.number < lo {
+			lo = r.h.number
+		}
+	}
+	if len(t.nulls) > 0 && lo > uint64(t.window) {
+		t.nulls = t.nulls.from(lo - uint64(t.window))
+	}
+	if ref := t.windowRef(); ref != nil {
+		for hash, n := range t.notGaps {
+			if n+uint64(t.window) < ref.number {
+				delete(t.notGaps, hash)
+			}
+		}
+	}
+}
+
+// probeGap is rule 1 for vote msg whose held parent p sits more than one
+// height below it: its sender is asked the heights between not known to be
+// null rounds, one at a time from the top, by number. Once every one
+// answered a null round the vote is handled again and links; the first
+// other answer ends the probe and drops it, as a parent under a number far
+// below its child is dropped (§19 U12), and the header's later votes ask
+// nothing (notGaps, kept while the window holds its height). A gap wider
+// than reorgWindow is dropped at once. Votes for the same header wait on
+// one probe.
+func (t *ChainTracker) probeGap(msg trackerMsg, p *chainHeader) {
+	h := msg.hdr
+	if _, judged := t.notGaps[h.hash]; judged || h.number <= p.number || h.number-p.number > uint64(t.window) || !t.canFetch() {
+		return
+	}
+	if waiting, ok := t.gaps[h.hash]; ok {
+		t.gaps[h.hash] = append(waiting, msg)
+		return
+	}
+	t.gaps[h.hash] = []trackerMsg{msg}
+	t.probeNext(h, p, msg.upstream)
+}
+
+// probeNext asks sender the highest height between p and h not known to be
+// a null round, or, with none left, hands h's waiting votes back.
+func (t *ChainTracker) probeNext(h, p *chainHeader, sender string) {
+	n := t.nulls.below(h.number)
+	for n > p.number && t.nulls.has(n) {
+		n--
+	}
+	if n <= p.number {
+		msgs := t.gaps[h.hash]
+		delete(t.gaps, h.hash)
+		for _, m := range msgs {
+			t.handleHeader(m)
+		}
+		return
+	}
+	t.submitHeader(t.headerSpec(classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), sender, false), func(_ *chainHeader, err error) {
+		if _, ok := t.gaps[h.hash]; !ok {
+			return
+		}
+		if epoch, null := NullRoundOf(err); !null || epoch != n {
+			delete(t.gaps, h.hash)
+			t.notGaps[h.hash] = h.number
+			return
+		}
+		t.nullRound(n)
+		t.probeNext(h, p, sender)
+	})
 }
 
 // againstNumber reports whether a by-number fetch's outcome is evidence
