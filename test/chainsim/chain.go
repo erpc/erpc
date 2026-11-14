@@ -657,6 +657,22 @@ func (c *Chain) StartSplit(vs ...*Vendor) (canon *Block, f *Fork) {
 	return canon, f
 }
 
+// StartNullSplit mints the next canonical block and, for vs, a minority
+// branch whose first block takes the number after it and names the old
+// head as its parent, as a Lotus node on a fork where that height was a
+// null round: vs answer the canonical block's height with code 12. The
+// branch grows every tick until EndFork.
+func (c *Chain) StartNullSplit(vs ...*Vendor) (canon *Block, f *Fork) {
+	c.mu.Lock()
+	tip := c.tipLocked()
+	canon = c.mintLocked(tip, tip.Number+1, time.Now(), false)
+	c.canon = append(c.canon, canon)
+	f = c.forkLocked(c.mintLocked(tip, tip.Number+2, time.Unix(int64(canon.Time), 0), true), 0, vs)
+	c.mu.Unlock()
+	c.refresh()
+	return canon, f
+}
+
 func (c *Chain) forkLocked(base *Block, length int, vs []*Vendor) *Fork {
 	b := base
 	for range length {

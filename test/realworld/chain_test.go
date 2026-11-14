@@ -712,21 +712,25 @@ func c18() spec {
 }
 
 // C20 bounds (§19 C20): the null rounds in a row, each run c20Gap blocks
-// after the last, then c20Tail blocks, so the vendors' finalized tag
-// (chainsim.FinalizedLag below the head) passes every null height. Reads
-// of latest, eth_blockNumber, finalized and safe every c20ReadEvery per
-// pod. c20Behind: canonical blocks above the served latest at its answer,
-// the baseline's lag with host slack. c20NullRead: a read of a null height
-// answers the upstream's code 12 within it, never a wait (§6.5 View).
+// after the last, then the fork case, then c20Tail blocks, so the vendors'
+// finalized tag (chainsim.FinalizedLag below the head) passes every null
+// height. Reads of latest, eth_blockNumber, finalized and safe every
+// c20ReadEvery per pod. c20Behind: canonical blocks above the served
+// latest at its answer, the baseline's lag with host slack. c20NullRead: a
+// read of a null height answers the upstream's code 12 within it, never a
+// wait (§6.5 View). c20Forked serves the fork with a null round for
+// c20ForkBlocks blocks.
 var c20Runs = []int{1, 2}
 
 const (
-	c20Gap       = 40
-	c20Tail      = chainsim.FinalizedLag + 30
-	c20ReadEvery = 100 * time.Millisecond
-	c20Behind    = 8
-	c20NullRead  = time.Second
-	c20NullCode  = 12
+	c20Gap        = 40
+	c20Tail       = chainsim.FinalizedLag + 30
+	c20ReadEvery  = 100 * time.Millisecond
+	c20Behind     = 8
+	c20NullRead   = time.Second
+	c20NullCode   = 12
+	c20Forked     = "ws-b"
+	c20ForkBlocks = 10
 )
 
 // C20: a Filecoin chain whose nodes answer as Lotus does, with a null
@@ -735,8 +739,14 @@ const (
 // within c20Behind blocks of the chain; no tag read (latest,
 // eth_blockNumber, finalized, safe) answers a null height; a read of the
 // null height answers the upstream's code 12 within c20NullRead; header
-// fetch errors grow by at most one sweep per null height on each pod (§6.5
-// rules 1 and 2, View; §9; §10.1; §19 C20).
+// fetch errors grow by at most one sweep per null height on each pod.
+// Then the fork case: c20Forked alone serves a fork where height e was a
+// null round, so it answers e with code 12, while the other vendors serve
+// the canonical block at e. The canonical chain wins: latest stays within
+// c20Behind of the canonical head, a read of e by number answers the
+// canonical block, and every tap gets the canonical blocks from e−1 on, in
+// order, no fork block among them (§6.5 rules 1 and 2, View; §9; §10.1;
+// §19 C20).
 func c20() spec {
 	return spec{name: "C20", bound: healthyDelivery, sim: chainsim.Config{Lotus: true}, body: func(s *scenario) {
 		s.blocks(20)
@@ -779,7 +789,21 @@ func c20() spec {
 			}
 			s.blocks(c20Gap)
 		}
+		canon, f := s.chain.StartNullSplit(s.vendors[c20Forked])
+		e := canon.Number
+		// e is a null height on the fork: one sweep there too.
+		nulls = append(nulls, e)
+		s.logf("%s on a fork where %d was a null round; the canonical chain has %d %s", s.upstream(c20Forked), e, e, short(canon.Hash))
+		s.blocks(c20ForkBlocks)
+		for pod := range s.h.pods {
+			if got := s.blockAnswer(pod, "", "eth_getBlockByNumber", hexutil.EncodeUint64(e), false); s.blockOf(got) != canon {
+				s.violate(s.name, "pod-%d: block %d by number answered %s, not the canonical %s", pod+1, e, got, short(canon.Hash))
+			}
+		}
+		s.chain.EndFork(f)
+		s.logf("%s back on the canonical chain", s.upstream(c20Forked))
 		s.blocks(c20Tail)
+		c20RequireCanon(s, e-1, e+c20ForkBlocks)
 		stop()
 		readers.Wait()
 		for pod := range s.h.pods {
@@ -797,7 +821,8 @@ func c20() spec {
 
 // c20Read reads latest, eth_blockNumber, finalized and safe on pod once.
 // Each must answer a block, never a null height; it returns how many
-// canonical blocks stood above the served latest when it answered.
+// canonical blocks stood above the served latest when it answered, above
+// its newest canonical ancestor for a fork block.
 func c20Read(s *scenario, pod int) (behind uint64) {
 	for _, tag := range []string{"latest", "finalized", "safe"} {
 		var b headJSON
@@ -812,6 +837,13 @@ func c20Read(s *scenario, pod int) (behind uint64) {
 			s.violate(s.name, "pod-%d: %s answered %d, a null round", pod+1, tag, n)
 		}
 		if tag == "latest" {
+			x := s.chain.Block(b.Hash)
+			for x != nil && x.Minority() {
+				x = x.Parent
+			}
+			if x != nil {
+				n = x.Number
+			}
 			tip := s.chain.Tip().Number
 			for x := s.chain.CanonAfter(n); x != nil && x.Number <= tip; x = s.chain.CanonAfter(x.Number) {
 				behind++
@@ -823,6 +855,43 @@ func c20Read(s *scenario, pod int) (behind uint64) {
 		s.violate(s.name, "pod-%d: eth_blockNumber answered %d, a null round", pod+1, uint64(bn))
 	}
 	return behind
+}
+
+// c20RequireCanon fails every tap whose deliveries from height from to to
+// are not the canonical blocks there, in order, each once.
+func c20RequireCanon(s *scenario, from, to uint64) {
+	var want []hash
+	for x := s.chain.CanonAt(from); x != nil && x.Number <= to; x = s.chain.CanonAfter(x.Number) {
+		want = append(want, x.Hash)
+	}
+	var cs []*clientBase
+	for _, c := range s.heads {
+		cs = append(cs, &c.clientBase)
+	}
+	for _, g := range s.grpcs {
+		cs = append(cs, &g.clientBase)
+	}
+	for _, c := range cs {
+		c.mu.Lock()
+		var got []delivery
+		for _, d := range c.deliveries {
+			if d.number >= from && d.number <= to {
+				got = append(got, d)
+			}
+		}
+		c.mu.Unlock()
+		for i, d := range got {
+			if i >= len(want) || d.hash != want[i] {
+				s.violate(c.name, "pod-%d: delivery %d in %d…%d is %d %s, not the canonical block (fork block: %v)", d.pod+1, i+1, from, to, d.number, short(d.hash), s.chain.Block(d.hash) != nil && s.chain.Block(d.hash).Minority())
+				break
+			}
+		}
+		if len(got) < len(want) {
+			s.violate(c.name, "got %d of the %d canonical blocks %d…%d", len(got), len(want), from, to)
+		} else {
+			s.logf("%s: canonical blocks %d…%d in order", c.name, from, to)
+		}
+	}
 }
 
 // c20ReadNull reads null height n by number on pod: the upstream's answer,
