@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -215,6 +216,12 @@ type ChainTracker struct {
 	settleTaken map[string]time.Time
 	demoted     []string
 	forkAt      time.Time
+	// forked is, per voter whose vote is off the pins, the highest number
+	// it shares with the pins: its newest pinned ancestor's, or, for a
+	// branch whose parent is not held, the height below its root. Last
+	// handed to the network: it holds no pinned block above it, so routing
+	// never sends it a read of one first (spec §6.1). Network-wide only.
+	forked map[string]int64
 	// sampled is the view Head last fed to the block time.
 	sampled *chainHeader
 
@@ -1197,7 +1204,9 @@ func (t *ChainTracker) vendorTable() *Vendors {
 // whose pace keeps it to one fetch per W. A voter still off W after the
 // first poll loses its number vote and goes last in routing, until its
 // vote is on the branch again. The network reads the demoted set; forkAt
-// is the next poll or demotion.
+// is the next poll or demotion. Routing reads, at once, each off voter's
+// newest pinned ancestor (forked): within W a by-number read of a pinned
+// block above it went to the forked node first and served its branch.
 func (t *ChainTracker) trackForks() {
 	now, w := time.Now(), t.W()
 	for u := range t.offPins {
@@ -1211,6 +1220,7 @@ func (t *ChainTracker) trackForks() {
 		}
 	}
 	var demoted, first, again []string
+	forked := map[string]int64{}
 	t.forkAt = time.Time{}
 	soonest := func(at time.Time) {
 		if !at.IsZero() && (t.forkAt.IsZero() || at.Before(t.forkAt)) {
@@ -1222,6 +1232,11 @@ func (t *ChainTracker) trackForks() {
 			delete(t.offPins, u)
 			delete(t.refreshedAt, u)
 			continue
+		}
+		if b := t.branchOf(nd); b.parent != nil {
+			forked[u] = int64(b.parent.h.number)
+		} else {
+			forked[u] = int64(b.h.number) - 1
 		}
 		since, ok := t.offPins[u]
 		if !ok {
@@ -1242,6 +1257,12 @@ func (t *ChainTracker) trackForks() {
 	}
 	if t.selector != "" {
 		return
+	}
+	if !maps.Equal(forked, t.forked) {
+		t.forked = forked
+		if n, ok := t.network.(interface{ EvmVotesForked(at map[string]int64) }); ok {
+			t.callNetwork("votes-forked", func() { n.EvmVotesForked(forked) })
+		}
 	}
 	if p, ok := t.network.(interface {
 		EvmPollForks(ids []string, pace time.Duration) time.Time

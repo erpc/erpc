@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
 	"runtime"
@@ -1842,5 +1843,78 @@ func TestChainTracker_NullRoundProbe(t *testing.T) {
 		require.Greater(t, lowest, uint64(12+16), "the lowest root leaves 12 a window below")
 		assert.Empty(t, nulls, "null rounds below the window are pruned")
 		assert.Zero(t, judged, "judged headers below the window are pruned")
+	})
+}
+
+// forkWatch is servedChain that records each set of forked voters the
+// tracker hands the network (EvmVotesForked).
+type forkWatch struct {
+	*servedChain
+	mu  sync.Mutex
+	got []map[string]int64
+}
+
+func (n *forkWatch) EvmVotesForked(at map[string]int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.got = append(n.got, maps.Clone(at))
+}
+
+func (n *forkWatch) last() (map[string]int64, int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.got) == 0 {
+		return nil, 0
+	}
+	return n.got[len(n.got)-1], len(n.got)
+}
+
+// A voter on a fork where the pinned chain's 9 was a null round runs a
+// height ahead of the chain; routing learns at once that it holds no
+// pinned block above 8, its newest pinned ancestor, and forgets it once
+// its vote is back on the pins. A branch whose parent is not held shares
+// the pins up to the height below its root, never none of them (spec §6.1
+// reached N, §19 C20).
+func TestChainTracker_ForkedVotes(t *testing.T) {
+	ctx := context.Background()
+	newTracker := func(t *testing.T, id string) (*forkWatch, *ChainTracker) {
+		net := &forkWatch{servedChain: newServedChain(t, id)}
+		c := newChainTracker(t.Context(), net, 16, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+		return net, c
+	}
+	forkedTo := func(t *testing.T, c *ChainTracker, net *forkWatch, want map[string]int64, msg string) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			got, _ := net.last()
+			return maps.Equal(got, want)
+		}, 5*time.Second, 10*time.Millisecond, msg)
+	}
+
+	t.Run("a fork over a null round", func(t *testing.T) {
+		net, c := newTracker(t, "evm:forked-votes")
+		voteChain(t, c, "b", "a", 1, 8, testHash("f", 0))
+		_, before := net.last()
+
+		net.null(t, 9)
+		c.Observe("b", testHeader(10, testHash("b", 10), testHash("a", 8)), true)
+		c.Observe("b", testHeader(11, testHash("b", 11), testHash("b", 10)), true)
+		forkedTo(t, c, net, map[string]int64{"b": 8}, "b's vote leaves the pins above 8")
+		v, ok := c.HashAt(10)
+		require.True(t, ok)
+		assert.Equal(t, testHash("a", 10), v, "the pins keep a's chain")
+		_, during := net.last()
+		assert.Equal(t, before+1, during, "one hand-over for the fork")
+
+		voteChain(t, c, "b", "a", 11, 11, testHash("a", 10))
+		got, _ := net.last()
+		assert.Empty(t, got, "back on the pins, b is no longer forked")
+	})
+
+	t.Run("a branch whose parent is not held", func(t *testing.T) {
+		net, c := newTracker(t, "evm:forked-root")
+		c.Observe("b", testHeader(9, testHash("c", 9), testHash("e", 8)), true)
+		forkedTo(t, c, net, map[string]int64{"b": 8}, "b shares the pins up to 8, below its root")
 	})
 }
