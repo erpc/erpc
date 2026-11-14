@@ -494,3 +494,26 @@ func TestNetworkCacheHead_GetLogsPastCacheHeadReadsCacheWhole(t *testing.T) {
 	assert.Equal(t, [][2]uint64{{from, tip}, {from, head}}, below,
 		"the cache is read for the whole range, refused, then once up to its head")
 }
+
+// A held read waits for a holder (awaitHolder), but none can come when
+// every upstream's hash vote left the pins below the block: the request
+// goes at once, as it did before the wait (spec §6.4 held, §6.1 reached N).
+func TestNetwork_AwaitHolder_NoHolderCanCome(t *testing.T) {
+	n := newCacheHeadNode(t, fmt.Sprintf("bds-await-%d", time.Now().UnixNano()), 3*time.Second, false)
+	tip := int64(n.chain.Tip().Number)
+	var ups []common.Upstream
+	forked := map[string]int64{}
+	for _, u := range n.nw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.nw.networkId) {
+		ups = append(ups, u)
+		forked[u.Id()] = tip - 1
+	}
+	require.Len(t, ups, 2)
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, tip)))
+	n.nw.EvmVotesForked(forked)
+	t.Cleanup(func() { n.nw.EvmVotesForked(nil) })
+
+	start := time.Now()
+	got := n.nw.awaitHolder(context.Background(), req, ups, tip, true)
+	assert.Less(t, time.Since(start), 200*time.Millisecond, "no holder can come, so the read does not wait")
+	assert.ElementsMatch(t, ups, got)
+}

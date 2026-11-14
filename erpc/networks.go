@@ -4957,7 +4957,7 @@ func (n *Network) splitHolders(ups []common.Upstream, bn, credit int64, holds fu
 // known head may hold any block; one whose hash vote left the pins holds
 // none above its fork point, however high its branch runs (EvmVotesForked).
 func (n *Network) mayHold(u common.Upstream, bn, credit int64, holds func(common.Upstream) bool) bool {
-	if at, ok := n.forkPoint(u); ok && bn > at {
+	if n.forkedBelow(u, bn) {
 		return false
 	}
 	head := n.reachedHead(u, credit)
