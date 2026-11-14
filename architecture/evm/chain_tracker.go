@@ -216,11 +216,11 @@ type ChainTracker struct {
 	settleTaken map[string]time.Time
 	demoted     []string
 	forkAt      time.Time
-	// forked is, per voter whose vote is off the pins, the number of its
-	// newest pinned ancestor (0 for a branch that names no held block), as
-	// last handed to the network: it holds no pinned block above it, so
-	// routing never sends it a read of one first (spec §6.4). Network-wide
-	// only.
+	// forked is, per voter whose vote is off the pins, the highest number
+	// it shares with the pins: its newest pinned ancestor's, or, for a
+	// branch whose parent is not held, the height below its root. Last
+	// handed to the network: it holds no pinned block above it, so routing
+	// never sends it a read of one first (spec §6.1). Network-wide only.
 	forked map[string]int64
 	// sampled is the view Head last fed to the block time.
 	sampled *chainHeader
@@ -1233,10 +1233,10 @@ func (t *ChainTracker) trackForks() {
 			delete(t.refreshedAt, u)
 			continue
 		}
-		if p := t.branchOf(nd).parent; p != nil {
-			forked[u] = int64(p.h.number)
+		if b := t.branchOf(nd); b.parent != nil {
+			forked[u] = int64(b.parent.h.number)
 		} else {
-			forked[u] = 0
+			forked[u] = int64(b.h.number) - 1
 		}
 		since, ok := t.offPins[u]
 		if !ok {
