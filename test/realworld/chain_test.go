@@ -3,13 +3,16 @@ package realworld
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/test/chainsim"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rpc"
 	"google.golang.org/grpc/codes"
 )
 
@@ -706,4 +709,138 @@ func c18() spec {
 			s.requireReorgsTold()
 			s.blocks(25)
 		}}
+}
+
+// C20 bounds (§19 C20): the null rounds in a row, each run c20Gap blocks
+// after the last, then c20Tail blocks, so the vendors' finalized tag
+// (chainsim.FinalizedLag below the head) passes every null height. Reads
+// of latest, eth_blockNumber, finalized and safe every c20ReadEvery per
+// pod. c20Behind: canonical blocks above the served latest at its answer,
+// the baseline's lag with host slack. c20NullRead: a read of a null height
+// answers the upstream's code 12 within it, never a wait (§6.5 View).
+var c20Runs = []int{1, 2}
+
+const (
+	c20Gap       = 40
+	c20Tail      = chainsim.FinalizedLag + 30
+	c20ReadEvery = 100 * time.Millisecond
+	c20Behind    = 8
+	c20NullRead  = time.Second
+	c20NullCode  = 12
+)
+
+// C20: a Filecoin chain whose nodes answer as Lotus does, with a null
+// round, then two in a row: block N+1 names N−1 as its parent. Every tap
+// gets N−1 then N+1, linked, within the delivery bound; latest stays
+// within c20Behind blocks of the chain; no tag read (latest,
+// eth_blockNumber, finalized, safe) answers a null height; a read of the
+// null height answers the upstream's code 12 within c20NullRead; header
+// fetch errors grow by at most one sweep per null height on each pod (§6.5
+// rules 1 and 2, View; §9; §10.1; §19 C20).
+func c20() spec {
+	return spec{name: "C20", bound: healthyDelivery, sim: chainsim.Config{Lotus: true}, body: func(s *scenario) {
+		s.blocks(20)
+		fetchErrors := func(pod int) float64 {
+			v, _ := s.metric(pod, "erpc_chain_tracker_fetch_total", map[string]string{"kind": "header", "outcome": "error"})
+			return v
+		}
+		errors0 := make([]float64, len(s.h.pods))
+		for pod := range s.h.pods {
+			errors0[pod] = fetchErrors(pod)
+		}
+		ctx, stop := context.WithCancel(s.ctx)
+		var readers sync.WaitGroup
+		worst := make([]uint64, len(s.h.pods))
+		for pod := range s.h.pods {
+			readers.Go(func() {
+				for ctx.Err() == nil {
+					worst[pod] = max(worst[pod], c20Read(s, pod))
+					sleepCtx(ctx, c20ReadEvery)
+				}
+			})
+		}
+		var nulls []uint64
+		for _, k := range c20Runs {
+			below := s.chain.Tip()
+			s.chain.NullRounds(k)
+			for s.chain.Tip() == below {
+				s.chain.WaitTicks(1)
+			}
+			above := s.chain.Tip()
+			if above.ParentHash() != below.Hash || above.Number != below.Number+uint64(k)+1 {
+				s.violate("harness", "block %d does not follow %d across %d null rounds", above.Number, below.Number, k)
+			}
+			s.logf("null rounds %d…%d: %d %s names %d %s", below.Number+1, above.Number-1, above.Number, short(above.Hash), below.Number, short(below.Hash))
+			for n := below.Number + 1; n < above.Number; n++ {
+				nulls = append(nulls, n)
+				for pod := range s.h.pods {
+					c20ReadNull(s, pod, n)
+				}
+			}
+			s.blocks(c20Gap)
+		}
+		s.blocks(c20Tail)
+		stop()
+		readers.Wait()
+		for pod := range s.h.pods {
+			if worst[pod] > c20Behind {
+				s.violate(s.name, "pod-%d: latest stood %d blocks behind the chain, bound %d", pod+1, worst[pod], c20Behind)
+			}
+			if d := fetchErrors(pod) - errors0[pod]; d > float64(len(nulls)) {
+				s.violate(s.name, "pod-%d: %v header fetch errors over %d null heights, at most one sweep each", pod+1, d, len(nulls))
+			} else {
+				s.logf("pod-%d: header fetch errors +%v over %d null heights; latest at most %d behind", pod+1, d, len(nulls), worst[pod])
+			}
+		}
+	}}
+}
+
+// c20Read reads latest, eth_blockNumber, finalized and safe on pod once.
+// Each must answer a block, never a null height; it returns how many
+// canonical blocks stood above the served latest when it answered.
+func c20Read(s *scenario, pod int) (behind uint64) {
+	for _, tag := range []string{"latest", "finalized", "safe"} {
+		var b headJSON
+		if err := s.call(pod, &b, "eth_getBlockByNumber", tag, false); err != nil {
+			if s.ctx.Err() == nil {
+				s.violate(s.name, "pod-%d: %s: %v", pod+1, tag, err)
+			}
+			continue
+		}
+		n := uint64(b.Number)
+		if s.chain.NullAt(n) {
+			s.violate(s.name, "pod-%d: %s answered %d, a null round", pod+1, tag, n)
+		}
+		if tag == "latest" {
+			tip := s.chain.Tip().Number
+			for x := s.chain.CanonAfter(n); x != nil && x.Number <= tip; x = s.chain.CanonAfter(x.Number) {
+				behind++
+			}
+		}
+	}
+	var bn hexutil.Uint64
+	if err := s.call(pod, &bn, "eth_blockNumber"); err == nil && s.chain.NullAt(uint64(bn)) {
+		s.violate(s.name, "pod-%d: eth_blockNumber answered %d, a null round", pod+1, uint64(bn))
+	}
+	return behind
+}
+
+// c20ReadNull reads null height n by number on pod: the upstream's answer,
+// code c20NullCode, within c20NullRead.
+func c20ReadNull(s *scenario, pod int, n uint64) {
+	start := time.Now()
+	var raw json.RawMessage
+	err := s.call(pod, &raw, "eth_getBlockByNumber", hexutil.EncodeUint64(n), false)
+	took := time.Since(start)
+	var re rpc.Error
+	switch {
+	case err == nil:
+		s.violate(s.name, "pod-%d: null round %d answered %.100s, not the upstream's error", pod+1, n, raw)
+	case !errors.As(err, &re) || re.ErrorCode() != c20NullCode:
+		s.violate(s.name, "pod-%d: null round %d answered %v, not the upstream's code %d", pod+1, n, err, c20NullCode)
+	case took > c20NullRead:
+		s.violate(s.name, "pod-%d: null round %d answered after %s, bound %s", pod+1, n, took.Round(time.Millisecond), c20NullRead)
+	default:
+		s.logf("pod-%d: null round %d answered %q in %s", pod+1, n, err, took.Round(time.Millisecond))
+	}
 }

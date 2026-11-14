@@ -98,11 +98,14 @@ func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
 	a := *h
 	c, pinned := indexer.Cursor{}, false
 	if t := n.laneTracker(""); t != nil {
-		c, pinned = t.View().PinAt(uint64(latest))
-	}
-	if !pinned {
+		v := t.View()
+		if c, pinned = v.PinAt(uint64(latest)); !pinned {
+			c = indexer.Cursor{Number: v.Block(uint64(latest))}
+		}
+	} else {
 		c = indexer.Cursor{Number: uint64(latest)}
 	}
+	latest = int64(c.Number)
 	a.Latest, a.LatestHash = latest, c.Hash
 	a.LatestAt, a.NextAt = time.Time{}, time.Time{}
 	a.Firm = min(a.Firm, latest)
@@ -243,7 +246,7 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	if limit > 0 && uint64(limit) < head.Number {
 		c, pinned := v.PinAt(uint64(limit))
 		if !pinned {
-			c = indexer.Cursor{Number: uint64(limit)}
+			c = indexer.Cursor{Number: v.Block(uint64(limit))}
 		}
 		head, at = c, time.Time{}
 	}
@@ -251,6 +254,10 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	h.Firm = int64(min(v.Firm(), head.Number))
 	if h.Finalized > h.Latest {
 		h.Finalized = h.Latest
+	}
+	// A tag never resolves to a null round, a height with no block.
+	if h.Finalized > 0 {
+		h.Finalized = int64(v.Block(uint64(h.Finalized)))
 	}
 }
 

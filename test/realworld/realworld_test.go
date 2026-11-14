@@ -112,6 +112,7 @@ func catalogue() []phaseSpec {
 		{"tagstate", 10701, []spec{p11()}},
 		{"x5", 10901, []spec{x5()}},
 		{"c18", 12601, []spec{c18()}},
+		{"c20", 15601, []spec{c20()}},
 		{"u3-lone", 9501, []spec{u3Lone()}},
 		{"x9", 9801, []spec{x9()}},
 		{"x2", 10201, []spec{x2()}},

@@ -389,18 +389,20 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 		return
 	}
 	// The parent is no newer than r: when even r's time puts its height
-	// outside the window, the parent is outside too.
-	if t.outside(e, r, &chainHeader{number: r.h.number - 1, timestamp: r.h.timestamp}, uncapped) {
+	// outside the window, the parent is outside too. It is at the height
+	// below r that is no known null round.
+	below := t.nulls.below(r.h.number)
+	if t.outside(e, r, &chainHeader{number: below, timestamp: r.h.timestamp}, uncapped) {
 		return
 	}
 	class := classFill
 	if e.walk > 0 {
 		class = classHead
-	} else if !t.fillsBelow(r.h.number - 1) {
+	} else if !t.fillsBelow(below) {
 		return
 	}
 	want := r.h.parentHash
-	method, ref, upstream := "eth_getBlockByNumber", fmt.Sprintf("0x%x", r.h.number-1), ""
+	method, ref, upstream := "eth_getBlockByNumber", fmt.Sprintf("0x%x", below), ""
 	if e.byHash {
 		method, ref, upstream = "eth_getBlockByHash", fmt.Sprintf("0x%x", want), e.sender
 	}
@@ -410,13 +412,18 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 			return
 		}
 		e.busy = false
+		epoch, null := NullRoundOf(err)
 		switch {
-		case err == nil && h.hash == want && h.number+1 == r.h.number:
+		case err == nil && h.hash == want && t.nulls.links(h, r.h):
 			t.extended(r, e, h)
 		case err == nil && h.hash == want:
 			// The parent's hash under another number: no answer joins this
 			// root, so its extension ends and it stays a root.
 			e.atBase, e.walk, t.treesDirty = true, 0, true
+		case !e.byHash && null && epoch == below:
+			// No block at that height: the next step asks the one below it,
+			// and the parent links across the null rounds.
+			t.nullRound(below)
 		case !e.byHash && againstNumber(err):
 			e.byHash = true
 		case e.byHash && e.walk > 0:
@@ -429,6 +436,78 @@ func (t *ChainTracker) extend(r *node, e *extension, uncapped bool) {
 			e.atBase, t.treesDirty = true, true
 		}
 	})
+}
+
+// nullRound records that height n has no block: roots waiting on a held
+// parent below it may link now.
+func (t *ChainTracker) nullRound(n uint64) {
+	if t.nulls.has(n) {
+		return
+	}
+	t.nulls = t.nulls.with(n)
+	for ph := range t.waiting {
+		if p := t.nodes[ph]; p != nil {
+			t.join(p)
+		}
+	}
+}
+
+// pruneNulls forgets the null rounds more than reorgWindow below every
+// held root: no header the window holds can link across them any more.
+func (t *ChainTracker) pruneNulls() {
+	if len(t.nulls) == 0 {
+		return
+	}
+	lo := uint64(0)
+	for r := range t.exts {
+		if lo == 0 || r.h.number < lo {
+			lo = r.h.number
+		}
+	}
+	if lo > uint64(t.window) {
+		t.nulls = t.nulls.from(lo - uint64(t.window))
+	}
+}
+
+// probeGap is rule 1 for vote msg whose held parent p sits more than one
+// height below it: its sender is asked each height between not known to
+// be a null round, by number. Once every one answered a null round the
+// vote is handled again and links; any other answer drops it, as a
+// parent under a number far below its child is dropped (§19 U12). A gap
+// wider than reorgWindow is dropped at once. Votes for the same header
+// wait on one probe.
+func (t *ChainTracker) probeGap(msg trackerMsg, p *chainHeader) {
+	h := msg.hdr
+	if h.number <= p.number || h.number-p.number > uint64(t.window) || !t.canFetch() {
+		return
+	}
+	if waiting, ok := t.gaps[h.hash]; ok {
+		t.gaps[h.hash] = append(waiting, msg)
+		return
+	}
+	t.gaps[h.hash] = []trackerMsg{msg}
+	for n := p.number + 1; n < h.number; n++ {
+		if t.nulls.has(n) {
+			continue
+		}
+		t.submitHeader(t.headerSpec(classHead, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), msg.upstream, false), func(_ *chainHeader, err error) {
+			msgs, ok := t.gaps[h.hash]
+			if !ok {
+				return
+			}
+			if epoch, null := NullRoundOf(err); !null || epoch != n {
+				delete(t.gaps, h.hash)
+				return
+			}
+			t.nullRound(n)
+			if t.nulls.links(p, h) {
+				delete(t.gaps, h.hash)
+				for _, m := range msgs {
+					t.handleHeader(m)
+				}
+			}
+		})
+	}
 }
 
 // againstNumber reports whether a by-number fetch's outcome is evidence

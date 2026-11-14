@@ -150,7 +150,9 @@ func (n *Network) sweep(ctx context.Context, req *common.NormalizedRequest, meth
 		cancel()
 		req.MarkUpstreamCompleted(ctx, u, r, err)
 		if err != nil {
-			if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			// A null round is the chain's answer, not the upstream's
+			// failure: another upstream has no block there either.
+			if _, null := evm.NullRoundOf(err); null || common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 				return nil, err
 			}
 			missed = true
