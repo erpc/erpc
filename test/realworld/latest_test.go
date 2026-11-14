@@ -73,7 +73,10 @@ var p13Pair = p13Shape{"P13", 600 * time.Millisecond, []time.Duration{80 * time.
 // full poll and reorgWindow, read every 17 s, as LightLink's public RPC:
 // the clock stops 2 W after a read, so each read finds about 26 heights
 // the pins lack, which one walk fetch a round trip linked 8 of within W
-// (df07357e: 40 blocks behind, served 17.5 s old, each read 2.5 s).
+// (df07357e: 40 blocks behind, served 17.5 s old, each read 2.5 s). Only
+// eth_getBlockByNumber: an idle eth_blockNumber answers the view from
+// before the idle spell (§7 family 1), as the old image answers its 30 s
+// poll, so their ages compare poll phases.
 var p13Lone = p13Shape{"P13-lone", 500 * time.Millisecond, []time.Duration{250 * time.Millisecond}, "30s", 17 * time.Second, 12,
 	[]string{"eth_getBlockByNumber"}, 32}
 
