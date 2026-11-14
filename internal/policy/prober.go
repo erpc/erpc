@@ -211,6 +211,17 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 		return
 	}
 
+	// Stateful gate — never mirror a method the network's method table
+	// marks stateful. eth_getFilterChanges moves the filter's cursor, so a
+	// mirror to the node that holds the filter takes the client's events,
+	// and a mirrored eth_newFilter installs a filter nobody polls. The
+	// request reaches the prober before Network.Forward's own stateful
+	// check, so that check does not cover the mirror.
+	if isStatefulMethod(req.Network(), method) {
+		telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "stateful_method").Inc()
+		return
+	}
+
 	finality := req.Finality(ctx).String()
 	excluded := p.engine.GetExcluded(p.networkID, method, finality)
 	if len(excluded) == 0 {
@@ -439,6 +450,32 @@ func (p *Prober) mirror(req *common.NormalizedRequest, u common.Upstream, cfg *P
 // risk double-broadcast / double-charge / double-signing. We err on
 // the side of caution and skip any method with a known write
 // signature.
+// isStatefulMethod reports whether network's method table marks method
+// stateful, the lookup Network.Forward's stateful check uses. A request with
+// no network config, or a config with an empty table, is read against the
+// default table, in which MethodsConfig.SetDefaults always marks the filter
+// methods stateful.
+func isStatefulMethod(network common.Network, method string) bool {
+	var methods *common.MethodsConfig
+	if network != nil {
+		if cfg := network.Config(); cfg != nil {
+			methods = cfg.Methods
+		}
+	}
+	if methods == nil || len(methods.Definitions) == 0 {
+		methods = defaultMethods()
+	}
+	mc := methods.FindMethodConfig(method)
+	return mc != nil && mc.Stateful
+}
+
+// defaultMethods is the method table a network gets when it configures none.
+var defaultMethods = sync.OnceValue(func() *common.MethodsConfig {
+	m := &common.MethodsConfig{}
+	_ = m.SetDefaults() // an empty config has nothing to reject
+	return m
+})
+
 func isProbeUnsafeMethod(method string) bool {
 	if method == "" {
 		return true // unknown method → skip
