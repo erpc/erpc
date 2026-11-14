@@ -304,8 +304,9 @@ func TestNetworkPolicy_RealPoll_LaggingUpstreamExcluded(t *testing.T) {
 // head froze far behind the tip but that still answers its polls holds every
 // block up to its own finalized one. The tip ranking keeps excluding it; a
 // client read of finalized block numbers it holds reaches it by the held
-// ranking. A block above its own finalized one, a read of latest, and a node
-// whose polls stopped answering never reach it.
+// ranking, also pinned to it alone by use-upstream. A block above its own
+// finalized one, a read of latest, and a node whose polls stopped answering
+// never reach it.
 func TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -428,6 +429,20 @@ func TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks(t *testing.T
 	require.Error(t, err, "no upstream left that is frozen or at the tip")
 	assert.GreaterOrEqual(t, frozenCalls.Load(), int64(1), "the frozen node was tried for block 40")
 	assert.EqualValues(t, 0, deadCalls.Load(), "a node that stopped answering gets no request")
+
+	// (f) Block 60 pinned by use-upstream to the frozen node alone: the
+	// selector's own Head has no voter, so no Finalized; the chain finalized
+	// block 60, so the frozen node serves it.
+	frozenCalls.Store(0)
+	mockGetBlockByNumberAt("0x3c", block(60), &frozenCalls, "frozen-archive")
+	pinned := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x3c",false]}`))
+	pinned.SetDirectives(&common.RequestDirectives{UseUpstream: "frozen-archive"})
+	resp, err = network.Forward(ctx, pinned)
+	require.NoError(t, err, "a finalized block pinned to the frozen node alone must reach it")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, jrr.GetResultString(), `"number":"0x3c"`)
+	assert.EqualValues(t, 1, frozenCalls.Load(), "the frozen node served block 60")
 }
 
 // TestNetworkPolicy_RealPoll_WithinTolerance_NoneExcluded guards the other

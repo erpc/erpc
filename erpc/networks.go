@@ -2457,13 +2457,15 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 // on a minority fork, and has finalized the highest block req names; then
 // every upstream of ups held lacks. ups unchanged when req does not qualify
 // or no frozen upstream joins, so a request never has fewer upstreams.
-// Consensus keeps its participants.
+// Consensus keeps its participants. The block must be at or below the
+// network-wide lane's Finalized, the chain's: a use-upstream selector that
+// names only held-only upstreams has no voter, so its own Head has none.
 func (n *Network) heldOrder(ctx context.Context, req *common.NormalizedRequest, ups, held []common.Upstream) []common.Upstream {
 	if n.cfg.Architecture != common.ArchitectureEvm || req.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
 		return ups
 	}
 	bn, ok := common.EvmRequestedBlockNumber(ctx, req)
-	if !ok || bn <= 0 || bn > n.EvmHead(ctx, req).Finalized || n.RunsConsensus(ctx, req) {
+	if !ok || bn <= 0 || bn > n.servedTipAll.published().Finalized || n.RunsConsensus(ctx, req) {
 		return ups
 	}
 	list, added := make([]common.Upstream, 0, len(held)+len(ups)), false
