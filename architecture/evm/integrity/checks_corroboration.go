@@ -86,6 +86,15 @@ func init() {
 				if !eqInt(want.Logs[j].LogIndex, match.Logs[j].LogIndex) {
 					return failf("receipt log %d logIndex %q differs from canonical %q", j, want.Logs[j].LogIndex, match.Logs[j].LogIndex)
 				}
+				got, canonical := &want.Logs[j], &match.Logs[j]
+				if !eqHex(got.Address, canonical.Address) || !eqHex(got.Data, canonical.Data) || len(got.Topics) != len(canonical.Topics) {
+					return failf("receipt log %d payload differs from canonical", j)
+				}
+				for k := range got.Topics {
+					if !eqHex(got.Topics[k], canonical.Topics[k]) {
+						return failf("receipt log %d topic %d differs from canonical", j, k)
+					}
+				}
 			}
 			return nil
 		},
