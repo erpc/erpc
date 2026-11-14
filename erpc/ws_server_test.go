@@ -1287,11 +1287,6 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 
 		assert.NotEqual(t, clientSubId1, clientSubId2, "each client should get a unique subscription ID")
 
-		// Only ONE eth_subscribe should have been sent to the upstream (dedup)
-		subMu.Lock()
-		assert.Equal(t, 1, subscribeCount, "upstream should only receive one eth_subscribe (dedup)")
-		subMu.Unlock()
-
 		// Both clients should receive the notification
 		conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
 		_, notif1, err := conn1.ReadMessage()
@@ -1309,6 +1304,13 @@ func TestWebSocket_SubscriptionDedup(t *testing.T) {
 		p2 := n2["params"].(map[string]interface{})
 		assert.Equal(t, clientSubId1, p1["subscription"])
 		assert.Equal(t, clientSubId2, p2["subscription"])
+
+		// The source subscribes upstream in the background (wsupstream
+		// Adapter.Set), so the count is read only once a push came through
+		// it: only ONE eth_subscribe reached the upstream (dedup).
+		subMu.Lock()
+		assert.Equal(t, 1, subscribeCount, "upstream should only receive one eth_subscribe (dedup)")
+		subMu.Unlock()
 	})
 
 	// Two wss sources push the same pending transactions; the client gets
