@@ -555,7 +555,8 @@ func TestCovDefaults_NetworkDefaultsSetDefaults_FillsNested(t *testing.T) {
 	assert.Equal(t, int64(30_000), nd.Evm.GetLogsMaxAllowedRange)
 	assert.Equal(t, covDefaultsDur(400*time.Millisecond), nd.Svm.StatePollerDebounce)
 	assert.False(t, *nd.DirectiveDefaults.EnforceHighestBlock)
-	assert.True(t, *nd.DirectiveDefaults.EnforceGetLogsBlockRange)
+	assert.Nil(t, nd.DirectiveDefaults.EnforceGetLogsBlockRange,
+		"networkDefaults keeps nil where the operator said nothing; each network defaults its own copy")
 
 	var nilDD *DirectiveDefaultsConfig
 	assert.NoError(t, nilDD.SetDefaults())
