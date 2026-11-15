@@ -218,6 +218,14 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 	}
 
 	for _, u := range excluded {
+		// The mirror calls Forward with byPassMethodExclusion=true, which
+		// also skips the X-ERPC-Use-Upstream check in Upstream.shouldSkip.
+		// Without this gate a request its client pinned to one upstream
+		// reaches the others.
+		if !req.MatchesUseUpstream(u) {
+			telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "pinned_elsewhere").Inc()
+			continue
+		}
 		if !p.tryReserveProbe(u, cfg) {
 			continue
 		}
