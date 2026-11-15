@@ -459,7 +459,7 @@ Defaults from [`internal/policy/stdlib/stdlib.js:L725-727`](https://github.com/e
 | Option | Default | Notes |
 |---|---|---|
 | `hysteresis` | `0.10` (default policy uses `0.30`) | Challenger must exceed incumbent score by this fraction to trigger switch. |
-| `minSwitchInterval` | `"30s"` | Cooldown after a switch. No switching during cooldown regardless of score gap. |
+| `minSwitchInterval` | `"30s"` | Cooldown after a switch. No switching during cooldown regardless of score gap. A value the parser cannot read uses this default and logs one `WARN` (see edge case 18). |
 | `scope` | `"network"` | `"network"` \| `"network-method"` \| `"network-finality"` \| `"network-method-finality"`. Coarser scopes share the sticky register across slots. |
 
 #### `latencyDeviationAbove` options (JS)
@@ -778,6 +778,8 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 16. **Idle slot eviction sweep runs every 1 minute.** The engine's `sweepIdleSlots` fires every `engineSweepInterval = 1 minute`. A narrow slot with `idleEvictionAfter = 1 h` may persist for up to 1 h + 1 min after its last access. The health tracker's own idle eviction threshold is separate and shorter: `DefaultIdleEvictionAfter = 30 minutes` for per-`(upstream, method, finality)` metric entries. [`internal/policy/engine.go:engineSweepInterval:L208`](https://github.com/erpc/erpc/blob/main/internal/policy/engine.go#L208)
 
 17. **A lag-excluded frozen upstream still serves finalized block numbers.** `erpc_selection_position` stays `-1` for it (the tip ranking excludes it), while `erpc_selection_held_position` shows its place in the held ranking. It serves only requests whose highest block is at or below both the network's finalized block and its own; `latest`, tags, hashes, blocks above its own finalized block and consensus requests never reach it. A node whose polls stop answering stops joining requests once two fetch cadences pass, with no tick needed: the frozen check runs per request. [`erpc/networks_selection_policy_realpoll_test.go:TestNetworkPolicy_RealPoll_FrozenUpstreamServesFinalizedBlocks`](https://github.com/erpc/erpc/blob/main/erpc/networks_selection_policy_realpoll_test.go)
+
+18. **An unreadable duration knob uses the default, not zero.** `durationMs` returns `null` for a value that names no duration: a string `time.ParseDuration` refuses (`'30 s'`, `'30sec'`), an empty string, a boolean, `NaN` or `±Inf`. `stickyPrimary` then uses its `30s` default and logs `WARN [policy] cannot read minSwitchInterval …` once per spelling. An explicit `0` is readable and still means "reconsider the primary on every tick". [`internal/policy/stdlib/stdlib.js:durationOr`](https://github.com/erpc/erpc/blob/main/internal/policy/stdlib/stdlib.js)
 
 ### Observability
 

@@ -625,8 +625,12 @@ declare global {
     function methodMatches(pat: Pattern): boolean;
     /** True iff `ctx.finality === 'finalized'`. */
     function isFinalityRequest(): boolean;
-    /** Convert a `Duration` to milliseconds. Installed by the engine. */
-    function durationMs(d: Duration): number;
+    /**
+     * Convert a `Duration` to milliseconds, or `null` when the value names no
+     * duration (an unparseable string, an empty string, a non-number, NaN or
+     * Infinity). Installed by the engine.
+     */
+    function durationMs(d: Duration): number | null;
     /** One primary per network; max cohesion across methods + finalities. */
     const NETWORK: "network";
     /** One primary per `(network, method)`; finalities share. */

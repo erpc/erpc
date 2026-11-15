@@ -273,6 +273,25 @@
     return neg ? !m : m;
   }
 
+  // durationOr reads a duration knob. When the operator wrote a value the
+  // parser cannot read, it returns `fallback` (the same cost as an absent
+  // knob) and warns once per spelling. The eval runs on every tick, so it
+  // keeps only the last spelling it warned about: a set would grow without
+  // a bound when a policy computes the knob per request.
+  let _lastDurationWarning = '';
+  function durationOr(value, fallback, knob) {
+    const ms = durationMs(value);
+    if (ms != null) return ms;
+    if (value == null) return fallback;
+    const seen = knob + '=' + String(value);
+    if (_lastDurationWarning !== seen) {
+      _lastDurationWarning = seen;
+      console.warn('[policy] cannot read ' + knob + ' ' + JSON.stringify(value) +
+                   ', using ' + fallback + 'ms');
+    }
+    return fallback;
+  }
+
   // matchAny tests value against a pattern, an array of patterns (OR), or null.
   function matchAny(pat, value) {
     if (pat == null) return true;
@@ -872,7 +891,7 @@
   define('stickyPrimary', function (opts) {
     opts = opts || {};
     const hysteresis  = (opts.hysteresis != null) ? opts.hysteresis : 0.10;
-    const minSwitchMs = (opts.minSwitchInterval != null) ? durationMs(opts.minSwitchInterval) : 30_000;
+    const minSwitchMs = durationOr(opts.minSwitchInterval, 30_000, 'minSwitchInterval');
     const scope       = opts.scope || 'network';
     if (this.length === 0) return this.slice();
 
