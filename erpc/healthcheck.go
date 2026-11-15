@@ -113,7 +113,11 @@ func (s *HttpServer) handleHealthCheck(
 	}
 	logger = logger.With().Str("evalStrategy", evalStrategy).Logger()
 
+	// A plain error carries no error code, so handleErrorResponse answers 200.
+	// A load balancer reads the status code, and this instance cannot serve.
+	// Write 503 first, as the simple-mode failure below writes 502.
 	if s.erpc == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
 		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails, s.executionHeadersMode())
 		return
 	}
@@ -122,6 +126,7 @@ func (s *HttpServer) handleHealthCheck(
 	if projectId == "" {
 		projects = s.erpc.GetProjects()
 		if len(projects) == 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
 			handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("no projects found"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails, s.executionHeadersMode())
 			return
 		}
