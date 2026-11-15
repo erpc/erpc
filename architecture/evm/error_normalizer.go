@@ -69,6 +69,26 @@ func nullRoundEpoch(code common.JsonRpcErrorNumber, err *common.ErrJsonRpcExcept
 // reth prints a revert as Debug text in the message and sends no "data" field.
 var rethRevertError = regexp.MustCompile(`RevertError \{ output: (?:Some\((0x[0-9a-fA-F]*)\)|None) \}`)
 
+// decodeRejection matches the serde_json error a Rust node (reth) puts in the
+// "data" of a -32602 when its JSON decoder rejects the request text itself,
+// such as odd-length hex or a wrong-length address. It is anchored at both
+// ends and needs serde's "at line N column M" position.
+//
+// It covers only the two shapes nodes have shown: "invalid value" and
+// "invalid length". "invalid type", "missing field" and "unknown variant" or
+// "unknown field" stay out on purpose. They depend on the node's decoder
+// version or vendor: an older node rejects a field a newer one accepts, and
+// Envio rejects a block object other nodes accept. Those keep their failover.
+var decodeRejection = regexp.MustCompile(`^invalid (value|length)\b.* at line \d+ column \d+$`)
+
+// isDecodeRejection reports whether a -32602's "data" is a decode failure of
+// the request text. It reads "data" only, and only as a string: the message,
+// or a structured data object, never makes a -32602 final.
+func isDecodeRejection(data interface{}) bool {
+	s, ok := data.(string)
+	return ok && decodeRejection.MatchString(s)
+}
+
 func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {
 	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
 		var details map[string]interface{} = make(map[string]interface{})
@@ -866,6 +886,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					}
 				}
 			}
+		} else if code == -32602 && isDecodeRejection(err.Data) {
+			// The node's JSON decoder rejected the request text itself. Every
+			// node decodes the same bytes the same way, so no retry, on this
+			// node or another, can succeed.
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
 		} else if code == -32602 || code == -32600 {
 			// For generic invalid args/params errors, we retry.
 			return common.NewErrEndpointClientSideException(
