@@ -406,3 +406,20 @@ func extractRefFromJsonRpcResponse(ctx context.Context, req *common.NormalizedRe
 
 	return "", 0, nil
 }
+
+// MethodHasNoBlockDependency reports whether a method's result depends on no
+// block, so no upstream can be missing the block it asks for.
+//
+// It reads the same method config as ExtractBlockReferenceFromRequest. That
+// function gives a finalized method block number 1 and a realtime method block
+// number 0. Both are cache sentinels, not blocks the caller asked for. A
+// block-availability gate asks here instead of decoding the sentinel.
+//
+// A method with no config returns false, so the caller keeps its gating.
+func MethodHasNoBlockDependency(method string, network common.Network) bool {
+	cfg := common.ResolveMethodConfig(method, network)
+	if cfg == nil {
+		return false
+	}
+	return cfg.Finalized || cfg.Realtime
+}

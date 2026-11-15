@@ -4230,6 +4230,12 @@ func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u commo
 	if methodHasDedicatedRangeAvailabilityHook(method) {
 		return nil, false
 	}
+	// A block-agnostic method (eth_chainId, net_version) cannot be missing a
+	// block. Its extracted block number 1 is a cache sentinel, not a block the
+	// caller asked for, and it is below every lower bound.
+	if evm.MethodHasNoBlockDependency(method, n) {
+		return nil, false
+	}
 	// Explicit method/network enforceBlockAvailability:false is an operator opt-out.
 	if n.blockAvailabilityExplicitlyDisabled(method) {
 		return nil, false
@@ -4337,6 +4343,10 @@ func (n *Network) eligibleUpstreamIDsForBoundary(ctx context.Context, method str
 		return nil
 	}
 	if methodHasDedicatedRangeAvailabilityHook(method) {
+		return nil
+	}
+	// A block-agnostic method has no boundary: every upstream is eligible.
+	if evm.MethodHasNoBlockDependency(method, n) {
 		return nil
 	}
 	// Resolve the request's block number (cached at normalization, with a
