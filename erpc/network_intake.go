@@ -1031,6 +1031,28 @@ func (n *Network) EvmForkDemoted(ids []string) {
 	n.headsChanged()
 }
 
+// EvmVotesForked takes the network-wide tracker's voters whose hash vote
+// is off the pins, each with the highest number it shares with the pins
+// (spec §6.1): routing reads it at once, before any demotion.
+func (n *Network) EvmVotesForked(at map[string]int64) {
+	if len(at) == 0 {
+		n.forked.Store(nil)
+	} else {
+		n.forked.Store(&at)
+	}
+}
+
+// forkedBelow reports whether u's hash vote left the pins below block bn,
+// so u holds no pinned block bn (EvmVotesForked).
+func (n *Network) forkedBelow(u common.Upstream, bn int64) bool {
+	m := n.forked.Load()
+	if m == nil {
+		return false
+	}
+	at, ok := (*m)[u.Id()]
+	return ok && bn > at
+}
+
 // EvmHashVotersChanged is the network-wide tracker's note that its hash
 // voters changed: the reconciler rechecks topic admission (spec §5.2).
 func (n *Network) EvmHashVotersChanged() {
