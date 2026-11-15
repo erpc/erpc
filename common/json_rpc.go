@@ -165,7 +165,8 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 		result:  resultRaw,
 	}
 
-	if len(errBytes) > 0 {
+	// A null error member means "no error". See isJsonNull.
+	if len(errBytes) > 0 && !isJsonNull(errBytes) {
 		// Copy to avoid retaining buffer via unsafe conversion
 		err := jr.ParseError(string(errBytes))
 		if err != nil {
@@ -373,7 +374,8 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		}
 	}
 
-	if len(temp.Error) > 0 {
+	// A null error member means "no error". See isJsonNull.
+	if len(temp.Error) > 0 && !isJsonNull(temp.Error) {
 		if err := r.ParseError(string(temp.Error)); err != nil {
 			return err
 		}
