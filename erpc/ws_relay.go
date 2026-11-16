@@ -31,7 +31,7 @@ func (m *relayFrom) Tail(t indexer.Topic) uint64 {
 // network's relay feed that starts after from, the topic's tail at
 // subscribe time, and writes only once opened, after the client has its
 // id. A start older than the ring skips to the newest, counted as lag
-// (spec §11). It ends only with ctx or a failed write; a panic or any
+// (spec §12). It ends only with ctx or a failed write; a panic or any
 // other error restarts it after the newest entry, so the subscription
 // never goes silent.
 func (sm *SubscriptionManager) runRelay(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, topic indexer.Topic, from uint64) {

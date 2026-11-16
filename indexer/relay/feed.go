@@ -1,5 +1,5 @@
 // Package relay is one network's relay feed: for each relayed subscription
-// kind, a ring of deduplicated messages per variant (spec §11), bounded by
+// kind, a ring of deduplicated messages per variant (spec §12), bounded by
 // the kind's common.RelaySpec.
 package relay
 

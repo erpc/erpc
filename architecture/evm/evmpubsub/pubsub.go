@@ -29,7 +29,7 @@ const (
 	KindNewPendingTransactions = "newPendingTransactions"
 )
 
-// Bounds of a network's newPendingTransactions relay (spec §13.2).
+// Bounds of a network's newPendingTransactions relay (spec §12, §15.2).
 const (
 	PendingRingSize    = 10_000
 	PendingMaxKeys     = 100_000

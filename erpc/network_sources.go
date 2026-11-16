@@ -240,7 +240,7 @@ func (r *sourceReconciler) subscribed(upstreamId string, t indexer.Topic, err er
 // ErrRelayVariantLimitExceeded when none is idle. Every subscribe from the
 // first holder on waits for the same verdict, up to relayOpenWait from the
 // first: the first refusal when every push source a pass set the topic on
-// refused it (spec §11).
+// refused it (spec §12).
 func (r *sourceReconciler) openRelay(ctx context.Context, t indexer.Topic) (release func(), err error) {
 	kind, _, ok := t.Relay()
 	spec := r.nw.relay.Spec(kind)
@@ -685,7 +685,7 @@ func (r *sourceReconciler) stopAll() {
 // requireSubscriptionSource fails with ErrNoSubscriptionSource when nothing
 // on the network can feed subType, after the sources caught up with the
 // network's upstreams. logs need heads and a feed that serves receipts or
-// their fallback (spec §10); relayed kinds need a push source (§11).
+// their fallback (spec §10); relayed kinds need a push source (§12).
 // A subscribe skips the source pass when the last pass found a source and
 // one feeds now (sourceReconciler.live), so subscribes on a fed topic never
 // queue behind a pass.

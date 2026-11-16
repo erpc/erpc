@@ -279,7 +279,7 @@ func (sm *SubscriptionManager) reserveSub(maxTotal int) bool {
 
 // openRelay opens the topic of a relayed kind's variant params on nw's
 // relay feed until release; the reconciler admits it and decides whether
-// its push sources refused it (spec §11).
+// its push sources refused it (spec §12).
 func (sm *SubscriptionManager) openRelay(ctx context.Context, nw *Network, method, kind string, params []interface{}) (topic indexer.Topic, release func(), err error) {
 	if nw.relay == nil {
 		return "", nil, common.NewErrNoSubscriptionSource(nw.networkId, method, kind)
