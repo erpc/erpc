@@ -15,8 +15,8 @@ Decisions:
 9. The window holds `maxBackfill` of chain time, at least `reorgWindow` blocks. A reorg inside a tap's range reaches it as Reverted; anything else ends it with its transport's signal (§9).
 10. On a reorg, resumable transports resend from the fork point; ws `logs` gets `removed:true`, as geth does (§10.2).
 11. Resumable transports resume from the last block they applied; a cursor the instance cannot place ends the stream, so a client never keeps a branch it was not told about (§10.3).
-12. `newPendingTransactions` uses the same sources and taps, over a mempool feed (§12).
-13. Polls, pending-transaction subscriptions and `onDemand` wss `newHeads` stop 60s after the last tap needing them closes; an `always` wss `newHeads` starts with the network and stays on (§5.2).
+12. Relayed subscription kinds (EVM: `newPendingTransactions`) use the same sources and taps, over a relay feed bounded per kind by its `RelaySpec` (§12).
+13. Polls, relay topics (pending-transaction subscriptions) and `onDemand` wss `newHeads` stop 60s after the last tap needing them closes; an `always` wss `newHeads` starts with the network and stays on (§5.2).
 14. Reads decide finality on `Head.Finalized`; a permanent cache write also needs the serving upstream's finalized (§6.4).
 15. `translateLatestTag: false` stays the per-method opt-out; the tag-state gate skips an upstream whose `latest` state is stale (§7, §6.11).
 16. Nothing needs a person: every degraded state has a detector, an automatic recovery and a time bound (§15). No switch stays set until a restart.
@@ -31,7 +31,7 @@ Decisions:
 | W | Freshness window: `max(3 × bt, 2s)`, at most 60s |
 | q | `evm.servedTip.quorum` (default 2); `q.Of(n)` = `max(1, min(q, n))`, `majority` = `n/2 + 1` (`common/served_tip.go`) |
 | source | Upstream that feeds headers, by push (wss) or poll (any RPC client) |
-| observation | One header or pending transaction from one upstream |
+| observation | One header or relayed message (a pending transaction) from one upstream |
 | intake | Parsing, validity and identity checks on each observation |
 | accepted | A source header that passed intake checks 0–2 on this instance |
 | lane | One use-upstream group of a network; `""` is the network-wide lane |
@@ -73,11 +73,12 @@ Decisions:
 | reorgWindow | Floor of the window; window of group trackers; walk depth; receipts depth; ws lag bound (`reorgWindow` × bt of delivery delay) |
 | logs head | The highest confirmed pin up to which every block's receipts are held or not needed |
 | scheduler | Per (network, instance) limit, classes and backoff for walks, receipts and fill (§8) |
-| mempool feed | Rings of deduplicated pending transactions, one per (network, variant) |
+| relay feed | Rings of deduplicated messages of relayed kinds, one per (network, kind, variant), bounded by the kind's `RelaySpec` (§12) |
+| pub/sub dialect | How an architecture's clients and upstreams speak WebSocket subscriptions (`common.PubSubDialect`; EVM `eth_subscribe`, `evmpubsub`): methods, subscription ids, notification envelope, and the kinds a subscribe opens, each a `KindSpec` whose `Relay` marks a relayed kind |
 | tap | One consumer of a feed: its cursor and its read loop |
 | cursor | Number and hash of the last block a tap applied |
 | out of range | A cursor the feed cannot continue: below the window, on a branch whose fork point left the window, or unknown to every upstream |
-| demand | Topics that open taps need, each at the fastest pace its taps need; a topic is `newHeads` or `newPendingTransactions:<variant>`. A client tap's pace is every block; the integrity follow tap's is `integrity.follow.interval` (1s) |
+| demand | Topics that open taps need, each at the fastest pace its taps need; a topic is `newHeads` or a relay topic `<kind>:<variant>` (`indexer.RelayTopic`), such as `newPendingTransactions:<variant>`. A client tap's pace is every block; the integrity follow tap's is `integrity.follow.interval` (1s) |
 | transport | Encodes a tap's reads for one wire: ws, gRPC; Kafka later |
 | resumable transport | One whose consumers reconnect from a cursor: gRPC, Kafka |
 
@@ -116,7 +117,7 @@ flowchart LR
   H --> G{"confirmed head"}
   C --> G
   G --> K["taps"]
-  I --> M["mempool feed"]
+  I --> M["relay feed"]
   M --> K
   K --> WS["ws"]
   K --> GR["gRPC"]
@@ -135,9 +136,10 @@ flowchart LR
 | Tracker and chain feed | `architecture/evm/chain_tracker.go`, `chain_tracker_rules.go` | fork choice, confirmed head, window, receipts |
 | Scheduler | `architecture/evm/chain_fetch.go` | walks, receipts, fill: limit, classes, backoff (§8) |
 | Tag-state gate | `architecture/evm/integrity_stateprobe.go`, `checkEvmUpstreamBlockAvailability` | tag-state heads and the skip (§6.11) |
-| Mempool feed | `indexer/mempool` | dedup ring per subscribe variant |
+| Pub/sub dialect | `common/pubsub.go`, `architecture/evm/evmpubsub` | subscribe and unsubscribe methods, subscription ids, notification envelope, kinds and each relayed kind's `RelaySpec` |
+| Relay feed | `indexer/relay` | per relayed kind: dedup ring per subscribe variant, bounded by the kind's `RelaySpec` |
 | Taps | `indexer/taps.go` | read loops, demand |
-| Transports | `erpc/ws_newheads.go`, `erpc/ws_logs.go`, `erpc/grpc_stream_blocks.go` | encoding, auth, wire signals |
+| Transports | `erpc/ws_newheads.go`, `erpc/ws_logs.go`, `erpc/ws_relay.go`, `erpc/grpc_stream_blocks.go` | encoding, auth, wire signals |
 
 - Dependencies point to `indexer`: sources, transports and the tracker use its interfaces. `indexer` imports neither `erpc` nor `architecture/evm`.
 - `health` cannot import `architecture/evm`: the bench reads the fetch schedule's backoff through an injected reader.
@@ -209,21 +211,35 @@ var ErrOutOfRange = errors.New("cursor out of range")
 // fork_left_window, cursor_unknown, lag, reorg_depth, receipts_timeout.
 type OutOfRangeError struct{ Reason string }
 
-// MempoolFeed is the reader side of one network's pending transactions.
-type MempoolFeed interface {
-    Tail(variant string) uint64 // newest sequence; a new tap starts after it
-    // Read waits for payloads after seq, bounded by ctx.
+// RelayFeed is the reader side of one network's relayed messages.
+type RelayFeed interface {
+    Tail(t Topic) uint64 // newest sequence; a new tap starts after it
+    // Read waits for messages after seq, bounded by ctx.
     // ErrOutOfRange: seq left the ring.
-    Read(ctx context.Context, variant string, after uint64) (txs []json.RawMessage, next uint64, err error)
+    Read(ctx context.Context, t Topic, after uint64) (msgs []json.RawMessage, next uint64, err error)
 }
+
+// Topic is what a source feeds: newHeads, or a relay topic <kind>:<variant>.
+type Topic string
+
+const TopicNewHeads Topic = "newHeads"
+
+// RelayTopic is the topic of one variant of a relayed kind.
+func RelayTopic(kind, variant string) Topic
+// Relay is t's kind and variant, if t is a relay topic.
+func (t Topic) Relay() (kind, variant string, ok bool)
+// RelayVariant names a relayed kind's subscribe params, those after the
+// kind: sorted-key JSON, so equal params from any client are one variant.
+func RelayVariant(params []interface{}) (string, error)
 
 // Taps runs read loops: read, emit, repeat. A loop ends when ctx ends, emit
 // fails, or the feed returns an error. transport and kind label metrics.
 func NewTaps(logger *zerolog.Logger, projectId string, onDemandChange func(networkId string)) *Taps // the callback never blocks
 func (t *Taps) RunChain(ctx context.Context, networkId, transport, kind string,
     f ChainFeed, start *Cursor, o ReadOpts, emit func(Batch) error) error // start nil: f.Head
-func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,
-    f MempoolFeed, emit func([]json.RawMessage) error) error
+// RunRelay: out of range skips to the newest; transport and topic's kind label metrics.
+func (t *Taps) RunRelay(ctx context.Context, networkId, transport string, topic Topic,
+    f RelayFeed, emit func([]json.RawMessage) error) error
 func (t *Taps) Demand(networkId string) []Topic
 // Pace is the fastest pace the open taps of networkId need topic at;
 // ok is false while no tap needs it.
@@ -232,7 +248,7 @@ func (t *Taps) Pace(networkId string, topic Topic) (pace time.Duration, ok bool)
 // Intake is what sources report into; erpc implements it per network.
 type Intake interface {
     Header(upstreamId string, raw json.RawMessage)
-    PendingTx(upstreamId, variant string, raw json.RawMessage)
+    Relayed(upstreamId string, t Topic, raw json.RawMessage)
     // Subscribed reports a push subscribe's answer for t: nil once it is
     // live, else the upstream's error (§5.1, §12).
     Subscribed(upstreamId string, t Topic, err error)
@@ -241,6 +257,42 @@ type Intake interface {
 // Source feeds one upstream's observations over one transport.
 type Source interface {
     Set(topics []Topic) // what to feed now; idempotent; empty stops
+}
+```
+
+```go
+// common: what each architecture's pub/sub dialect declares (§12).
+type PubSubDialect interface {
+    Methods() []string
+    IsSubscribe(method string) bool
+    IsUnsubscribe(method string) bool
+    SubscribeKind(method string, params []interface{}) (kind string, variant []interface{})
+    Kind(kind string) (KindSpec, bool)
+    NewSubID() (string, error)
+    EncodeSubID(id string) json.RawMessage
+    UnsubscribeID(params []interface{}) (string, error)
+    SubscribeRequest(kind string, variant []interface{}) (method string, params []interface{})
+    UnsubscribeRequest(kind, id string) (method string, params []interface{})
+    NotificationKind(method string) (kind string, ok bool)
+    DecodeSubID(raw []byte) (string, bool)
+}
+// ArchitectureHandler.PubSub() returns it; nil: the architecture has no pub/sub.
+
+type KindSpec struct {
+    Notification string     // method of the kind's notifications to clients
+    Relay        *RelaySpec // set: relayed through the relay feed; nil: the chain tracker serves it
+}
+
+// RelaySpec bounds one relayed kind on one network.
+type RelaySpec struct {
+    RingSize    int                              // newest messages each variant keeps
+    DedupFor    time.Duration                    // a key suppresses repeats this long from its first add to any variant
+    MaxKeys     int                              // dedup keys held across the kind's variants
+    MaxVariants int                              // variants open at once
+    Key         func(raw json.RawMessage) string // dedup identity; "": kept without dedup
+    SilentAfter *util.Duration                   // silence rule (§5.2); nil: none
+    SilentMax   time.Duration                    // the silence backoff's cap
+    Placement   Placement                        // PlacementAll: every admitted push source
 }
 ```
 
@@ -285,7 +337,7 @@ Example, one wss push, two wss voters:
 
 | Upstream endpoint | Mode | Topics | Cadence |
 |---|---|---|---|
-| `ws`, `wss` | push, `eth_subscribe` | `newHeads`, `newPendingTransactions:<variant>` | per event |
+| `ws`, `wss` | push, the pub/sub dialect's subscribe (EVM `eth_subscribe`) | `newHeads`, relay topics `<kind>:<variant>` (EVM `newPendingTransactions:<variant>`) | per event |
 | `http`, `https`, `grpc` | poll, `eth_getBlockByNumber(latest)` through the upstream's client | `newHeads` | the fetch schedule's cadence (§6.8) |
 | gRPC `StreamBlocks` client, Kafka consumer | push | `newHeads` | not planned; each is one `Source` |
 
@@ -299,16 +351,16 @@ Example, one wss push, two wss voters:
 ```
 push u:  newHeads                       always: from network init; onDemand: while demand has newHeads at pace 0
 poll u:  newHeads                       while demand has newHeads and admitted(u)
-push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
+push u:  <kind>:<v>                     a relayed kind: while demand has it and admitted(u), on every such u (placement all)
 ```
 
 `admitted(u)` is topic admission (§6.2).
 
 - One reconciler per network, on one goroutine, calls `Set`: at network init, whether or not a WebSocket or gRPC server runs; then on demand changes, hash-voter changes, subscribe answers (`Intake.Subscribed`), and on a timer at W.
-- Idle: no demand for 60s → polls, pending-transaction subscriptions and `onDemand` `newHeads` stop. Only a tap at pace 0 (ws `newHeads` or `logs`, gRPC `StreamBlocks`) wants `onDemand` `newHeads`; the integrity follow tap's pace is the block clock's.
+- Idle: no demand for 60s → polls, relay topics and `onDemand` `newHeads` stop. Only a tap at pace 0 (ws `newHeads` or `logs`, gRPC `StreamBlocks`) wants `onDemand` `newHeads`; the integrity follow tap's pace is the block clock's.
 - A head a push source pushed meets the latest part of its own full poll (`AskPushed`): a push-fed upstream is not polled for latest as well.
 - Silent `newHeads`: a connected push source whose `newHeads` pushed nothing for 15s, while its own head counter stood above its last push when those 15s began, reconnects its socket (`watchHeads`). A halted chain or a lagging node trips neither half. Pushes count before intake, so a gated source is not silent. Its hash vote ages out after W, before the reconnect.
-- A pending-transaction topic with no message for 60s, while heads carry transactions, is subscribed again; a topic that stays silent backs off from 60s to 30 min.
+- A relay topic whose kind has a silence rule (`RelaySpec.SilentAfter`; EVM `newPendingTransactions`: 60s) and that had no message for that long, while heads carry transactions, is subscribed again; a topic that stays silent waits twice as long each time, up to `SilentMax` (30 min).
 
 ### 5.3 Intake
 
@@ -325,7 +377,7 @@ push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 - Client answers to `eth_getBlockByNumber(latest)` move the head counter where the tag still reaches upstreams (`translateLatestTag: false`, `skip-interpolation`), best-effort and non-blocking (#450), and reach the trackers without a vote.
 - The chain-identity cordon (`cordonForChainIdMismatch`) expires: the poller checks `eth_chainId` every 5 min and uncordons after 2 matching checks in a row; a mismatched major jump cordons again (#997).
 - While an upstream is cordoned for chain identity, every head it reports — poll, push or client answer — is dropped before its counter, so a cross-wired endpoint never moves a counter; only the 5-minute recheck (2 matches) lifts the cordon.
-- Pending transactions pass check 4 and topic admission, then enter the mempool feed.
+- Relayed messages (`Intake.Relayed`) pass check 4 and topic admission, then enter the relay feed.
 
 ## 6. Head model: eleven concepts
 
@@ -362,7 +414,7 @@ admitted(u) = voter(u) and (failover off, or u is not fallback tier,
 
 - A source streams while the newest header its own channel brought, a push for a wss source or a poll-source poll for an http source, has a hash age of at most W. Its other polls still vote (§6.3) but do not count here, so a primary whose pushes stop releases the fallback's topics, pending transactions included, while its polls still serve heads.
 
-Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle targets, the reconciler, mempool admission. Keeps: #320 (no syncing or excluded upstream), #202 (syncing never votes), #888 (eligible set), #1063 (caps rank below live heads), #836 (fallback held while a primary streams).
+Owner: `erpc/network_intake.go`. Readers: `Head`, the confirmed head, settle targets, the reconciler, relay admission (`Intake.Relayed`). Keeps: #320 (no syncing or excluded upstream), #202 (syncing never votes), #888 (eligible set), #1063 (caps rank below live heads), #836 (fallback held while a primary streams).
 
 ### 6.3 Reports: what does a voter say?
 
@@ -670,7 +722,7 @@ From cursor `c`, first matching case:
 |---|---|---|---|---|
 | ws `newHeads` | headers | each new-branch head, oldest first | restart after the confirmed head | the block after its cursor reached the confirmed head more than `reorgWindow` × bt ago, nothing Reverted → restart |
 | ws `logs` | receipts where the filter bloom may match | `removed:true` logs of Reverted, newest first; then logs of Applied | close `1013`; closes from one event spread over 60s | the block after its cursor reached the logs head more than `reorgWindow` × bt ago → out of range (`lag`); a batch that reverts more than `reorgWindow` of the blocks the tap sent → out of range (`reorg_depth`); 60s on one block's receipts → out of range |
-| ws `newPendingTransactions` | mempool | none | skip to the newest | — |
+| ws relayed kind (EVM `newPendingTransactions`) | relay feed | none | skip to the newest | — |
 | gRPC `StreamBlocks` | headers | resend from the fork point | end, `OUT_OF_RANGE` | 60s of stalled Read → `UNAVAILABLE`; one `Send` 10s → `UNAVAILABLE` |
 | Kafka, later | headers, receipts | resend from the fork point | write a reset record, then restart after the confirmed head | — |
 
@@ -747,14 +799,23 @@ Cost, measured 2026-10-14 on public RPCs, 5 consecutive blocks each:
 - Logs reach clients one receipts round trip after the confirmed head (about 70–160 ms above).
 - Receipts held: eth 32 blocks × ~1 MB ≈ 32 MB; monad 32 blocks × ~125 KB ≈ 4 MB.
 
-## 12. Mempool feed
+## 12. Relay feed
 
-- Sources: push transports only. A network with no push source refuses `newPendingTransactions` with `ErrNoSubscriptionSource`; a configured push source counts while it reconnects (§6.2).
-- Feed: one ring per (network, variant) of the last 10,000 entries. A variant is the subscribe params as sorted-key JSON; at most 16 per network, lingering variants included, then subscribe is refused with `ErrSubscriptionLimitExceeded`.
+A subscription kind is relayed when its dialect's `KindSpec.Relay` is set: its messages come from push sources and pass through the network's relay feed (`indexer/relay`), not the chain feed. Each relayed kind brings its own `common.RelaySpec`; the feed and the reconciler read every bound from it, so a kind's caps are its own and no other kind's.
+
+| Kind (dialect) | `RingSize` | `MaxKeys` | `MaxVariants` | `DedupFor` | `Key` | Silence (`SilentAfter` → `SilentMax`) | `Placement` |
+|---|---|---|---|---|---|---|---|
+| `newPendingTransactions` (EVM, `evmpubsub`) | 10,000 | 100,000 | 16 | 60s | `PendingTxKey`: the hash a string payload is, or an object payload's `hash`, lowercased | 60s, doubling to 30 min | `all` |
+
+EVM `newHeads` and `logs` are not relayed: the chain tracker serves them (§10).
+
+- Sources: push transports only. A network with no push source refuses a relayed kind with `ErrNoSubscriptionSource`; a configured push source counts while it reconnects (§6.2).
+- Topic: `<kind>:<variant>` (`indexer.RelayTopic`; `Topic.Relay` splits it). A variant is the subscribe params after the kind as sorted-key JSON (`indexer.RelayVariant`).
+- Feed: one ring per (network, kind, variant) of the kind's newest `RingSize` entries. A kind holds at most its `MaxVariants` variants per network (EVM `newPendingTransactions`: 16); the cap is the kind's spec, with no structural ceiling. A new variant at the cap takes the place of the kind's idle variant wanted longest ago; with none idle, subscribe is refused with `ErrSubscriptionLimitExceeded` (`NewErrRelayVariantLimitExceeded`: "maximum distinct `<kind>` params per network exceeded", `maxVariantsPerNetwork`).
 - A subscribe that opens a new variant waits up to 10s for its push sources' first answers (`Intake.Subscribed`). When every admitted push source answers with an error other than a capacity error, the subscribe fails with the first one, as the upstream sent it: `-32602` for bad params. Capacity errors, connection errors and timeouts open the subscription; each source retries with its backoff.
-- Dedup by transaction hash over 60s, one entry per hash, at most 100,000 hashes per network.
-- A new tap starts after `Tail`. A tap wakes at most every 50 ms and reads everything after its sequence. Out of range skips to the newest. No reorgs, no resume.
-- Admission: a push source subscribes only while topic admission admits it (§6.2).
+- Dedup is per kind: a message whose `Key` already reached its ring is dropped while the key is held, `DedupFor` from the key's first add to any variant of the kind; at most `MaxKeys` keys per kind per network, the oldest leave first. A message with an empty key is kept without dedup. Closing a variant's ring frees the keys only it held.
+- A new tap starts after `Tail`. A tap (`Taps.RunRelay`) wakes at most every 50 ms and reads everything after its sequence. Out of range skips to the newest. No reorgs, no resume. `Read` on a topic whose ring is not open fails (`relay topic %q is not open`).
+- Admission: a push source subscribes only while topic admission admits it (§6.2); placement `all` sets the topic on every admitted push source.
 
 ## 13. Integrity
 
@@ -826,7 +887,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | reconciler | panic, missed wake | `recover`, timer | restart; timer at W | W |
 | taps | slow client | lag | ws `logs` out of range and ws `newHeads` restart once the block after the cursor has waited `reorgWindow` × bt; gRPC `UNAVAILABLE` after a 10s `Send` | `reorgWindow` × bt |
 | gRPC | instance lags, restarted, or fill is slow | a stalled Read | 60s, then `UNAVAILABLE`; the client reconnects | 60s |
-| mempool | subscription silent | no message for 60s while blocks carry transactions | resubscribe, backing off to 30 min | 60s |
+| relay feed | subscription silent | no message for the kind's `SilentAfter` (EVM `newPendingTransactions`: 60s) while blocks carry transactions | resubscribe, backing off to `SilentMax` (30 min) | `SilentAfter` |
 | integrity follow tap | out of range | Read error | restart after the confirmed head | 1 Read |
 | state prober | an upstream's `eth_getProof` keeps failing | 10 errors in a row, no success | its proof probes stop; context probes go on | 10 min |
 | Kafka writer | lease lost | renewal fails | tap stops; the transactional epoch fences it; the next holder resumes from the last record | lease TTL |
@@ -849,7 +910,7 @@ Owner: `data/shared_state_variable.go`; the rollback write in `EvmStatePoller`.
 | Settle | 3 targets per round | the round ends undecided |
 | Lanes | 16 per network | further selectors take the stateless pick |
 | Tracker mailbox | fetch results and ticks never drop; headers: the newest per source | answers drop first |
-| Mempool | 10,000 entries per ring; 100,000 hashes over 60s per network; 16 variants per network | the oldest leave; subscribe refused |
+| Relay feed | per relayed kind, its `RelaySpec`; EVM `newPendingTransactions`: 10,000 entries per ring, 100,000 keys over 60s per network, 16 variants per network | the oldest leave; subscribe refused |
 | ws subscriptions per connection | `server.webSocket.maxSubscriptionsPerConnection` (100) | subscribe refused, `-32005` |
 | ws subscriptions per instance | `server.webSocket.maxSubscriptions`; 0 = unlimited | subscribe refused, `-32005` |
 | ws connections | `server.webSocket.maxConnections` per instance and `maxConnectionsPerIP` per client IP; 0 = unlimited | `429` before the upgrade |
@@ -901,7 +962,7 @@ networks:
 | `networks[].evm.chainTracker.maxBackfill` | new; replaces `integrity.follow.maxBlocksPerTick` |
 | `networks[].evm.stripSubscribeFromBlockZero` | deleted: no upstream `logs` subscribe |
 | `server.webSocket.subscriptionBufferSize` | deleted: no per-subscription queue |
-| `indexer` (`canonicalChainDepth`, `dedupWindowSize`) | deleted: the mempool bounds in §15.2 replace `dedupWindowSize` |
+| `indexer` (`canonicalChainDepth`, `dedupWindowSize`) | deleted: each relayed kind's `RelaySpec` bounds (§12, §15.2) replace `dedupWindowSize` |
 | `translateLatestTag` default for `eth_getBlockByNumber` | now on, as for every method; `enforceHighestBlock` for it is deleted |
 | `translateLatestTag` default for `arbtrace_*` | off: classic nodes serve them (§7) |
 | `networks[].evm.fallbackStatePollerDebounce` | default removed (was 5s): unset, the cold-start cadence follows bt's 1s default (§6.7) |
@@ -939,7 +1000,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_chain_tracker_settle_total{project,network,reason,outcome}` | new; reason: `tie` (rule 4), `fork` (the §6.3 refresh), `recheck` (`ReconfirmPin`); outcome: `decided`, `undecided`. The `chain tracker settle ended` log names the reason and the key the round started with |
 | `erpc_chain_tracker_fetch_total{project,network,kind,class,outcome}` | new; kind: `header`, `receipts`, `logs`, `logs_hash` (the logs gate's one header lookup of a `blockHash` the tracker does not hold; `error`: none found, §6.4 logs gate), `bloom_trust` (a trust check's receipts fetch, §11 bloom trust); outcome: `ok`, `error`, `capacity` |
 | `erpc_chain_tracker_fetch_slots{project,network,class}` | new gauge: current share per class |
-| `erpc_source_resubscribe_total{project,network,upstream,topic}` | new: silent pending-transaction topics (§5.2) |
+| `erpc_source_resubscribe_total{project,network,upstream,topic}` | new: silent relay topics, per their kind's silence rule (§5.2) |
 | `erpc_upstream_websocket_heads_stall_reconnects_total` | existing; counts silent-`newHeads` reconnects (§5.2) |
 | `erpc_taps{project,network,transport,kind}` | new gauge: open taps; replaces `erpc_websocket_subscriptions_active` |
 | `erpc_tap_end_total{project,network,transport,kind,reason,detail}` | new; reason `out_of_range` with detail `below_window`, `fork_left_window`, `cursor_unknown`, `receipts_timeout`, `reorg_depth`; reason `lagging` with detail `lag`; replaces `erpc_websocket_subscription_notifications_dropped_total` |
@@ -953,8 +1014,8 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_upstream_stale_latest_block_total` | `category="eth_getBlockByNumber"` disappears with the post-forward raise (§20); `eth_blockNumber` is answered from `Head`, so the series left rarely moves. The bundled dashboards drop both stale-block panels |
 | `erpc_integrity_aux_request_total` | `kind="chain_follow"` disappears; `logs_probe`, `logs_hash` and `bloom_trust` are new: the logs gate's requests (§6.4) |
 | `erpc_upstream_subscriptions_active` | `kind="logs"` disappears |
-| `erpc_subscription_dedup_dropped_total` | `kind="logs"`, `kind="newHeads"` disappear; mempool only |
-| `erpc_subscription_dedup_entries` | mempool only |
+| `erpc_subscription_dedup_dropped_total` | `kind="logs"`, `kind="newHeads"` disappear; relayed kinds only (`kind` is the relayed kind, EVM `newPendingTransactions`) |
+| `erpc_subscription_dedup_entries` | relay feed only: keys held across the network's relayed kinds |
 
 Tap metrics label `network` with the network label. Every other metric keeps its labels.
 
@@ -1256,7 +1317,7 @@ One home per fact:
 - A request whose tag reaches the upstream as is (`translateLatestTag: false`, `skip-interpolation`, `arbtrace_*` by default) is never cached, and an `eth_getLogs` or `trace_filter` range whose bound is sent as a tag is not split up front: eRPC does not know where the upstream's tag ends.
 - An interpolated `finalized`-tag request is cached by finalized or unfinalized policies at its number; a cache policy with `finality: realtime` and a `finalized` param, which matched it on main, no longer does.
 - An interpolated `latest`-tag request above `Finalized` is also read from and written to unfinalized policies at its number, as the numbered request at N: its first read per block hits the head fetch's seed (§6.8) instead of an upstream. At or below `Finalized` (finality at the head, as on Avalanche) it reads N's entries of either finality and writes none permanent (#90): a miss there sent each first read per block to a far holder, and `finalized`-tag reads at the same N joined it in the multiplexer (§19 P17-avax: 2.2% over 50 ms, main 0.0%).
-- One client can hold all 16 `newPendingTransactions` variants of a network; every other new variant is then refused. `StreamBlocks` streams have no per-instance cap, as on main; a cursor above every head waits until the connection's maximum age.
+- One client can hold all of a relayed kind's `MaxVariants` variants of a network (16 for EVM `newPendingTransactions`); every other new variant of that kind is then refused. `StreamBlocks` streams have no per-instance cap, as on main; a cursor above every head waits until the connection's maximum age.
 - An upstream and its push twin (the same vendor's ws beside its HTTP endpoint) count as two hash voters: one vendor can confirm a head alone where it runs both; the evidence quorum (§6.10) still counts it once.
 - ws `logs` read the network-wide receipts, whatever lane the connection pins: on HyperEVM, a `systx-*` subscriber can get the standard family's log indexes.
 - Tracker fetches leave client rate limits. They share upstream permits with clients, except catch-up, which yields; when clients use a whole upstream budget, tracker fetches fail with them until load drops. Head Asks skip rate limits (§6.8): at most one fetch per upstream per cadence per instance, outside the vendor budget an operator configured.

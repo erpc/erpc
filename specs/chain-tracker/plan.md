@@ -10,7 +10,7 @@ Spec: [feature.md](feature.md). One step per commit; each ships on its own. Befo
 | 1 | sources: HTTP poll, reconciler from network init, opt-in `subscriptionSource`, idle stop, expiring switches; prewarm deleted |
 | 2 | walk, settle, re-anchor, fill, `Read`, scheduler; follower ticker deleted; `TestChainFeed_ConvergesUnderFaults` |
 | 3 | logs from receipts, fallback, bloom check; upstream `logs` subscriptions deleted |
-| 4 | mempool feed; indexer ingress, egress and ws buffers deleted |
+| 4 | pending-transaction feed, now the relay feed (`indexer/relay`, bounded per kind by `common.RelaySpec`); indexer ingress, egress and ws buffers deleted |
 | 5 | integrity on tracker data, suspension |
 | 6 | gRPC `StreamBlocks` as a resumable transport; block stream hub deleted |
 
@@ -48,7 +48,7 @@ T   the rest of the real-world catalogue
 - Add:
   - Number age and hash age against the lag reference, in `health/tracker.go` (spec §6.1); W.
   - Bench threshold `max(30s, 3 × backed-off cadence)`, read through an injected reader of the poller backoff.
-  - `voter(u)` and topic admission (spec §6.2); the reconciler and mempool admission read topic admission.
+  - `voter(u)` and topic admission (spec §6.2); the reconciler and relay admission (`Intake.Relayed`) read topic admission.
   - Hash votes only from tracker and poller fetches that skip cache reads, and pushes (spec §6.3).
   - Minority-fork demotion: off the pins for longer than W → no number vote, last in routing.
   - Confirmed head = highest pin with `q.Of(hash voters)` hash votes and number ≤ the lane's `Latest`; cold window W; a use-upstream connection gates on its lane (spec §6.5).
