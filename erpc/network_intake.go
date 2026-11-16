@@ -128,17 +128,17 @@ func (in *networkIntake) Subscribed(upstreamId string, t indexer.Topic, err erro
 	in.nw.sources.subscribed(upstreamId, t, err)
 }
 
-// PendingTx takes one pending transaction of a push source into the
-// mempool feed while topic admission admits the source, as the last pass
+// Relayed takes one message of relay topic t from a push source into the
+// relay feed while topic admission admits the source, as the last pass
 // read it.
-func (in *networkIntake) PendingTx(upstreamId, variant string, raw json.RawMessage) {
-	if in.nw.mempool == nil {
+func (in *networkIntake) Relayed(upstreamId string, t indexer.Topic, raw json.RawMessage) {
+	if in.nw.relay == nil {
 		return
 	}
 	if ids := in.admitted.Load(); ids == nil || !slices.Contains(*ids, upstreamId) {
 		return
 	}
-	in.nw.mempool.Add(variant, raw)
+	in.nw.relay.Add(t, raw)
 }
 
 // Polled takes the header a poll of upstreamId's latest, sent at sent,

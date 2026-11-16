@@ -1,3 +1,7 @@
+// Package indexer is the chain- and transport-neutral core between sources
+// and transports: the chain and relay feed contracts, intake, sources and
+// taps. It must not import erpc, architecture/evm, clients, or any
+// transport library.
 package indexer
 
 import (
@@ -101,58 +105,57 @@ func (e OutOfRangeError) EndReason() string {
 	return TapEndOutOfRange
 }
 
-// MempoolFeed is the reader side of one network's pending transactions.
-type MempoolFeed interface {
-	Tail(variant string) uint64 // newest sequence; a new tap starts after it
-	// Read waits for payloads after seq, bounded by ctx.
+// RelayFeed is the reader side of one network's relayed messages.
+type RelayFeed interface {
+	Tail(t Topic) uint64 // newest sequence; a new tap starts after it
+	// Read waits for messages after seq, bounded by ctx.
 	// ErrOutOfRange: seq left the ring.
-	Read(ctx context.Context, variant string, after uint64) (txs []json.RawMessage, next uint64, err error)
+	Read(ctx context.Context, t Topic, after uint64) (msgs []json.RawMessage, next uint64, err error)
 }
 
-// Topic is what a source feeds: newHeads, or
-// newPendingTransactions:<variant>.
+// Topic is what a source feeds: newHeads, or a relay topic
+// <kind>:<variant>.
 type Topic string
 
-const TopicNewHeads Topic = SubTypeNewHeads
+// TopicNewHeads is the chain's heads; a topic of the sources, named as the
+// subscription kind that wants them.
+const TopicNewHeads Topic = "newHeads"
 
-const pendingTxTopicPrefix = SubTypeNewPendingTransactions + ":"
+// RelayTopic is the topic of one variant of a relayed kind.
+func RelayTopic(kind, variant string) Topic { return Topic(kind + ":" + variant) }
 
-// PendingTxTopic is the topic of one pending-transaction variant.
-func PendingTxTopic(variant string) Topic { return Topic(pendingTxTopicPrefix + variant) }
-
-// PendingTxVariant is t's variant, if t is a pending-transaction topic.
-func (t Topic) PendingTxVariant() (variant string, ok bool) {
-	return strings.CutPrefix(string(t), pendingTxTopicPrefix)
+// Relay is t's kind and variant, if t is a relay topic.
+func (t Topic) Relay() (kind, variant string, ok bool) {
+	return strings.Cut(string(t), ":")
 }
 
-// PendingTxVariantOf names the variant of newPendingTransactions subscribe
-// params: the params after the subscription type, as JSON with sorted keys,
-// so equal params from any client are one variant.
-func PendingTxVariantOf(params []interface{}) (string, error) {
-	rest := []interface{}{}
-	if len(params) > 1 {
-		rest = params[1:]
+// RelayVariant names the variant of a relayed kind's subscribe params,
+// those after the kind: JSON with sorted keys, so equal params from any
+// client are one variant.
+func RelayVariant(params []interface{}) (string, error) {
+	if len(params) == 0 {
+		return "[]", nil
 	}
-	b, err := json.Marshal(rest)
+	b, err := json.Marshal(params)
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
 }
 
-// PendingTxParams are the subscribe params variant names, after the kind.
-func PendingTxParams(variant string) ([]interface{}, error) {
-	var rest []interface{}
-	if err := json.Unmarshal([]byte(variant), &rest); err != nil {
+// RelayParams are the subscribe params variant names, after the kind.
+func RelayParams(variant string) ([]interface{}, error) {
+	var params []interface{}
+	if err := json.Unmarshal([]byte(variant), &params); err != nil {
 		return nil, err
 	}
-	return rest, nil
+	return params, nil
 }
 
 // Intake is what sources report into; erpc implements it per network.
 type Intake interface {
 	Header(upstreamId string, raw json.RawMessage)
-	PendingTx(upstreamId, variant string, raw json.RawMessage)
+	Relayed(upstreamId string, t Topic, raw json.RawMessage)
 	// Subscribed reports a push subscribe's answer for t: nil once it is
 	// live, else the upstream's error.
 	Subscribed(upstreamId string, t Topic, err error)

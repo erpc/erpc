@@ -1,5 +1,5 @@
 // Package wsupstream adapts a WebSocket JSON-RPC upstream into a source
-// (indexer.Source: newHeads and pending transactions into intake): it owns
+// (indexer.Source: newHeads and relay topics into intake): it owns
 // the upstream subscribe and unsubscribe calls, in its client's pub/sub
 // dialect, and resubscribes after every reconnect.
 package wsupstream
@@ -69,7 +69,7 @@ type Adapter struct {
 	// hash vote expires at once.
 	disconnected func()
 
-	// intake takes every newHeads and pending-transaction push and every
+	// intake takes every newHeads and relay-topic push and every
 	// subscribe answer.
 	intake indexer.Intake
 
@@ -95,13 +95,12 @@ type Adapter struct {
 	headsWanted  bool
 	headsRefused atomic.Bool
 	headsReask   *time.Timer
-	// topics are the pending-transaction topics Set asked for; they
-	// survive disconnects to be resubscribed.
-	topics map[indexer.Topic]*pendingSub
+	// topics are the relay topics Set asked for; they survive disconnects
+	// to be resubscribed.
+	topics map[indexer.Topic]*relaySub
 }
 
-// upstreamSub is one upstream subscription: newHeads or a pending-transaction
-// topic.
+// upstreamSub is one upstream subscription: newHeads or a relay topic.
 type upstreamSub struct {
 	// mu serialises subscribe attempts so Set and the resubscribe loop
 	// can't create duplicates.
@@ -139,12 +138,15 @@ type Options struct {
 	Disconnected func()
 }
 
-// pendingSub is one pending-transaction topic of Set.
-type pendingSub struct {
+// headsKind is the subscription kind of indexer.TopicNewHeads.
+const headsKind = string(indexer.TopicNewHeads)
+
+// relaySub is one relay topic of Set.
+type relaySub struct {
 	upstreamSub
-	topic   indexer.Topic
-	variant string
-	// params are the subscribe params naming variant.
+	topic indexer.Topic
+	kind  string
+	// params are the subscribe params naming the topic's variant.
 	params []interface{}
 	// heard is when its last message arrived, in unix nanoseconds.
 	heard atomic.Int64
@@ -167,7 +169,7 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 		networkLabel: opts.NetworkLabel,
 		wsClient:     wsClient,
 		logger:       &lg,
-		topics:       make(map[indexer.Topic]*pendingSub),
+		topics:       make(map[indexer.Topic]*relaySub),
 		resubWake:    make(chan struct{}, 1),
 		intake:       intake,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, bypassMethodExclusion bool) (*common.NormalizedResponse, error) {
@@ -181,16 +183,17 @@ func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger 
 	}
 }
 
-// Set feeds what topics name: newHeads, and each pending-transaction topic.
+// Set feeds what topics name: newHeads, and each relay topic.
 // A topic Set adds is subscribed in the background and its answer reported
 // through Intake.Subscribed; a dropped one is released upstream.
 func (a *Adapter) Set(topics []indexer.Topic) {
 	wantHeads := slices.Contains(topics, indexer.TopicNewHeads)
 	type released struct {
+		kind  string
 		id    string
 		epoch uint64
 	}
-	var added []*pendingSub
+	var added []*relaySub
 	var releases []released
 	a.subsMu.Lock()
 	headsChanged := wantHeads != a.headsWanted
@@ -204,16 +207,16 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 		}
 	}
 	for _, t := range topics {
-		variant, ok := t.PendingTxVariant()
+		kind, variant, ok := t.Relay()
 		if !ok || a.topics[t] != nil {
 			continue
 		}
-		params, err := indexer.PendingTxParams(variant)
+		params, err := indexer.RelayParams(variant)
 		if err != nil {
-			a.logger.Warn().Err(err).Str("topic", string(t)).Msg("cannot subscribe a pending-transaction topic with unparsable params")
+			a.logger.Warn().Err(err).Str("topic", string(t)).Msg("cannot subscribe a relay topic with unparsable params")
 			continue
 		}
-		sub := &pendingSub{topic: t, variant: variant, params: params}
+		sub := &relaySub{topic: t, kind: kind, params: params}
 		a.topics[t] = sub
 		added = append(added, sub)
 	}
@@ -224,7 +227,7 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 		delete(a.topics, t)
 		// Marked here, so a subscribe in flight releases its result.
 		if sub.id != "" {
-			releases = append(releases, released{sub.id, sub.epoch})
+			releases = append(releases, released{sub.kind, sub.id, sub.epoch})
 		}
 		sub.clearLocked()
 		sub.removed = true
@@ -232,10 +235,10 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 	a.subsMu.Unlock()
 
 	for _, r := range releases {
-		go a.release(context.Background(), indexer.SubTypeNewPendingTransactions, r.id, r.epoch)
+		go a.release(context.Background(), r.kind, r.id, r.epoch)
 	}
 	if headsChanged && !wantHeads {
-		a.drop(context.Background(), &a.heads, indexer.SubTypeNewHeads)
+		a.drop(context.Background(), &a.heads, headsKind)
 	}
 	if (headsChanged && wantHeads) || len(added) > 0 {
 		a.attach()
@@ -253,7 +256,7 @@ var _ indexer.Source = (*Adapter)(nil)
 // Connected reports whether the upstream's socket is up.
 func (a *Adapter) Connected() bool { return a.wsClient.IsConnected() }
 
-// Activity is pending-transaction topic t's last message and the start of
+// Activity is relay topic t's last message and the start of
 // its live upstream subscription, each zero if none.
 func (a *Adapter) Activity(t indexer.Topic) (heard, subscribed time.Time) {
 	a.subsMu.Lock()
@@ -271,7 +274,7 @@ func (a *Adapter) Activity(t indexer.Topic) (heard, subscribed time.Time) {
 	return heard, subscribed
 }
 
-// Resubscribe drops pending-transaction topic t's live upstream
+// Resubscribe drops relay topic t's live upstream
 // subscription and subscribes it again. The new subscribe counts in
 // erpc_source_resubscribe_total once it is sent.
 func (a *Adapter) Resubscribe(t indexer.Topic) {
@@ -281,12 +284,12 @@ func (a *Adapter) Resubscribe(t indexer.Topic) {
 		a.subsMu.Unlock()
 		return
 	}
-	id, epoch := sub.id, sub.epoch
+	id, epoch, kind := sub.id, sub.epoch, sub.kind
 	sub.clearLocked()
 	sub.resub = true
 	a.subsMu.Unlock()
 	if id != "" {
-		go a.release(context.Background(), indexer.SubTypeNewPendingTransactions, id, epoch)
+		go a.release(context.Background(), kind, id, epoch)
 	}
 	a.startResubscribe()
 }
@@ -428,7 +431,7 @@ func (a *Adapter) startResubscribe() {
 	go a.resubscribeWithRetry(ctx)
 }
 
-// resubscribeWithRetry (re)subscribes newHeads and every pending-transaction
+// resubscribeWithRetry (re)subscribes newHeads and every relay
 // topic, retrying with backoff until all succeed or ctx is cancelled, so
 // one failed subscribe doesn't leave the adapter without heads until the
 // next reconnect.
@@ -449,7 +452,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		default:
 		}
 		askHeads := a.headsWanted && a.headsReask == nil
-		subs := make([]*pendingSub, 0, len(a.topics))
+		subs := make([]*relaySub, 0, len(a.topics))
 		for _, sub := range a.topics {
 			subs = append(subs, sub)
 		}
@@ -457,7 +460,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		if askHeads {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			a.heads.mu.Lock()
-			err := a.subscribeLocked(attemptCtx, &a.heads, indexer.SubTypeNewHeads, nil, a.handleNewHeads, nil)
+			err := a.subscribeLocked(attemptCtx, &a.heads, headsKind, nil, a.handleNewHeads, nil)
 			a.heads.mu.Unlock()
 			cancel()
 			switch {
@@ -488,13 +491,13 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		for _, sub := range subs {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			sub.mu.Lock()
-			err := a.subscribePendingLocked(attemptCtx, sub)
+			err := a.subscribeRelayLocked(attemptCtx, sub)
 			sub.mu.Unlock()
 			cancel()
 			if err != nil {
 				done = false
 				a.logger.Warn().Err(err).Str("topic", string(sub.topic)).
-					Msg("failed to re-subscribe pending-transaction topic, will retry")
+					Msg("failed to re-subscribe relay topic, will retry")
 			}
 			if ctx.Err() != nil {
 				continue
@@ -532,9 +535,9 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 	}
 }
 
-func (a *Adapter) subscribePendingLocked(ctx context.Context, sub *pendingSub) error {
-	return a.subscribeLocked(ctx, &sub.upstreamSub, indexer.SubTypeNewPendingTransactions, sub.params, func(params []byte) {
-		a.handlePendingTx(sub, params)
+func (a *Adapter) subscribeRelayLocked(ctx context.Context, sub *relaySub) error {
+	return a.subscribeLocked(ctx, &sub.upstreamSub, sub.kind, sub.params, func(params []byte) {
+		a.handleRelayed(sub, params)
 	}, func() {
 		a.subsMu.Lock()
 		resub := sub.resub
@@ -667,7 +670,7 @@ func (a *Adapter) countEvent(kind string, raw []byte) {
 }
 
 func (a *Adapter) handleNewHeads(raw []byte) {
-	a.countEvent(indexer.SubTypeNewHeads, raw)
+	a.countEvent(headsKind, raw)
 	var outer notificationParams
 	if err := common.SonicCfg.Unmarshal(raw, &outer); err != nil {
 		a.logger.Warn().Err(err).Msg("failed to parse newHeads notification envelope")
@@ -678,15 +681,15 @@ func (a *Adapter) handleNewHeads(raw []byte) {
 	a.intake.Header(a.upstreamID, outer.Result)
 }
 
-func (a *Adapter) handlePendingTx(sub *pendingSub, raw []byte) {
+func (a *Adapter) handleRelayed(sub *relaySub, raw []byte) {
 	// Counted before intake: a topic whose messages intake gates is not
 	// silent.
 	sub.heard.Store(time.Now().UnixNano())
-	a.countEvent(indexer.SubTypeNewPendingTransactions, raw)
+	a.countEvent(sub.kind, raw)
 	var outer notificationParams
 	if err := common.SonicCfg.Unmarshal(raw, &outer); err != nil {
-		a.logger.Warn().Err(err).Msg("failed to parse newPendingTransactions notification envelope")
+		a.logger.Warn().Err(err).Str("kind", sub.kind).Msg("failed to parse relay notification envelope")
 		return
 	}
-	a.intake.PendingTx(a.upstreamID, sub.variant, outer.Result)
+	a.intake.Relayed(a.upstreamID, sub.topic, outer.Result)
 }

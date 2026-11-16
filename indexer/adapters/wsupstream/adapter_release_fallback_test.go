@@ -21,9 +21,9 @@ func TestAdapterQuietSubscriptionReleasedDespiteFailedUnsubscribe(t *testing.T) 
 	require.Eventually(t, a.wsClient.IsConnected, 3*time.Second, 10*time.Millisecond)
 	failed := failFirstUnsubscribe(a)
 
-	variant, err := indexer.PendingTxVariantOf([]interface{}{indexer.SubTypeNewPendingTransactions})
+	variant, err := indexer.RelayVariant(nil)
 	require.NoError(t, err)
-	topic := indexer.PendingTxTopic(variant)
+	topic := indexer.RelayTopic(evmpubsub.KindNewPendingTransactions, variant)
 	a.Set([]indexer.Topic{topic})
 	subID := conn.nextRequest(t, evmpubsub.MethodSubscribe).SubID
 	require.Eventually(t, func() bool { return topicLive(a, topic) }, 3*time.Second, 10*time.Millisecond)

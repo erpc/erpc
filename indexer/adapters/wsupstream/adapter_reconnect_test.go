@@ -27,8 +27,8 @@ import (
 // --- test doubles -------------------------------------------------------
 
 type txEvent struct {
-	variant string
-	raw     string
+	topic indexer.Topic
+	raw   string
 }
 
 type answer struct {
@@ -52,8 +52,8 @@ func (s *fakeSink) Subscribed(_ string, t indexer.Topic, err error) {
 	}
 }
 
-func (s *fakeSink) PendingTx(_ string, variant string, raw json.RawMessage) {
-	s.txs <- txEvent{variant, string(raw)}
+func (s *fakeSink) Relayed(_ string, t indexer.Topic, raw json.RawMessage) {
+	s.txs <- txEvent{t, string(raw)}
 }
 
 // notifyServer is a WS upstream that answers eth_subscribe with ids from a
@@ -131,12 +131,12 @@ func (nc *notifyConn) serve(gate chan struct{}, rejectNewHeads bool) {
 		if gate != nil {
 			<-gate
 		}
-		if rejectNewHeads && req.Params[0] == indexer.SubTypeNewHeads {
+		if rejectNewHeads && req.Params[0] == evmpubsub.KindNewHeads {
 			nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"error":{"code":-32601,"message":"the method eth_subscribe does not exist/is not available"}}`)
 			continue
 		}
 		nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":"` + req.SubID + `"}`)
-		if req.Params[0] == indexer.SubTypeNewPendingTransactions {
+		if req.Params[0] == evmpubsub.KindNewPendingTransactions {
 			nc.sendTx(req.SubID, 1)
 		}
 	}
@@ -199,7 +199,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 		networkLabel: "evm:123",
 		wsClient:     wsc,
 		logger:       &logger,
-		topics:       make(map[indexer.Topic]*pendingSub),
+		topics:       make(map[indexer.Topic]*relaySub),
 		resubWake:    make(chan struct{}, 1),
 		intake:       sink,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
@@ -234,9 +234,9 @@ func subscribedHeads(a *Adapter) func() bool {
 // txTopic is a newPendingTransactions topic; tag tells topics apart.
 func txTopic(t *testing.T, tag string) indexer.Topic {
 	t.Helper()
-	v, err := indexer.PendingTxVariantOf([]interface{}{indexer.SubTypeNewPendingTransactions, map[string]interface{}{"tag": tag}})
+	v, err := indexer.RelayVariant([]interface{}{map[string]interface{}{"tag": tag}})
 	require.NoError(t, err)
-	return indexer.PendingTxTopic(v)
+	return indexer.RelayTopic(evmpubsub.KindNewPendingTransactions, v)
 }
 
 // topicLive reports whether topic's subscription is live on the current
@@ -388,14 +388,14 @@ func TestAdapterResubscribesAllTopicsAfterReconnect(t *testing.T) {
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	for id, subType := range subscribes {
-		if subType == indexer.SubTypeNewPendingTransactions {
+		if subType == evmpubsub.KindNewPendingTransactions {
 			conn2.sendTx(id, 2)
 		}
 	}
-	delivered := make(map[string]bool)
+	delivered := make(map[indexer.Topic]bool)
 	for len(delivered) < numTopics {
 		if tx := nextTx(t, sink); tx.raw == `"0xtx2"` {
-			delivered[tx.variant] = true
+			delivered[tx.topic] = true
 		}
 	}
 
@@ -419,8 +419,7 @@ func TestAdapterDeliversFirstNotificationAfterSubscribe(t *testing.T) {
 	topic := txTopic(t, "0xabc")
 	a.Set([]indexer.Topic{topic})
 	require.NoError(t, nextAnswer(t, sink, topic))
-	variant, _ := topic.PendingTxVariant()
-	assert.Equal(t, txEvent{variant: variant, raw: `"0xtx1"`}, nextTx(t, sink))
+	assert.Equal(t, txEvent{topic: topic, raw: `"0xtx1"`}, nextTx(t, sink))
 }
 
 // TestAdapterDropTopicDuringSubscribe: a Set that drops a topic while its

@@ -81,7 +81,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	defer sender.stop()
 	tracker := nw.chainTracker
 	feed := waitBoundedFeed{ChainTracker: tracker, wait: streamBlocksReadWait.Load(), lastVote: nw.newestHashVoteAt}
-	sends := newTapSends(nw, "", "grpc", indexer.SubTypeNewHeads)
+	sends := newTapSends(nw, "", "grpc", evmpubsub.KindNewHeads)
 	sendWait := streamBlocksSendWait.Load()
 	emit := func(b indexer.Batch) (int, error) {
 		for i, blk := range b.Applied {
@@ -107,7 +107,7 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	}
 	done := make(chan error, 1)
 	if !nw.bg.Go(func() {
-		done <- nw.taps.RunChain(tapCtx, nw.Label(), "grpc", indexer.SubTypeNewHeads, feed, start, indexer.ReadOpts{Resumable: true}, emit)
+		done <- nw.taps.RunChain(tapCtx, nw.Label(), "grpc", evmpubsub.KindNewHeads, feed, start, indexer.ReadOpts{Resumable: true}, emit)
 	}) {
 		return status.Error(codes.Unavailable, "network is stopping")
 	}
@@ -161,7 +161,7 @@ func (gs *GrpcServer) openBlockStream(ctx context.Context, input *RequestInput) 
 		return nil, err
 	}
 	nq := common.NewNormalizedRequestFromJsonRpcRequest(
-		common.NewJsonRpcRequest(evmpubsub.MethodSubscribe, []interface{}{indexer.SubTypeNewHeads}),
+		common.NewJsonRpcRequest(evmpubsub.MethodSubscribe, []interface{}{evmpubsub.KindNewHeads}),
 	)
 	nq.SetClientIP(input.ClientIP)
 	if input.UserAgent != "" {

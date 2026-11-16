@@ -26,7 +26,7 @@ func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
 	for done := false; !done; {
 		select {
 		case req := <-conn1.requests:
-			if req.Method == evmpubsub.MethodSubscribe && req.Params[0] == indexer.SubTypeNewHeads {
+			if req.Method == evmpubsub.MethodSubscribe && req.Params[0] == evmpubsub.KindNewHeads {
 				headsSubscribes++
 			}
 		case <-deadline:
@@ -41,7 +41,7 @@ func TestAdapterGivesUpNewHeadsWhenUnsupported(t *testing.T) {
 
 	_ = conn1.conn.UnderlyingConn().Close()
 	conn2 := <-server.newConn
-	require.Equal(t, indexer.SubTypeNewHeads, conn2.nextRequest(t, evmpubsub.MethodSubscribe).Params[0],
+	require.Equal(t, evmpubsub.KindNewHeads, conn2.nextRequest(t, evmpubsub.MethodSubscribe).Params[0],
 		"a new connection asks for newHeads again")
 	require.Eventually(t, func() bool {
 		a.subsMu.Lock()

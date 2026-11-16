@@ -95,7 +95,7 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, nil, err
 	}
 
-	subType, _ := dialect.SubscribeKind(method, jrReq.Params)
+	subType, variantParams := dialect.SubscribeKind(method, jrReq.Params)
 	var logsFilter *logfilter.LogsFilter
 	if subType == evmpubsub.KindLogs {
 		if logsFilter, err = parseLogsSubscribe(jrReq.Params); err != nil {
@@ -122,17 +122,17 @@ func (sm *SubscriptionManager) Subscribe(
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, nil, err
 	}
-	var variant string
-	releaseVariant := func() {}
+	var topic indexer.Topic
+	releaseTopic := func() {}
 	if spec.Relay != nil {
-		if variant, releaseVariant, err = sm.openRelayVariant(ctx, nw, method, subType, jrReq.Params); err != nil {
+		if topic, releaseTopic, err = sm.openRelay(ctx, nw, method, subType, variantParams); err != nil {
 			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 			return nil, nil, err
 		}
 	}
 
 	if !sm.reserveSub(maxTotal) {
-		releaseVariant()
+		releaseTopic()
 		telemetry.CounterHandle(telemetry.MetricWebsocketRejectedTotal, project.Config.Id, wsRejectSubGlobal).Inc()
 		err := common.NewErrInstanceSubscriptionLimitExceeded(maxTotal)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
@@ -152,12 +152,12 @@ func (sm *SubscriptionManager) Subscribe(
 			lane := laneSelector(nq)
 			switch {
 			case spec.Relay != nil:
-				release := releaseVariant
-				releaseVariant = func() {}
-				from := nw.mempool.Tail(variant)
+				release := releaseTopic
+				releaseTopic = func() {}
+				from := nw.relay.Tail(topic)
 				nw.bg.Go(func() {
 					defer release()
-					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from)
+					sm.runRelay(tapCtx, wsc, sub, opened, nw, topic, from)
 				})
 			case subType == evmpubsub.KindLogs:
 				head := nw.chainTracker.HeadAsOf()
@@ -171,7 +171,7 @@ func (sm *SubscriptionManager) Subscribe(
 		}
 	}
 	if err := addErr; err != nil {
-		releaseVariant()
+		releaseTopic()
 		sm.activeSubs.Add(-1)
 		if errors.Is(err, wsclient.ErrLimitExceeded) {
 			err = common.NewErrSubscriptionLimitExceeded(maxSubs)
@@ -277,21 +277,23 @@ func (sm *SubscriptionManager) reserveSub(maxTotal int) bool {
 	return true
 }
 
-// openRelayVariant opens the variant of a relayed kind's subscribe params
-// on nw's relay feed until release; the reconciler admits it and decides
-// whether its push sources refused it (spec §11).
-func (sm *SubscriptionManager) openRelayVariant(ctx context.Context, nw *Network, method, kind string, params []interface{}) (variant string, release func(), err error) {
-	if nw.mempool == nil {
+// openRelay opens the topic of a relayed kind's variant params on nw's
+// relay feed until release; the reconciler admits it and decides whether
+// its push sources refused it (spec §11).
+func (sm *SubscriptionManager) openRelay(ctx context.Context, nw *Network, method, kind string, params []interface{}) (topic indexer.Topic, release func(), err error) {
+	if nw.relay == nil {
 		return "", nil, common.NewErrNoSubscriptionSource(nw.networkId, method, kind)
 	}
-	if variant, err = indexer.PendingTxVariantOf(params); err != nil {
+	variant, err := indexer.RelayVariant(params)
+	if err != nil {
 		return "", nil, common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
 			"invalid "+kind+" params: "+err.Error(), nil, nil)
 	}
-	if release, err = nw.sources.openPending(ctx, variant); err != nil {
+	topic = indexer.RelayTopic(kind, variant)
+	if release, err = nw.sources.openRelay(ctx, topic); err != nil {
 		return "", nil, err
 	}
-	return variant, release, nil
+	return topic, release, nil
 }
 
 // getOrCreateConn returns the connection's subscriptions, creating them on

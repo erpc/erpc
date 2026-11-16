@@ -362,7 +362,7 @@ func (s *chaosSeed) recordHeadsEnds(ctx context.Context) {
 			return
 		case <-time.After(10 * time.Millisecond):
 		}
-		if now := tapEndsOf(indexer.SubTypeNewHeads); !maps.Equal(now, last) {
+		if now := tapEndsOf(evmpubsub.KindNewHeads); !maps.Equal(now, last) {
 			s.endsMu.Lock()
 			s.headsEnds = append(s.headsEnds, tapEndsAt{at: time.Now(), ends: now})
 			s.endsMu.Unlock()
@@ -491,7 +491,7 @@ func (cl *chaosClient) problem(format string, args ...interface{}) {
 
 func (cl *chaosClient) apply(s *chaosSeed, n uint64, h chainsim.Hash) {
 	b := s.chain.Block(h)
-	ends := tapEndsOf(indexer.SubTypeNewHeads)
+	ends := tapEndsOf(evmpubsub.KindNewHeads)
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	now := time.Now()
@@ -607,7 +607,7 @@ func (s *chaosSeed) dialLogs(name string) {
 			return conn != nil
 		}, 15*time.Second, chaosBlock, "logs subscribe on filter %d is accepted", f)
 		cl := &chaosLogsClient{name: fmt.Sprintf("%s/%d", name, f), filter: f, conn: conn, held: make(map[chainsim.LogKey]uint64),
-			taps: tapEndsOf(indexer.SubTypeLogs), subscribedTip: s.chain.Tip().Number}
+			taps: tapEndsOf(evmpubsub.KindLogs), subscribedTip: s.chain.Tip().Number}
 		s.mu.Lock()
 		s.logs = append(s.logs, cl)
 		s.mu.Unlock()
@@ -651,7 +651,7 @@ func (cl *chaosLogsClient) read(s *chaosSeed) {
 		_, msg, err := cl.conn.ReadMessage()
 		if err != nil {
 			ended := time.Now()
-			why := fmt.Sprintf("logs tap ends since it opened %s; %s", endsSince(cl.taps, tapEndsOf(indexer.SubTypeLogs)), s.trackerContext(ended.Add(-logsCloseBound())))
+			why := fmt.Sprintf("logs tap ends since it opened %s; %s", endsSince(cl.taps, tapEndsOf(evmpubsub.KindLogs)), s.trackerContext(ended.Add(-logsCloseBound())))
 			cl.mu.Lock()
 			cl.ended, cl.endTip, cl.why = ended, s.chain.Tip().Number, why
 			var ce *websocket.CloseError
@@ -1160,7 +1160,7 @@ func (s *chaosSeed) run(faults []string) {
 	defer stop()
 	s.startERPC()
 	go s.watchBreakers(ctx)
-	s.headsEnds = []tapEndsAt{{at: time.Now(), ends: tapEndsOf(indexer.SubTypeNewHeads)}}
+	s.headsEnds = []tapEndsAt{{at: time.Now(), ends: tapEndsOf(evmpubsub.KindNewHeads)}}
 	go s.recordHeadsEnds(ctx)
 	s.chain.Start()
 
@@ -3173,7 +3173,7 @@ func (p *chaosPendingClient) read(s *chaosSeed, conn *websocket.Conn) {
 // pendingSilentAfter the source subscribes the topic again.
 func (s *chaosSeed) pendingSilentVendor() {
 	v := s.liveWS()
-	topic := string(indexer.PendingTxTopic("[]"))
+	topic := string(indexer.RelayTopic(evmpubsub.KindNewPendingTransactions, "[]"))
 	resubs := func() float64 {
 		return testutil.ToFloat64(telemetry.MetricSourceResubscribeTotal.WithLabelValues("test_ws", "evm:123", v.ID, topic))
 	}

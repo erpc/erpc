@@ -17,6 +17,7 @@ import (
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
@@ -277,7 +278,7 @@ func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 	}
 
 	tapLabels := func(transport string) []string {
-		return []string{"test_ws", "evm:123", transport, indexer.SubTypeNewHeads}
+		return []string{"test_ws", "evm:123", transport, evmpubsub.KindNewHeads}
 	}
 	openTaps := func(transport string) float64 {
 		return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels(transport)...))
@@ -450,7 +451,7 @@ func TestNetworkIntake_NonSourceVoterNeverHoldsTaps(t *testing.T) {
 			conn := dialWs(t, addr)
 			defer conn.Close()
 			subscribeNewHeads(t, conn)
-			tapLabels := []string{"test_ws", "evm:123", "ws", indexer.SubTypeNewHeads}
+			tapLabels := []string{"test_ws", "evm:123", "ws", evmpubsub.KindNewHeads}
 			require.Eventually(t, func() bool { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) == 1 },
 				5*time.Second, 10*time.Millisecond, "the client's tap opens")
 			require.Eventually(t, func() bool { return httpVendor.latestPolls.Load() > 0 }, 5*time.Second, 10*time.Millisecond,
@@ -516,7 +517,7 @@ func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
 	require.NoError(t, err)
 	got := make(chan uint64, 16)
 	go func() {
-		_ = indexer.NewTaps(network.logger, "test", nil).RunChain(ctx, network.networkId, "test", indexer.SubTypeNewHeads, network.chainTracker, &start, indexer.ReadOpts{},
+		_ = indexer.NewTaps(network.logger, "test", nil).RunChain(ctx, network.networkId, "test", evmpubsub.KindNewHeads, network.chainTracker, &start, indexer.ReadOpts{},
 			func(b indexer.Batch) (int, error) {
 				for _, blk := range b.Applied {
 					got <- blk.Number

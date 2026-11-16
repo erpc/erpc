@@ -25,7 +25,7 @@ import (
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
-	"github.com/erpc/erpc/indexer/mempool"
+	"github.com/erpc/erpc/indexer/relay"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
@@ -137,13 +137,13 @@ type Network struct {
 
 	// chainTracker is the network-wide tracker; intake feeds it from the
 	// sources, which the reconciler sets; taps read it and are the demand.
-	// mempool holds the pending transactions intake admits. All nil on
-	// non-EVM networks. bg runs the intake, reconciler and tap loops.
+	// relay holds the relayed messages intake admits. All nil on non-EVM
+	// networks. bg runs the intake, reconciler and tap loops.
 	chainTracker *evm.ChainTracker
 	intake       *networkIntake
 	sources      *sourceReconciler
 	taps         *indexer.Taps
-	mempool      *mempool.Feed
+	relay        *relay.Feed
 	bg           util.Goroutines
 }
 
