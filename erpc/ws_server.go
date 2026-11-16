@@ -10,11 +10,11 @@ import (
 	"net/http"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
@@ -42,12 +42,17 @@ type WsConnection struct {
 	// architecture is the URL's, for error bodies built before the request
 	// is bound to its network (as on the HTTP path).
 	architecture common.NetworkArchitecture
-	httpReq      *http.Request // the upgrade request, for auth and headers
+	// arch is the URL architecture's handler, nil if none is registered;
+	// dialect is its subscription dialect, nil if it serves none.
+	arch    common.ArchitectureHandler
+	dialect common.PubSubDialect
+	httpReq *http.Request // the upgrade request, for auth and headers
 	// costFrames: every text message starts with a cost header block (see
 	// encodeMessage); set at upgrade from headerCostFrames and costHeaders.
 	costFrames bool
-	// notifyCostBlocks caches each subscription kind's notification block.
-	notifyCostBlocks [wsclient.KindPendingTx + 1]atomic.Pointer[[]byte]
+	// notifyCostBlocks caches each subscription kind's notification block
+	// (kind -> []byte).
+	notifyCostBlocks sync.Map
 
 	// w is the connection's one data writer (see ws_writer.go).
 	w wsWriter
@@ -120,6 +125,11 @@ func (s *HttpServer) handleWebSocket(
 	// Not derived from the app context: shutdown ends connections via stop()
 	// so in-flight requests still get their response.
 	connCtx, connCancel := context.WithCancel(context.Background())
+	arch, _ := common.GetArchitectureHandler(common.NetworkArchitecture(architecture))
+	var dialect common.PubSubDialect
+	if arch != nil {
+		dialect = arch.PubSub()
+	}
 	wsc := &WsConnection{
 		id:           fmt.Sprintf("ws-%d", atomic.AddInt64(&wsConnCounter, 1)),
 		conn:         wsConn,
@@ -130,6 +140,8 @@ func (s *HttpServer) handleWebSocket(
 		project:      project,
 		networkId:    fmt.Sprintf("%s:%s", architecture, chainId),
 		architecture: common.NetworkArchitecture(architecture),
+		arch:         arch,
+		dialect:      dialect,
 		httpReq:      r,
 		costFrames:   s.costHeadersEnabled() && r.Header.Get(headerCostFrames) == "1",
 		sem:          make(chan struct{}, wsCfg.MaxConcurrentRequestsPerConnection),
@@ -380,9 +392,9 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	}
 
 	method, _ := nq.Method()
-	// Agave drops a Solana client's id-less keepalive ping unrun and
-	// unanswered, so it is not metered here either.
-	if notification && wsc.architecture == common.ArchitectureSvm && method == svm.MethodPing {
+	// An architecture may drop some id-less requests unrun and unanswered,
+	// as its nodes do; they are not metered either.
+	if notification && wsc.arch != nil && wsc.arch.IgnoresNotification(method) {
 		common.EndRequestSpan(requestCtx, nil, nil)
 		return nil, notification, nil
 	}
@@ -393,8 +405,11 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 	if !allowed {
 		return unsupported(fmt.Sprintf("method not supported: %s", method)), notification, nil
 	}
-	if inBatch && IsSubscriptionMethod(method) {
-		return unsupported("subscription methods (eth_subscribe, eth_unsubscribe) are not supported in batch requests"), notification, nil
+	d := wsc.dialect
+	subscribe := d != nil && d.IsSubscribe(method)
+	unsubscribe := d != nil && d.IsUnsubscribe(method)
+	if inBatch && (subscribe || unsubscribe) {
+		return unsupported("subscription methods (" + strings.Join(d.Methods(), ", ") + ") are not supported in batch requests"), notification, nil
 	}
 
 	ap, err := auth.NewPayloadFromHttp(method, wsc.httpReq.RemoteAddr, headers, queryArgs)
@@ -419,9 +434,9 @@ func (wsc *WsConnection) handleRequest(ctx context.Context, raw []byte, startedA
 
 	var resp *common.NormalizedResponse
 	switch {
-	case IsSubscribeMethod(method):
+	case subscribe:
 		resp, open, err = wsc.server.subscriptionManager.Subscribe(requestCtx, wsc, nq, project, wsc.networkId)
-	case IsSubscriptionMethod(method):
+	case unsubscribe:
 		resp, err = wsc.server.subscriptionManager.Unsubscribe(requestCtx, wsc, nq, project, wsc.networkId)
 	default:
 		resp, err = project.Forward(requestCtx, wsc.networkId, nq)
@@ -546,25 +561,21 @@ func (wsc *WsConnection) costBlock(ctx context.Context, items []interface{}) []b
 }
 
 // notificationCostBlock is the cost frame header block of one subscription
-// notification: one billable eth_subscription call on the connection's
+// notification: one billable notification call on the connection's
 // network. sub.NetworkID is the indexer's project-scoped key, not the
 // network id the response headers carry, so the connection's is used.
-func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription) []byte {
+func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription, spec common.KindSpec) []byte {
 	if !wsc.costFrames {
 		return nil
 	}
-	kind := int(sub.Kind)
-	cacheable := kind >= 0 && kind < len(wsc.notifyCostBlocks)
-	if cacheable {
-		if b := wsc.notifyCostBlocks[kind].Load(); b != nil {
-			return *b
-		}
+	if b, ok := wsc.notifyCostBlocks.Load(sub.Kind); ok {
+		return b.([]byte)
 	}
 	h := http.Header{}
 	h.Set("X-ERPC-Calls", "1")
 	h.Set("X-ERPC-Billable", "1")
-	h.Set("X-ERPC-Methods", "eth_subscription")
-	h.Set("X-ERPC-Subscription", sub.Kind.String())
+	h.Set("X-ERPC-Methods", spec.Notification)
+	h.Set("X-ERPC-Subscription", sub.Kind)
 	h.Set("X-ERPC-Network-Id", wsc.networkId)
 	nw, err := wsc.project.GetNetwork(wsc.ctx, wsc.networkId)
 	if err == nil {
@@ -574,8 +585,8 @@ func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription) []byte
 	_ = h.Write(&buf)
 	b := buf.Bytes()
 	// Retry the alias next time if the network lookup failed.
-	if cacheable && err == nil {
-		wsc.notifyCostBlocks[kind].Store(&b)
+	if err == nil {
+		wsc.notifyCostBlocks.Store(sub.Kind, b)
 	}
 	return b
 }
@@ -709,31 +720,35 @@ func (wsc *WsConnection) waitInflight(timeout time.Duration) {
 	}
 }
 
-// wsNotifier writes one subscription's eth_subscription notifications. The
-// envelope is spliced around the payload bytes as they came, so no
-// notification is encoded again per subscriber, and the metric handles are
-// bound once.
+// wsNotifier writes one subscription's notifications. The envelope is
+// spliced around the payload bytes as they came, so no notification is
+// encoded again per subscriber, and the metric handles are bound once.
 type wsNotifier struct {
-	wsc *WsConnection
-	sub wsclient.Subscription
-	// prefix is the envelope up to the result:
+	wsc  *WsConnection
+	sub  wsclient.Subscription
+	spec common.KindSpec
+	// prefix is the envelope up to the result, for EVM:
 	// {"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"<id>","result":
 	prefix      []byte
 	sent, bytes *telemetry.BoundCounter
 }
 
 var (
-	wsNotificationHead   = []byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":`)
-	wsNotificationResult = []byte(`,"result":`)
-	wsNotificationSuffix = []byte("}}\n")
+	wsNotificationHead         = []byte(`{"jsonrpc":"2.0","method":"`)
+	wsNotificationSubscription = []byte(`","params":{"subscription":`)
+	wsNotificationResult       = []byte(`,"result":`)
+	wsNotificationSuffix       = []byte("}}\n")
 )
 
+// notifier is sub's writer; sub was opened through the connection's
+// dialect, so the dialect is set and knows its kind.
 func (wsc *WsConnection) notifier(sub wsclient.Subscription) *wsNotifier {
-	id, _ := json.Marshal(sub.ClientSubID)
-	prefix := slices.Concat(wsNotificationHead, id, wsNotificationResult)
-	labels := []string{wsc.project.Config.Id, wsc.networkLabel, sub.Kind.String()}
+	spec, _ := wsc.dialect.Kind(sub.Kind)
+	prefix := slices.Concat(wsNotificationHead, []byte(spec.Notification), wsNotificationSubscription,
+		wsc.dialect.EncodeSubID(sub.ClientSubID), wsNotificationResult)
+	labels := []string{wsc.project.Config.Id, wsc.networkLabel, sub.Kind}
 	return &wsNotifier{
-		wsc: wsc, sub: sub, prefix: prefix,
+		wsc: wsc, sub: sub, spec: spec, prefix: prefix,
 		sent:  telemetry.BindCounter(telemetry.MetricWebsocketNotificationsSentTotal, labels...),
 		bytes: telemetry.BindCounter(telemetry.MetricWebsocketNotificationBytesTotal, labels...),
 	}
@@ -746,7 +761,7 @@ func (n *wsNotifier) write(result json.RawMessage, d tapDelivery) error {
 	if n.sub.Removed() {
 		return nil
 	}
-	msg, err := n.wsc.encodeMessage(n.wsc.notificationCostBlock(n.sub), func(w io.Writer) error {
+	msg, err := n.wsc.encodeMessage(n.wsc.notificationCostBlock(n.sub, n.spec), func(w io.Writer) error {
 		_, _ = w.Write(n.prefix)
 		_, _ = w.Write(result)
 		_, err := w.Write(wsNotificationSuffix)

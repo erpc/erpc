@@ -1,11 +1,11 @@
-package wsclient
+package evmpubsub
 
 import (
 	"strings"
 	"testing"
 )
 
-func TestExtractSubscriptionType(t *testing.T) {
+func TestSubscribeKind(t *testing.T) {
 	cases := []struct {
 		name   string
 		params []interface{}
@@ -17,14 +17,14 @@ func TestExtractSubscriptionType(t *testing.T) {
 		{"non-string first", []interface{}{123}, ""},
 	}
 	for _, c := range cases {
-		if got := ExtractSubscriptionType(c.params); got != c.want {
+		if got, _ := (Dialect{}).SubscribeKind(MethodSubscribe, c.params); got != c.want {
 			t.Errorf("%s: got %q want %q", c.name, got, c.want)
 		}
 	}
 }
 
-func TestExtractClientSubID_ValidString(t *testing.T) {
-	got, err := ExtractClientSubID([]interface{}{"0xabc"})
+func TestUnsubscribeID_ValidString(t *testing.T) {
+	got, err := Dialect{}.UnsubscribeID([]interface{}{"0xabc"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -33,22 +33,22 @@ func TestExtractClientSubID_ValidString(t *testing.T) {
 	}
 }
 
-func TestExtractClientSubID_EmptyParams(t *testing.T) {
-	_, err := ExtractClientSubID(nil)
+func TestUnsubscribeID_EmptyParams(t *testing.T) {
+	_, err := Dialect{}.UnsubscribeID(nil)
 	if err == nil {
 		t.Fatalf("expected error on empty params")
 	}
 }
 
-func TestExtractClientSubID_NonString(t *testing.T) {
-	_, err := ExtractClientSubID([]interface{}{123})
+func TestUnsubscribeID_NonString(t *testing.T) {
+	_, err := Dialect{}.UnsubscribeID([]interface{}{123})
 	if err == nil {
 		t.Fatalf("expected error on non-string param")
 	}
 }
 
-func TestGenerateClientSubID_Shape(t *testing.T) {
-	id, err := GenerateClientSubID()
+func TestNewSubID_Shape(t *testing.T) {
+	id, err := Dialect{}.NewSubID()
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -61,9 +61,9 @@ func TestGenerateClientSubID_Shape(t *testing.T) {
 	}
 }
 
-func TestGenerateClientSubID_Unique(t *testing.T) {
-	a, _ := GenerateClientSubID()
-	b, _ := GenerateClientSubID()
+func TestNewSubID_Unique(t *testing.T) {
+	a, _ := Dialect{}.NewSubID()
+	b, _ := Dialect{}.NewSubID()
 	if a == b {
 		t.Fatalf("two consecutive IDs must differ")
 	}

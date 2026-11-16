@@ -7,27 +7,26 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Bounds of one network's feed (spec §13.2).
+// Bounds of one network's feed (spec §13.2), the EVM dialect's.
 const (
-	RingSize    = 10_000
-	MaxHashes   = 100_000
-	MaxVariants = 16
+	RingSize    = evmpubsub.PendingRingSize
+	MaxHashes   = evmpubsub.PendingMaxKeys
+	MaxVariants = evmpubsub.PendingMaxVariants
 )
 
 // DedupFor is how long a transaction hash suppresses its repeats; a var so
 // tests can change it.
-var DedupFor = util.NewDuration(60 * time.Second)
+var DedupFor = util.NewDuration(evmpubsub.PendingDedupFor)
 
 // ErrVariantLimit refuses a ring past MaxVariants open ones.
 var ErrVariantLimit = errors.New("too many newPendingTransactions variants on the network")
@@ -133,7 +132,7 @@ func (f *Feed) Close(variant string) {
 // its first add to any ring. A payload without a hash is kept without
 // dedup.
 func (f *Feed) Add(variant string, raw json.RawMessage) {
-	hash := txHash(raw)
+	hash := evmpubsub.PendingTxKey(raw)
 	now := time.Now()
 	f.mu.Lock()
 	r := f.rings[variant]
@@ -234,20 +233,4 @@ func (f *Feed) Read(ctx context.Context, variant string, after uint64) ([]json.R
 		case <-changed:
 		}
 	}
-}
-
-// txHash is a pending transaction's identity: the hash a string payload
-// is, or an object payload's hash, lowercased; "" when it has none.
-func txHash(raw json.RawMessage) string {
-	var s string
-	if err := common.SonicCfg.Unmarshal(raw, &s); err == nil && s != "" {
-		return strings.ToLower(s)
-	}
-	var obj struct {
-		Hash string `json:"hash"`
-	}
-	if err := common.SonicCfg.Unmarshal(raw, &obj); err == nil {
-		return strings.ToLower(obj.Hash)
-	}
-	return ""
 }

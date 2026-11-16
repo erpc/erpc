@@ -9,6 +9,7 @@ import (
 
 	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/telemetry"
@@ -160,7 +161,7 @@ func (gs *GrpcServer) openBlockStream(ctx context.Context, input *RequestInput) 
 		return nil, err
 	}
 	nq := common.NewNormalizedRequestFromJsonRpcRequest(
-		common.NewJsonRpcRequest(MethodEthSubscribe, []interface{}{indexer.SubTypeNewHeads}),
+		common.NewJsonRpcRequest(evmpubsub.MethodSubscribe, []interface{}{indexer.SubTypeNewHeads}),
 	)
 	nq.SetClientIP(input.ClientIP)
 	if input.UserAgent != "" {
@@ -183,7 +184,7 @@ func (gs *GrpcServer) openBlockStream(ctx context.Context, input *RequestInput) 
 		return nil, err
 	}
 	telemetry.CounterHandle(telemetry.MetricNetworkRequestsReceived,
-		project.Config.Id, nw.Label(), MethodEthSubscribe,
+		project.Config.Id, nw.Label(), evmpubsub.MethodSubscribe,
 		nq.Finality(ctx).String(), nq.UserId(), nq.AgentName(),
 	).Inc()
 	return nw, nil

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -16,15 +17,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const (
-	MethodEthSubscribe   = "eth_subscribe"
-	MethodEthUnsubscribe = "eth_unsubscribe"
-)
-
-// SubscriptionManager serves eth_subscribe and eth_unsubscribe on client
-// WebSocket connections. newHeads and logs subscriptions are taps on the
-// network-wide chain tracker; newPendingTransactions are taps on the
-// network's mempool feed.
+// SubscriptionManager serves the subscribe and unsubscribe methods of a
+// connection's dialect on client WebSocket connections. Chain-served kinds
+// (EVM newHeads and logs) are taps on the network-wide chain tracker;
+// relayed kinds are taps on the network's relay feed.
 type SubscriptionManager struct {
 	logger *zerolog.Logger
 
@@ -45,19 +41,10 @@ func NewSubscriptionManager(logger *zerolog.Logger) *SubscriptionManager {
 	}
 }
 
-// IsSubscriptionMethod reports whether method is eth_subscribe or
-// eth_unsubscribe.
-func IsSubscriptionMethod(method string) bool {
-	return method == MethodEthSubscribe || method == MethodEthUnsubscribe
-}
-
-func IsSubscribeMethod(method string) bool {
-	return method == MethodEthSubscribe
-}
-
-// Subscribe handles eth_subscribe: it opens a tap for a new client
-// subscription on the connection. The subscription writes nothing until
-// the caller calls open, once the response carrying its id is written.
+// Subscribe handles a subscribe request of the connection's dialect: it
+// opens a tap for a new client subscription on the connection. The
+// subscription writes nothing until the caller calls open, once the
+// response carrying its id is written.
 func (sm *SubscriptionManager) Subscribe(
 	ctx context.Context,
 	wsc *WsConnection,
@@ -66,7 +53,8 @@ func (sm *SubscriptionManager) Subscribe(
 	networkId string,
 ) (resp *common.NormalizedResponse, open func(), err error) {
 	start := time.Now()
-	method := MethodEthSubscribe
+	dialect := wsc.dialect
+	method, _ := nq.Method()
 	lg := sm.logger.With().Str("connId", wsc.id).Str("networkId", networkId).Logger()
 
 	nw, err := project.GetNetwork(ctx, networkId)
@@ -107,19 +95,19 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, nil, err
 	}
 
-	subType := wsclient.ExtractSubscriptionType(jrReq.Params)
+	subType, _ := dialect.SubscribeKind(method, jrReq.Params)
 	var logsFilter *logfilter.LogsFilter
-	if subType == indexer.SubTypeLogs {
+	if subType == evmpubsub.KindLogs {
 		if logsFilter, err = parseLogsSubscribe(jrReq.Params); err != nil {
 			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 			return nil, nil, err
 		}
 	}
-	if err := nw.requireSubscriptionSource(ctx, subType); err != nil {
+	if err := nw.requireSubscriptionSource(ctx, method, subType); err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, nil, err
 	}
-	clientSubID, err := wsclient.GenerateClientSubID()
+	clientSubID, err := dialect.NewSubID()
 	if err != nil {
 		err = fmt.Errorf("failed to generate subscription ID: %w", err)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
@@ -127,15 +115,17 @@ func (sm *SubscriptionManager) Subscribe(
 	}
 
 	key := indexerNetworkKey(nw)
-	kind, err := resolveSubscription(subType)
-	if err != nil {
+	spec, ok := dialect.Kind(subType)
+	if !ok {
+		err := common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
+			fmt.Sprintf("unsupported subscription type: %q", subType), nil, nil)
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, nil, err
 	}
 	var variant string
 	releaseVariant := func() {}
-	if kind == wsclient.KindPendingTx {
-		if variant, releaseVariant, err = sm.openPendingVariant(ctx, nw, jrReq.Params); err != nil {
+	if spec.Relay != nil {
+		if variant, releaseVariant, err = sm.openRelayVariant(ctx, nw, method, subType, jrReq.Params); err != nil {
 			sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 			return nil, nil, err
 		}
@@ -149,7 +139,7 @@ func (sm *SubscriptionManager) Subscribe(
 		return nil, nil, err
 	}
 	var addErr error
-	if (kind == wsclient.KindNewHead || kind == wsclient.KindLog) && nw.chainTracker == nil {
+	if spec.Relay == nil && nw.chainTracker == nil {
 		addErr = common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
 			subType+" subscriptions need an evm network", nil, nil)
 	} else {
@@ -158,13 +148,10 @@ func (sm *SubscriptionManager) Subscribe(
 		tapCtx, stop := context.WithCancel(nw.appCtx)
 		var opened <-chan struct{}
 		var sub wsclient.Subscription
-		if sub, opened, addErr = conn.AddSubscription(clientSubID, key, kind, maxSubs, stop); addErr == nil {
+		if sub, opened, addErr = conn.AddSubscription(clientSubID, key, subType, maxSubs, stop); addErr == nil {
 			lane := laneSelector(nq)
-			switch kind {
-			case wsclient.KindLog:
-				head := nw.chainTracker.HeadAsOf()
-				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, lane, head, logsFilter) })
-			case wsclient.KindPendingTx:
+			switch {
+			case spec.Relay != nil:
 				release := releaseVariant
 				releaseVariant = func() {}
 				from := nw.mempool.Tail(variant)
@@ -172,6 +159,9 @@ func (sm *SubscriptionManager) Subscribe(
 					defer release()
 					sm.runPendingTxs(tapCtx, wsc, sub, opened, nw, variant, from)
 				})
+			case subType == evmpubsub.KindLogs:
+				head := nw.chainTracker.HeadAsOf()
+				nw.bg.Go(func() { sm.runLogs(tapCtx, wsc, sub, opened, nw, lane, head, logsFilter) })
 			default:
 				head := nw.chainTracker.HeadAsOf()
 				nw.bg.Go(func() { sm.runNewHeads(tapCtx, wsc, sub, opened, nw, lane, head) })
@@ -196,10 +186,10 @@ func (sm *SubscriptionManager) Subscribe(
 		Msg("subscription established")
 
 	sm.recordSuccessMetrics(project, nw, method, reqFinality, start, nq)
-	return newJsonRpcResultResponse(nq, jrReq, []byte(`"`+clientSubID+`"`)), func() { conn.Open(clientSubID) }, nil
+	return newJsonRpcResultResponse(nq, jrReq, dialect.EncodeSubID(clientSubID)), func() { conn.Open(clientSubID) }, nil
 }
 
-// Unsubscribe handles an eth_unsubscribe request.
+// Unsubscribe handles an unsubscribe request of the connection's dialect.
 func (sm *SubscriptionManager) Unsubscribe(
 	ctx context.Context,
 	wsc *WsConnection,
@@ -208,7 +198,7 @@ func (sm *SubscriptionManager) Unsubscribe(
 	networkId string,
 ) (*common.NormalizedResponse, error) {
 	start := time.Now()
-	method := MethodEthUnsubscribe
+	method, _ := nq.Method()
 	lg := sm.logger.With().Str("connId", wsc.id).Str("networkId", networkId).Logger()
 
 	nw, err := project.GetNetwork(ctx, networkId)
@@ -233,7 +223,7 @@ func (sm *SubscriptionManager) Unsubscribe(
 		return nil, err
 	}
 
-	clientSubID, err := wsclient.ExtractClientSubID(jrReq.Params)
+	clientSubID, err := wsc.dialect.UnsubscribeID(jrReq.Params)
 	if err != nil {
 		sm.recordFailureMetrics(project, nw, method, reqFinality, start, nq, err)
 		return nil, err
@@ -243,7 +233,7 @@ func (sm *SubscriptionManager) Unsubscribe(
 	sm.connMu.Lock()
 	conn := sm.conns[wsc.id]
 	sm.connMu.Unlock()
-	var kind wsclient.EventKind
+	var kind string
 	existed := false
 	if conn != nil {
 		kind, existed = conn.RemoveSubscription(clientSubID)
@@ -255,7 +245,7 @@ func (sm *SubscriptionManager) Unsubscribe(
 	}
 	sm.activeSubs.Add(-1)
 
-	lg.Info().Str("clientSubId", clientSubID).Str("subType", kind.String()).Msg("subscription removed")
+	lg.Info().Str("clientSubId", clientSubID).Str("subType", kind).Msg("subscription removed")
 
 	sm.recordSuccessMetrics(project, nw, method, reqFinality, start, nq)
 	return newJsonRpcResultResponse(nq, jrReq, []byte("true")), nil
@@ -287,31 +277,16 @@ func (sm *SubscriptionManager) reserveSub(maxTotal int) bool {
 	return true
 }
 
-// resolveSubscription maps subType to its kind.
-func resolveSubscription(subType string) (wsclient.EventKind, error) {
-	switch subType {
-	case indexer.SubTypeNewHeads:
-		return wsclient.KindNewHead, nil
-	case indexer.SubTypeLogs:
-		return wsclient.KindLog, nil
-	case indexer.SubTypeNewPendingTransactions:
-		return wsclient.KindPendingTx, nil
-	default:
-		return 0, common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
-			fmt.Sprintf("unsupported subscription type: %q", subType), nil, nil)
-	}
-}
-
-// openPendingVariant opens the variant of newPendingTransactions params on
-// nw's mempool feed until release; the reconciler admits it and decides
+// openRelayVariant opens the variant of a relayed kind's subscribe params
+// on nw's relay feed until release; the reconciler admits it and decides
 // whether its push sources refused it (spec §11).
-func (sm *SubscriptionManager) openPendingVariant(ctx context.Context, nw *Network, params []interface{}) (variant string, release func(), err error) {
+func (sm *SubscriptionManager) openRelayVariant(ctx context.Context, nw *Network, method, kind string, params []interface{}) (variant string, release func(), err error) {
 	if nw.mempool == nil {
-		return "", nil, common.NewErrNoSubscriptionSource(nw.networkId, indexer.SubTypeNewPendingTransactions)
+		return "", nil, common.NewErrNoSubscriptionSource(nw.networkId, method, kind)
 	}
 	if variant, err = indexer.PendingTxVariantOf(params); err != nil {
 		return "", nil, common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorInvalidArgument,
-			"invalid newPendingTransactions params: "+err.Error(), nil, nil)
+			"invalid "+kind+" params: "+err.Error(), nil, nil)
 	}
 	if release, err = nw.sources.openPending(ctx, variant); err != nil {
 		return "", nil, err

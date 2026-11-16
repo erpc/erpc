@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/architecture/evm/integrity"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/failsafe"
@@ -163,7 +164,7 @@ func TestChainFeed_ConvergesUnderFaults(t *testing.T) {
 		{evm.ReceiptsProbeCeiling, chaosScaled(12 * time.Second)},
 		{logsReceiptsWait, chaosScaled(60 * time.Second)},
 		{logsCloseSpread, chaosScaled(60 * time.Second)},
-		{pendingSilentAfter, chaosScaled(60 * time.Second)},
+		{evmpubsub.PendingSilentAfter, chaosScaled(60 * time.Second)},
 		// Above the waits of the gRPC seed's other faults, so only the
 		// faults that test them end a stream with UNAVAILABLE.
 		{streamBlocksReadWait, 15 * chaosBlock},
@@ -3183,7 +3184,7 @@ func (s *chaosSeed) pendingSilentVendor() {
 		"%s's silent pending-transaction topic is subscribed again", v.ID)
 	took := time.Since(from)
 	v.Update(func(f *chainsim.Faults) { f.SilentPending = false })
-	require.GreaterOrEqual(s.t, took, pendingSilentAfter.Load(), "only a topic silent for pendingSilentAfter is subscribed again")
+	require.GreaterOrEqual(s.t, took, evmpubsub.PendingSilentAfter.Load(), "only a topic silent for PendingSilentAfter is subscribed again")
 	require.Eventually(s.t, func() bool { return v.Stats().PendingSubscribes > subs }, 5*time.Second, 20*time.Millisecond,
 		"%s gets the new subscribe", v.ID)
 	s.occur(fPendingSilent, fmt.Sprintf("%s silent; subscribed again after %s", v.ID, took.Round(time.Millisecond)))

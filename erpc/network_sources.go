@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
@@ -27,12 +28,6 @@ var (
 	// last tap needing it closed: an onDemand source's newHeads, every
 	// pending-transaction topic.
 	sourceIdleStop = util.NewDuration(60 * time.Second)
-	// pendingSilentAfter: a pending-transaction topic with no message this
-	// long, while heads carry transactions, is subscribed again; each
-	// further silence of the topic on that source waits twice as long, up
-	// to pendingSilentMax, until it sends a message.
-	pendingSilentAfter = util.NewDuration(60 * time.Second)
-	pendingSilentMax   = util.NewDuration(30 * time.Minute)
 	// pendingOpenWait bounds how long a subscribe that opens a variant
 	// waits for its push sources' first answers.
 	pendingOpenWait = util.NewDuration(10 * time.Second)
@@ -107,7 +102,7 @@ type pendingOpen struct {
 type pendingOn struct {
 	since time.Time
 	// silentAfter is the silence that subscribes it again; 0 is
-	// pendingSilentAfter.
+	// evmpubsub.PendingSilentAfter.
 	silentAfter time.Duration
 	answered    bool
 	err         error
@@ -262,7 +257,7 @@ func (r *sourceReconciler) openPending(ctx context.Context, variant string) (rel
 	if st.holders == 0 {
 		if err := r.nw.mempool.Open(variant); err != nil {
 			r.mu.Unlock()
-			return nil, common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
+			return nil, common.NewErrRelayVariantLimitExceeded(evmpubsub.KindNewPendingTransactions, mempool.MaxVariants)
 		}
 		st.open = &pendingOpen{deadline: now.Add(pendingOpenWait.Load())}
 	}
@@ -299,7 +294,7 @@ func (r *sourceReconciler) admitLocked(now time.Time, idle time.Duration) error 
 		return nil
 	}
 	if oldest == nil {
-		return common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
+		return common.NewErrRelayVariantLimitExceeded(evmpubsub.KindNewPendingTransactions, mempool.MaxVariants)
 	}
 	oldest.seen = time.Time{}
 	r.wake()
@@ -551,7 +546,7 @@ func (r *sourceReconciler) setPush(s *source, heads bool, wanted []indexer.Topic
 			}
 		}
 	}
-	minSilent, maxSilent := pendingSilentAfter.Load(), pendingSilentMax.Load()
+	minSilent, maxSilent := evmpubsub.PendingSilentAfter.Load(), evmpubsub.PendingSilentMax
 	var silent []indexer.Topic
 	r.mu.Lock()
 	for t, st := range r.pending {
@@ -674,9 +669,9 @@ func (r *sourceReconciler) stopAll() {
 // A subscribe skips the source pass when the last pass found a source and
 // one feeds now (sourceReconciler.live), so subscribes on a fed topic never
 // queue behind a pass.
-func (n *Network) requireSubscriptionSource(ctx context.Context, subType string) error {
+func (n *Network) requireSubscriptionSource(ctx context.Context, method, subType string) error {
 	if n.sources == nil {
-		return common.NewErrNoSubscriptionSource(n.networkId, subType)
+		return common.NewErrNoSubscriptionSource(n.networkId, method, subType)
 	}
 	if n.subscriptionSourced(subType) && n.sources.live(subType) {
 		return nil
@@ -685,7 +680,7 @@ func (n *Network) requireSubscriptionSource(ctx context.Context, subType string)
 		return err
 	}
 	if !n.subscriptionSourced(subType) {
-		return common.NewErrNoSubscriptionSource(n.networkId, subType)
+		return common.NewErrNoSubscriptionSource(n.networkId, method, subType)
 	}
 	return nil
 }

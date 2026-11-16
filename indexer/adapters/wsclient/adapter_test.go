@@ -10,20 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func add(a *Adapter, id string, kind EventKind) error {
+func add(a *Adapter, id string, kind string) error {
 	_, _, err := a.AddSubscription(id, "evm:1", kind, 10, func() {})
 	return err
 }
 
 func TestAdapter_AddAfterDrainIsRefused(t *testing.T) {
 	a := New()
-	require.NoError(t, add(a, "s1", KindLog))
+	require.NoError(t, add(a, "s1", "logs"))
 
 	removed := a.Drain()
 	require.Len(t, removed, 1)
 	assert.Equal(t, "s1", removed[0].ClientSubID)
 
-	assert.ErrorIs(t, add(a, "s2", KindLog), ErrClosed)
+	assert.ErrorIs(t, add(a, "s2", "logs"), ErrClosed)
 	assert.Equal(t, 0, a.Count())
 }
 
@@ -31,8 +31,8 @@ func TestAdapter_AddAfterDrainIsRefused(t *testing.T) {
 // it is released exactly once.
 func TestAdapter_RemoveAndDrainAreExclusive(t *testing.T) {
 	a := New()
-	require.NoError(t, add(a, "s1", KindLog))
-	require.NoError(t, add(a, "s2", KindLog))
+	require.NoError(t, add(a, "s1", "logs"))
+	require.NoError(t, add(a, "s2", "logs"))
 
 	_, existed := a.RemoveSubscription("s1")
 	require.True(t, existed)
@@ -52,7 +52,7 @@ func TestAdapter_SubscriptionLimitIsAtomic(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if add(a, fmt.Sprintf("s%d", i), KindNewHead) == nil {
+			if add(a, fmt.Sprintf("s%d", i), "newHeads") == nil {
 				ok.Add(1)
 			}
 		}(i)
