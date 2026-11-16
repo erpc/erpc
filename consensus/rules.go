@@ -941,6 +941,12 @@ var shortCircuitRules = []shortCircuitRule{
 			if best.Count < a.config.agreementThreshold {
 				return false
 			}
+			// A node-local refusal of a broadcast ("nonce too high" from a node
+			// behind the sender's last mined transaction, "underpriced") does not
+			// bind an outstanding participant, and any acceptance wins.
+			if isTxBroadcastMethod(a.method) && a.hasRemaining() && common.IsRetryableExecutionException(best.RepresentativeError) {
+				return false
+			}
 			// Don't short-circuit when preferHighestValueFor is configured for this method;
 			// we need all responses to find the truly highest value.
 			if _, ok := methodFields(a.config.preferHighestValueFor, a.method); ok {
