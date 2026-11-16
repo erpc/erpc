@@ -1,7 +1,7 @@
 // Package wsupstream adapts a WebSocket JSON-RPC upstream into a source
 // (indexer.Source: newHeads and pending transactions into intake): it owns
-// the upstream eth_subscribe and eth_unsubscribe calls and resubscribes
-// after every reconnect.
+// the upstream subscribe and unsubscribe calls, in its client's pub/sub
+// dialect, and resubscribes after every reconnect.
 package wsupstream
 
 import (
@@ -23,13 +23,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const (
-	methodEthSubscribe   = "eth_subscribe"
-	methodEthUnsubscribe = "eth_unsubscribe"
-
-	// resubAttemptTimeout bounds each subscribe attempt and unsubscribe.
-	resubAttemptTimeout = 15 * time.Second
-)
+// resubAttemptTimeout bounds each subscribe attempt and unsubscribe.
+const resubAttemptTimeout = 15 * time.Second
 
 // Resubscribe backoff bounds; vars so tests can shorten them.
 var (
@@ -149,7 +144,8 @@ type pendingSub struct {
 	upstreamSub
 	topic   indexer.Topic
 	variant string
-	params  []interface{}
+	// params are the subscribe params naming variant.
+	params []interface{}
 	// heard is when its last message arrived, in unix nanoseconds.
 	heard atomic.Int64
 	// resub marks a subscribe Resubscribe asked for and none sent yet.
@@ -157,11 +153,11 @@ type pendingSub struct {
 	resub bool
 }
 
-// New returns the adapter of up, or nil if up is not a WebSocket upstream.
-// Its newHeads pushes go to intake.
+// New returns the adapter of up, or nil if up is not a WebSocket upstream
+// with a pub/sub dialect. Its newHeads pushes go to intake.
 func New(up *upstream.Upstream, networkID string, intake indexer.Intake, logger *zerolog.Logger, opts Options) *Adapter {
 	wsClient, ok := up.Client.(*clients.WsJsonRpcClient)
-	if !ok {
+	if !ok || wsClient.Dialect() == nil {
 		return nil
 	}
 	lg := logger.With().Str("upstreamId", up.Id()).Str("networkId", networkID).Logger()
@@ -236,7 +232,7 @@ func (a *Adapter) Set(topics []indexer.Topic) {
 	a.subsMu.Unlock()
 
 	for _, r := range releases {
-		go a.release(context.Background(), r.id, r.epoch)
+		go a.release(context.Background(), indexer.SubTypeNewPendingTransactions, r.id, r.epoch)
 	}
 	if headsChanged && !wantHeads {
 		a.drop(context.Background(), &a.heads, indexer.SubTypeNewHeads)
@@ -290,7 +286,7 @@ func (a *Adapter) Resubscribe(t indexer.Topic) {
 	sub.resub = true
 	a.subsMu.Unlock()
 	if id != "" {
-		go a.release(context.Background(), id, epoch)
+		go a.release(context.Background(), indexer.SubTypeNewPendingTransactions, id, epoch)
 	}
 	a.startResubscribe()
 }
@@ -461,7 +457,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 		if askHeads {
 			attemptCtx, cancel := context.WithTimeout(ctx, a.attemptTimeout)
 			a.heads.mu.Lock()
-			err := a.subscribeLocked(attemptCtx, &a.heads, []interface{}{indexer.SubTypeNewHeads}, a.handleNewHeads, nil)
+			err := a.subscribeLocked(attemptCtx, &a.heads, indexer.SubTypeNewHeads, nil, a.handleNewHeads, nil)
 			a.heads.mu.Unlock()
 			cancel()
 			switch {
@@ -537,7 +533,7 @@ func (a *Adapter) resubscribeWithRetry(ctx context.Context) {
 }
 
 func (a *Adapter) subscribePendingLocked(ctx context.Context, sub *pendingSub) error {
-	return a.subscribeLocked(ctx, &sub.upstreamSub, sub.params, func(params []byte) {
+	return a.subscribeLocked(ctx, &sub.upstreamSub, indexer.SubTypeNewPendingTransactions, sub.params, func(params []byte) {
 		a.handlePendingTx(sub, params)
 	}, func() {
 		a.subsMu.Lock()
@@ -550,11 +546,11 @@ func (a *Adapter) subscribePendingLocked(ctx context.Context, sub *pendingSub) e
 	})
 }
 
-// subscribeLocked subscribes sub unless it is live or dropped; the caller
-// holds sub.mu. sending, if set, runs just before the subscribe is sent.
-// The result is kept only if sub is still wanted and its connection is
-// still up, and released upstream otherwise.
-func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params []interface{}, handler func(params []byte), sending func()) error {
+// subscribeLocked subscribes sub, of kind with variant, unless it is live
+// or dropped; the caller holds sub.mu. sending, if set, runs just before
+// the subscribe is sent. The result is kept only if sub is still wanted
+// and its connection is still up, and released upstream otherwise.
+func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, kind string, variant []interface{}, handler func(params []byte), sending func()) error {
 	a.subsMu.Lock()
 	skip := sub.id != "" || sub.removed
 	a.subsMu.Unlock()
@@ -569,7 +565,8 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 		sending()
 	}
 	ws := &clients.WsSubscription{Handler: handler}
-	if err := a.send(clients.WithWsSubscription(ctx, ws), methodEthSubscribe, params); err != nil {
+	method, params := a.wsClient.Dialect().SubscribeRequest(kind, variant)
+	if err := a.send(clients.WithWsSubscription(ctx, ws), method, params); err != nil {
 		return err
 	}
 	if ws.ID == "" {
@@ -580,8 +577,7 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 	connUp := ws.Epoch == a.wsClient.Epoch()
 	commit := connUp && !sub.removed
 	if commit {
-		// params[0] is the eth_subscribe subscription type.
-		sub.id, sub.epoch, sub.since, sub.live = ws.ID, ws.Epoch, time.Now(), a.liveGauge(params[0].(string))
+		sub.id, sub.epoch, sub.since, sub.live = ws.ID, ws.Epoch, time.Now(), a.liveGauge(kind)
 		sub.live.Inc()
 	}
 	a.subsMu.Unlock()
@@ -590,10 +586,10 @@ func (a *Adapter) subscribeLocked(ctx context.Context, sub *upstreamSub, params 
 		return errNotConnected
 	}
 	if !commit {
-		a.release(ctx, ws.ID, ws.Epoch)
+		a.release(ctx, kind, ws.ID, ws.Epoch)
 		return nil
 	}
-	a.logger.Info().Str("upstreamSubId", ws.ID).Interface("subType", params[0]).Msg("subscribed upstream")
+	a.logger.Info().Str("upstreamSubId", ws.ID).Str("subType", kind).Msg("subscribed upstream")
 	return nil
 }
 
@@ -606,17 +602,17 @@ func (a *Adapter) drop(ctx context.Context, sub *upstreamSub, kind string) {
 	sub.removed = true
 	a.subsMu.Unlock()
 	if id != "" {
-		a.release(ctx, id, epoch)
+		a.release(ctx, kind, id, epoch)
 	}
 }
 
-// release drops a subscription's handler and cancels it upstream. Both are
-// no-ops once its connection is gone, since the subscription died with it.
-// The cancel outlives a caller context that is already done (a timed-out
-// subscribe, a client that disconnected after unsubscribing), but a caller
-// deadline still in the future and shorter than attemptTimeout bounds
-// it, so teardown keeps its budget.
-func (a *Adapter) release(ctx context.Context, id string, epoch uint64) {
+// release drops a subscription of kind's handler and cancels it upstream.
+// Both are no-ops once its connection is gone, since the subscription died
+// with it. The cancel outlives a caller context that is already done (a
+// timed-out subscribe, a client that disconnected after unsubscribing),
+// but a caller deadline still in the future and shorter than
+// attemptTimeout bounds it, so teardown keeps its budget.
+func (a *Adapter) release(ctx context.Context, kind, id string, epoch uint64) {
 	a.wsClient.UnregisterSubscriptionHandler(id, epoch)
 	timeout := a.attemptTimeout
 	if deadline, ok := ctx.Deadline(); ok {
@@ -626,15 +622,16 @@ func (a *Adapter) release(ctx context.Context, id string, epoch uint64) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	if err := a.send(clients.WithWsSubscription(ctx, &clients.WsSubscription{Epoch: epoch}), methodEthUnsubscribe, []interface{}{id}); err != nil {
+	method, params := a.wsClient.Dialect().UnsubscribeRequest(kind, id)
+	if err := a.send(clients.WithWsSubscription(ctx, &clients.WsSubscription{Epoch: epoch}), method, params); err != nil {
 		// A quiet subscription never triggers the client's orphan cancel.
-		a.wsClient.UnsubscribeOrphan(id, epoch)
+		a.wsClient.UnsubscribeOrphan(kind, id, epoch)
 	}
 }
 
 // send forwards a subscription RPC through the upstream as eRPC's own,
 // timeout-only, so upstream-scope retry and hedge policies never send it
-// twice: a duplicate eth_subscribe would leave an orphan subscription.
+// twice: a duplicate subscribe would leave an orphan subscription.
 func (a *Adapter) send(ctx context.Context, method string, params []interface{}) error {
 	body, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",

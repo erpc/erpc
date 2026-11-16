@@ -50,9 +50,6 @@ type WsConnection struct {
 	// costFrames: every text message starts with a cost header block (see
 	// encodeMessage); set at upgrade from headerCostFrames and costHeaders.
 	costFrames bool
-	// notifyCostBlocks caches each subscription kind's notification block
-	// (kind -> []byte).
-	notifyCostBlocks sync.Map
 
 	// w is the connection's one data writer (see ws_writer.go).
 	w wsWriter
@@ -560,22 +557,24 @@ func (wsc *WsConnection) costBlock(ctx context.Context, items []interface{}) []b
 	return b.Bytes()
 }
 
-// notificationCostBlock is the cost frame header block of one subscription
-// notification: one billable notification call on the connection's
-// network. sub.NetworkID is the indexer's project-scoped key, not the
-// network id the response headers carry, so the connection's is used.
-func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription, spec common.KindSpec) []byte {
+// costBlock is the cost frame header block of each of n's notifications:
+// one billable notification call on the connection's network. sub.NetworkID
+// is the indexer's project-scoped key, not the network id the response
+// headers carry, so the connection's is used. Cached once the network
+// lookup succeeds; until then each notification retries the alias.
+func (n *wsNotifier) costBlock() []byte {
+	wsc := n.wsc
 	if !wsc.costFrames {
 		return nil
 	}
-	if b, ok := wsc.notifyCostBlocks.Load(sub.Kind); ok {
-		return b.([]byte)
+	if b := n.costs.Load(); b != nil {
+		return *b
 	}
 	h := http.Header{}
 	h.Set("X-ERPC-Calls", "1")
 	h.Set("X-ERPC-Billable", "1")
-	h.Set("X-ERPC-Methods", spec.Notification)
-	h.Set("X-ERPC-Subscription", sub.Kind)
+	h.Set("X-ERPC-Methods", n.spec.Notification)
+	h.Set("X-ERPC-Subscription", n.sub.Kind)
 	h.Set("X-ERPC-Network-Id", wsc.networkId)
 	nw, err := wsc.project.GetNetwork(wsc.ctx, wsc.networkId)
 	if err == nil {
@@ -584,9 +583,8 @@ func (wsc *WsConnection) notificationCostBlock(sub wsclient.Subscription, spec c
 	var buf bytes.Buffer
 	_ = h.Write(&buf)
 	b := buf.Bytes()
-	// Retry the alias next time if the network lookup failed.
 	if err == nil {
-		wsc.notifyCostBlocks.Store(sub.Kind, b)
+		n.costs.Store(&b)
 	}
 	return b
 }
@@ -727,10 +725,12 @@ type wsNotifier struct {
 	wsc  *WsConnection
 	sub  wsclient.Subscription
 	spec common.KindSpec
-	// prefix is the envelope up to the result, for EVM:
-	// {"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"<id>","result":
+	// prefix is the envelope up to the result:
+	// {"jsonrpc":"2.0","method":<notification>,"params":{"subscription":<id>,"result":
 	prefix      []byte
 	sent, bytes *telemetry.BoundCounter
+	// costs caches costBlock; nil until it is built with the network alias.
+	costs atomic.Pointer[[]byte]
 }
 
 var (
@@ -761,7 +761,7 @@ func (n *wsNotifier) write(result json.RawMessage, d tapDelivery) error {
 	if n.sub.Removed() {
 		return nil
 	}
-	msg, err := n.wsc.encodeMessage(n.wsc.notificationCostBlock(n.sub, n.spec), func(w io.Writer) error {
+	msg, err := n.wsc.encodeMessage(n.costBlock(), func(w io.Writer) error {
 		_, _ = w.Write(n.prefix)
 		_, _ = w.Write(result)
 		_, err := w.Write(wsNotificationSuffix)

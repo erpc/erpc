@@ -140,13 +140,13 @@ func PendingTxVariantOf(params []interface{}) (string, error) {
 	return string(b), nil
 }
 
-// PendingTxParams are the eth_subscribe params of variant.
+// PendingTxParams are the subscribe params variant names, after the kind.
 func PendingTxParams(variant string) ([]interface{}, error) {
 	var rest []interface{}
 	if err := json.Unmarshal([]byte(variant), &rest); err != nil {
 		return nil, err
 	}
-	return append([]interface{}{SubTypeNewPendingTransactions}, rest...), nil
+	return rest, nil
 }
 
 // Intake is what sources report into; erpc implements it per network.

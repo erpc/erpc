@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/gorilla/websocket"
@@ -152,7 +153,7 @@ func newTestWsClient(t *testing.T, u *url.URL) *WsJsonRpcClient {
 	t.Cleanup(cancel)
 	logger := zerolog.New(zerolog.NewTestWriter(t)).Level(zerolog.WarnLevel)
 	up := common.NewFakeUpstream("test-ws-upstream")
-	ci, err := NewWsJsonRpcClient(ctx, &logger, "test-project", up, u, nil, nil)
+	ci, err := NewWsJsonRpcClient(ctx, &logger, "test-project", up, u, nil, nil, evmpubsub.Dialect{})
 	require.NoError(t, err)
 	c, ok := ci.(*WsJsonRpcClient)
 	require.True(t, ok)
@@ -305,7 +306,7 @@ func TestWsClientConnectedGaugeFollowsNetworkLabel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	logger := zerolog.New(zerolog.NewTestWriter(t)).Level(zerolog.WarnLevel)
-	_, err := NewWsJsonRpcClient(ctx, &logger, "test-project", up, server.wsURL(t), nil, nil)
+	_, err := NewWsJsonRpcClient(ctx, &logger, "test-project", up, server.wsURL(t), nil, nil, evmpubsub.Dialect{})
 	require.NoError(t, err)
 	<-server.newConn
 

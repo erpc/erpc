@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -37,7 +38,7 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	stalls := telemetry.MetricUpstreamWebsocketHeadsStallReconnectsTotal.WithLabelValues("test-project", "evm:123", "test-ws-upstream")
 	stallsBefore := testutil.ToFloat64(stalls)
 
-	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
+	conn1.sendNewHead(conn1.nextRequest(t, evmpubsub.MethodSubscribe).SubID, 100)
 	require.Equal(t, int64(100), nextHead(t, sink))
 	age.Store(int64(time.Second))
 
@@ -49,7 +50,7 @@ func TestAdapterReconnectsSilentNewHeads(t *testing.T) {
 	}
 	require.Equal(t, stallsBefore+1, testutil.ToFloat64(stalls), "a forced reconnect is counted")
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
-	conn2.sendNewHead(conn2.nextRequest(t, methodEthSubscribe).SubID, 106)
+	conn2.sendNewHead(conn2.nextRequest(t, evmpubsub.MethodSubscribe).SubID, 106)
 	require.Equal(t, int64(106), nextHead(t, sink))
 }
 
@@ -66,7 +67,7 @@ func TestAdapterKeepsSilentNewHeadsWhenChainHalts(t *testing.T) {
 	startHeadsSource(a)
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
-	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
+	conn1.sendNewHead(conn1.nextRequest(t, evmpubsub.MethodSubscribe).SubID, 100)
 	require.Equal(t, int64(100), nextHead(t, sink))
 
 	select {
@@ -84,7 +85,7 @@ func TestAdapterWatchHeadsStopsWithClient(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	logger := zerolog.Nop()
-	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), server.wsURL(t), nil, nil)
+	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), server.wsURL(t), nil, nil, evmpubsub.Dialect{})
 	require.NoError(t, err)
 	a := &Adapter{wsClient: ci.(*clients.WsJsonRpcClient), logger: &logger, hashAge: func() time.Duration { return 0 }}
 

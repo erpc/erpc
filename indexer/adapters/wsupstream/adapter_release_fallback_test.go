@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/indexer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,10 +25,10 @@ func TestAdapterQuietSubscriptionReleasedDespiteFailedUnsubscribe(t *testing.T) 
 	require.NoError(t, err)
 	topic := indexer.PendingTxTopic(variant)
 	a.Set([]indexer.Topic{topic})
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+	subID := conn.nextRequest(t, evmpubsub.MethodSubscribe).SubID
 	require.Eventually(t, func() bool { return topicLive(a, topic) }, 3*time.Second, 10*time.Millisecond)
 
 	a.Set(nil)
 	require.Eventually(t, failed.Load, 3*time.Second, 10*time.Millisecond)
-	assert.Equal(t, []interface{}{subID}, conn.nextRequest(t, methodEthUnsubscribe).Params)
+	assert.Equal(t, []interface{}{subID}, conn.nextRequest(t, evmpubsub.MethodUnsubscribe).Params)
 }

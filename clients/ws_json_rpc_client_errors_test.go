@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/upstream"
@@ -63,7 +64,7 @@ func TestWsClientNormalizesJsonRpcErrorsLikeHttp(t *testing.T) {
 	wsURL, err := url.Parse(wsSrv.URL)
 	require.NoError(t, err)
 	wsURL.Scheme = "ws"
-	wsClient, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", up, wsURL, nil, extractor)
+	wsClient, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", up, wsURL, nil, extractor, evmpubsub.Dialect{})
 	require.NoError(t, err)
 
 	for name, c := range map[string]clients.ClientInterface{"http": httpClient, "ws": wsClient} {
