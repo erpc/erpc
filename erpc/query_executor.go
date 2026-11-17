@@ -457,10 +457,33 @@ func queryUnavailable(format string, args ...interface{}) error {
 	return status.Errorf(codes.Unavailable, format, args...)
 }
 
+// queryTransient reports whether err is a slow or rate-limited read: a
+// native upstream's deadline, BDS TIMEOUT_ERROR or RATE_LIMITED, or an erpc
+// rate limit or capacity refusal of a shim sub-request. A retry reads the
+// same range, so it must not carry MIP-16 -32005 (gRPC RESOURCE_EXHAUSTED):
+// that code makes a client stop paging, and is for a budget that fromBlock
+// alone exceeds.
+func queryTransient(err error) bool {
+	var baseErr *bdscommon.BaseError
+	if !errors.As(err, &baseErr) {
+		st, ok := status.FromError(err)
+		if !ok {
+			return common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded,
+				common.ErrCodeAuthRateLimitRuleExceeded, common.ErrCodeProjectRateLimitRuleExceeded,
+				common.ErrCodeNetworkRateLimitRuleExceeded, common.ErrCodeUpstreamRateLimitRuleExceeded)
+		}
+		if baseErr, ok = bdscommon.FromGRPCStatus(st); !ok {
+			return st.Code() == codes.DeadlineExceeded
+		}
+	}
+	return baseErr.Code == bdscommon.ErrorCode_TIMEOUT_ERROR || baseErr.Code == bdscommon.ErrorCode_RATE_LIMITED
+}
+
 // queryJsonRpcError converts an executor failure to the JSON-RPC error the
-// HTTP server renders, with the exact MIP-16 code. Errors that carry no
-// MIP-16 meaning (upstream failures, timeouts of sub-requests, auth) pass
-// through unchanged for the usual erpc normalization.
+// HTTP server renders, with the exact MIP-16 code. A transient failure is
+// erpc's retryable server error -32603. Other errors that carry no MIP-16
+// meaning (upstream failures, auth) pass through unchanged for the usual erpc
+// normalization.
 func queryJsonRpcError(err error) error {
 	if err == nil {
 		return nil
@@ -471,6 +494,11 @@ func queryJsonRpcError(err error) error {
 	switch {
 	case errors.As(err, &paramsErr):
 		code = evm.JsonRpcCodeInvalidParams
+	case queryTransient(err):
+		// The verdict carries no cause: TranslateToJsonRpcException would
+		// find the sub-request's UpstreamsExhausted in it and answer that
+		// bundle's dominant code, -32005 for a 429. The message keeps the chain.
+		return common.NewErrJsonRpcExceptionInternal(evm.JsonRpcCodeInternalError, common.JsonRpcErrorNumber(evm.JsonRpcCodeInternalError), message, nil, nil)
 	case errors.As(err, &baseErr):
 		code = evm.QueryErrorCode(baseErr)
 		message = baseErr.Message
@@ -489,20 +517,30 @@ func queryJsonRpcError(err error) error {
 
 // queryGrpcError converts an executor failure to the gRPC status a client
 // gets: the MIP-16 status of a MIP-16 condition, a native upstream's own
-// status, else erpc's error mapping.
+// status, else erpc's error mapping; UNAVAILABLE in place of a transient
+// RESOURCE_EXHAUSTED.
 func queryGrpcError(err error) error {
+	if err == nil {
+		return nil
+	}
 	var paramsErr *evm.QueryParamsError
 	var baseErr *bdscommon.BaseError
+	var st *status.Status
 	switch {
 	case errors.As(err, &paramsErr):
 		return status.Error(codes.InvalidArgument, paramsErr.Error())
 	case errors.As(err, &baseErr):
-		return baseErr.ToGRPCStatus().Err()
+		st = baseErr.ToGRPCStatus()
+	default:
+		var ok bool
+		if st, ok = status.FromError(err); !ok {
+			st = status.Convert(grpcStatusOf(err))
+		}
 	}
-	if st, ok := status.FromError(err); ok {
-		return st.Err()
+	if st.Code() == codes.ResourceExhausted && queryTransient(err) {
+		return status.Error(codes.Unavailable, st.Message())
 	}
-	return grpcStatusOf(err)
+	return st.Err()
 }
 
 func queryCodeOfGrpc(code codes.Code) int {
@@ -513,7 +551,7 @@ func queryCodeOfGrpc(code codes.Code) int {
 		return evm.JsonRpcCodeResourceNotFound
 	case codes.Unimplemented:
 		return evm.JsonRpcCodeMethodNotSupported
-	case codes.ResourceExhausted, codes.DeadlineExceeded:
+	case codes.ResourceExhausted:
 		return evm.JsonRpcCodeLimitExceeded
 	}
 	return evm.JsonRpcCodeInternalError

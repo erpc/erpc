@@ -535,6 +535,26 @@ func TestNetworkQuery_Shim(t *testing.T) {
 		assert.NotContains(t, []int{-32001, -32005}, code, "rpc4's failure, not a missing block or the budget")
 	})
 
+	// rpc5 rate-limits every block read, as public Monad nodes did on
+	// 2026-11-17: HTTP 429 with a plain-text body.
+	gock.New("http://rpc5.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x66"`)
+		}).
+		Reply(429).BodyString("Rate limit exceeded\n")
+	limited := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc5")
+
+	t.Run("a rate-limited shim upstream is transient, never the budget", func(t *testing.T) {
+		_, code := queryJson(t, ctx, limited, "eth_queryBlocks", `[{"fromBlock":"0x66","toBlock":"0x66"}]`)
+		assert.Equal(t, -32603, code, "a retry reads the block; -32005 would stop the client paging")
+
+		client, gctx := queryGrpc(t, ctx, limited)
+		stream, err := client.QueryBlocks(gctx, &bdsevm.QueryBlocksRequest{FromBlock: util.StringPtr("0x66"), ToBlock: util.StringPtr("0x66")})
+		_, grpcCode := grpcPages(t, stream, err)
+		assert.Equal(t, codes.Unavailable, grpcCode, "RESOURCE_EXHAUSTED is the gRPC budget code")
+	})
+
 	t.Run("gRPC streams projected shim pages and maps every failure to a status", func(t *testing.T) {
 		client, gctx := queryGrpc(t, ctx, ntw)
 		target := uint32(2)
