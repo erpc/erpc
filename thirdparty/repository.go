@@ -158,6 +158,7 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			JsonRpc:                      jsonRpc,
 			IgnoreMethods:                upstream.IgnoreMethods,
 			AllowMethods:                 upstream.AllowMethods,
+			MethodRewrite:                upstream.MethodRewrite,
 			AutoIgnoreUnsupportedMethods: upstream.AutoIgnoreUnsupportedMethods,
 			Failsafe:                     failsafe,
 			RateLimitBudget:              upstream.RateLimitBudget,

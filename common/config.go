@@ -1016,6 +1016,15 @@ type UpstreamConfig struct {
 	// inherits the project-level `upstreamDefaults.routing` (all-or-nothing,
 	// matching the Tags inheritance pattern).
 	Routing *UpstreamRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
+
+	// MethodRewrite renames a method on the way to this upstream: a request
+	// for a key method is sent with the value method, and the upstream's
+	// response returns to the client unchanged. Keys are exact method names
+	// as the client sends them; methods absent from the map go out as-is.
+	// Everything else (allowMethods / ignoreMethods, selection, failsafe,
+	// cache, hooks, metrics) sees the client's method. Only the wire
+	// request changes, so each upstream can map one method differently.
+	MethodRewrite map[string]string `yaml:"methodRewrite,omitempty" json:"methodRewrite,omitempty"`
 }
 
 // UpstreamRoutingConfig holds per-upstream routing hints. Today this is
@@ -1135,6 +1144,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty"`
 		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
 		AllowMethods                 []string                 `yaml:"allowMethods,omitempty"`
+		MethodRewrite                map[string]string        `yaml:"methodRewrite,omitempty"`
 		AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty"`
 		Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty"`
 		RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty"`
@@ -1158,6 +1168,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.Grpc = old.Grpc
 	u.IgnoreMethods = old.IgnoreMethods
 	u.AllowMethods = old.AllowMethods
+	u.MethodRewrite = old.MethodRewrite
 	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
 	u.RateLimitBudget = old.RateLimitBudget
 	u.RateLimitAutoTune = old.RateLimitAutoTune
@@ -1253,7 +1264,24 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 		copy(copied.AllowMethods, c.AllowMethods)
 	}
 
+	if c.MethodRewrite != nil {
+		copied.MethodRewrite = maps.Clone(c.MethodRewrite)
+	}
+
 	return copied
+}
+
+// WireMethod returns the method name this upstream receives for a client
+// request of method: the methodRewrite target when one is configured, else
+// method unchanged.
+func (c *UpstreamConfig) WireMethod(method string) string {
+	if c == nil {
+		return method
+	}
+	if to, ok := c.MethodRewrite[method]; ok {
+		return to
+	}
+	return method
 }
 
 type ShadowUpstreamConfig struct {

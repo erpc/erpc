@@ -271,7 +271,7 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 	requestBody, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": jrReq.JSONRPC,
 		"id":      wireID,
-		"method":  method,
+		"method":  c.upstream.Config().WireMethod(method),
 		"params":  common.WireParams(ctx, req, jrReq.Params),
 	})
 	jrReq.RUnlock()

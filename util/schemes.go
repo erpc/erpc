@@ -20,3 +20,10 @@ func IsWsEndpoint(endpoint string) bool {
 	parsed, err := url.Parse(endpoint)
 	return err == nil && (parsed.Scheme == "ws" || parsed.Scheme == "wss")
 }
+
+// IsGrpcEndpoint reports whether endpoint uses a gRPC scheme (grpc://,
+// grpcs:// or grpc+bds://).
+func IsGrpcEndpoint(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	return err == nil && (parsed.Scheme == "grpc" || parsed.Scheme == "grpcs" || parsed.Scheme == "grpc+bds")
+}

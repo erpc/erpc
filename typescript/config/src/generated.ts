@@ -1027,6 +1027,16 @@ export interface UpstreamConfig {
    * matching the Tags inheritance pattern).
    */
   routing?: UpstreamRoutingConfig;
+  /**
+   * MethodRewrite renames a method on the way to this upstream: a request
+   * for a key method is sent with the value method, and the upstream's
+   * response returns to the client unchanged. Keys are exact method names
+   * as the client sends them; methods absent from the map go out as-is.
+   * Everything else (allowMethods / ignoreMethods, selection, failsafe,
+   * cache, hooks, metrics) sees the client's method. Only the wire
+   * request changes, so each upstream can map one method differently.
+   */
+  methodRewrite?: { [key: string]: string};
 }
 /**
  * UpstreamRoutingConfig holds per-upstream routing hints. Today this is

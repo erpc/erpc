@@ -397,7 +397,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		jrReq.RLock()
 		batchReq = append(batchReq, common.JsonRpcRequest{
 			JSONRPC: jrReq.JSONRPC,
-			Method:  jrReq.Method,
+			Method:  c.upstream.Config().WireMethod(jrReq.Method),
 			Params:  common.WireParams(req.ctx, req.request, jrReq.Params),
 			ID:      jrReq.ID,
 		})
@@ -709,7 +709,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	span.SetAttributes(attribute.String("request.method", jrReq.Method))
 	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
-		Method:  jrReq.Method,
+		Method:  c.upstream.Config().WireMethod(jrReq.Method),
 		Params:  common.WireParams(ctx, req, jrReq.Params),
 		ID:      jrReq.ID,
 	})

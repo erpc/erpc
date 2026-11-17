@@ -227,6 +227,20 @@ func TestCovValidation_Upstream(t *testing.T) {
 		{"request mode with priced budget", func(u *UpstreamConfig) {
 			u.RateLimitCountMode, u.RateLimitBudget = RateLimitCountModeRequest, "priced"
 		}, ""},
+		{"methodRewrite valid", func(u *UpstreamConfig) {
+			u.MethodRewrite = map[string]string{"custom_send": "eth_sendRawTransaction"}
+		}, ""},
+		{"methodRewrite empty target", func(u *UpstreamConfig) {
+			u.MethodRewrite = map[string]string{"custom_send": ""}
+		}, "upstream 'u1': methodRewrite needs a non-empty method on both sides"},
+		{"methodRewrite wildcard key", func(u *UpstreamConfig) {
+			u.MethodRewrite = map[string]string{"custom_*": "eth_sendRawTransaction"}
+		}, "upstream 'u1': methodRewrite key 'custom_*' must be an exact method name"},
+		{"methodRewrite on grpc", func(u *UpstreamConfig) {
+			u.Endpoint = "grpc://node:443"
+			u.Evm.ChainId = 0
+			u.MethodRewrite = map[string]string{"custom_send": "eth_sendRawTransaction"}
+		}, "upstream 'u1': methodRewrite is only supported on http(s) and ws(s) endpoints, not gRPC"},
 	})
 
 	t.Run("skipEndpointCheck allows empty endpoint", func(t *testing.T) {

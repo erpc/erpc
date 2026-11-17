@@ -223,6 +223,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].vendorName` | string | `""`; at runtime filled by URL pattern match or `guessVendorName()` | When non-empty, forces name-lookup only — `OwnsUpstream` URL matching is skipped. Mismatch silently applies the wrong error normalizer. No warning is logged. |
 | `upstreams[*].ignoreMethods` | `[]string` | nil; **forced to `["*"]` when `allowMethods` set and `ignoreMethods` nil** (<SourceLink file="common/defaults.go" lines="1706-1712" />) | Evaluated first in `ShouldHandleMethod`. Glob wildcards + `\|` OR + `&` AND + `!` NOT. Result cached per method forever. |
 | `upstreams[*].allowMethods` | `[]string` | nil | Evaluated after `ignoreMethods`; a match forces support to true. Setting this alone implicitly blocks all other methods via injected `ignoreMethods: ["*"]`. |
+| `upstreams[*].methodRewrite` | `map[string]string` | nil; all-or-nothing inheritance from `upstreamDefaults.methodRewrite` (<SourceLink file="common/defaults.go" lines="1959-1961" />) | Renames a method on the request sent to this upstream: key = method the client sends (exact name, no globs), value = method the upstream receives. The response returns to the client unchanged. Only the outgoing JSON-RPC body changes (<SourceLink file="common/config.go" lines="1274-1286" />): `allowMethods`/`ignoreMethods`, selection policy, failsafe, cache, hooks and metrics all use the client's method. Empty keys/values, glob keys and gRPC endpoints fail validation (<SourceLink file="common/validation.go" lines="1105-1120" />). |
 | `upstreams[*].autoIgnoreUnsupportedMethods` | `*bool` | nil (no global default); `true` for repository-provider upstreams (<SourceLink file="thirdparty/repository.go" lines="89-91" />) | When true, an `ErrCodeEndpointUnsupported` reply ignores that method on this upstream for 10 min. An `allowMethods` entry for the method wins over it. |
 | `upstreams[*].failsafe[]` | `[]*FailsafeConfig` | nil; deep-copied from `upstreamDefaults.failsafe` when absent (all-or-nothing) | Per-entry `matchMethod` defaults to `"*"`. Match priority: method+finality &gt; method &gt; finality &gt; catch-all. `consensus` rejected at upstream scope. |
 | `upstreams[*].rateLimitBudget` | string | `""` | References `rateLimiters.budgets[].id`. Checked before each `Forward`; trips `ErrUpstreamRateLimitRuleExceeded`. |
@@ -823,6 +824,96 @@ SVM upstream gets its own slot/health poller automatically:
 }]`}
 />
 
+**7. A custom method served by a relay group, with a fallback node.** Clients call a
+method no node knows (`custom_sendMevProtected`). Only the relays take it, each relay
+receives `eth_sendRawTransaction`, and the regular node takes it when every relay
+fails. `allowMethods` keeps the relays off all other methods. `methodRewrite` renames
+the method per upstream. A per-method selection policy puts the relays first and the
+other upstreams after them, so network retry reaches the regular node last. This
+`evalFunc` replaces the default policy, so add the default's `excludeIf` steps
+(see [Selection & scoring](/config/projects/selection-policies)) if you need them:
+
+<ConfigTabs
+  path="projects[]"
+  focusYaml="7,8,12,13,16,19,20,23,24,29,31-34"
+  focusTs="6,10,13,14,16,17,24,26-29"
+  yaml={`projects:
+  - id: main
+    upstreams:
+      - id: regular
+        endpoint: https://node.example/rpc
+        # Lets the regular node take the custom method as the fallback
+        methodRewrite:
+          custom_sendMevProtected: eth_sendRawTransaction
+      - id: mev-relay-a
+        endpoint: https://relay-a.example
+        evm: { chainId: 1 }
+        tags: [mev]
+        allowMethods: [custom_sendMevProtected]
+        methodRewrite:
+          custom_sendMevProtected: eth_sendRawTransaction
+      - id: mev-relay-b
+        # Each relay keeps its own URL path
+        endpoint: https://relay-b.example/v1/jsonrpc
+        evm: { chainId: 1 }
+        tags: [mev]
+        allowMethods: [custom_sendMevProtected]
+        methodRewrite:
+          custom_sendMevProtected: eth_sendRawTransaction
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+        failsafe:
+          - matchMethod: "*"
+            retry: { maxAttempts: 3 }
+        selectionPolicy:
+          # One ranking per method, so the custom method gets its own order
+          evalScope: network-method
+          evalFunc: |
+            (upstreams, ctx) =>
+              methodMatches('custom_sendMevProtected')
+                ? upstreams.byTag('mev').sortByScore(PREFER_FASTEST).concat(upstreams.excludeTag('mev'))
+                : upstreams.excludeTag('mev').sortByScore(PREFER_FASTEST)`}
+  ts={`import { createConfig } from "@erpc-cloud/config";
+
+const rewrite = { custom_sendMevProtected: "eth_sendRawTransaction" };
+
+export default createConfig({
+  projects: [{
+    id: "main",
+    upstreams: [
+      // Lets the regular node take the custom method as the fallback
+      { id: "regular", endpoint: "https://node.example/rpc", methodRewrite: rewrite },
+      {
+        id: "mev-relay-a", endpoint: "https://relay-a.example", evm: { chainId: 1 },
+        tags: ["mev"], allowMethods: ["custom_sendMevProtected"], methodRewrite: rewrite,
+      },
+      {
+        // Each relay keeps its own URL path
+        id: "mev-relay-b", endpoint: "https://relay-b.example/v1/jsonrpc", evm: { chainId: 1 },
+        tags: ["mev"], allowMethods: ["custom_sendMevProtected"], methodRewrite: rewrite,
+      },
+    ],
+    networks: [{
+      architecture: "evm",
+      evm: { chainId: 1 },
+      failsafe: [{ matchMethod: "*", retry: { maxAttempts: 3 } }],
+      selectionPolicy: {
+        // One ranking per method, so the custom method gets its own order
+        evalScope: "network-method",
+        evalFunc: (upstreams, ctx) =>
+          methodMatches("custom_sendMevProtected")
+            ? upstreams.byTag("mev").sortByScore(PREFER_FASTEST).concat(upstreams.excludeTag("mev"))
+            : upstreams.excludeTag("mev").sortByScore(PREFER_FASTEST),
+      },
+    }],
+  }],
+});`}
+/>
+
+Covered by `TestNetwork_MethodRewrite_*` in
+[`erpc/networks_method_rewrite_test.go`](https://github.com/erpc/erpc/blob/main/erpc/networks_method_rewrite_test.go).
+
 ### Request/response behavior
 
 - `shouldSkip` runs before every `Forward` call. Skip reasons surface as
@@ -958,6 +1049,20 @@ SVM upstream gets its own slot/health poller automatically:
     the upstream omits its `svm` block; per-field copy of `blockAvailability` when the
     upstream has a partial `svm` block and left the field unset. Copies are deep — two
     upstreams must not alias the same pointer. (<SourceLink file="common/defaults.go" lines="1850-1877" />)
+28. **`methodRewrite` changes only the outgoing method name.** eRPC still treats the
+    request as the client's method everywhere else. For example, a
+    `custom_sendMevProtected` renamed to `eth_sendRawTransaction` does not get the
+    `eth_sendRawTransaction` idempotency hooks or error classification, and cache
+    policies, failsafe `matchMethod`, rate-limit rules and metric labels match
+    `custom_sendMevProtected`. A successful result returns to the client unchanged;
+    an error goes through the usual error normalization. (<SourceLink file="clients/http_json_rpc_client.go" />)
+29. **`methodRewrite` keys are exact.** `custom_*` is rejected at startup, not used as a
+    glob. A method without a key is sent unchanged. Each upstream has its own map, so
+    one client method can go out as a different method on each upstream.
+30. **Without `methodRewrite`, an upstream receives the client's method as-is.** In a
+    pool where only some upstreams rename a custom method, the others receive the
+    custom name and usually answer "method not found". Give each upstream that may
+    take the method either a rewrite or an `ignoreMethods` entry for it.
 
 
 ### Observability

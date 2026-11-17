@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -1954,6 +1955,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	}
 	if u.IgnoreMethods == nil && defaults.IgnoreMethods != nil {
 		u.IgnoreMethods = append([]string{}, defaults.IgnoreMethods...)
+	}
+	if u.MethodRewrite == nil && defaults.MethodRewrite != nil {
+		u.MethodRewrite = maps.Clone(defaults.MethodRewrite)
 	}
 	if u.AutoIgnoreUnsupportedMethods == nil && defaults.AutoIgnoreUnsupportedMethods != nil {
 		u.AutoIgnoreUnsupportedMethods = defaults.AutoIgnoreUnsupportedMethods

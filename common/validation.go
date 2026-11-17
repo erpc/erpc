@@ -1102,6 +1102,21 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if ca := u.CreditAllowance; ca != nil && (ca.Credits <= 0 || ca.ApiKey == "") {
 		return fmt.Errorf("upstream '%s': creditAllowance needs credits > 0 and apiKey", u.Id)
 	}
+	for from, to := range u.MethodRewrite {
+		if from == "" || to == "" {
+			return fmt.Errorf("upstream '%s': methodRewrite needs a non-empty method on both sides, got '%s' -> '%s'", u.Id, from, to)
+		}
+		// Keys match exactly; a glob key would never match and silently
+		// send the request unrenamed.
+		if strings.ContainsAny(from, "*?") {
+			return fmt.Errorf("upstream '%s': methodRewrite key '%s' must be an exact method name, wildcards are not supported", u.Id, from)
+		}
+	}
+	// A gRPC BDS client maps each method to a typed call, not a JSON-RPC
+	// body, so it has no method name to rename.
+	if len(u.MethodRewrite) > 0 && util.IsGrpcEndpoint(u.Endpoint) {
+		return fmt.Errorf("upstream '%s': methodRewrite is only supported on http(s) and ws(s) endpoints, not gRPC", u.Id)
+	}
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {
 			return err
