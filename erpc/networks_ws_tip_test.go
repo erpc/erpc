@@ -219,6 +219,8 @@ func eventuallyPinned(t *testing.T, network *Network, want int64, msg string) {
 // and every transport, move only to a block q sources have. Three wss
 // sources at 1005, 1001 and 1000 with q = 2: HTTP, ws newHeads and gRPC
 // StreamBlocks stop at 1001, and reach 1005 once a second source has it.
+// The onDemand sources subscribe nothing with neither a tap nor a read, and
+// subscribe newHeads on a read of latest alone (spec decision 13).
 func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 	setupGock()
 	t.Cleanup(util.ResetGock)
@@ -275,6 +277,20 @@ func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
 		s, _ := b["number"].(string)
 		return s
 	}
+
+	time.Sleep(network.chainTracker.W() + 300*time.Millisecond)
+	for id, v := range vendors {
+		require.Zero(t, v.subscribes.Load(), "%s: no tap and no read of the tip, so no newHeads subscription", id)
+	}
+	latestBlock()
+	require.Eventually(t, func() bool {
+		for _, v := range vendors {
+			if v.subscribes.Load() == 0 {
+				return false
+			}
+		}
+		return true
+	}, 2*network.chainTracker.W(), 10*time.Millisecond, "a read of latest, with no tap, subscribes every onDemand source")
 
 	tapLabels := func(transport string) []string {
 		return []string{"test_ws", "evm:123", transport, indexer.SubTypeNewHeads}

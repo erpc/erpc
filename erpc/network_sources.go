@@ -44,8 +44,9 @@ var (
 //	push u: newPendingTransactions:<v>  while demand has it and admitted(u)
 //
 // Heads are wanted while a tap needs every block (pace 0: eth_subscribe
-// newHeads or logs, a gRPC block stream) and sourceIdleStop after; a
-// paced tap, the integrity follow tap, is fed by the block clock alone.
+// newHeads or logs, a gRPC block stream) or the network-wide tracker has a
+// read of the tip (TipRead), and sourceIdleStop after; a paced tap, the
+// integrity follow tap, is fed by the block clock alone.
 // Heads that no push brings come from each lane's block clock (spec §6.8),
 // which fetches the voters' heads while taps demand them. It runs on one
 // goroutine, from network init whether or not a WebSocket or gRPC server
@@ -69,8 +70,8 @@ type sourceReconciler struct {
 	// block clock fetches; push: some push source can carry pending
 	// transactions.
 	heads, push bool
-	// headsSeen is when a pass last saw heads wanted by a tap, or saw that
-	// demand end; headsDemanded is whether the last pass saw it.
+	// headsSeen is when a pass last saw heads wanted by a tap or a tip read,
+	// or saw that demand end; headsDemanded is whether the last pass saw it.
 	headsSeen     time.Time
 	headsDemanded bool
 	// pending holds each pending-transaction topic that is held, demanded,
@@ -448,7 +449,9 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 
 	demand := r.nw.taps.Demand(r.nw.Label())
 	pace, demanded := r.nw.taps.Pace(r.nw.Label(), indexer.TopicNewHeads)
-	wantHeads, pending, left := r.wanted(demand, demanded && pace == 0, now)
+	// A client reading the tip may fetch any block another pod's tap sent,
+	// so it needs this pod's view as fresh as a push (spec decision 13).
+	wantHeads, pending, left := r.wanted(demand, demanded && pace == 0 || r.nw.chainTracker.TipRead(now), now)
 	if left > 0 {
 		next = min(next, left)
 	}

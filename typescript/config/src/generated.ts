@@ -1227,11 +1227,11 @@ export interface EvmUpstreamConfig {
   /**
    * SubscriptionSource sets when this ws/wss upstream pushes newHeads to
    * the chain tracker: off, onDemand (while a client tap needs every
-   * block: eth_subscribe newHeads or logs, a gRPC block stream; it stops
-   * 60s after the last one ends) or always (from network init). Anything
-   * but off on another endpoint is refused at load: the block clock
-   * fetches every upstream's head. Unset: onDemand for ws/wss endpoints,
-   * off otherwise.
+   * block: eth_subscribe newHeads or logs, a gRPC block stream; or while
+   * clients read the lane's tip, the block clock's read demand; it stops
+   * 60s after both end) or always (from network init). Anything but off
+   * on another endpoint is refused at load: the block clock fetches every
+   * upstream's head. Unset: onDemand for ws/wss endpoints, off otherwise.
    */
   subscriptionSource?: SubscriptionSourceMode;
   /**
@@ -3107,6 +3107,13 @@ export interface EvmHead {
    * head's anchor lowered it) or unknown.
    */
   latestat: any /* time.Time */;
+  /**
+   * Anchored is set when the read follows the cache's fresh head
+   * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+   * read of latest is served from the cache or by number, never sent to
+   * an upstream as the tag. Unset with no cache head, or a stale one.
+   */
+  anchored: boolean;
   /**
    * NextAt is the earliest time the lane's next block may come: LatestAt
    * plus the shorter of half a block and the shortest recent step of the

@@ -778,10 +778,10 @@ func (c *headClock) score(id string) time.Duration {
 }
 
 // clockDemand reports whether the clock runs, and the fastest pace its
-// demand needs heads at (0 every block): a read of latest within
-// readDemand, or a tap that needs newHeads (demand).
+// demand needs heads at (0 every block): a read of the tip (TipRead), or a
+// tap that needs newHeads (demand).
 func (t *ChainTracker) clockDemand(now time.Time) (pace time.Duration, ok bool) {
-	if at := t.latestReadAt.Load(); at > 0 && now.Sub(time.Unix(0, at)) < t.readDemand() {
+	if t.TipRead(now) {
 		return 0, true
 	}
 	return t.demand()
@@ -792,6 +792,14 @@ func (t *ChainTracker) clockDemand(now time.Time) (pace time.Duration, ok bool) 
 func (t *ChainTracker) ClockRuns() bool {
 	_, ok := t.clockDemand(time.Now())
 	return ok
+}
+
+// TipRead reports whether a read of the lane's tip (LatestRead, MarkRead,
+// ReadAhead, Proven) came within readDemand of now: the clock's read
+// demand, without its taps.
+func (t *ChainTracker) TipRead(now time.Time) bool {
+	at := t.latestReadAt.Load()
+	return at > 0 && now.Sub(time.Unix(0, at)) < t.readDemand()
 }
 
 // readDemand is how long a read of latest keeps the clock running: 2 W.

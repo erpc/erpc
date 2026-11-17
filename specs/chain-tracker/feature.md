@@ -16,7 +16,7 @@ Decisions:
 10. On a reorg, resumable transports resend from the fork point; ws `logs` gets `removed:true`, as geth does (§10.2).
 11. Resumable transports resume from the last block they applied; a cursor the instance cannot place ends the stream, so a client never keeps a branch it was not told about (§10.3).
 12. `newPendingTransactions` uses the same sources and taps, over a mempool feed (§12).
-13. Polls, pending-transaction subscriptions and `onDemand` wss `newHeads` stop 60s after the last tap needing them closes; an `always` wss `newHeads` starts with the network and stays on (§5.2).
+13. Polls and pending-transaction subscriptions stop 60s after the last tap needing them closes. An `onDemand` wss `newHeads` runs while a tap needs every block or clients read the lane's tip (the block clock's read demand, so a block another instance sent is fetchable here, decision 1), and stops 60s after both end; an `always` wss `newHeads` starts with the network and stays on (§5.2).
 14. Reads decide finality on `Head.Finalized`; a permanent cache write also needs the serving upstream's finalized (§6.4).
 15. `translateLatestTag: false` stays the per-method opt-out; the tag-state gate skips an upstream whose `latest` state is stale (§7, §6.11).
 16. Nothing needs a person: every degraded state has a detector, an automatic recovery and a time bound (§15). No switch stays set until a restart.
@@ -297,7 +297,7 @@ Example, one wss push, two wss voters:
 ### 5.2 Which topics each source feeds
 
 ```
-push u:  newHeads                       always: from network init; onDemand: while demand has newHeads at pace 0
+push u:  newHeads                       always: from network init; onDemand: while demand has newHeads at pace 0, or a read of the tip within 2 W
 poll u:  newHeads                       while demand has newHeads and admitted(u)
 push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 ```
@@ -305,7 +305,7 @@ push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 `admitted(u)` is topic admission (§6.2).
 
 - One reconciler per network, on one goroutine, calls `Set`: at network init, whether or not a WebSocket or gRPC server runs; then on demand changes, hash-voter changes, subscribe answers (`Intake.Subscribed`), and on a timer at W.
-- Idle: no demand for 60s → polls, pending-transaction subscriptions and `onDemand` `newHeads` stop. Only a tap at pace 0 (ws `newHeads` or `logs`, gRPC `StreamBlocks`) wants `onDemand` `newHeads`; the integrity follow tap's pace is the block clock's.
+- Idle: no demand for 60s → polls, pending-transaction subscriptions and `onDemand` `newHeads` stop. Only a tap at pace 0 (ws `newHeads` or `logs`, gRPC `StreamBlocks`) or the block clock's read demand (a read of the lane's tip within 2 W, `TipRead`) wants `onDemand` `newHeads`; the integrity follow tap's pace is the block clock's, so it alone wants none. The reconciler's W timer sees a read demand start; the idle edge's fetch serves the reads before the first push.
 - A head a push source pushed meets the latest part of its own full poll (`AskPushed`): a push-fed upstream is not polled for latest as well.
 - Silent `newHeads`: a connected push source whose `newHeads` pushed nothing for 15s, while its own head counter stood above its last push when those 15s began, reconnects its socket (`watchHeads`). A halted chain or a lagging node trips neither half. Pushes count before intake, so a gated source is not silent. Its hash vote ages out after W, before the reconnect.
 - A pending-transaction topic with no message for 60s, while heads carry transactions, is subscribed again; a topic that stays silent backs off from 60s to 30 min.
@@ -1080,7 +1080,7 @@ Baseline B: 200 ms blocks; 4 vendor simulators (2 wss, 2 https, 2 vendor names),
 | D7 | `maxSubscriptionsPerConnection: 3`; 4th subscribe | `-32005` |
 | D8 | 1 wss + 2 https non-sources; client load at every upstream budget for 30s | head Asks keep fetching (`erpc_head_ask_total{outcome="fetched"}` rises on each instance): they take no permit (§6.8); no stall longer than W |
 | D9 | pending stream silent with socket open | resubscribe after 60s |
-| D10 | wss `onDemand` and wss `always`, WebSocket server on; no client, then a `logs` client on one instance, then a `newHeads` client, then none | `onDemand`: 0 upstream `newHeads` with no client, 1 on the client's instance with a client, 0 within 60s after the last; no upstream `logs` subscription; `always`: 1 per instance throughout, and no latest poll reaches it; latest reads within W at every step |
+| D10 | wss `onDemand` and wss `always`, WebSocket server on; no client and no read, then an HTTP read of latest on one instance, then a `logs` client on one instance, then a `newHeads` client, then none | `onDemand`: 0 upstream `newHeads` with neither client nor read, 1 on the reading instance within W of the read, 1 on the client's instance with a client, 0 within 60s after the last client and read; no upstream `logs` subscription; `always`: 1 per instance throughout, and no latest poll reaches it; latest reads within W at every step |
 | X1 | no fault | the oracle holds for every block on both instances |
 | X2 | memory shared state; instance 2 serves only numbered calls | the oracle holds after at most 1 retry; never `future` for a sent block |
 | X3 | cold instance joins mid-chain | `Latest` known at once; taps wait for the first confirmed head; nothing above `Latest` sent |
@@ -1240,7 +1240,7 @@ One home per fact:
 - An upstream that does not gzip sends about 10× the receipts bytes.
 - Decision 17 is an assumption: a vendor that announces heads before its receipts are ready delays logs by one retry per block.
 - Each voter's full poll costs its `latest` call once per `statePollerInterval` while no clock turn meets it: a far or lagging voter's always.
-- `always` wss upstreams subscribe `newHeads` at network init, even when no WebSocket or gRPC server runs: one push per block per upstream per instance. `onDemand` ones (the default) push only while a client needs every block.
+- `always` wss upstreams subscribe `newHeads` at network init, even when no WebSocket or gRPC server runs: one push per block per upstream per instance. `onDemand` ones (the default) push only while a client needs every block or reads the tip.
 - With integrity on, a network where no upstream serves `eth_getBlockReceipts` serves `logs` only through the corroborated fallback (§11).
 - A network with one voter follows it: `q.Of(1)` = 1, so a fork it alone is on reaches clients.
 - A tie with no upstream left to settle keeps the pinned branch.

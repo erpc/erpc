@@ -1474,11 +1474,11 @@ type EvmUpstreamConfig struct {
 	PinLatestTag *bool `yaml:"pinLatestTag,omitempty" json:"pinLatestTag"`
 	// SubscriptionSource sets when this ws/wss upstream pushes newHeads to
 	// the chain tracker: off, onDemand (while a client tap needs every
-	// block: eth_subscribe newHeads or logs, a gRPC block stream; it stops
-	// 60s after the last one ends) or always (from network init). Anything
-	// but off on another endpoint is refused at load: the block clock
-	// fetches every upstream's head. Unset: onDemand for ws/wss endpoints,
-	// off otherwise.
+	// block: eth_subscribe newHeads or logs, a gRPC block stream; or while
+	// clients read the lane's tip, the block clock's read demand; it stops
+	// 60s after both end) or always (from network init). Anything but off
+	// on another endpoint is refused at load: the block clock fetches every
+	// upstream's head. Unset: onDemand for ws/wss endpoints, off otherwise.
 	SubscriptionSource SubscriptionSourceMode `yaml:"subscriptionSource,omitempty" json:"subscriptionSource"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
