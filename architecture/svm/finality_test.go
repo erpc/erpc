@@ -40,6 +40,7 @@ func (f *fakeNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 {
 	}
 	return f.finalizedSlot
 }
+func (f *fakeNetwork) SvmHighestLatestSlotMax(context.Context) int64 { return f.latestSlot }
 func (f *fakeNetwork) SvmHighestIndexedSlot(context.Context) int64   { return f.indexedSlot }
 func (f *fakeNetwork) SvmEnforceBlockAvailability() bool {
 	if f.enforceBlockAvailability == nil {
