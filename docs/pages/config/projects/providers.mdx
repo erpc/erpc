@@ -237,7 +237,7 @@ Static map of 18 chains with heterogeneous path shapes. **Auth is always header-
 
 #### blockpi
 
-Static map of 56 chains (exported `BlockPiNetworkNames`). URL: `https://{netName}.blockpi.network/v1/rpc/{escapedKey}`; chain `movement` uses `/rpc/v1/{escapedKey}/v1`. Error mapping: message containing `apikey is on another chain` → `ErrEndpointUnauthorized`. OwnsUpstream: scheme prefixes or `.blockpi.network`.
+Static map of 56 chains (exported `BlockPiNetworkNames`). URL: `https://{netName}.blockpi.network/v1/rpc/{escapedKey}`; chain `movement` uses `/rpc/v1/{escapedKey}/v1`. Error mapping: message containing `apikey is on another chain` or `apikey not found` → `ErrEndpointUnauthorized`. OwnsUpstream: scheme prefixes or `.blockpi.network`.
 
 | key | required | default |
 |---|---|---|

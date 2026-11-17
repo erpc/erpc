@@ -41,8 +41,17 @@ func TestBlockPiVendor_GenerateConfigs(t *testing.T) {
 func TestBlockPiVendor_GetVendorSpecificErrorIfAny(t *testing.T) {
 	v := CreateBlockPiVendor()
 
-	for _, msg := range []string{"ApiKey is on another chain", "this API key is on another chain"} {
-		err, details := vendorErr(t, v, "eth_getLogs", 400, -32000, msg, "d")
+	for _, c := range []struct {
+		status, code int
+		msg          string
+	}{
+		{400, -32000, "ApiKey is on another chain"},
+		{400, -32000, "this API key is on another chain"},
+		{503, 100021, "Apikey not found"},
+		{503, 100021, "API key not found"},
+	} {
+		msg := c.msg
+		err, details := vendorErr(t, v, "eth_getLogs", c.status, c.code, msg, "d")
 		require.Error(t, err, msg)
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized), "%q -> %v", msg, err)
 		assert.Equal(t, common.JsonRpcErrorUnauthorized, normalizedCode(t, err))
