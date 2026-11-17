@@ -3753,6 +3753,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		wantStatus   int
 		wantBody     string
 		wantCacheHit bool
+		wantHeaders  map[string]string
 	}{
 		{
 			name: "Basic healthcheck",
@@ -4495,6 +4496,72 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			wantStatus:   http.StatusOK,
 			wantBody:     `OK`,
 		},
+		{
+			name: "Cost headers - network healthcheck is zero calls on its network",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
+				}
+				pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
+				return &HttpServer{
+					logger:    logger,
+					serverCfg: &common.ServerConfig{CostHeaders: &common.TRUE},
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{"test": pp},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{Mode: common.HealthCheckModeNetworks},
+					draining:       &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "evm",
+			chainId:      "123",
+			request:      &http.Request{Method: "HEAD", URL: &url.URL{Path: "/test/evm/123"}},
+			wantStatus:   http.StatusOK,
+			wantHeaders: map[string]string{
+				"X-ERPC-Calls":         "0",
+				"X-ERPC-Billable":      "0",
+				"X-ERPC-Network-Id":    "evm:123",
+				"X-ERPC-Network-Alias": "evm:123",
+			},
+		},
+		{
+			name: "Cost headers - unserved network names no network",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, pr, nil, mtk, nil),
+				}
+				pp.upstreamsRegistry.Bootstrap(ctx)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, mtk, nil, nil, nil, nil, logger)
+				return &HttpServer{
+					logger:    logger,
+					serverCfg: &common.ServerConfig{CostHeaders: &common.TRUE},
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{"test": pp},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{Mode: common.HealthCheckModeSimple},
+					draining:       &atomic.Bool{},
+				}
+			},
+			projectId:    "test",
+			architecture: "evm",
+			chainId:      "53302",
+			request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/test/evm/53302"}},
+			wantStatus:   http.StatusBadGateway,
+			wantHeaders: map[string]string{
+				"X-ERPC-Calls":         "0",
+				"X-ERPC-Billable":      "0",
+				"X-ERPC-Network-Id":    "",
+				"X-ERPC-Network-Alias": "",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4524,6 +4591,9 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 
 			if tt.wantCacheHit {
 				assert.Equal(t, "HIT", resp.Header.Get("X-ERPC-Cache"))
+			}
+			for name, want := range tt.wantHeaders {
+				assert.Equal(t, want, resp.Header.Get(name), name)
 			}
 		})
 	}
