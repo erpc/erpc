@@ -43,7 +43,8 @@ func (n *blockTimeNetwork) SvmHighestFinalizedSlot(context.Context) int64 { retu
 func (n *blockTimeNetwork) SvmHighestFinalizedSlotMax(context.Context) int64 {
 	return 0
 }
-func (n *blockTimeNetwork) SvmHighestIndexedSlot(context.Context) int64 { return 0 }
+func (n *blockTimeNetwork) SvmHighestLatestSlotMax(context.Context) int64 { return 0 }
+func (n *blockTimeNetwork) SvmHighestIndexedSlot(context.Context) int64   { return 0 }
 func (n *blockTimeNetwork) Forward(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	return nil, nil
 }
@@ -243,6 +244,7 @@ func (realtimeNetworkNoBlockTime) SvmHighestFinalizedSlot(context.Context) int64
 	return 0
 }
 func (realtimeNetworkNoBlockTime) SvmHighestFinalizedSlotMax(context.Context) int64 { return 0 }
+func (realtimeNetworkNoBlockTime) SvmHighestLatestSlotMax(context.Context) int64    { return 0 }
 func (realtimeNetworkNoBlockTime) SvmHighestIndexedSlot(context.Context) int64      { return 0 }
 func (realtimeNetworkNoBlockTime) Forward(context.Context, *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	return nil, nil

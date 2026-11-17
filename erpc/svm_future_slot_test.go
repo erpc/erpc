@@ -17,7 +17,7 @@ import (
 // svmProdShapedNetworkYaml is the failsafe shape of a production Solana
 // network: hedge maxCount 1 and retry maxAttempts 3 for every method, with the
 // delays scaled down so a test round stays short. statePollerDebounce 2s makes
-// the getBlock staleness margin 2 + 2s/400ms = 7 slots.
+// the guards' staleness margin 2 + 2s/400ms = 7 slots.
 const svmProdShapedNetworkYaml = `
 architecture: svm
 svm:
@@ -53,14 +53,13 @@ func svmWireError(t *testing.T, req *common.NormalizedRequest, err error) map[st
 	return body.Error
 }
 
-// TestSvm_ReadBeyondPoolTip_AnsweredLocally covers reads that name a slot far
+// TestSvm_ReadBeyondPoolTip_AnsweredLocally covers reads that name a slot
 // beyond the highest slot any upstream of the pool knows: getBlockTime's slot
 // and a minContextSlot option. No upstream can answer them, so every attempt,
 // failover, retry and hedge is a wasted round-trip ending in the same agave
-// error. Up to 128 slots above the tracked tip (a read-your-writes slot from a
-// fresher node, which the pool often reaches within the retry waits) and with a
-// cold poller, they forward. The getBlock guard's staleness margin (7 slots
-// here) is not the bound: tip+10 is past it and still forwards.
+// error. Within the staleness margin (7 slots here) of the tracked tip, where
+// an upstream may have moved since the last poll, and with a cold poller, they
+// forward; one slot past it they are answered locally.
 func TestSvm_ReadBeyondPoolTip_AnsweredLocally(t *testing.T) {
 	const (
 		latest    = int64(300000)
@@ -110,43 +109,49 @@ func TestSvm_ReadBeyondPoolTip_AnsweredLocally(t *testing.T) {
 			wantMsg:  fmt.Sprintf("Block not available for slot %d", indexedTip+far),
 		},
 		{
-			name:   "minContextSlot past the getBlock margin forwards",
+			name:   "minContextSlot at the staleness margin forwards",
 			method: "getBalance",
-			params: fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+10),
+			params: fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+7),
 			shred:  latest,
-			reply:  fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":42}}`, finalizedTip+10),
+			reply:  fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":42}}`, finalizedTip+7),
 		},
 		{
-			name:   "getBlockTime past the getBlock margin forwards",
+			name:   "getBlockTime at the staleness margin forwards",
 			method: "getBlockTime",
-			params: fmt.Sprintf(`[%d]`, indexedTip+10),
+			params: fmt.Sprintf(`[%d]`, indexedTip+7),
 			shred:  latest,
 			reply:  `{"jsonrpc":"2.0","id":1,"result":1700000000}`,
 		},
 		{
-			name:   "minContextSlot at tip plus 128 forwards",
-			method: "getBalance",
-			params: fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+128),
-			shred:  latest,
-			reply:  fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":42}}`, finalizedTip+128),
-		},
-		{
-			name:   "getBlockTime at tip plus 128 forwards",
-			method: "getBlockTime",
-			params: fmt.Sprintf(`[%d]`, indexedTip+128),
-			shred:  latest,
-			reply:  `{"jsonrpc":"2.0","id":1,"result":1700000000}`,
-		},
-		{
-			name:     "minContextSlot at tip plus 129 answered locally",
+			name:     "minContextSlot one past the staleness margin answered locally",
 			method:   "getBalance",
-			params:   fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+129),
+			params:   fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d}]`, finalizedTip+8),
 			shred:    latest,
 			reply:    minContextSlotNotReached,
 			local:    true,
 			wantCode: -32016,
 			wantMsg:  "Minimum context slot has not been reached",
 			wantData: map[string]interface{}{"contextSlot": float64(finalizedTip)},
+		},
+		{
+			name:     "getBlockTime one past the staleness margin answered locally",
+			method:   "getBlockTime",
+			params:   fmt.Sprintf(`[%d]`, indexedTip+8),
+			shred:    latest,
+			reply:    blockNotAvailable(indexedTip + 8),
+			local:    true,
+			wantCode: -32004,
+			wantMsg:  fmt.Sprintf("Block not available for slot %d", indexedTip+8),
+		},
+		{
+			// A client's minContextSlot is often the context.slot of its previous
+			// answer: an upstream holds that slot even while its last shred-insert
+			// poll trails it by more than the margin.
+			name:   "minContextSlot at the latest slot forwards past a stale shred-insert poll",
+			method: "getBalance",
+			params: fmt.Sprintf(`["11111111111111111111111111111111",{"minContextSlot":%d,"commitment":"processed"}]`, latest),
+			shred:  latest - 20,
+			reply:  fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":42}}`, latest),
 		},
 		{
 			name:   "minContextSlot with a cold poller forwards",
@@ -317,7 +322,13 @@ func TestSvm_ReadBeyondPoolTip_AnsweredLocally(t *testing.T) {
 			require.NoError(t, netCfg.SetDefaults(upstreams, nil))
 			net, _ := setupTestSvmNetworkFromConfig(t, ctx, netCfg, upstreams)
 			require.Eventually(t, func() bool {
-				return net.SvmHighestFinalizedSlotMax(ctx) == finalized && net.SvmHighestIndexedSlot(ctx) == tc.shred
+				for _, u := range net.upstreamsRegistry.GetNetworkUpstreams(ctx, net.networkId) {
+					sp := u.SvmStatePoller()
+					if sp == nil || sp.IsObjectNull() || sp.LatestSlot() != latest || sp.FinalizedSlot() != finalized || sp.ShredInsertSlot() != tc.shred {
+						return false
+					}
+				}
+				return true
 			}, 5*time.Second, 20*time.Millisecond, "pollers never reported the mocked slots")
 
 			req := common.NewNormalizedRequest([]byte(fmt.Sprintf(
