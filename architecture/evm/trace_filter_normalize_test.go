@@ -12,6 +12,8 @@ import (
 func newMockEvmUpstream(id string) *mockEvmUpstream {
 	m := &mockEvmUpstream{}
 	m.On("Id").Return(id).Maybe()
+	// Hooks read the upstream's config for its methodRewrite.
+	m.On("Config").Return(&common.UpstreamConfig{}).Maybe()
 	return m
 }
 
