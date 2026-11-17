@@ -449,8 +449,8 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 
 	demand := r.nw.taps.Demand(r.nw.Label())
 	pace, demanded := r.nw.taps.Pace(r.nw.Label(), indexer.TopicNewHeads)
-	// A client reading the tip may fetch any block another pod's tap sent,
-	// so it needs this pod's view as fresh as a push (spec decision 13).
+	// A client reading the tip may fetch any block another instance's tap sent,
+	// so it needs this instance's view as fresh as a push (spec decision 13).
 	wantHeads, pending, left := r.wanted(demand, demanded && pace == 0 || r.nw.chainTracker.TipRead(now), now)
 	if left > 0 {
 		next = min(next, left)
