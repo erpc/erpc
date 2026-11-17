@@ -78,6 +78,12 @@ func (s *HttpServer) handleHealthCheck(
 	writeFatalError func(ctx context.Context, statusCode int, body error),
 ) {
 	logger := s.logger.With().Str("handler", "healthcheck").Str("projectId", projectId).Logger()
+	// A healthcheck routes no JSON-RPC call, so the cost header group says so:
+	// a metering proxy otherwise reads a header-less 200 as one billable call.
+	if s.costHeadersEnabled() {
+		w.Header().Set("X-ERPC-Calls", "0")
+		w.Header().Set("X-ERPC-Billable", "0")
+	}
 	if s.draining.Load() {
 		http.Error(w, "shutting down", http.StatusServiceUnavailable)
 		return
@@ -339,6 +345,15 @@ func (s *HttpServer) handleHealthCheck(
 		}
 
 		projectsHealth = append(projectsHealth, projectHealth)
+	}
+
+	if s.costHeadersEnabled() && targetNetworkId != "" && len(projects) == 1 {
+		if _, served := projectsHealth[0].Networks[targetNetworkId]; served {
+			if network, _ := projects[0].GetNetwork(ctx, targetNetworkId); network != nil {
+				w.Header().Set("X-ERPC-Network-Id", network.Id())
+				w.Header().Set("X-ERPC-Network-Alias", network.Label())
+			}
+		}
 	}
 
 	// Format and return response based on mode
