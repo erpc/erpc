@@ -1018,12 +1018,15 @@ type UpstreamConfig struct {
 	Routing *UpstreamRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
 
 	// MethodRewrite renames a method on the way to this upstream: a request
-	// for a key method is sent with the value method, and the upstream's
-	// response returns to the client unchanged. Keys are exact method names
-	// as the client sends them; methods absent from the map go out as-is.
-	// Everything else (allowMethods / ignoreMethods, selection, failsafe,
-	// cache, hooks, metrics) sees the client's method. Only the wire
-	// request changes, so each upstream can map one method differently.
+	// for a key method is sent with the value method. Keys are exact method
+	// names as the client sends them; methods absent from the map go out
+	// as-is. Each upstream has its own map, so one client method can go out
+	// differently per upstream. Code that interprets this upstream's answer
+	// (upstream hooks such as eth_sendRawTransaction idempotency, error
+	// normalization, write-safety checks of upstream retry/hedge) uses the
+	// target method (see UpstreamMethod). Routing and request-level
+	// behaviour (allowMethods / ignoreMethods, selection, network failsafe
+	// matchMethod, cache, rate limits, metrics) use the client's method.
 	MethodRewrite map[string]string `yaml:"methodRewrite,omitempty" json:"methodRewrite,omitempty"`
 }
 
@@ -1264,9 +1267,7 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 		copy(copied.AllowMethods, c.AllowMethods)
 	}
 
-	if c.MethodRewrite != nil {
-		copied.MethodRewrite = maps.Clone(c.MethodRewrite)
-	}
+	copied.MethodRewrite = maps.Clone(c.MethodRewrite)
 
 	return copied
 }
@@ -1282,6 +1283,20 @@ func (c *UpstreamConfig) WireMethod(method string) string {
 		return to
 	}
 	return method
+}
+
+// UpstreamMethod returns the method u runs for req: u's methodRewrite target
+// for req's method, else req's method. Code that interprets what an
+// upstream did (upstream hooks, error normalization, write-safety checks)
+// reads this; code that describes the client's request (cache, failsafe
+// matchMethod, rate limits, metrics) reads req.Method(). A nil u gives
+// req's method.
+func UpstreamMethod(req *NormalizedRequest, u Upstream) (string, error) {
+	method, err := req.Method()
+	if err != nil || u == nil {
+		return method, err
+	}
+	return u.Config().WireMethod(method), nil
 }
 
 type ShadowUpstreamConfig struct {

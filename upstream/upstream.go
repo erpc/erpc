@@ -277,6 +277,7 @@ func NewUpstream(
 			if err != nil {
 				return nil, err
 			}
+			ex.wireMethod = cfg.WireMethod
 			// Wire breaker-transition metric. Side-effect-only; failsafe/
 			// package stays telemetry-free.
 			if b := ex.Breaker(); b != nil {
@@ -680,7 +681,14 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		}
 	}
 
-	lg := u.logger.With().Str("method", method).Str("networkId", u.NetworkId()).Interface("id", nrq.ID()).Logger()
+	lgc := u.logger.With().Str("method", method).Str("networkId", u.NetworkId()).Interface("id", nrq.ID())
+	// methodRewrite: record what this upstream actually receives, so a
+	// "method not found" from it can be traced to the renamed method.
+	if wire := cfg.WireMethod(method); wire != method {
+		span.SetAttributes(attribute.String("request.wire_method", wire))
+		lgc = lgc.Str("wireMethod", wire)
+	}
+	lg := lgc.Logger()
 
 	if limitersBudget != nil && nrq.UpstreamPolicies() != common.UpstreamPoliciesHeadAsk {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")

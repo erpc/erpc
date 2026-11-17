@@ -70,7 +70,17 @@ func HandleNetworkPostForward(ctx context.Context, network common.Network, nq *c
 	ctx, span := common.StartDetailSpan(ctx, "Network.PostForwardHook")
 	defer span.End()
 
-	method, err := nq.Method()
+	// The hook interprets an upstream's answer, so it follows the method
+	// that upstream ran (its methodRewrite target): the one that answered,
+	// else the last one tried.
+	var answered common.Upstream
+	if nr != nil {
+		answered = nr.Upstream()
+	}
+	if answered == nil {
+		answered = nq.LastUpstream()
+	}
+	method, err := common.UpstreamMethod(nq, answered)
 	if err != nil {
 		return nr, err
 	}
@@ -95,7 +105,7 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook")
 	defer span.End()
 
-	method, err := r.Method()
+	method, err := common.UpstreamMethod(r, u)
 	if err != nil {
 		return false, nil, err
 	}
@@ -127,7 +137,7 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook")
 	defer span.End()
 
-	method, err := rq.Method()
+	method, err := common.UpstreamMethod(rq, u)
 	if err != nil {
 		return rs, err
 	}

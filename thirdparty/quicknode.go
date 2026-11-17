@@ -74,7 +74,9 @@ var quicknodeApiCreditsBaseURL = "https://api.quicknode.com/v0/api-credits/" // 
 // fallback otherwise), overridable per method via
 // `providers[].settings.creditUnits`.
 func (v *QuicknodeVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
+	// The vendor bills the method it ran (methodRewrite target).
 	method, _ := req.Method()
+	method = upstream.WireMethod(method)
 	var override map[string]int64
 	if upstream != nil {
 		override = upstream.CreditUnits

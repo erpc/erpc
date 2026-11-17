@@ -1029,12 +1029,15 @@ export interface UpstreamConfig {
   routing?: UpstreamRoutingConfig;
   /**
    * MethodRewrite renames a method on the way to this upstream: a request
-   * for a key method is sent with the value method, and the upstream's
-   * response returns to the client unchanged. Keys are exact method names
-   * as the client sends them; methods absent from the map go out as-is.
-   * Everything else (allowMethods / ignoreMethods, selection, failsafe,
-   * cache, hooks, metrics) sees the client's method. Only the wire
-   * request changes, so each upstream can map one method differently.
+   * for a key method is sent with the value method. Keys are exact method
+   * names as the client sends them; methods absent from the map go out
+   * as-is. Each upstream has its own map, so one client method can go out
+   * differently per upstream. Code that interprets this upstream's answer
+   * (upstream hooks such as eth_sendRawTransaction idempotency, error
+   * normalization, write-safety checks of upstream retry/hedge) uses the
+   * target method (see UpstreamMethod). Routing and request-level
+   * behaviour (allowMethods / ignoreMethods, selection, network failsafe
+   * matchMethod, cache, rate limits, metrics) use the client's method.
    */
   methodRewrite?: { [key: string]: string};
 }

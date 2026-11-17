@@ -267,11 +267,13 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 	// Serialize the JSON-RPC request with the rewritten wire id
 	jrReq.RLock()
 	originalID := jrReq.ID
-	method := jrReq.Method
+	// method is what this upstream receives (methodRewrite target): the
+	// subscription guard below must judge the method the upstream runs.
+	method := c.upstream.Config().WireMethod(jrReq.Method)
 	requestBody, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": jrReq.JSONRPC,
 		"id":      wireID,
-		"method":  c.upstream.Config().WireMethod(method),
+		"method":  method,
 		"params":  common.WireParams(ctx, req, jrReq.Params),
 	})
 	jrReq.RUnlock()

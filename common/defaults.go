@@ -2,7 +2,6 @@ package common
 
 import (
 	"fmt"
-	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -1472,13 +1471,7 @@ func (p *ProjectConfig) SetNetworkDefaults(n *NetworkConfig) error {
 }
 
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
-	if strings.HasPrefix(upstream.Endpoint, "http://") ||
-		strings.HasPrefix(upstream.Endpoint, "https://") ||
-		strings.HasPrefix(upstream.Endpoint, "ws://") ||
-		strings.HasPrefix(upstream.Endpoint, "wss://") ||
-		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
-		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") ||
-		strings.HasPrefix(upstream.Endpoint, "grpcs://") {
+	if util.IsNativeProtocol(upstream.Endpoint) {
 		return nil, nil
 	}
 
@@ -1955,9 +1948,6 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	}
 	if u.IgnoreMethods == nil && defaults.IgnoreMethods != nil {
 		u.IgnoreMethods = append([]string{}, defaults.IgnoreMethods...)
-	}
-	if u.MethodRewrite == nil && defaults.MethodRewrite != nil {
-		u.MethodRewrite = maps.Clone(defaults.MethodRewrite)
 	}
 	if u.AutoIgnoreUnsupportedMethods == nil && defaults.AutoIgnoreUnsupportedMethods != nil {
 		u.AutoIgnoreUnsupportedMethods = defaults.AutoIgnoreUnsupportedMethods

@@ -353,7 +353,8 @@ func (e *networkExecutor) runRetry(
 				// eth_sendRawTransaction's execution-reverted is the
 				// REAL answer (broadcasted but reverted) — operators
 				// want the original error, not a retry-exhausted wrapper.
-				method, _ := req.Method()
+				// The method the failing upstream ran (methodRewrite target).
+				method, _ := common.UpstreamMethod(req, req.LastUpstream())
 				if strings.EqualFold(method, "eth_sendRawTransaction") &&
 					common.HasErrorCode(surfaceErr, common.ErrCodeEndpointExecutionException) {
 					return nil, surfaceErr

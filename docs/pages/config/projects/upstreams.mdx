@@ -223,7 +223,7 @@ All paths relative to `projects[*]`. "Default" = value after `SetDefaults`/`Appl
 | `upstreams[*].vendorName` | string | `""`; at runtime filled by URL pattern match or `guessVendorName()` | When non-empty, forces name-lookup only — `OwnsUpstream` URL matching is skipped. Mismatch silently applies the wrong error normalizer. No warning is logged. |
 | `upstreams[*].ignoreMethods` | `[]string` | nil; **forced to `["*"]` when `allowMethods` set and `ignoreMethods` nil** (<SourceLink file="common/defaults.go" lines="1706-1712" />) | Evaluated first in `ShouldHandleMethod`. Glob wildcards + `\|` OR + `&` AND + `!` NOT. Result cached per method forever. |
 | `upstreams[*].allowMethods` | `[]string` | nil | Evaluated after `ignoreMethods`; a match forces support to true. Setting this alone implicitly blocks all other methods via injected `ignoreMethods: ["*"]`. |
-| `upstreams[*].methodRewrite` | `map[string]string` | nil; all-or-nothing inheritance from `upstreamDefaults.methodRewrite` (<SourceLink file="common/defaults.go" lines="1959-1961" />) | Renames a method on the request sent to this upstream: key = method the client sends (exact name, no globs), value = method the upstream receives. The response returns to the client unchanged. Only the outgoing JSON-RPC body changes (<SourceLink file="common/config.go" lines="1274-1286" />): `allowMethods`/`ignoreMethods`, selection policy, failsafe, cache, hooks and metrics all use the client's method. Empty keys/values, glob keys and gRPC endpoints fail validation (<SourceLink file="common/validation.go" lines="1105-1120" />). |
+| `upstreams[*].methodRewrite` | `map[string]string` | nil; per upstream only, never inherited (`upstreamDefaults.methodRewrite` fails validation, <SourceLink file="common/validation.go" lines="838-843" />) | Renames a method on the request sent to this upstream: key = method the client sends (exact name), value = method the upstream receives (<SourceLink file="common/config.go" lines="1278-1300" />). What interprets this upstream's answer follows the target method: upstream hooks (e.g. `eth_sendRawTransaction` idempotency), error normalization, upstream-scope retry/hedge write checks, vendor credit units. What describes the client's request follows the client's method: `allowMethods`/`ignoreMethods`, selection policy, network failsafe `matchMethod`, cache, rate limits, metric labels. Keys with method-pattern characters (`* ? \| & ! ( )`, spaces), empty keys/values and gRPC endpoints fail validation (<SourceLink file="common/validation.go" lines="1115-1130" />). |
 | `upstreams[*].autoIgnoreUnsupportedMethods` | `*bool` | nil (no global default); `true` for repository-provider upstreams (<SourceLink file="thirdparty/repository.go" lines="89-91" />) | When true, an `ErrCodeEndpointUnsupported` reply ignores that method on this upstream for 10 min. An `allowMethods` entry for the method wins over it. |
 | `upstreams[*].failsafe[]` | `[]*FailsafeConfig` | nil; deep-copied from `upstreamDefaults.failsafe` when absent (all-or-nothing) | Per-entry `matchMethod` defaults to `"*"`. Match priority: method+finality &gt; method &gt; finality &gt; catch-all. `consensus` rejected at upstream scope. |
 | `upstreams[*].rateLimitBudget` | string | `""` | References `rateLimiters.budgets[].id`. Checked before each `Forward`; trips `ErrUpstreamRateLimitRuleExceeded`. |
@@ -828,15 +828,24 @@ SVM upstream gets its own slot/health poller automatically:
 method no node knows (`custom_sendMevProtected`). Only the relays take it, each relay
 receives `eth_sendRawTransaction`, and the regular node takes it when every relay
 fails. `allowMethods` keeps the relays off all other methods. `methodRewrite` renames
-the method per upstream. A per-method selection policy puts the relays first and the
-other upstreams after them, so network retry reaches the regular node last. This
-`evalFunc` replaces the default policy, so add the default's `excludeIf` steps
-(see [Selection & scoring](/config/projects/selection-policies)) if you need them:
+the method per upstream, and the renamed send gets `eth_sendRawTransaction`'s
+handling: an "already known" answer after a retry returns the transaction hash, and a
+relay's simulation revert moves on to the next upstream. A per-method selection policy
+puts the relays first and the other upstreams after them, so network retry reaches the
+regular node last. This `evalFunc` replaces the default policy, so add the default's
+`excludeIf` steps (see [Selection & scoring](/config/projects/selection-policies)) if
+you need them.
+
+**Warning:** the fallback sends the transaction to a regular node, which puts it in the
+public mempool and removes the MEV protection. Keep it only if landing the transaction
+matters more than keeping it private. Also keep hedging off for the custom method (the
+first failsafe entry below): a hedge would send the transaction to the next upstream
+while a slow relay is still working on it.
 
 <ConfigTabs
   path="projects[]"
-  focusYaml="7,8,12,13,16,19,20,23,24,29,31-34"
-  focusTs="6,10,13,14,16,17,24,26-29"
+  focusYaml="7-8,12-15,18,20-23,30-32,38,41-43"
+  focusTs="3,10,13,18,27,32,34-36"
   yaml={`projects:
   - id: main
     upstreams:
@@ -864,8 +873,14 @@ other upstreams after them, so network retry reaches the regular node last. This
       - architecture: evm
         evm: { chainId: 1 }
         failsafe:
+          # First matching entry wins: the custom send never hedges, so a
+          # slow relay cannot push the transaction to the public node early
+          - matchMethod: custom_sendMevProtected
+            retry: { maxAttempts: 3 }
+            hedge: null
           - matchMethod: "*"
             retry: { maxAttempts: 3 }
+            hedge: { delay: { quantile: 0.7 }, maxCount: 1 }
         selectionPolicy:
           # One ranking per method, so the custom method gets its own order
           evalScope: network-method
@@ -897,7 +912,12 @@ export default createConfig({
     networks: [{
       architecture: "evm",
       evm: { chainId: 1 },
-      failsafe: [{ matchMethod: "*", retry: { maxAttempts: 3 } }],
+      failsafe: [
+        // First matching entry wins: the custom send never hedges, so a
+        // slow relay cannot push the transaction to the public node early
+        { matchMethod: "custom_sendMevProtected", retry: { maxAttempts: 3 }, hedge: null },
+        { matchMethod: "*", retry: { maxAttempts: 3 }, hedge: { delay: { quantile: 0.7 }, maxCount: 1 } },
+      ],
       selectionPolicy: {
         // One ranking per method, so the custom method gets its own order
         evalScope: "network-method",
@@ -1049,21 +1069,37 @@ Covered by `TestNetwork_MethodRewrite_*` in
     the upstream omits its `svm` block; per-field copy of `blockAvailability` when the
     upstream has a partial `svm` block and left the field unset. Copies are deep — two
     upstreams must not alias the same pointer. (<SourceLink file="common/defaults.go" lines="1850-1877" />)
-28. **`methodRewrite` changes only the outgoing method name.** eRPC still treats the
-    request as the client's method everywhere else. For example, a
-    `custom_sendMevProtected` renamed to `eth_sendRawTransaction` does not get the
-    `eth_sendRawTransaction` idempotency hooks or error classification, and cache
-    policies, failsafe `matchMethod`, rate-limit rules and metric labels match
-    `custom_sendMevProtected`. A successful result returns to the client unchanged;
-    an error goes through the usual error normalization. (<SourceLink file="clients/http_json_rpc_client.go" />)
-29. **`methodRewrite` keys are exact.** `custom_*` is rejected at startup, not used as a
-    glob. A method without a key is sent unchanged. Each upstream has its own map, so
-    one client method can go out as a different method on each upstream.
+28. **`methodRewrite` splits the method in two.** The upstream's side uses the target
+    method: `HandleUpstreamPreForward`/`HandleUpstreamPostForward` and
+    `HandleNetworkPostForward` dispatch on it (<SourceLink file="architecture/evm/hooks.go" lines="73-145" />),
+    `ExtractJsonRpcError` classifies the upstream's error by it, the network executor
+    keeps a send's real revert by it (<SourceLink file="erpc/network_executor.go" lines="355-361" />),
+    and the upstream executor's no-retry/no-hedge write check uses it
+    (<SourceLink file="upstream/upstream_executor.go" lines="41-49" />). So a
+    `custom_sendMevProtected` renamed to `eth_sendRawTransaction` turns a relay's
+    "already known" into the transaction hash and makes a relay's simulation revert
+    retryable toward the network (`TestNetwork_MethodRewrite_AlreadyKnownIsIdempotentSuccess`,
+    `TestNetwork_MethodRewrite_RelayRevertFallsBack`). The client's side uses the client
+    method: cache policies, network failsafe `matchMethod` (so disable hedging with an
+    entry matching the client method), rate-limit rules, metric labels, and the
+    network-scope hedge and multiplexing write checks, which run before an upstream is
+    chosen. Renaming to a write that eRPC never retries (e.g. `eth_sendTransaction`) is
+    therefore still hedged at network scope unless a failsafe entry for the client
+    method turns hedging off.
+29. **`methodRewrite` keys are exact.** `custom_*`, `a|b` or `!x` are rejected at startup,
+    not used as patterns. A method without a key is sent unchanged. Each upstream has its
+    own map, so one client method can go out as a different method on each upstream; a
+    provider's `overrides` keep the map, and `repository://` providers copy it to every
+    generated upstream (`TestUpstreamConfig_MethodRewrite_YamlAndCopy`,
+    `TestRepositoryVendor_GenerateConfigs`).
 30. **Without `methodRewrite`, an upstream receives the client's method as-is.** In a
     pool where only some upstreams rename a custom method, the others receive the
     custom name and usually answer "method not found". Give each upstream that may
     take the method either a rewrite or an `ignoreMethods` entry for it.
-
+31. **A WebSocket upstream's subscription guard judges the target method.** A method
+    renamed to `eth_subscribe`/`eth_unsubscribe` without a subscription owner is skipped,
+    never sent (<SourceLink file="clients/ws_json_rpc_client.go" lines="270-305" />,
+    `TestWsClientMethodRewrite`).
 
 ### Observability
 
@@ -1083,6 +1119,13 @@ Covered by `TestNetwork_MethodRewrite_*` in
 | `erpc_upstream_cordon_duration_seconds` | histogram (1 s … 86 400 s) | project, network, upstream | Observed on each uncordon |
 | `erpc_upstream_stale_upper_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot above upper bound. SVM `confidence` is `"configured"` for declared `svm.blockAvailability.upper`. |
 | `erpc_upstream_stale_lower_bound_total` | counter | project, vendor, network, upstream, category, confidence | Block/slot below lower bound. SVM `confidence` is `"configured"` (declared `svm.blockAvailability`). |
+
+With `methodRewrite`, metrics keep the client's method in their `category` label. The
+method the upstream received is on the `Upstream.Forward` and
+`HttpJsonRpcClient.sendSingleRequest` trace spans as `request.wire_method`, and on the
+upstream's request logs as `wireMethod`, only when it differs from the client's
+(<SourceLink file="upstream/upstream.go" lines="683-689" />,
+<SourceLink file="clients/http_json_rpc_client.go" lines="709-717" />).
 
 ### Source code entry points
 

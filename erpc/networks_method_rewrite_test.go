@@ -229,3 +229,72 @@ func TestNetwork_MethodRewrite_OtherMethodsSkipRelays(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `"0x1111"`, jrr.GetResultString())
 }
+
+func customSendSignedReq() *common.NormalizedRequest {
+	return common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"custom_sendMevProtected","params":["` + sampleSignedTx + `"]}`))
+}
+
+// A renamed send carries eth_sendRawTransaction's idempotency: when one
+// relay fails after it may have broadcast and the retry reaches a relay
+// that answers "already known", the client gets the transaction hash, not
+// an error.
+func TestNetwork_MethodRewrite_AlreadyKnownIsIdempotentSuccess(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	setupGockObserver(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mockSendRaw(t, upstreamHostFromID("relay-a"), 503, `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"relay unavailable"}}`)
+	mockSendRaw(t, upstreamHostFromID("relay-b"), 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"already known"}}`)
+	mockSendRaw(t, upstreamHostFromID("regular"), 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"regular must not be reached"}}`)
+
+	ntw := setupMevRewriteNetwork(t, ctx)
+	resp, _ := ntw.Forward(ctx, customSendSignedReq())
+	if resp != nil {
+		resp.Release()
+	}
+	policy.TickForTest(ntw.policyEngine, ntw.networkId, "custom_sendMevProtected")
+
+	hitsMu.Lock()
+	hits = map[string]int{}
+	hitsMu.Unlock()
+	resp, err := ntw.Forward(ctx, customSendSignedReq())
+	require.NoError(t, err, "already known from a relay must become a success")
+	require.NotNil(t, resp)
+	defer resp.Release()
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Regexp(t, `^"0x[0-9a-f]{64}"$`, jrr.GetResultString(), "the hook answers with the transaction hash")
+	assert.Equal(t, 0, gockHits(upstreamHostFromID("regular")), "the transaction is already known, the fallback node must not get it")
+}
+
+// A relay whose simulation reverts is retryable toward the network for a
+// renamed send, as for eth_sendRawTransaction, so the fallback node is tried.
+func TestNetwork_MethodRewrite_RelayRevertFallsBack(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	setupGockObserver(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	revert := `{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}`
+	mockSendRaw(t, upstreamHostFromID("relay-a"), 200, revert)
+	mockSendRaw(t, upstreamHostFromID("relay-b"), 200, revert)
+	mockSendRaw(t, upstreamHostFromID("regular"), 200, sendRawOk)
+
+	ntw := setupMevRewriteNetwork(t, ctx)
+	resp, _ := ntw.Forward(ctx, customSendReq())
+	if resp != nil {
+		resp.Release()
+	}
+	policy.TickForTest(ntw.policyEngine, ntw.networkId, "custom_sendMevProtected")
+
+	resp, err := ntw.Forward(ctx, customSendReq())
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer resp.Release()
+	assert.Equal(t, "regular", resp.Upstream().Id())
+}

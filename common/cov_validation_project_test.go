@@ -73,6 +73,9 @@ func TestCovValidation_Project(t *testing.T) {
 		{"upstreamDefaults matchCommitment", func(p *ProjectConfig) {
 			p.UpstreamDefaults.Failsafe[1].MatchCommitment = []string{"confirmed"}
 		}, "project.*.upstreamDefaults: failsafe.matchCommitment is only supported for network-level failsafe"},
+		{"upstreamDefaults methodRewrite", func(p *ProjectConfig) {
+			p.UpstreamDefaults.MethodRewrite = map[string]string{"custom_send": "eth_sendRawTransaction"}
+		}, "project.*.upstreamDefaults: methodRewrite is only supported on each upstream"},
 		{"networkDefaults bad suffix", func(p *ProjectConfig) { p.NetworkDefaults.CacheKeySuffix = "v2!" }, "networkDefaults.cacheKeySuffix 'v2!' must contain only alphanumeric characters"},
 		{"networkDefaults negative maxClientBatchSize", func(p *ProjectConfig) { p.NetworkDefaults.MaxClientBatchSize = util.IntPtr(-1) }, "networkDefaults.maxClientBatchSize must be 0 (no limit) or greater, got -1"},
 		{"invalid network", func(p *ProjectConfig) { p.Networks[1].Architecture = "" }, "network.*.architecture is required"},
@@ -236,6 +239,18 @@ func TestCovValidation_Upstream(t *testing.T) {
 		{"methodRewrite wildcard key", func(u *UpstreamConfig) {
 			u.MethodRewrite = map[string]string{"custom_*": "eth_sendRawTransaction"}
 		}, "upstream 'u1': methodRewrite key 'custom_*' must be an exact method name"},
+		{"methodRewrite or-pattern key", func(u *UpstreamConfig) {
+			u.MethodRewrite = map[string]string{"a|b": "eth_sendRawTransaction"}
+		}, "upstream 'u1': methodRewrite key 'a|b' must be an exact method name"},
+		{"methodRewrite negated key", func(u *UpstreamConfig) {
+			u.MethodRewrite = map[string]string{"!eth_call": "eth_sendRawTransaction"}
+		}, "upstream 'u1': methodRewrite key '!eth_call' must be an exact method name"},
+		{"methodRewrite key with space", func(u *UpstreamConfig) {
+			u.MethodRewrite = map[string]string{"custom send": "eth_sendRawTransaction"}
+		}, "upstream 'u1': methodRewrite key 'custom send' must be an exact method name"},
+		{"methodRewrite dotted key is exact", func(u *UpstreamConfig) {
+			u.MethodRewrite = map[string]string{"rpc.custom": "eth_sendRawTransaction"}
+		}, ""},
 		{"methodRewrite on grpc", func(u *UpstreamConfig) {
 			u.Endpoint = "grpc://node:443"
 			u.Evm.ChainId = 0

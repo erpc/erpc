@@ -269,7 +269,9 @@ var alchemyMethodRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]+$`)
 // (live-fetched from the docs, built-in fallback), overridable per method
 // via `providers[].settings.creditUnits`.
 func (v *AlchemyVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
+	// The vendor bills the method it ran (methodRewrite target).
 	method, _ := req.Method()
+	method = upstream.WireMethod(method)
 	var override map[string]int64
 	if upstream != nil {
 		override = upstream.CreditUnits
