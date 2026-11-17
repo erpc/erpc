@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"math/big"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,12 +64,15 @@ func (logOnlyNetwork) Label() string                 { return "" }
 func (logOnlyNetwork) Config() *common.NetworkConfig { return nil }
 
 // servedChain serves header fetches by number and by hash from the blocks
-// it was given; a fetch of a held ref waits until the ref is released.
-// Sources a and b, of two vendors, are its hash voters.
+// it was given; a fetch of a held ref waits until the ref is released, and
+// a ref with an error answers it. Sources a and b, of two vendors, are its
+// hash voters.
 type servedChain struct {
 	mockNetwork
 	mu      sync.Mutex
 	blocks  map[string]json.RawMessage // number or hash -> header
+	errs    map[string]error           // number or hash -> the upstream's error
+	asked   []string                   // every ref fetched, in order
 	gates   map[string]chan struct{}
 	refuse  map[string]int // ref -> answers left refused for capacity
 	fetches atomic.Int32
@@ -73,7 +80,7 @@ type servedChain struct {
 }
 
 func newServedChain(t testing.TB, id string) *servedChain {
-	n := &servedChain{blocks: map[string]json.RawMessage{}, gates: map[string]chan struct{}{}, refuse: map[string]int{}}
+	n := &servedChain{blocks: map[string]json.RawMessage{}, errs: map[string]error{}, gates: map[string]chan struct{}{}, refuse: map[string]int{}}
 	n.On("Forward", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 			n.fetches.Add(1)
@@ -93,11 +100,15 @@ func newServedChain(t testing.TB, id string) *servedChain {
 				}
 			}
 			n.mu.Lock()
-			body, refused := n.blocks[ref], n.refuse[ref] > 0
+			n.asked = append(n.asked, ref)
+			body, refused, answer := n.blocks[ref], n.refuse[ref] > 0, n.errs[ref]
 			if refused {
 				n.refuse[ref]--
 			}
 			n.mu.Unlock()
+			if answer != nil {
+				return nil, answer
+			}
 			if refused {
 				return nil, common.NewErrUpstreamsExhaustedWithCause(common.NewErrEndpointCapacityExceeded(errors.New("vendor-a: 429")))
 			}
@@ -1490,4 +1501,420 @@ func TestSettleRefreshRunsOncePerForkPoint(t *testing.T) {
 	assert.Equal(t, 5, net.forkAsks(), "c's refresh at its fork point already ran")
 	v, _ := c.HashAt(10)
 	assert.Equal(t, testHash("0", 10), v, "the refreshed votes keep the pins")
+}
+
+// pendingHeights are the numbers above floor whose by-number header fetch
+// the scheduler holds, queued or in flight, and those of them still
+// queued, each ascending.
+func pendingHeights(s *fetchScheduler, floor uint64) (all, queued []uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, r := range s.pending {
+		var params []any
+		if k.method != "eth_getBlockByNumber" || json.Unmarshal([]byte(k.params), &params) != nil || len(params) == 0 {
+			continue
+		}
+		ref, _ := params[0].(string)
+		if n, err := strconv.ParseUint(strings.TrimPrefix(ref, "0x"), 16, 64); err == nil && n > floor {
+			all = append(all, n)
+			if !r.started {
+				queued = append(queued, n)
+			}
+		}
+	}
+	slices.Sort(all)
+	slices.Sort(queued)
+	return all, queued
+}
+
+// walkGap pins a1..a20 on voters a and b, serves a21..a<top>, holds every
+// fetch of the gap's heights, and has both voters vote a<top>: a vote
+// whose walk the gap keeps waiting.
+func walkGap(t *testing.T, id string, window int, top uint64) (*servedChain, *ChainTracker) {
+	t.Helper()
+	net := newServedChain(t, id)
+	c := newChainTracker(t.Context(), net, window, time.Hour, "", "", "", nil, newFetchScheduler(t.Context(), net))
+	t.Cleanup(c.Want(indexer.ReadOpts{}))
+	voteChain(t, c, "a", "a", 1, 20, testHash("f", 0))
+	voteChain(t, c, "b", "a", 1, 20, testHash("f", 0))
+	for n := uint64(21); n <= top; n++ {
+		net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), testHash("a", n-1)))
+		if n < top {
+			net.hold(fmt.Sprintf("0x%x", n))
+		}
+	}
+	vote := testHeader(top, testHash("a", top), testHash("a", top-1))
+	c.Observe("a", vote, true)
+	c.Observe("b", vote, true)
+	c.Sync(t.Context())
+	return net, c
+}
+
+// A walk fetches the heights it lacks together (spec §6.5 rule 1, §8),
+// links them top-down, and fetches no height twice.
+func TestChainTracker_WalkAhead(t *testing.T) {
+	heights := func(from, to uint64) (hs []uint64) {
+		for n := from; n <= to; n++ {
+			hs = append(hs, n)
+		}
+		return hs
+	}
+	ref := func(n uint64) string { return fmt.Sprintf("0x%x", n) }
+
+	t.Run("a walk step asks the heights below it at once", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			window int
+			top    uint64
+			want   []uint64
+		}{
+			{"down to the highest held header", 32, 26, heights(21, 25)},
+			{"at most the walk's remaining blocks", 4, 30, heights(26, 29)},
+			{"at most class 1's share", 64, 60, heights(60-uint64(fetchSlots), 59)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, c := walkGap(t, "evm:walk-ahead", tc.window, tc.top)
+				// Every pending height but fill's of block 0, below the pins.
+				all, _ := pendingHeights(c.fetch, 0)
+				assert.Equal(t, tc.want, all)
+			})
+		}
+	})
+
+	t.Run("a step takes its height's answered fetch and sends no second", func(t *testing.T) {
+		ctx := t.Context()
+		net, c := walkGap(t, "evm:walk-reuse", 32, 26)
+		for n := uint64(21); n <= 24; n++ {
+			net.release(ref(n))
+		}
+		require.Eventually(t, func() bool { all, _ := pendingHeights(c.fetch, 20); return slices.Equal(all, []uint64{25}) },
+			5*time.Second, 5*time.Millisecond, "21-24 answer while the walk waits on 25")
+		net.release(ref(25))
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, _ := c.HashAt(26)
+			return v == testHash("a", 26)
+		}, 5*time.Second, 5*time.Millisecond, "the walk links the gap and the votes move")
+		for n := uint64(21); n <= 25; n++ {
+			assert.Len(t, net.askedOf(ref(n)), 1, "height %d fetched once", n)
+		}
+	})
+
+	t.Run("a by-number answer that does not link is fetched by hash", func(t *testing.T) {
+		ctx := t.Context()
+		net, c := walkGap(t, "evm:walk-mismatch", 32, 26)
+		net.mu.Lock()
+		net.blocks[ref(24)] = testHeader(24, testHash("e", 24), testHash("a", 23))
+		net.mu.Unlock()
+		for n := uint64(21); n <= 25; n++ {
+			net.release(ref(n))
+		}
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, _ := c.HashAt(26)
+			return v == testHash("a", 26)
+		}, 5*time.Second, 5*time.Millisecond, "the walk links the gap")
+		v, _ := c.HashAt(24)
+		assert.Equal(t, testHash("a", 24), v, "the block 25 names is pinned, not the number's answer")
+		assert.Len(t, net.askedOf(testHash("a", 24)), 1, "24 is fetched by hash once")
+	})
+
+	t.Run("fetches the walk will not reach are left", func(t *testing.T) {
+		slots := fetchSlots
+		fetchSlots = 4
+		t.Cleanup(func() { fetchSlots = slots })
+		ctx := t.Context()
+		net, c := walkGap(t, "evm:walk-left", 32, 30)
+		all, queued := pendingHeights(c.fetch, 20)
+		require.Equal(t, heights(26, 29), all, "the step and 3 more")
+		require.Len(t, queued, 2, "a share of 4 starts 2 of one class while the others are idle")
+		// Both voters vote on the pins' branch again: no vote waits on
+		// the walk, which ends at its next step.
+		voteChain(t, c, "a", "a", 21, 21, testHash("a", 20))
+		voteChain(t, c, "b", "a", 21, 21, testHash("a", 20))
+		net.release(ref(29))
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			_, held := c.HeldNumber(testHash("a", 29))
+			return held
+		}, 5*time.Second, 5*time.Millisecond, "29 answers")
+		c.Sync(ctx)
+		// The step's slot starts the higher queued fetch as it frees; the
+		// lower one is still queued when the walk ends, and goes with it.
+		all, _ = pendingHeights(c.fetch, 20)
+		assert.NotContains(t, all, queued[0], "the queued fetch is left")
+		assert.Empty(t, net.askedOf(ref(queued[0])), "the queued fetch never went")
+	})
+
+	t.Run("a height known to be a null round is not asked", func(t *testing.T) {
+		ctx := t.Context()
+		net := newServedChain(t, "evm:walk-null")
+		c := newChainTracker(t.Context(), net, 32, time.Hour, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		t.Cleanup(c.Want(indexer.ReadOpts{}))
+		voteChain(t, c, "a", "a", 1, 20, testHash("f", 0))
+		voteChain(t, c, "b", "a", 1, 20, testHash("f", 0))
+		onTracker(c, func() { c.nullRound(23) })
+		parent := testHash("a", 20)
+		for _, n := range []uint64{21, 22, 24, 25, 26} {
+			net.serve(n, testHash("a", n), testHeader(n, testHash("a", n), parent))
+			parent = testHash("a", n)
+			if n < 26 {
+				net.hold(ref(n))
+			}
+		}
+		vote := testHeader(26, testHash("a", 26), testHash("a", 25))
+		c.Observe("a", vote, true)
+		c.Observe("b", vote, true)
+		c.Sync(ctx)
+		all, _ := pendingHeights(c.fetch, 20)
+		assert.Equal(t, []uint64{21, 22, 24, 25}, all, "the walk asks around the null round")
+		for _, n := range []uint64{21, 22, 24, 25} {
+			net.release(ref(n))
+		}
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, _ := c.HashAt(26)
+			return v == testHash("a", 26)
+		}, 5*time.Second, 5*time.Millisecond, "24 links to 22 across the null round")
+		assert.Empty(t, net.askedOf(ref(23)), "23 is never asked")
+	})
+}
+
+// null makes the chain answer each height in ns as Lotus answers a null
+// round.
+func (n *servedChain) null(t testing.TB, ns ...uint64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, x := range ns {
+		n.errs[fmt.Sprintf("0x%x", x)] = lotusNull(t, x)
+	}
+}
+
+// askedOf is every fetch of refs, in order.
+func (n *servedChain) askedOf(refs ...string) []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var out []string
+	for _, r := range n.asked {
+		if slices.Contains(refs, r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// onTracker runs fn on the tracker's goroutine and waits for it.
+func onTracker(c *ChainTracker, fn func()) {
+	done := make(chan struct{})
+	c.mb.put(trackerMsg{kind: msgCall, fn: func() { fn(); close(done) }})
+	<-done
+}
+
+func TestNullRounds_Links(t *testing.T) {
+	cases := []struct {
+		name  string
+		p, h  uint64
+		nulls nullRounds
+		links bool
+	}{
+		{"the next height", 10, 11, nil, true},
+		{"across one null round", 9, 11, nullRounds{10}, true},
+		{"across two null rounds", 8, 11, nullRounds{9, 10}, true},
+		{"a height between not known to be null", 8, 11, nullRounds{10}, false},
+		{"no null round between", 8, 11, nil, false},
+		// One fork's node answered null at p's own height; the block another
+		// branch holds there is still h's parent.
+		{"a null round at p's own height", 10, 11, nullRounds{10}, true},
+		{"a null round at p's height and between", 9, 11, nullRounds{9, 10}, true},
+		{"null rounds outside the gap", 9, 11, nullRounds{5, 10, 11, 12}, true},
+		{"a parent at h's height", 11, 11, nullRounds{10}, false},
+		{"a parent above h", 12, 11, nil, false},
+		// U12: a voter's tip header under a number 30M ahead.
+		{"a header far ahead of its held parent", 21, 30_000_021, nullRounds{22, 23, 24}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.nulls.links(&chainHeader{number: tc.p}, &chainHeader{number: tc.h})
+			assert.Equal(t, tc.links, got)
+		})
+	}
+}
+
+func TestPosition(t *testing.T) {
+	run := func(ns ...uint64) []*chainHeader {
+		out := make([]*chainHeader, len(ns))
+		for i, n := range ns {
+			out[i] = &chainHeader{number: n}
+		}
+		return out
+	}
+	dense := run(10, 11, 12, 13, 14)
+	gapped := run(10, 11, 13, 16, 17) // 12, 14 and 15 are null rounds
+	cases := []struct {
+		name string
+		run  []*chainHeader
+		n    uint64
+		i    int
+		ok   bool
+	}{
+		{"dense: the first", dense, 10, 0, true},
+		{"dense: inside", dense, 12, 2, true},
+		{"dense: the last", dense, 14, 4, true},
+		{"dense: below", dense, 9, 0, false},
+		{"dense: above", dense, 15, 5, false},
+		{"gapped: below the gap", gapped, 11, 1, true},
+		{"gapped: a null height", gapped, 12, 2, false},
+		{"gapped: above one null round", gapped, 13, 2, true},
+		{"gapped: inside two null rounds", gapped, 15, 3, false},
+		{"gapped: above two null rounds", gapped, 16, 3, true},
+		{"gapped: the last", gapped, 17, 4, true},
+		{"empty", nil, 10, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			i, ok := position(tc.run, tc.n)
+			assert.Equal(t, tc.i, i, "index")
+			assert.Equal(t, tc.ok, ok, "found")
+		})
+	}
+}
+
+// A vote whose held parent sits more than one height below it asks its
+// sender the heights between, one at a time from the top (spec §6.5 rule
+// 1, §19 U12).
+func TestChainTracker_NullRoundProbe(t *testing.T) {
+	ctx := context.Background()
+	newTracker := func(t *testing.T, id string) (*servedChain, *ChainTracker) {
+		net := newServedChain(t, id)
+		c := newChainTracker(t.Context(), net, 16, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+		voteChain(t, c, "b", "a", 1, 10, testHash("f", 0))
+		return net, c
+	}
+
+	t.Run("links across null rounds, asked from the top", func(t *testing.T) {
+		net, c := newTracker(t, "evm:null-probe")
+		net.null(t, 11, 12)
+		h13 := testHeader(13, testHash("a", 13), testHash("a", 10))
+		c.Observe("a", h13, true)
+		c.Observe("b", h13, true)
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			v, ok := c.HashAt(13)
+			return ok && v == testHash("a", 13)
+		}, 5*time.Second, 10*time.Millisecond, "13 links to 10 across 11 and 12")
+		assert.Equal(t, []string{"0xc", "0xb"}, net.askedOf("0xb", "0xc"), "each height asked once, from the top")
+		v, ok := c.HashAt(10)
+		require.True(t, ok)
+		assert.Equal(t, testHash("a", 10), v)
+	})
+
+	t.Run("a block between ends the probe; the header asks nothing again", func(t *testing.T) {
+		net, c := newTracker(t, "evm:null-probe-block")
+		net.null(t, 12)
+		net.serve(11, testHash("c", 11), testHeader(11, testHash("c", 11), testHash("a", 10)))
+		bogus := testHash("d", 13)
+		c.Observe("a", testHeader(13, bogus, testHash("a", 10)), true)
+		require.Eventually(t, func() bool {
+			var judged bool
+			onTracker(c, func() { _, judged = c.notGaps[[32]byte(gethcommon.HexToHash(bogus))] })
+			return judged
+		}, 5*time.Second, 10*time.Millisecond, "the probe judges 13 no gap of null rounds")
+		assert.Equal(t, []string{"0xc", "0xb"}, net.askedOf("0xb", "0xc"))
+		_, ok := c.HashAt(13)
+		assert.False(t, ok, "13 does not link to 10")
+
+		c.Observe("a", testHeader(13, bogus, testHash("a", 10)), true)
+		c.Sync(ctx)
+		assert.Equal(t, []string{"0xc", "0xb"}, net.askedOf("0xb", "0xc"), "the judged header's next vote asks nothing")
+
+		// The window moves past both: the null round and the judgment go.
+		voteChain(t, c, "a", "a", 11, 60, testHash("a", 10))
+		voteChain(t, c, "b", "a", 60, 60, testHash("a", 59))
+		var nulls nullRounds
+		var judged int
+		lowest := uint64(math.MaxUint64)
+		onTracker(c, func() {
+			nulls, judged = c.nulls, len(c.notGaps)
+			for r := range c.exts {
+				lowest = min(lowest, r.h.number)
+			}
+		})
+		require.Greater(t, lowest, uint64(12+16), "the lowest root leaves 12 a window below")
+		assert.Empty(t, nulls, "null rounds below the window are pruned")
+		assert.Zero(t, judged, "judged headers below the window are pruned")
+	})
+}
+
+// forkWatch is servedChain that records each set of forked voters the
+// tracker hands the network (EvmVotesForked).
+type forkWatch struct {
+	*servedChain
+	mu  sync.Mutex
+	got []map[string]int64
+}
+
+func (n *forkWatch) EvmVotesForked(at map[string]int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.got = append(n.got, maps.Clone(at))
+}
+
+func (n *forkWatch) last() (map[string]int64, int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.got) == 0 {
+		return nil, 0
+	}
+	return n.got[len(n.got)-1], len(n.got)
+}
+
+// A voter on a fork where the pinned chain's 9 was a null round runs a
+// height ahead of the chain; routing learns at once that it holds no
+// pinned block above 8, its newest pinned ancestor, and forgets it once
+// its vote is back on the pins. A branch whose parent is not held shares
+// the pins up to the height below its root, never none of them (spec §6.1
+// reached N, §19 C20).
+func TestChainTracker_ForkedVotes(t *testing.T) {
+	ctx := context.Background()
+	newTracker := func(t *testing.T, id string) (*forkWatch, *ChainTracker) {
+		net := &forkWatch{servedChain: newServedChain(t, id)}
+		c := newChainTracker(t.Context(), net, 16, 0, "", "", "", nil, newFetchScheduler(t.Context(), net))
+		voteChain(t, c, "a", "a", 1, 10, testHash("f", 0))
+		return net, c
+	}
+	forkedTo := func(t *testing.T, c *ChainTracker, net *forkWatch, want map[string]int64, msg string) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			c.Sync(ctx)
+			got, _ := net.last()
+			return maps.Equal(got, want)
+		}, 5*time.Second, 10*time.Millisecond, msg)
+	}
+
+	t.Run("a fork over a null round", func(t *testing.T) {
+		net, c := newTracker(t, "evm:forked-votes")
+		voteChain(t, c, "b", "a", 1, 8, testHash("f", 0))
+		_, before := net.last()
+
+		net.null(t, 9)
+		c.Observe("b", testHeader(10, testHash("b", 10), testHash("a", 8)), true)
+		c.Observe("b", testHeader(11, testHash("b", 11), testHash("b", 10)), true)
+		forkedTo(t, c, net, map[string]int64{"b": 8}, "b's vote leaves the pins above 8")
+		v, ok := c.HashAt(10)
+		require.True(t, ok)
+		assert.Equal(t, testHash("a", 10), v, "the pins keep a's chain")
+		_, during := net.last()
+		assert.Equal(t, before+1, during, "one hand-over for the fork")
+
+		voteChain(t, c, "b", "a", 11, 11, testHash("a", 10))
+		got, _ := net.last()
+		assert.Empty(t, got, "back on the pins, b is no longer forked")
+	})
+
+	t.Run("a branch whose parent is not held", func(t *testing.T) {
+		net, c := newTracker(t, "evm:forked-root")
+		c.Observe("b", testHeader(9, testHash("c", 9), testHash("e", 8)), true)
+		forkedTo(t, c, net, map[string]int64{"b": 8}, "b shares the pins up to 8, below its root")
+	})
 }

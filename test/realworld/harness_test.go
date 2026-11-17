@@ -1052,6 +1052,9 @@ func podConfig(p *pod, redis *redisServer, nets []*netSpec) []byte {
 				evm["chainTracker"] = m{"reorgWindow": reorgWindow, "maxBackfill": maxBackfill.String()}
 			}
 			for k, v := range n.evm {
+				if k == "chainTracker" && p.old {
+					continue
+				}
 				evm[k] = v
 			}
 			nw := m{"architecture": "evm", "evm": evm}

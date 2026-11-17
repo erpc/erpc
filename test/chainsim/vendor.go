@@ -549,8 +549,9 @@ func (v *Vendor) pendingPushesLocked(b *Block, out []push) []push {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
 }
 
 func reply(id interface{}, res interface{}, e *rpcError) map[string]interface{} {
@@ -588,7 +589,7 @@ func (v *Vendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		v.throttled.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(reply(nil, nil, &rpcError{-32005, "rate limit exceeded"}))
+		_ = json.NewEncoder(w).Encode(reply(nil, nil, &rpcError{Code: -32005, Message: "rate limit exceeded"}))
 		return
 	}
 	batch := bytes.HasPrefix(bytes.TrimSpace(body), []byte("["))
@@ -762,7 +763,7 @@ func (v *Vendor) handleWS(wc *wsConn, req map[string]interface{}) {
 	switch {
 	case f.Throttled:
 		v.throttled.Add(1)
-		e = &rpcError{-32005, "rate limit exceeded"}
+		e = &rpcError{Code: -32005, Message: "rate limit exceeded"}
 	case method == "eth_subscribe":
 		topic, _ := firstString(params)
 		sub := fmt.Sprintf("0x%x", v.subSeq.Add(1))
@@ -771,7 +772,7 @@ func (v *Vendor) handleWS(wc *wsConn, req map[string]interface{}) {
 		switch {
 		case topic == "newHeads" && f.NoNewHeads:
 			v.headsRefused.Add(1)
-			e = &rpcError{-32601, "notifications not supported"}
+			e = &rpcError{Code: -32601, Message: "notifications not supported"}
 		case topic == "newHeads":
 			v.headsSubs.Add(1)
 			if open {
@@ -785,7 +786,7 @@ func (v *Vendor) handleWS(wc *wsConn, req map[string]interface{}) {
 		case topic == "logs":
 			v.logsSubs.Add(1)
 		default:
-			e = &rpcError{-32602, "unknown subscription " + topic}
+			e = &rpcError{Code: -32602, Message: "unknown subscription " + topic}
 		}
 		c.mu.Unlock()
 		res = sub
@@ -830,12 +831,18 @@ func parseNumber(s string) (uint64, bool) {
 
 // byNumberLocked walks the vendor's own branch down to n.
 func (v *Vendor) byNumberLocked(n uint64) *Block {
+	if b := v.atOrBelowLocked(n); b != nil && b.Number == n {
+		return b
+	}
+	return nil
+}
+
+// atOrBelowLocked is the highest block of the vendor's own branch at or
+// below n.
+func (v *Vendor) atOrBelowLocked(n uint64) *Block {
 	b := v.tip
 	for b != nil && b.Number > n {
 		b = b.Parent
-	}
-	if b == nil || b.Number != n {
-		return nil
 	}
 	return b
 }
@@ -881,7 +888,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	f := v.faults
 	if f.Capacity {
 		v.capacityRefused.Add(1)
-		return nil, &rpcError{-32005, "compute units exceeded"}
+		return nil, &rpcError{Code: -32005, Message: "compute units exceeded"}
 	}
 	if v.prunedLocked(method, params) {
 		v.prunedRefused.Add(1)
@@ -921,7 +928,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
 		if !ok {
-			return nil, &rpcError{-32602, "invalid hash"}
+			return nil, &rpcError{Code: -32602, Message: "invalid hash"}
 		}
 		if f.NullHeld || !v.seen[h] || !v.servesLocked(c.byHash[h]) {
 			return nil, nil
@@ -934,7 +941,7 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		case "latest", "pending":
 			v.latestCalls = append(v.latestCalls, LatestCall{At: time.Now(), Refused: f.RefuseLatest})
 			if f.RefuseLatest {
-				return nil, &rpcError{-32000, "latest block tag not supported"}
+				return nil, &rpcError{Code: -32000, Message: "latest block tag not supported"}
 			}
 			tip := v.tagTipLocked()
 			if f.Ahead > 0 {
@@ -943,22 +950,24 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			b = tip
 		case "finalized", "safe":
 			if c.cfg.NoFinalized || f.NoFinalized {
-				return nil, &rpcError{-32602, "invalid block number tag " + tag}
+				return nil, &rpcError{Code: -32602, Message: "invalid block number tag " + tag}
 			}
 			if f.RefuseFinalized {
-				return nil, &rpcError{-32000, tag + " block tag not supported"}
+				return nil, &rpcError{Code: -32000, Message: tag + " block tag not supported"}
 			}
 			depth := uint64(FinalizedLag)
 			if f.FinalityDepth > 0 {
 				depth = f.FinalityDepth
 			}
-			b = v.byNumberLocked(c.finalizedLocked(v.tip.Number, depth))
+			// A finalized epoch that is a null round names the block below it,
+			// as Lotus does.
+			b = v.atOrBelowLocked(c.finalizedLocked(v.tip.Number, depth))
 		case "earliest":
 			b = c.canon[0]
 		default:
 			n, ok := parseNumber(tag)
 			if !ok {
-				return nil, &rpcError{-32602, "invalid block number"}
+				return nil, &rpcError{Code: -32602, Message: "invalid block number"}
 			}
 			full := len(params) > 1 && params[1] == true
 			v.numberCalls[n] = append(v.numberCalls[n], numberCall{at: time.Now(), full: full})
@@ -967,6 +976,14 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 			}
 			if b = v.byNumberLocked(n); b != nil && !v.servesLocked(b) {
 				b = nil
+			}
+			if b == nil && c.cfg.Lotus {
+				if n > v.tagTipLocked().Number {
+					return nil, &rpcError{Code: 1, Message: "requested a future epoch (beyond 'latest')"}
+				}
+				if v.atOrBelowLocked(n) != nil {
+					return nil, &rpcError{Code: 12, Message: fmt.Sprintf("requested epoch was a null round (%d)", n), Data: n}
+				}
 			}
 		}
 		if b == nil {
@@ -978,14 +995,14 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
 		if !ok {
-			return nil, &rpcError{-32602, "invalid block hash"}
+			return nil, &rpcError{Code: -32602, Message: "invalid block hash"}
 		}
 		v.receipts[h]++
 		switch {
 		case f.NoReceipts:
-			return nil, &rpcError{-32601, "the method eth_getBlockReceipts does not exist/is not available"}
+			return nil, &rpcError{Code: -32601, Message: "the method eth_getBlockReceipts does not exist/is not available"}
 		case f.ReceiptsDown || c.failingLocked(h):
-			return nil, &rpcError{-32603, "receipts unavailable"}
+			return nil, &rpcError{Code: -32603, Message: "receipts unavailable"}
 		}
 		b := c.byHash[h]
 		if b == nil || !v.seen[h] || f.NullHeld || f.NullReceipts {
@@ -1007,12 +1024,12 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 		return rs, nil
 	case "eth_getTransactionReceipt":
 		if f.TxReceiptsDown {
-			return nil, &rpcError{-32603, "receipt unavailable"}
+			return nil, &rpcError{Code: -32603, Message: "receipt unavailable"}
 		}
 		hs, _ := firstString(params)
 		h, ok := parseHash(hs)
 		if !ok {
-			return nil, &rpcError{-32602, "invalid transaction hash"}
+			return nil, &rpcError{Code: -32602, Message: "invalid transaction hash"}
 		}
 		tx, ok := c.byTx[h]
 		if !ok || f.NullHeld || v.byNumberLocked(tx.b.Number) != tx.b && !v.leadsLocked(tx.b) {
@@ -1022,14 +1039,14 @@ func (v *Vendor) answer(method string, params []interface{}) (interface{}, *rpcE
 	case "eth_getLogs":
 		v.logsCalls.Add(1)
 		if f.LogsDown {
-			return nil, &rpcError{-32603, "logs unavailable"}
+			return nil, &rpcError{Code: -32603, Message: "logs unavailable"}
 		}
 		return v.logsLocked(params)
 	case "eth_getBlockTransactionCountByNumber":
 		tag, _ := firstString(params)
 		n, ok := parseNumber(tag)
 		if !ok {
-			return nil, &rpcError{-32602, "invalid block number"}
+			return nil, &rpcError{Code: -32602, Message: "invalid block number"}
 		}
 		b := v.byNumberLocked(n)
 		if b == nil {
@@ -1115,7 +1132,7 @@ func ParentNumber(n uint64) uint64 { return n / 4 }
 // call to an address with no code; any other call "0x0".
 func (v *Vendor) callLocked(params []interface{}) (interface{}, *rpcError) {
 	if len(params) == 0 {
-		return nil, &rpcError{-32602, "missing call"}
+		return nil, &rpcError{Code: -32602, Message: "missing call"}
 	}
 	tx, _ := params[0].(map[string]interface{})
 	to, _ := tx["to"].(string)
@@ -1159,7 +1176,7 @@ func (v *Vendor) stateAtLocked(params []interface{}, i int) (*Block, *rpcError) 
 			default:
 				n, ok := parseNumber(ref)
 				if !ok {
-					return nil, &rpcError{-32602, "invalid block number"}
+					return nil, &rpcError{Code: -32602, Message: "invalid block number"}
 				}
 				at = v.byNumberLocked(n)
 			}
@@ -1176,7 +1193,7 @@ func (v *Vendor) stateAtLocked(params []interface{}, i int) (*Block, *rpcError) 
 		}
 	}
 	if at == nil {
-		return nil, &rpcError{-32000, "header not found"}
+		return nil, &rpcError{Code: -32000, Message: "header not found"}
 	}
 	return at, nil
 }
@@ -1186,20 +1203,20 @@ func (v *Vendor) stateAtLocked(params []interface{}, i int) (*Block, *rpcError) 
 func (v *Vendor) logsLocked(params []interface{}) (interface{}, *rpcError) {
 	q, _ := params[0].(map[string]interface{})
 	if q == nil {
-		return nil, &rpcError{-32602, "invalid filter"}
+		return nil, &rpcError{Code: -32602, Message: "invalid filter"}
 	}
 	var blocks []*Block
 	if hs, ok := q["blockHash"].(string); ok {
 		h, ok := parseHash(hs)
 		if !ok {
-			return nil, &rpcError{-32602, "invalid block hash"}
+			return nil, &rpcError{Code: -32602, Message: "invalid block hash"}
 		}
 		if v.chain.failingLocked(h) {
-			return nil, &rpcError{-32603, "logs unavailable"}
+			return nil, &rpcError{Code: -32603, Message: "logs unavailable"}
 		}
 		b := v.chain.byHash[h]
 		if b == nil || !v.seen[h] {
-			return nil, &rpcError{-32000, "unknown block"}
+			return nil, &rpcError{Code: -32000, Message: "unknown block"}
 		}
 		if v.logsIndexedLocked(b) {
 			blocks = []*Block{b}

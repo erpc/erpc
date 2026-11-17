@@ -83,26 +83,36 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	return h
 }
 
-// anchorHead is h, a network-wide read's Head, with Latest lowered to the
-// cache's fresh head (evm.servedTip.followCacheHead, evm.CacheHead.Clamp
-// against the latest last served): Latest takes the view's pin at that
+// anchorHead is h, a network-wide read's Head, anchored to the cache's
+// fresh head (evm.servedTip.followCacheHead, evm.CacheHead.Clamp against
+// the latest last served): Anchored, so the read is served from the cache
+// or by number, never sent as the tag (tagsLatestRead), and Latest lowered
+// to the clamp when it is below: Latest takes the view's pin at that
 // number, its hash, and Finalized and Firm stay at or below it, as
-// viewHead does for a limit. Only the read Head: headFor, the view, pins,
-// intake, hash votes, the block clock, the refusal ceiling and every
-// stream stay on the tracker's own head.
+// viewHead does for a limit. h as is while the cache's head is stale. Only
+// the read Head: headFor, the view, pins, intake, hash votes, the block
+// clock, the refusal ceiling and every stream stay on the tracker's own
+// head.
 func (n *Network) anchorHead(h *common.EvmHead) *common.EvmHead {
-	latest := n.cacheHead.Clamp(h.Latest, n.servedLatest.Load())
-	if latest >= h.Latest {
+	latest, fresh := n.cacheHead.Clamp(h.Latest, n.servedLatest.Load())
+	if !fresh {
 		return h
 	}
 	a := *h
+	a.Anchored = true
+	if latest >= h.Latest {
+		return &a
+	}
 	c, pinned := indexer.Cursor{}, false
 	if t := n.laneTracker(""); t != nil {
-		c, pinned = t.View().PinAt(uint64(latest))
-	}
-	if !pinned {
+		v := t.View()
+		if c, pinned = v.PinAt(uint64(latest)); !pinned {
+			c = indexer.Cursor{Number: v.Block(uint64(latest))}
+		}
+	} else {
 		c = indexer.Cursor{Number: uint64(latest)}
 	}
+	latest = int64(c.Number)
 	a.Latest, a.LatestHash = latest, c.Hash
 	a.LatestAt, a.NextAt = time.Time{}, time.Time{}
 	a.Firm = min(a.Firm, latest)
@@ -243,7 +253,7 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	if limit > 0 && uint64(limit) < head.Number {
 		c, pinned := v.PinAt(uint64(limit))
 		if !pinned {
-			c = indexer.Cursor{Number: uint64(limit)}
+			c = indexer.Cursor{Number: v.Block(uint64(limit))}
 		}
 		head, at = c, time.Time{}
 	}
@@ -251,6 +261,10 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 	h.Firm = int64(min(v.Firm(), head.Number))
 	if h.Finalized > h.Latest {
 		h.Finalized = h.Latest
+	}
+	// A tag never resolves to a null round, a height with no block.
+	if h.Finalized > 0 {
+		h.Finalized = int64(v.Block(uint64(h.Finalized)))
 	}
 }
 
@@ -874,10 +888,12 @@ func (n *Network) EvmPinned(selector string, block int64) bool {
 // full window instead, and waiting for evidence of one without: a retry
 // at once, or at the next one's held wait, missed too (P21-avax: 4-9
 // follow-ups failed per run, most in a pod's first 10 s). It ends with
-// ctx. The request itself is the probe: no head fetch is sent for it.
+// ctx. The request itself is the probe: no head fetch is sent for it. With
+// no upstream but those whose hash vote left the pins below bn, no holder
+// can come: it sends at once, as before the wait.
 func (n *Network) awaitHolder(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream, bn int64, retry bool) []common.Upstream {
 	t := n.laneTracker(selectorOf(req))
-	if t == nil || len(ups) == 0 {
+	if t == nil || len(ups) == 0 || !slices.ContainsFunc(ups, func(u common.Upstream) bool { return !n.forkedBelow(u, bn) }) {
 		return ups
 	}
 	credit := creditCap(n.requestHead(ctx, req))

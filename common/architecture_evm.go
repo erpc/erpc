@@ -271,7 +271,8 @@ type EvmStatePoller interface {
 	// plus a block, at most two intervals.
 	ClockTurn(by time.Time)
 	// HeadBackingOff reports whether the upstream's head fetches back off
-	// after node failures in a row: an Ask now fetches nothing.
+	// after node failures in a row, or answers in a row that brought a
+	// benched upstream no new head: an Ask now fetches nothing.
 	HeadBackingOff() bool
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64, at time.Time)

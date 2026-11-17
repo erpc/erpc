@@ -677,6 +677,93 @@ func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
 	assert.EqualValues(t, -32000, errObj["code"])
 }
 
+// web3.js and @solana/kit send {"jsonrpc":"2.0","method":"ping"} every 5 s on
+// a subscription socket. Agave has no ping method: it drops that frame unrun
+// and unanswered, and answers a ping with an id -32601 "Method not found".
+// eRPC does the same without asking an upstream, and meters nothing for the
+// dropped frame, so a socket's keepalive never bills.
+func TestWebSocket_SvmPingAnsweredLocally(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+
+	var pings atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.ID) == 0 {
+			req.ID = json.RawMessage("null")
+		}
+		// One vendor's answer to ping: the error object as a result.
+		result := `{"code":-32601,"message":"Method not found"}`
+		switch req.Method {
+		case "ping":
+			pings.Add(1)
+		case "getSlot":
+			result = "400000000"
+		case "getGenesisHash":
+			result = `"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
+	}))
+	defer upstream.Close()
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true), CostHeaders: util.BoolPtr(true)},
+		Projects: []*common.ProjectConfig{{
+			Id: "test_ws",
+			Networks: []*common.NetworkConfig{{
+				Architecture: common.ArchitectureSvm,
+				Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta"},
+			}},
+			Upstreams: []*common.UpstreamConfig{{
+				Id:       "svm-ws-ping",
+				Type:     common.UpstreamTypeSvm,
+				Endpoint: upstream.URL,
+				Svm:      &common.SvmUpstreamConfig{Cluster: "mainnet-beta"},
+			}},
+		}},
+	}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/svm/mainnet-beta", addr),
+		http.Header{"X-ERPC-Cost-Frames": {"1"}})
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The id-less ping writes nothing, not even a metering-only frame, so
+	// the first frame is the reply to the ping with an id.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","method":"ping"}`)))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
+	h, body := readCostFrame(t, conn)
+	var pong map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &pong))
+	assert.EqualValues(t, 1, pong["id"])
+	assert.NotContains(t, pong, "result", "%s", body)
+	errObj, ok := pong["error"].(map[string]interface{})
+	require.True(t, ok, "ping with an id must be answered with an error: %s", body)
+	assert.EqualValues(t, -32601, errObj["code"])
+	assert.Equal(t, "Method not found", errObj["message"])
+	assert.Equal(t, "0", h.Get("X-ERPC-Billable"))
+
+	// The socket still serves calls.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"getSlot"}`)))
+	_, body = readCostFrame(t, conn)
+	var slot map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &slot))
+	assert.EqualValues(t, 2, slot["id"])
+	assert.IsType(t, float64(0), slot["result"], "getSlot answers a slot: %s", body)
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+	_, extra, err := conn.ReadMessage()
+	assert.Error(t, err, "no frame for the id-less ping, got %q", extra)
+	assert.Zero(t, pings.Load(), "no upstream is asked for ping")
+}
+
 // A request without an id is a notification: it runs but gets no reply
 // (JSON-RPC 2.0 §4.1), alone or in a batch. "id": null is a request and is
 // answered.

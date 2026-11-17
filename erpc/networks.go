@@ -74,6 +74,10 @@ type Network struct {
 	// forkDemoted are the voters on a minority fork (EvmForkDemoted): no
 	// number vote, last in routing. nil while none is.
 	forkDemoted atomic.Pointer[[]string]
+	// forked is, per voter whose hash vote is off the pins, the number of
+	// its newest pinned ancestor (EvmVotesForked): it holds no pinned block
+	// above it (mayHold). nil while no vote is off.
+	forked atomic.Pointer[map[string]int64]
 	// hashStale are the sources whose hash age exceeds W, or whose socket
 	// closed (setHashStale): tried after the rest, before forkDemoted. nil
 	// while none is.
@@ -2409,10 +2413,11 @@ func (n *Network) RunsConsensus(ctx context.Context, req *common.NormalizedReque
 
 // selectionOrder is the selection policy's order of the upstreams for req:
 // the engine's order, or registration order until its first tick, without
-// upstreams whose method config excludes the method.
+// upstreams whose method config excludes the method. A client read of
+// finalized block numbers takes the held ranking (heldOrder).
 func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequest, method string) []common.Upstream {
 	_, upstreamSpan := common.StartDetailSpan(ctx, "PolicyEngine.GetOrdered")
-	var upsList []common.Upstream
+	var upsList, held []common.Upstream
 	if n.policyEngine != nil {
 		// Pass the request's actual finality so per-finality slots
 		// (when EvalPerFinality is on) resolve to the bucket-specific
@@ -2431,7 +2436,7 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 				upstreamSpan.SetAttributes(attribute.Int("upstreams.lane_size", len(laneIDs)))
 			}
 		}
-		upsList = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
+		upsList, held = n.policyEngine.GetOrderedInLane(n.networkId, method, finality, laneIDs)
 	}
 	if len(upsList) == 0 {
 		// Cold-start fallback: serve the raw registration order until the
@@ -2439,6 +2444,9 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 			upsList = append(upsList, u)
 		}
+	}
+	if held != nil {
+		upsList = n.heldOrder(ctx, req, upsList, held)
 	}
 	// Enforce method eligibility at selection time: an upstream whose
 	// ignoreMethods/allowMethods config (including entries added by
@@ -2466,6 +2474,49 @@ func (n *Network) selectionOrder(ctx context.Context, req *common.NormalizedRequ
 	}
 	upstreamSpan.End()
 	return upsList
+}
+
+// heldOrder serves a client read of finalized block numbers by the held
+// ranking (the selection policy run again with lag read as 0 for frozen
+// upstreams, see Tracker.IsHeadFrozen): held's order, keeping each upstream
+// of ups and adding a frozen one only if it is frozen now, not syncing, not
+// on a minority fork, and has finalized the highest block req names; then
+// every upstream of ups held lacks. ups unchanged when req does not qualify
+// or no frozen upstream joins, so a request never has fewer upstreams.
+// Consensus keeps its participants. The block must be at or below the
+// network-wide lane's Finalized, the chain's: a use-upstream selector that
+// names only held-only upstreams has no voter, so its own Head has none.
+func (n *Network) heldOrder(ctx context.Context, req *common.NormalizedRequest, ups, held []common.Upstream) []common.Upstream {
+	if n.cfg.Architecture != common.ArchitectureEvm || req.UpstreamPolicies() != common.UpstreamPoliciesConfigured {
+		return ups
+	}
+	bn, ok := common.EvmRequestedBlockNumber(ctx, req)
+	if !ok || bn <= 0 || bn > n.servedTipAll.published().Finalized || n.RunsConsensus(ctx, req) {
+		return ups
+	}
+	list, added := make([]common.Upstream, 0, len(held)+len(ups)), false
+	for _, u := range held {
+		if slices.Contains(ups, u) {
+			list = append(list, u)
+			continue
+		}
+		eu, ok := u.(common.EvmUpstream)
+		if ok && n.metricsTracker.IsHeadFrozen(u) &&
+			eu.EvmSyncingState() != common.EvmSyncingStateSyncing &&
+			!n.isForkDemoted(u) &&
+			bn <= eu.EvmEffectiveFinalizedBlock() {
+			list, added = append(list, u), true
+		}
+	}
+	if !added {
+		return ups
+	}
+	for _, u := range ups {
+		if !slices.Contains(list, u) {
+			list = append(list, u)
+		}
+	}
+	return list
 }
 
 // preferUpstreams reorders ups by hints only, every upstream staying
@@ -3449,8 +3500,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				// Deterministic errors: client faults and execution reverts are the
-				// same on every upstream — no point trying others.
-				if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				// same on every upstream — no point trying others. An execution
+				// exception marked retryable toward the network is only as fresh
+				// as this node's state, so the sweep asks the next upstream even
+				// when no network retry policy is configured.
+				if common.IsClientError(err) ||
+					(common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) && !common.IsRetryableExecutionException(err)) {
 					common.SetTraceSpanError(loopSpan, err)
 					loopSpan.End()
 					return nil, err
@@ -4925,8 +4980,12 @@ func (n *Network) splitHolders(ups []common.Upstream, bn, credit int64, holds fu
 // mayHold reports whether u may hold block bn, the one predicate routing
 // and the availability gate read (spec §6.4): its reachedHead reaches bn,
 // or, when holds is set, holds says so (thinHolds). An upstream with no
-// known head may hold any block.
+// known head may hold any block; one whose hash vote left the pins holds
+// none above its fork point, however high its branch runs (EvmVotesForked).
 func (n *Network) mayHold(u common.Upstream, bn, credit int64, holds func(common.Upstream) bool) bool {
+	if n.forkedBelow(u, bn) {
+		return false
+	}
 	head := n.reachedHead(u, credit)
 	return head <= 0 || common.EvmHeadReaches(u, head, bn) || holds != nil && holds(u)
 }

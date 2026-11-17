@@ -1,6 +1,7 @@
 package chainsim
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -68,6 +69,12 @@ type Config struct {
 	// hold: bloomMatch fails on every block with such a log, and a filter
 	// on Addrs[0] misses the header's bloom of a block that holds its logs.
 	ThinBloom bool
+	// Lotus: vendors answer as Filecoin's Lotus nodes do. A height with no
+	// block at or below the head (a null round, NullRounds) answers code 12
+	// "requested epoch was a null round (N)" with data N; a height above the
+	// head code 1 "requested a future epoch"; finalized and safe name the
+	// block at or below their epoch.
+	Lotus bool
 }
 
 // Chain is one simulated chain: its canonical branch, every block ever
@@ -104,8 +111,11 @@ type Chain struct {
 	// superset of the OR of their receipts' blooms (OffHeaderBloom).
 	headerBloomOff bool
 	// bigTxs, while set, is how many transactions each non-empty block
-	// minted holds (BigBlocks).
 	bigTxs int
+	// nullPlan is how many of the next ticks pass as null rounds; skip is
+	// how many epochs passed with no block since the last canonical one.
+	nullPlan int
+	skip     uint64
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -303,10 +313,46 @@ func (c *Chain) tipLocked() *Block { return c.canon[len(c.canon)-1] }
 
 func (c *Chain) canonAtLocked(n uint64) *Block {
 	base := c.canon[0].Number
-	if n < base || n-base >= uint64(len(c.canon)) {
+	if n < base {
 		return nil
 	}
-	return c.canon[n-base]
+	if i := n - base; i < uint64(len(c.canon)) && c.canon[i].Number == n {
+		return c.canon[i]
+	}
+	i, ok := slices.BinarySearchFunc(c.canon, n, func(b *Block, n uint64) int { return cmp.Compare(b.Number, n) })
+	if !ok {
+		return nil
+	}
+	return c.canon[i]
+}
+
+// NullRounds makes the next k ticks pass with no block, as Filecoin null
+// rounds: the next canonical block takes the number after them, and its
+// parent is the block before them.
+func (c *Chain) NullRounds(k int) {
+	c.mu.Lock()
+	c.nullPlan += k
+	c.mu.Unlock()
+}
+
+// NullAt reports whether canonical height n is a null round: below the
+// head, inside the chain, with no block.
+func (c *Chain) NullAt(n uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return n > c.canon[0].Number && n < c.tipLocked().Number && c.canonAtLocked(n) == nil
+}
+
+// CanonAfter is the first canonical block above n, past any null rounds;
+// nil above the head.
+func (c *Chain) CanonAfter(n uint64) *Block {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	i, _ := slices.BinarySearchFunc(c.canon, n+1, func(b *Block, n uint64) int { return cmp.Compare(b.Number, n) })
+	if i == len(c.canon) {
+		return nil
+	}
+	return c.canon[i]
 }
 
 // timeAtLocked is the time of a block at height n off the canonical chain:
@@ -465,7 +511,12 @@ func (c *Chain) tick(missed bool) {
 	c.mu.Lock()
 	var pushes []push
 	if !c.halted && !missed {
-		pushes = c.mintCanonLocked()
+		if c.nullPlan > 0 {
+			c.nullPlan--
+			c.skip++
+		} else {
+			pushes = c.mintCanonLocked()
+		}
 	}
 	for f := range c.forks {
 		f.tip = c.mintLocked(f.tip, f.tip.Number+1, c.timeAtLocked(f.tip.Number+1), true)
@@ -512,7 +563,8 @@ func (c *Chain) Burst(n int, d time.Duration) {
 // mintCanonLocked appends the next canonical block and returns the pushes
 // of its transactions as pending ones.
 func (c *Chain) mintCanonLocked() []push {
-	b := c.mintLocked(c.tipLocked(), c.tipLocked().Number+1, time.Now(), false)
+	b := c.mintLocked(c.tipLocked(), c.tipLocked().Number+1+c.skip, time.Now(), false)
+	c.skip = 0
 	c.canon = append(c.canon, b)
 	var pushes []push
 	for _, v := range c.vendors {
@@ -600,6 +652,22 @@ func (c *Chain) StartSplit(vs ...*Vendor) (canon *Block, f *Fork) {
 	canon = c.mintLocked(tip, tip.Number+1, time.Now(), false)
 	c.canon = append(c.canon, canon)
 	f = c.forkLocked(tip, 1, vs)
+	c.mu.Unlock()
+	c.refresh()
+	return canon, f
+}
+
+// StartNullSplit mints the next canonical block and, for vs, a minority
+// branch whose first block takes the number after it and names the old
+// head as its parent, as a Lotus node on a fork where that height was a
+// null round: vs answer the canonical block's height with code 12. The
+// branch grows every tick until EndFork.
+func (c *Chain) StartNullSplit(vs ...*Vendor) (canon *Block, f *Fork) {
+	c.mu.Lock()
+	tip := c.tipLocked()
+	canon = c.mintLocked(tip, tip.Number+1, time.Now(), false)
+	c.canon = append(c.canon, canon)
+	f = c.forkLocked(c.mintLocked(tip, tip.Number+2, time.Unix(int64(canon.Time), 0), true), 0, vs)
 	c.mu.Unlock()
 	c.refresh()
 	return canon, f

@@ -600,6 +600,31 @@ type headAsk struct {
 	lastFork *headFetch
 	// failures counts the node failures in a row (nodeFailedPoll).
 	failures int
+	// idle counts the answers in a row that brought no head above the
+	// counter held as the fetch started, while the tracker benched the
+	// upstream (endFetch): a frozen node's polls back off as a failing
+	// one's do, and its first new head ends the wait. A benched node that
+	// moves slower than the cadence counts idle between its blocks too,
+	// so its wait reaches about twice its block interval. The wait counts
+	// only while the bench holds (waits), and a halted chain benches no
+	// one, so it keeps its cadence.
+	idle int
+}
+
+// waits is the backoff's count of polls in a row that brought nothing:
+// node failures, and idle answers while the upstream is benched. Caller
+// holds a.mu.
+func (a *headAsk) waits(benched bool) int {
+	if benched {
+		return a.failures + a.idle
+	}
+	return a.failures
+}
+
+// headBenched reports whether the tracker benched the upstream's head;
+// read before headAsk.mu, as the tracker reads the cadence under its own.
+func (e *EvmStatePoller) headBenched() bool {
+	return e.tracker != nil && e.tracker.IsHeadBenched(e.upstream)
 }
 
 // headFetch is one fetch of latest. answered, next and the answer are
@@ -733,6 +758,7 @@ func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool
 	}
 	a := &e.headAsk
 	var f *headFetch
+	held := e.latestBlockShared.GetValue()
 	a.mu.Lock()
 	if a.last == nil || a.last.answered {
 		f = &headFetch{sent: sent, done: make(chan struct{}), toIntake: true}
@@ -741,17 +767,20 @@ func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool
 	a.mu.Unlock()
 	return func(block []byte, full bool) (header common.EvmHeader) {
 		answered := len(block) > 0
+		// An answer this read cannot decode ends no idle wait it could
+		// not judge: it counts as moved, the poll's cadence.
+		moved := true
 		if f != nil {
 			defer func() {
 				var err error
 				if !answered {
 					err = errReadNoBlock
 				}
-				e.endFetch(f, header, answered, err)
+				e.endFetch(f, header, answered, moved, err)
 			}()
 		}
 		bound := e.pollSrc.Load()
-		if !answered || bound == nil {
+		if !answered || bound == nil && f == nil {
 			return nil
 		}
 		raw, kind := bytes.Clone(block), HeaderPolled
@@ -764,6 +793,12 @@ func (e *EvmStatePoller) ReadLatest(sent time.Time) func(block []byte, full bool
 		}
 		h, ts, err := decodeChainHeader(raw)
 		if err != nil {
+			return nil
+		}
+		if n, err := common.HexToInt64(h.Number); err == nil {
+			moved = n > held
+		}
+		if bound == nil {
 			return nil
 		}
 		ch, err := checkChainHeader(raw, h, ts)
@@ -852,7 +887,13 @@ func (e *EvmStatePoller) ask(ctx context.Context, need common.HeadNeed, pace tim
 	case e.askable():
 		f, outcome, at, inHand = e.askFetch(trace.SpanContextFromContext(ctx), need, pace, after)
 	}
-	e.askCounts.Inc(telemetry.MetricHeadAskTotal, askCount{e.projectId, e.netLabel(), reason, outcome}, askCountLabels)
+	// An idle wait is a backoff to every caller; only the metric tells
+	// it apart.
+	label := outcome
+	if outcome == askIdle {
+		outcome = common.AskBackoff
+	}
+	e.askCounts.Inc(telemetry.MetricHeadAskTotal, askCount{e.projectId, e.netLabel(), reason, label}, askCountLabels)
 	if hook := AskHook.Load(); hook != nil {
 		(*hook)(e, AskMet{Reason: reason, After: after, Outcome: outcome, At: at, InHand: inHand})
 	}
@@ -887,6 +928,10 @@ func askCountLabels(k askCount) []string {
 	return []string{k.project, k.network, string(k.reason), string(k.outcome)}
 }
 
+// askIdle labels, in erpc_head_ask_total only, an Ask the idle wait alone
+// held back (headAsk.idle): its answer is AskBackoff, as a failure's.
+const askIdle common.AskOutcome = "idle"
+
 // askPace is the pace an Ask with need meets at: a fork need's as given,
 // any other never below the cadence.
 func askPace(need common.HeadNeed, pace, cadence time.Duration) time.Duration {
@@ -918,7 +963,7 @@ func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed
 			return nil, common.AskSharedFresh, at, true
 		}
 	}
-	f, outcome, at, inHand, start := e.headAsk.meet(need, pace, after, now, cadence, parent)
+	f, outcome, at, inHand, start := e.headAsk.meet(need, pace, after, now, cadence, e.headBenched(), parent)
 	if start {
 		e.startFetch(f)
 	}
@@ -926,9 +971,9 @@ func (e *EvmStatePoller) askFetch(parent trace.SpanContext, need common.HeadNeed
 }
 
 // meet returns the fetch that meets need at pace after after, under a.mu;
-// inHand: f was answered already; start: f is new, sent now, and the
-// caller starts it.
-func (a *headAsk) meet(need common.HeadNeed, pace time.Duration, after, now time.Time, cadence time.Duration, parent trace.SpanContext) (f *headFetch, outcome common.AskOutcome, at time.Time, inHand, start bool) {
+// benched: the tracker benched the upstream (waits); inHand: f was
+// answered already; start: f is new, sent now, and the caller starts it.
+func (a *headAsk) meet(need common.HeadNeed, pace time.Duration, after, now time.Time, cadence time.Duration, benched bool, parent trace.SpanContext) (f *headFetch, outcome common.AskOutcome, at time.Time, inHand, start bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	f = a.last
@@ -942,11 +987,14 @@ func (a *headAsk) meet(need common.HeadNeed, pace time.Duration, after, now time
 		return f.next, common.AskFetched, time.Time{}, false, false
 	case f != nil && !f.answered:
 		return f, common.AskInflight, f.sent, false, false
-	// Any outcome debounces for the pace; only node failures back off
-	// further.
+	// Any outcome debounces for the pace; node failures and a benched
+	// upstream's idle answers back off further.
 	case f != nil && need != common.HeadNeedFork && withinPace(f.sent, after, now, pace):
 		return f, common.AskInflight, f.sent, true, false
-	case f != nil && a.failures > 0 && withinPace(f.sent, after, now, backoffDelay(cadence, a.failures)):
+	case f != nil && a.waits(benched) > 0 && withinPace(f.sent, after, now, backoffDelay(cadence, a.waits(benched))):
+		if a.failures == 0 {
+			return nil, askIdle, time.Time{}, false, false
+		}
 		return nil, common.AskBackoff, time.Time{}, false, false
 	}
 	f = &headFetch{sent: now, fork: need == common.HeadNeedFork, done: make(chan struct{}), parent: parent}
@@ -965,13 +1013,15 @@ var errPollerStopped = errors.New("evm state poller stopped")
 // fails f, so every waiter hears an outcome.
 func (e *EvmStatePoller) startFetch(f *headFetch) {
 	if !e.bg.Go(func() { e.runFetch(f) }) {
-		e.endFetch(f, nil, false, errPollerStopped)
+		e.endFetch(f, nil, false, false, errPollerStopped)
 	}
 }
 
 // endFetch gives f's outcome to every waiter and starts the fork fetch
-// queued behind it.
-func (e *EvmStatePoller) endFetch(f *headFetch, header common.EvmHeader, answered bool, err error) {
+// queued behind it. moved: the answer's head is above the head this
+// poller held as f was sent.
+func (e *EvmStatePoller) endFetch(f *headFetch, header common.EvmHeader, answered, moved bool, err error) {
+	idle := answered && !moved && e.headBenched()
 	a := &e.headAsk
 	a.mu.Lock()
 	f.answered, f.header, f.err = true, header, err
@@ -980,6 +1030,11 @@ func (e *EvmStatePoller) endFetch(f *headFetch, header common.EvmHeader, answere
 		a.failures++
 	case answered:
 		a.failures = 0
+		if idle {
+			a.idle++
+		} else {
+			a.idle = 0
+		}
 	}
 	next := f.next
 	if next != nil {
@@ -1002,14 +1057,15 @@ func (e *EvmStatePoller) endFetch(f *headFetch, header common.EvmHeader, answere
 // them with an error.
 func (e *EvmStatePoller) runFetch(f *headFetch) {
 	var header common.EvmHeader
-	var answered bool
+	var number int64
 	var err error
+	held := e.latestBlockShared.GetValue()
 	defer func() {
 		if rec := recover(); rec != nil {
 			e.countHeadPanic("fetch", rec)
-			header, answered, err = nil, false, fmt.Errorf("head ask of upstream %s panicked: %v", e.upstream.Id(), rec)
+			header, number, err = nil, 0, fmt.Errorf("head ask of upstream %s panicked: %v", e.upstream.Id(), rec)
 		}
-		e.endFetch(f, header, answered, err)
+		e.endFetch(f, header, number > 0, number > held, err)
 	}()
 	ctx := e.appCtx
 	// A background Ask has no caller span: its fetch starts no root trace.
@@ -1027,19 +1083,20 @@ func (e *EvmStatePoller) runFetch(f *headFetch) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
-	header, answered, err = e.fetchLatest(ctx, f)
+	header, number, err = e.fetchLatest(ctx, f)
 }
 
 // fetchLatest fetches latest for f. With an intake bound, the header goes
 // to it, as a hash vote of this upstream (spec §6.3), and the counter
-// moves only there, after the header passed its checks. answered: the
-// node answered with a block; header: that block past intake check 0. No
-// header and no error: latest was refused as unsupported, the node holds no
-// block yet (missing data, never counted: it is polled until it holds one),
-// or the answer did not pass; after 10 refusals before any success the Ask
-// gives up for PollerGiveUpExpiry (latestGiveUp), and the reconciler polls
-// other sources (LatestUnsupported).
-func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header common.EvmHeader, answered bool, err error) {
+// moves only there, after the header passed its checks. number: the
+// block number the node answered, 0 for none; header: that block past
+// intake check 0. No number and no error: latest was refused as
+// unsupported, the node holds no block yet (missing data, never counted:
+// it is polled until it holds one), or the answer did not pass; after 10
+// refusals before any success the Ask gives up for PollerGiveUpExpiry
+// (latestGiveUp), and the reconciler polls other sources
+// (LatestUnsupported).
+func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header common.EvmHeader, number int64, err error) {
 	if e.logger.GetLevel() <= zerolog.TraceLevel {
 		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
 	}
@@ -1052,11 +1109,11 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 	if err != nil || b.number == 0 {
 		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			e.logger.Debug().Err(err).Msg("upstream holds no latest block yet in evm state poller")
-			return nil, false, nil
+			return nil, 0, nil
 		}
 		if refusedPoll(err) {
 			e.refused(&e.latestGiveUp, "latest", err)
-			return nil, false, nil
+			return nil, 0, nil
 		}
 		if nodeFailedPoll(err) && bound != nil {
 			bound.intake.PollFailed(e.upstream.Id(), f.sent)
@@ -1069,7 +1126,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 			e.tracker.RecordUpstreamFailure(e.upstream, "eth_getBlockByNumber", common.DataFinalityStateRealtime, err)
 		}
 		e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
-		return nil, false, err
+		return nil, 0, err
 	}
 
 	e.answered(&e.latestGiveUp)
@@ -1092,13 +1149,13 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 			Int64("blockTimestamp", b.timestamp).
 			Int64("counter", counter).
 			Msg("fetched latest block from upstream for its intake")
-		return header, true, nil
+		return header, b.number, nil
 	}
 
 	// A major move must pass a fresh chain-identity check before entering
 	// the shared counter / tracker (see verifyChainIdOnMajorHeadMove).
 	if !e.verifyChainIdOnMajorHeadMove(ctx, "latest", e.latestBlockShared.GetValue(), b.number) {
-		return nil, false, nil
+		return nil, 0, nil
 	}
 	if b.malformed == nil {
 		header = b.header
@@ -1113,7 +1170,7 @@ func (e *EvmStatePoller) fetchLatest(ctx context.Context, f *headFetch) (header 
 		Int64("blockNumber", b.number).
 		Int64("blockTimestamp", b.timestamp).
 		Msg("fetched latest block from upstream")
-	return header, true, nil
+	return header, b.number, nil
 }
 
 // deliverFetched sends f's header to the bound intake: a fork poll's
@@ -1130,42 +1187,44 @@ func (e *EvmStatePoller) deliverFetched(bound *pollSource, f *headFetch, b polle
 }
 
 // backoffDelay is how long after a fetch's send the next one may start:
-// the cadence, doubled per node failure in a row, at most AskMaxBackoff.
-func backoffDelay(cadence time.Duration, failures int) time.Duration {
-	if failures == 0 {
+// the cadence, doubled per poll in a row that brought nothing
+// (headAsk.waits), at most AskMaxBackoff.
+func backoffDelay(cadence time.Duration, waits int) time.Duration {
+	if waits == 0 {
 		return cadence
 	}
-	return max(cadence, min(cadence<<min(failures, 16), AskMaxBackoff.Load()))
+	return max(cadence, min(cadence<<min(waits, 16), AskMaxBackoff.Load()))
 }
 
 // backoff is the upstream's backed-off cadence now (backoffDelay).
 func (e *EvmStatePoller) backoff() time.Duration {
-	cadence := e.pollCadence()
+	cadence, benched := e.pollCadence(), e.headBenched()
 	e.headAsk.mu.Lock()
 	defer e.headAsk.mu.Unlock()
-	return backoffDelay(cadence, e.headAsk.failures)
+	return backoffDelay(cadence, e.headAsk.waits(benched))
 }
 
 // HeadBackingOff reports whether the upstream's head fetches back off: a
-// node failure in a row, and the last fetch's send plus the backed-off
-// cadence still ahead.
+// node failure or, while benched, an idle answer in a row, and the last
+// fetch's send plus the backed-off cadence still ahead.
 func (e *EvmStatePoller) HeadBackingOff() bool {
-	cadence := e.pollCadence()
+	cadence, benched := e.pollCadence(), e.headBenched()
 	a := &e.headAsk
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.failures > 0 && a.last != nil && time.Since(a.last.sent) < backoffDelay(cadence, a.failures)
+	n := a.waits(benched)
+	return n > 0 && a.last != nil && time.Since(a.last.sent) < backoffDelay(cadence, n)
 }
 
 // askNext is when an Ask with need at pace may fetch again: the send of
 // the fetch that would meet it plus the pace or the backed-off cadence,
 // the longer; zero when it may now.
 func (e *EvmStatePoller) askNext(need common.HeadNeed, pace time.Duration) time.Time {
-	cadence := e.pollCadence()
+	cadence, benched := e.pollCadence(), e.headBenched()
 	pace = askPace(need, pace, cadence)
 	a := &e.headAsk
 	a.mu.Lock()
-	f, n := a.last, a.failures
+	f, n := a.last, a.waits(benched)
 	if need == common.HeadNeedFork && pace > 0 {
 		f = a.lastFork
 	}
@@ -1800,12 +1859,22 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, e.finalizedDebounce(), e.fetchFinalized)
 }
 
-// finalizedDebounce is the finalized poll's debounce (spec §6.8, #1265).
+// finalizedDebounce is the finalized poll's debounce (spec §6.8, #1265):
+// while a benched upstream's polls bring no new head, at least the head's
+// backoff, since its finalized block does not move either.
 func (e *EvmStatePoller) finalizedDebounce() time.Duration {
 	e.stateMu.RLock()
 	cfg := e.cfg
 	e.stateMu.RUnlock()
-	return e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
+	d := e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
+	benched := e.headBenched()
+	e.headAsk.mu.Lock()
+	idle := benched && e.headAsk.idle > 0
+	e.headAsk.mu.Unlock()
+	if idle {
+		return max(d, e.backoff())
+	}
+	return d
 }
 
 // fetchFinalized fetches the upstream's finalized block: the shared

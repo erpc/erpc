@@ -58,19 +58,19 @@ func TestEngine_PerBoundary_LaneScopesPool(t *testing.T) {
 	// Lane {rpc1, rpc2}: once the lazily-created lane slot has ticked, the
 	// pool excludes rpc3 entirely (capability, not health).
 	require.Eventually(t, func() bool {
-		got := engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1", "rpc2"})
+		got, _ := engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1", "rpc2"})
 		return len(got) == 2 && got[0].Id() == "rpc1" && got[1].Id() == "rpc2"
 	}, 2*time.Second, 10*time.Millisecond, "lane {rpc1,rpc2} should scope the pool to exactly those two")
 
 	// Same membership, different order → same lane, same scoped pool.
 	require.Eventually(t, func() bool {
-		got := engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc2", "rpc1"})
+		got, _ := engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc2", "rpc1"})
 		return len(got) == 2 && got[0].Id() == "rpc1" && got[1].Id() == "rpc2"
 	}, 2*time.Second, 10*time.Millisecond, "lane key must be order-independent")
 
 	// nil lane IDs → full-pool wildcard slot (populated synchronously at
 	// RegisterNetwork), so all three are returned.
-	full := engine.GetOrderedInLane("evm:1", "*", "*", nil)
+	full, _ := engine.GetOrderedInLane("evm:1", "*", "*", nil)
 	require.Equal(t, []string{"rpc1", "rpc2", "rpc3"}, ids(full))
 }
 
@@ -109,7 +109,7 @@ func TestEngine_PerBoundary_Off_IgnoresLane(t *testing.T) {
 	// Even with a proper-subset lane passed, the axis is off → wildcard pool.
 	// The wildcard cache was populated by RegisterNetwork's synchronous tick,
 	// so this is deterministic without waiting.
-	got := engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1"})
+	got, _ := engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1"})
 	require.Equal(t, []string{"rpc1", "rpc2", "rpc3"}, ids(got))
 }
 
@@ -147,8 +147,8 @@ func TestEngine_PerBoundary_LaneSlotEvicted(t *testing.T) {
 	require.NoError(t, engine.RegisterNetwork("evm:1", "", func() []common.Upstream { return ups }, cfg))
 
 	// Lazy-create two distinct lane slots in addition to the wildcard.
-	_ = engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1", "rpc2"})
-	_ = engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1"})
+	_, _ = engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1", "rpc2"})
+	_, _ = engine.GetOrderedInLane("evm:1", "*", "*", []string{"rpc1"})
 	require.Equal(t, 3, policy.SlotCountForTest(engine),
 		"wildcard + two lane slots")
 

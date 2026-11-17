@@ -120,7 +120,8 @@ func (t *Taps) read(ctx context.Context, transport, kind string, f ChainFeed, c 
 
 // linked reports whether b continues a tap at c (spec §15.3): its Applied
 // blocks extend c, or its Reverted blocks run from c down to a fork point
-// its Applied blocks extend.
+// its Applied blocks extend. Each link is by hash, the number rising: by
+// more than one only over null rounds (§6.5).
 func linked(c Cursor, b Batch) bool {
 	at := c
 	if len(b.Reverted) > 0 {
@@ -128,7 +129,7 @@ func linked(c Cursor, b Batch) bool {
 			return false
 		}
 		for i := 1; i < len(b.Reverted); i++ {
-			if up := b.Reverted[i-1]; up.ParentHash != b.Reverted[i].Hash || up.Number != b.Reverted[i].Number+1 {
+			if up := b.Reverted[i-1]; up.ParentHash != b.Reverted[i].Hash || up.Number <= b.Reverted[i].Number {
 				return false
 			}
 		}
@@ -136,7 +137,7 @@ func linked(c Cursor, b Batch) bool {
 		at = Cursor{Number: fork.Number - min(fork.Number, 1), Hash: fork.ParentHash}
 	}
 	for _, blk := range b.Applied {
-		if blk.ParentHash != at.Hash || blk.Number != at.Number+1 {
+		if blk.ParentHash != at.Hash || blk.Number <= at.Number {
 			return false
 		}
 		at = Cursor{Number: blk.Number, Hash: blk.Hash}

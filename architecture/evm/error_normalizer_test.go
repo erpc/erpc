@@ -1,10 +1,13 @@
 package evm
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 )
@@ -818,4 +821,63 @@ func TestExtractJsonRpcError_Underpriced(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lotusAnswer is the error eRPC makes of an upstream's JSON-RPC error
+// object errObj, nil for a result.
+func lotusAnswer(t testing.TB, errObj string) error {
+	t.Helper()
+	var jr *common.JsonRpcResponse
+	if errObj == "" {
+		jr = common.MustNewJsonRpcResponseFromBytes([]byte(`1`), []byte(`null`), nil)
+	} else {
+		jr = common.MustNewJsonRpcResponseFromBytes([]byte(`1`), nil, []byte(errObj))
+	}
+	return ExtractJsonRpcError(&http.Response{StatusCode: 200, Header: http.Header{}}, nil, jr, nil)
+}
+
+// lotusNull is Lotus's answer that epoch n is a null round.
+func lotusNull(t testing.TB, n uint64) error {
+	return lotusAnswer(t, fmt.Sprintf(`{"code":12,"message":"requested epoch was a null round (%d)","data":%d}`, n, n))
+}
+
+// Only Lotus's null-round answer, code 12 with its message, is evidence
+// that a height has no block (spec §6.5 rule 1); the client still gets the
+// upstream's code and message.
+func TestNullRoundOf(t *testing.T) {
+	t.Parallel()
+	nullMsg := `{"code":12,"message":"requested epoch was a null round (6545215)"}`
+	cases := []struct {
+		name  string
+		err   error
+		epoch uint64
+		null  bool
+	}{
+		{"code 12 with the epoch in data", lotusNull(t, 6545215), 6545215, true},
+		{"code 12 with the epoch only in the message", lotusAnswer(t, nullMsg), 6545215, true},
+		{"through a sweep's per-upstream errors", common.NewErrUpstreamsExhaustedWithCause(errors.Join(lotusNull(t, 7), errors.New("rpc-b: 429"))), 7, true},
+		{"code 1, a future epoch", lotusAnswer(t, `{"code":1,"message":"requested a future epoch (beyond 'latest')"}`), 0, false},
+		{"code 12 with another message", lotusAnswer(t, `{"code":12,"message":"actor not found","data":6545215}`), 0, false},
+		{"another code with the null-round message", lotusAnswer(t, `{"code":-32000,"message":"requested epoch was a null round (6545215)","data":6545215}`), 0, false},
+		{"a timeout", common.NewErrEndpointRequestTimeout(time.Second, context.DeadlineExceeded), 0, false},
+		{"a null result", lotusAnswer(t, ""), 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			epoch, null := NullRoundOf(tc.err)
+			if null != tc.null || epoch != tc.epoch {
+				t.Fatalf("NullRoundOf = %d, %v; want %d, %v (err %v)", epoch, null, tc.epoch, tc.null, tc.err)
+			}
+		})
+	}
+
+	t.Run("the client gets the upstream's code and message", func(t *testing.T) {
+		jre := &common.ErrJsonRpcExceptionInternal{}
+		if !errors.As(common.TranslateToJsonRpcException(lotusNull(t, 6545215)), &jre) {
+			t.Fatal("no json-rpc exception for the client")
+		}
+		if jre.NormalizedCode() != 12 || jre.Message != "requested epoch was a null round (6545215)" {
+			t.Fatalf("client sees code %d %q", jre.NormalizedCode(), jre.Message)
+		}
+	})
 }
