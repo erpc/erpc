@@ -1249,6 +1249,12 @@ export interface EvmUpstreamConfig {
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
   /**
+   * QueryNative marks a JSON-RPC upstream that serves MIP-16 eth_query*
+   * methods itself. JSON-RPC eth_query* requests go to it unchanged before
+   * the native QueryService upstreams and the query shim.
+   */
+  queryNative?: EvmQueryNativeConfig;
+  /**
    * Multicall3 packs eth_calls bound for this upstream that share a block into one
    * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
    * per pack. Nil (default) sends every eth_call alone.
@@ -1294,6 +1300,17 @@ export interface EvmQueryShimConfig {
    * block completed.
    */
   maxPageDuration?: Duration;
+}
+/**
+ * EvmQueryNativeConfig marks a JSON-RPC upstream that answers MIP-16 eth_query*
+ * requests itself, one page per call. A JSON-RPC eth_query* request is sent to
+ * these upstreams unchanged, in selection-policy order, and the first answer is
+ * returned; when all of them fail, the native QueryService upstreams and the
+ * query shim are tried as before. gRPC QueryService streams do not use them.
+ */
+export interface EvmQueryNativeConfig {
+  enabled?: boolean;
+  allowedMethods?: string[];
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.

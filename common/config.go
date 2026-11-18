@@ -1500,6 +1500,10 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+	// QueryNative marks a JSON-RPC upstream that serves MIP-16 eth_query*
+	// methods itself. JSON-RPC eth_query* requests go to it unchanged before
+	// the native QueryService upstreams and the query shim.
+	QueryNative *EvmQueryNativeConfig `yaml:"queryNative,omitempty" json:"queryNative"`
 	// Multicall3 packs eth_calls bound for this upstream that share a block into one
 	// Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
 	// per pack. Nil (default) sends every eth_call alone.
@@ -1555,6 +1559,45 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		copy(copied.AllowedMethods, c.AllowedMethods)
 	}
 	return copied
+}
+
+// EvmQueryNativeConfig marks a JSON-RPC upstream that answers MIP-16 eth_query*
+// requests itself, one page per call. A JSON-RPC eth_query* request is sent to
+// these upstreams unchanged, in selection-policy order, and the first answer is
+// returned; when all of them fail, the native QueryService upstreams and the
+// query shim are tried as before. gRPC QueryService streams do not use them.
+type EvmQueryNativeConfig struct {
+	Enabled        *bool    `yaml:"enabled,omitempty" json:"enabled"`
+	AllowedMethods []string `yaml:"allowedMethods,omitempty" json:"allowedMethods"`
+}
+
+func (c *EvmQueryNativeConfig) Copy() *EvmQueryNativeConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &EvmQueryNativeConfig{AllowedMethods: slices.Clone(c.AllowedMethods)}
+	if c.Enabled != nil {
+		v := *c.Enabled
+		copied.Enabled = &v
+	}
+	return copied
+}
+
+// AllowsMethod reports whether the upstream serves the eth_query* method
+// natively: enabled, and the method matches allowedMethods (empty allows all).
+func (c *EvmQueryNativeConfig) AllowsMethod(method string) bool {
+	if c == nil || c.Enabled == nil || !*c.Enabled {
+		return false
+	}
+	if len(c.AllowedMethods) == 0 {
+		return true
+	}
+	for _, allowed := range c.AllowedMethods {
+		if match, err := WildcardMatch(allowed, method); err == nil && match {
+			return true
+		}
+	}
+	return false
 }
 
 // AllowsMethod reports whether the shim is enabled for the eth_query* method:
@@ -1680,6 +1723,9 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	}
 	if c.QueryShim != nil {
 		copied.QueryShim = c.QueryShim.Copy()
+	}
+	if c.QueryNative != nil {
+		copied.QueryNative = c.QueryNative.Copy()
 	}
 	if c.Multicall3 != nil {
 		v := *c.Multicall3

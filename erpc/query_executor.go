@@ -153,19 +153,8 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 // bds.evm.QueryService themselves and accept method per their allow/ignore
 // config.
 func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) []common.Upstream {
-	var ups []common.Upstream
-	if qe.network.policyEngine != nil {
-		// A query range spans finalized and unfinalized blocks, so it routes
-		// through the wildcard finality slot.
-		ups = qe.network.policyEngine.GetOrdered(qe.network.Id(), method, "*")
-	}
-	if len(ups) == 0 {
-		for _, u := range qe.network.upstreamsRegistry.GetNetworkUpstreams(ctx, qe.network.Id()) {
-			ups = append(ups, u)
-		}
-	}
 	var out []common.Upstream
-	for _, u := range ups {
+	for _, u := range qe.orderedUpstreams(ctx, method) {
 		if !servesNativeQuery(u) {
 			continue
 		}
@@ -177,6 +166,77 @@ func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) 
 		}
 	}
 	return out
+}
+
+// orderedUpstreams returns the network's upstreams in selection-policy order
+// for method, or in registration order before the policy engine has run.
+func (qe *EvmQueryExecutor) orderedUpstreams(ctx context.Context, method string) []common.Upstream {
+	var ups []common.Upstream
+	if qe.network.policyEngine != nil {
+		// A query range spans finalized and unfinalized blocks, so it routes
+		// through the wildcard finality slot.
+		ups = qe.network.policyEngine.GetOrdered(qe.network.Id(), method, "*")
+	}
+	if len(ups) == 0 {
+		for _, u := range qe.network.upstreamsRegistry.GetNetworkUpstreams(ctx, qe.network.Id()) {
+			ups = append(ups, u)
+		}
+	}
+	return ups
+}
+
+// jsonRpcNativeUpstreams returns, in selection-policy order, the JSON-RPC
+// upstreams that serve method themselves (evm.queryNative) and accept it per
+// their allow/ignore config. gRPC QueryService upstreams are left to
+// pipeThrough.
+func (qe *EvmQueryExecutor) jsonRpcNativeUpstreams(ctx context.Context, method string) []common.Upstream {
+	var out []common.Upstream
+	for _, u := range qe.orderedUpstreams(ctx, method) {
+		if servesNativeQuery(u) {
+			continue
+		}
+		cfg := u.Config()
+		if cfg == nil || cfg.Evm == nil || !cfg.Evm.QueryNative.AllowsMethod(method) {
+			continue
+		}
+		// Fail closed on matcher errors, as nativeUpstreams does.
+		if ok, err := u.ShouldHandleMethod(method); err == nil && ok {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// forwardJsonRpc sends a JSON-RPC eth_query* request unchanged to the
+// upstreams that serve method themselves, in order, and returns the first
+// answer. It returns (nil, nil) when no upstream serves method this way, and
+// the last upstream error when all of them fail; the caller then falls back to
+// the native QueryService upstreams and the query shim.
+func (qe *EvmQueryExecutor) forwardJsonRpc(ctx context.Context, req *common.NormalizedRequest, method string) (*common.NormalizedResponse, error) {
+	var lastErr error
+	for _, ups := range qe.jsonRpcNativeUpstreams(ctx, method) {
+		resp, err := ups.Forward(ctx, req, false, false)
+		if err == nil && resp != nil {
+			trace.SpanFromContext(ctx).SetAttributes(attribute.String("query.path", "json-rpc"), attribute.String("query.upstream", ups.Id()))
+			return resp, nil
+		}
+		if resp != nil {
+			resp.Release()
+		}
+		if err == nil {
+			err = fmt.Errorf("upstream %s returned no response for %s", ups.Id(), method)
+		}
+		qe.logger.Debug().Err(err).Str("upstreamId", ups.Id()).Str("method", method).Msg("JSON-RPC query upstream failed, trying the next one")
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// isQueryMethodNotServed reports whether err is the executor's -32004: no
+// native QueryService upstream and no query shim serves the method.
+func isQueryMethodNotServed(err error) bool {
+	var baseErr *bdscommon.BaseError
+	return errors.As(err, &baseErr) && baseErr.Code == bdscommon.ErrorCode_UNSUPPORTED_METHOD
 }
 
 // shimBudget reports whether any upstream enables the query shim for method,
@@ -606,12 +666,24 @@ func (n *Network) forwardQuery(ctx context.Context, req *common.NormalizedReques
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Logger()
 	executor := NewEvmQueryExecutor(n, &lg)
 	executor.parentRequestId = req.ID()
+	// Upstreams that serve MIP-16 over JSON-RPC (evm.queryNative) answer the
+	// request as sent, one page per call, before the executor's own paths.
+	resp, jsonRpcErr := executor.forwardJsonRpc(ctx, req, method)
+	if resp != nil {
+		return resp, nil
+	}
 	var page proto.Message
 	err = executor.Execute(ctx, queryReq, func(p proto.Message) error {
 		page = p
 		return errQueryPageDone
 	})
 	if err != nil {
+		if jsonRpcErr != nil && isQueryMethodNotServed(err) {
+			// Only the JSON-RPC upstreams serve the method, so their error
+			// says why the request failed.
+			common.SetTraceSpanError(span, jsonRpcErr)
+			return nil, jsonRpcErr
+		}
 		common.SetTraceSpanError(span, err)
 		return nil, queryJsonRpcError(err)
 	}

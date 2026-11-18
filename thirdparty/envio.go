@@ -187,6 +187,14 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	return cid == chainId, nil
 }
 
+// envioQueryMethods are the MIP-16 methods HyperRPC serves itself over
+// JSON-RPC on every chain (https://docs.envio.dev/docs/HyperRPC/mip-16).
+var envioQueryMethods = []string{
+	"eth_queryBlocks",
+	"eth_queryTransactions",
+	"eth_queryLogs",
+}
+
 func (v *EnvioVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
@@ -211,6 +219,16 @@ func (v *EnvioVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logge
 			"eth_getFilterChanges",
 			"eth_uninstallFilter",
 			"eth_newFilter",
+		}
+		upstream.AllowMethods = append(upstream.AllowMethods, envioQueryMethods...)
+	}
+	if upstream.Evm == nil {
+		upstream.Evm = &common.EvmUpstreamConfig{}
+	}
+	if upstream.Evm.QueryNative == nil {
+		upstream.Evm.QueryNative = &common.EvmQueryNativeConfig{
+			Enabled:        util.BoolPtr(true),
+			AllowedMethods: append([]string(nil), envioQueryMethods...),
 		}
 	}
 

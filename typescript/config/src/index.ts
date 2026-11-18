@@ -116,6 +116,7 @@ export type {
   UpstreamConfig,
   EvmUpstreamConfig,
   EvmQueryShimConfig,
+  EvmQueryNativeConfig,
   SvmUpstreamConfig,
   UpstreamIntegrityConfig,
   UpstreamIntegrityEthGetBlockReceiptsConfig,
