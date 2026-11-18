@@ -755,18 +755,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// "User-specified gas exceeds provider limit": the call asks for more
-		// gas than this node allows for eth_call / eth_estimateGas (Monad's
-		// RPC wording for its per-provider gas cap, -32000). The cap is node
-		// configuration, not chain state: another upstream may allow more, so
-		// the call still fails over across the network, but the upstream that
-		// refused is not asked again. Left as the server-side default, one
-		// such call was retried and hedged on every upstream until the
-		// failsafe gave up (about 70 attempts over 6 upstreams), and the
-		// caller saw ErrUpstreamsExhausted instead of the node's reason.
+		// A node's own gas cap: the call asks for more gas than this node
+		// allows for eth_call / eth_estimateGas. Monad's RPC words it
+		// "user-specified gas exceeds provider limit" or "gas limit too high"
+		// (-32000). The cap is node configuration, not chain state: another
+		// upstream may allow more, so the call still fails over across the
+		// network, but the upstream that refused is not asked again. Left as
+		// the server-side default, one such call was retried and hedged on
+		// every upstream until the failsafe gave up (about 70 attempts over 6
+		// upstreams), and the caller saw ErrUpstreamsExhausted instead of the
+		// node's reason.
 		//----------------------------------------------------------------
 
-		if strings.Contains(ml, "gas exceeds provider limit") {
+		if strings.Contains(ml, "gas exceeds provider limit") ||
+			strings.Contains(ml, "gas limit too high") {
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -879,6 +881,28 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(ml, "rlp: value size exceeds") ||
 			strings.Contains(ml, "invalid transaction") ||
 			strings.Contains(ml, "transaction type not supported") {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
+		}
+
+		//----------------------------------------------------------------
+		// "empty input": eth_simulateV1 with no block to simulate
+		// (`blockStateCalls: []`). go-ethereum, which defines the method,
+		// refuses it as invalid params; Monad sends the same words as -32000.
+		// The request itself is invalid, so no upstream can answer it: not
+		// retried. Left as the server-side default, each such call was asked
+		// about 36 times over 3 upstreams before the caller saw
+		// ErrUpstreamsExhausted. The exact message is matched, not a substring.
+		//----------------------------------------------------------------
+
+		if strings.EqualFold(strings.TrimSpace(err.Message), "empty input") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

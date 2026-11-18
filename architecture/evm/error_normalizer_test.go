@@ -217,39 +217,70 @@ func TestExtractJsonRpcError_GasRequiredExceedsAllowance(t *testing.T) {
 
 // TestExtractJsonRpcError_ProviderGasCap verifies that a node's refusal of a
 // call whose gas is above that node's own cap — -32000 "user-specified gas
-// exceeds provider limit", Monad's RPC wording — is an execution outcome that
-// is not retried on the same upstream, but stays retryable toward the network
-// because the cap is per-provider configuration.
+// exceeds provider limit" or "gas limit too high", Monad's RPC wordings — is
+// an execution outcome that is not retried on the same upstream, but stays
+// retryable toward the network because the cap is per-provider configuration.
 func TestExtractJsonRpcError_ProviderGasCap(t *testing.T) {
 	t.Parallel()
 
-	for _, method := range []string{"eth_call", "eth_estimateGas"} {
-		method := method
-		t.Run(method, func(t *testing.T) {
-			t.Parallel()
+	for _, message := range []string{"user-specified gas exceeds provider limit", "gas limit too high"} {
+		for _, method := range []string{"eth_call", "eth_estimateGas"} {
+			message, method := message, method
+			t.Run(method+"/"+message, func(t *testing.T) {
+				t.Parallel()
 
-			req := common.NewNormalizedRequest([]byte(
-				`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
-			nr := common.NewNormalizedResponse().WithRequest(req)
+				req := common.NewNormalizedRequest([]byte(
+					`{"jsonrpc":"2.0","method":"` + method + `","params":[],"id":1}`))
+				nr := common.NewNormalizedResponse().WithRequest(req)
 
-			r := &http.Response{StatusCode: 200, Header: http.Header{}}
-			jr := common.MustNewJsonRpcResponse(1, nil,
-				common.NewErrJsonRpcExceptionExternal(-32000, "user-specified gas exceeds provider limit", ""))
+				r := &http.Response{StatusCode: 200, Header: http.Header{}}
+				jr := common.MustNewJsonRpcResponse(1, nil,
+					common.NewErrJsonRpcExceptionExternal(-32000, message, ""))
 
-			err := ExtractJsonRpcError(r, nr, jr, nil)
-			if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-				t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
-			}
-			if common.IsRetryableTowardsUpstream(err) {
-				t.Fatalf("the refusing upstream must not be asked again (method=%s)", method)
-			}
-			if !common.IsRetryableTowardNetwork(err) {
-				t.Fatalf("another upstream may allow more gas: must stay retryable toward the network (method=%s)", method)
-			}
-			if !strings.Contains(err.Error(), "user-specified gas exceeds provider limit") {
-				t.Fatalf("expected the node's message to be kept, got: %v", err)
-			}
-		})
+				err := ExtractJsonRpcError(r, nr, jr, nil)
+				if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+					t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+				}
+				if common.IsRetryableTowardsUpstream(err) {
+					t.Fatalf("the refusing upstream must not be asked again")
+				}
+				if !common.IsRetryableTowardNetwork(err) {
+					t.Fatalf("another upstream may allow more gas: must stay retryable toward the network")
+				}
+				if !strings.Contains(err.Error(), message) {
+					t.Fatalf("expected the node's message to be kept, got: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// TestExtractJsonRpcError_SimulateEmptyInput verifies that "empty input" —
+// go-ethereum's invalid-params verdict for eth_simulateV1 with no block to
+// simulate, which Monad sends as -32000 — is a client-side error that is not
+// retried anywhere: the request itself names nothing to simulate.
+func TestExtractJsonRpcError_SimulateEmptyInput(t *testing.T) {
+	t.Parallel()
+
+	for _, code := range []int{-32000, -32602} {
+		req := common.NewNormalizedRequest([]byte(
+			`{"jsonrpc":"2.0","method":"eth_simulateV1","params":[{"blockStateCalls":[]},"latest"],"id":1}`))
+		nr := common.NewNormalizedResponse().WithRequest(req)
+
+		r := &http.Response{StatusCode: 200, Header: http.Header{}}
+		jr := common.MustNewJsonRpcResponse(1, nil,
+			common.NewErrJsonRpcExceptionExternal(code, "empty input", ""))
+
+		err := ExtractJsonRpcError(r, nr, jr, nil)
+		if !common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+			t.Fatalf("code %d: expected ErrEndpointClientSideException, got %T: %v", code, err, err)
+		}
+		if common.IsRetryableTowardNetwork(err) {
+			t.Fatalf("code %d: an empty simulation must not be retried toward the network", code)
+		}
+		if !strings.Contains(err.Error(), "empty input") {
+			t.Fatalf("code %d: expected the node's message to be kept, got: %v", code, err)
+		}
 	}
 }
 
