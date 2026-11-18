@@ -267,6 +267,7 @@ func (e *executor) executeConsensus(
 		st.ConsensusSlots.Add(int32(maxToSpawn))
 	}
 	responseChan := make(chan *execResult, maxToSpawn)
+	pace := newRoundPace(maxToSpawn)
 	// Per-slot cancellable child contexts let us cancel losers explicitly.
 	// Each slot inherits the shared cancellableCtx (which is cancelled
 	// when the analyzer signals a winner / fire-and-forget exits / etc.)
@@ -279,8 +280,9 @@ func (e *executor) executeConsensus(
 		// consensus fan-out (Reason = consensus_slot) in the attempt log,
 		// the X-ERPC-Upstreams trace, and erpc_upstream_selection_total.
 		slotCtx = common.WithConsensusSlot(slotCtx)
+		slotCtx = common.WithSlotPace(slotCtx, pace.slots[i])
 		slotCtx, attemptCancels[i] = context.WithCancel(slotCtx)
-		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan)
+		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan, pace)
 	}
 
 	// outcomeCh is buffered so the analyzer can signal the caller and
@@ -300,7 +302,7 @@ func (e *executor) executeConsensus(
 	go e.runAnalyzer(
 		ctx, lg, originalReq, labels,
 		responseChan, attemptCancels, maxToSpawn, cancelRemaining,
-		outcomeCh, analyzerDone, collectionSpan,
+		outcomeCh, analyzerDone, collectionSpan, pace,
 	)
 
 	// Caller's select: prefer winner when available; bail on ctx cancel.
@@ -404,6 +406,7 @@ func (e *executor) runAnalyzer(
 	outcomeCh chan<- consensusOutcome,
 	analyzerDone chan<- struct{},
 	collectionSpan trace.Span,
+	pace *roundPace,
 ) {
 	defer inflightAnalyzers.done()
 
@@ -544,24 +547,45 @@ func (e *executor) runAnalyzer(
 		}
 	}
 
+	cancelAttempts := func() {
+		cancelRemaining()
+		for ai := range attemptCancels {
+			if attemptCancels[ai] != nil {
+				attemptCancels[ai]()
+			}
+		}
+	}
+	// idleCapped marks a round the wait cap ended before it fired: every
+	// slot still out was idle past the cap, so none could answer in time.
+	idleCapped := false
+	endIfIdle := func(received int) bool {
+		if shortCircuited || !pace.idleThrough(waitDeadline, received) {
+			return false
+		}
+		waitCapped = true
+		idleCapped = true
+		if !e.config.fireAndForget {
+			cancelAttempts()
+		}
+		return true
+	}
+
 	// Collect responses. Every participant is guaranteed to write exactly
 	// once to responseChan (see executeParticipant: all exit paths + panic
 	// recovery write; channel is buffered to maxToSpawn so writes never block).
-	for i := 0; i < maxToSpawn; i++ {
+	for received := 0; received < maxToSpawn; {
 		var resp *execResult
 		select {
 		case resp = <-responseChan:
+			received++
 		case <-timerC():
 			// Wait cap fired — resolve with what we have.
 			waitCapped = true
 			if !e.config.fireAndForget {
-				cancelRemaining()
-				for ai := range attemptCancels {
-					if attemptCancels[ai] != nil {
-						attemptCancels[ai]()
-					}
-				}
+				cancelAttempts()
 			}
+		case <-pace.wake:
+			endIfIdle(received)
 		}
 		if waitCapped {
 			break
@@ -601,16 +625,15 @@ func (e *executor) runAnalyzer(
 			if e.config.fireAndForget {
 				lg.Debug().
 					Str("reason", reason).
-					Int("remaining", maxToSpawn-i-1).
+					Int("remaining", maxToSpawn-received).
 					Msg("fire-and-forget mode: remaining requests complete in background")
 			} else {
-				cancelRemaining()
-				for ai := range attemptCancels {
-					if attemptCancels[ai] != nil {
-						attemptCancels[ai]()
-					}
-				}
+				cancelAttempts()
 			}
+		}
+		// A slot may have gone idle before this response armed the cap.
+		if endIfIdle(received) {
+			break
 		}
 	}
 	if waitTimer != nil {
@@ -645,6 +668,7 @@ func (e *executor) runAnalyzer(
 	collectionSpan.SetAttributes(
 		attribute.Bool("short_circuited", shortCircuited),
 		attribute.Bool("wait_capped", waitCapped),
+		attribute.Bool("idle_capped", idleCapped),
 		attribute.Int("responses.collected", len(responses)),
 	)
 
@@ -678,15 +702,19 @@ func (e *executor) runAnalyzer(
 			Inc()
 	}
 	if waitCapped {
-		// Trigger label distinguishes which cap fired: maxWaitOnResult
-		// (at least one non-empty in the bag) vs maxWaitOnEmpty (only
-		// empty/error responses so far).
+		// Trigger label distinguishes why the round stopped waiting:
+		// maxWaitOnResult (at least one non-empty in the bag), maxWaitOnEmpty
+		// (only empty/error responses so far), or idle (every slot still out
+		// was idle past the cap, so the round ended before the cap fired).
 		trigger := "empty"
 		for _, r := range responses {
 			if r != nil && r.Err == nil && r.Result != nil && !r.Result.IsResultEmptyish(ctx) {
 				trigger = "result"
 				break
 			}
+		}
+		if idleCapped {
+			trigger = "idle"
 		}
 		telemetry.MetricConsensusWaitCapped.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, trigger, labels.finalityStr, labels.userId, labels.agentName).
@@ -800,6 +828,50 @@ func isNoAttemptCause(cause error) bool {
 	return isNoAttemptError(cause)
 }
 
+// roundPace tracks the slots of one consensus round still out, so the round
+// stops waiting once none of them can answer before its wait cap.
+type roundPace struct {
+	slots []*common.SlotPace
+	// delivered[i] is set before slot i writes its result to the round.
+	delivered []atomic.Bool
+	// wake signals that some slot went idle.
+	wake chan struct{}
+}
+
+func newRoundPace(n int) *roundPace {
+	p := &roundPace{
+		slots:     make([]*common.SlotPace, n),
+		delivered: make([]atomic.Bool, n),
+		wake:      make(chan struct{}, 1),
+	}
+	for i := range p.slots {
+		p.slots[i] = common.NewSlotPace(p.wake)
+	}
+	return p
+}
+
+// idleThrough reports whether no slot still out can answer before deadline:
+// at least one slot is out, every slot that delivered was received, and every
+// other slot is idle until deadline or later. Ending the round then returns
+// what the wait cap returns at deadline, only sooner. A zero deadline means
+// no cap is armed: the round waits for every slot.
+func (p *roundPace) idleThrough(deadline time.Time, received int) bool {
+	if deadline.IsZero() {
+		return false
+	}
+	delivered := 0
+	for i, s := range p.slots {
+		if p.delivered[i].Load() {
+			delivered++
+			continue
+		}
+		if !s.IdleThrough(deadline) {
+			return false
+		}
+	}
+	return delivered == received && delivered < len(p.slots)
+}
+
 // executeParticipant runs a single upstream request within a goroutine.
 func (e *executor) executeParticipant(
 	ctx context.Context,
@@ -809,6 +881,7 @@ func (e *executor) executeParticipant(
 	req *common.NormalizedRequest,
 	index int,
 	responseChan chan<- *execResult,
+	pace *roundPace,
 ) {
 	// Panic recovery
 	defer func() {
@@ -819,6 +892,7 @@ func (e *executor) executeParticipant(
 				Str("stack", string(debug.Stack())).
 				Msg("Panic in consensus participant")
 			telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).Inc()
+			pace.delivered[index].Store(true)
 			responseChan <- &execResult{Err: errPanicInConsensus}
 		}
 	}()
@@ -828,6 +902,7 @@ func (e *executor) executeParticipant(
 		telemetry.MetricConsensusCancellations.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
+		pace.delivered[index].Store(true)
 		responseChan <- nil
 		return
 	}
@@ -845,6 +920,7 @@ func (e *executor) executeParticipant(
 	}
 
 	if respObj == nil && respErr == nil {
+		pace.delivered[index].Store(true)
 		responseChan <- nil
 		return
 	}
@@ -866,6 +942,7 @@ func (e *executor) executeParticipant(
 		}
 	}
 
+	pace.delivered[index].Store(true)
 	responseChan <- &execResult{
 		Result:   respObj,
 		Err:      respErr,

@@ -54,6 +54,64 @@ func IsConsensusSlot(ctx context.Context) bool {
 	return v
 }
 
+// slotPaceContextKey carries the *SlotPace of one consensus participant slot.
+type slotPaceContextKey struct{}
+
+// SlotPace tells a consensus round when one participant slot can next
+// answer. A slot is idle while none of its attempts is in flight and the next
+// one waits on a timer (a hedge delay or a retry delay); it is busy otherwise.
+// The round stops waiting for slots that stay idle past its wait cap: their
+// answers could not arrive before the cap ends the round anyway.
+type SlotPace struct {
+	// idleUntil is when the slot's next attempt starts, in Unix nanoseconds;
+	// 0 while an attempt is in flight.
+	idleUntil atomic.Int64
+	wake      chan<- struct{}
+}
+
+// NewSlotPace returns a busy pace that signals wake, without blocking, each
+// time the slot goes idle. One wake channel serves every slot of a round.
+func NewSlotPace(wake chan<- struct{}) *SlotPace {
+	return &SlotPace{wake: wake}
+}
+
+// IdleUntil records that the slot starts no attempt before next.
+func (p *SlotPace) IdleUntil(next time.Time) {
+	if p == nil {
+		return
+	}
+	p.idleUntil.Store(next.UnixNano())
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Busy records that an attempt of the slot is in flight.
+func (p *SlotPace) Busy() {
+	if p == nil {
+		return
+	}
+	p.idleUntil.Store(0)
+}
+
+// IdleThrough reports whether the slot starts no attempt before t.
+func (p *SlotPace) IdleThrough(t time.Time) bool {
+	v := p.idleUntil.Load()
+	return v != 0 && v >= t.UnixNano()
+}
+
+// WithSlotPace returns ctx carrying the pace of its consensus slot.
+func WithSlotPace(ctx context.Context, p *SlotPace) context.Context {
+	return context.WithValue(ctx, slotPaceContextKey{}, p)
+}
+
+// SlotPaceOf returns the pace of ctx's consensus slot, or nil.
+func SlotPaceOf(ctx context.Context) *SlotPace {
+	p, _ := ctx.Value(slotPaceContextKey{}).(*SlotPace)
+	return p
+}
+
 // WithSweepIteration returns ctx marked as a non-first sweep pick.
 func WithSweepIteration(ctx context.Context) context.Context {
 	return context.WithValue(ctx, SweepIterationContextKey, true)
