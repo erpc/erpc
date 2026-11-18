@@ -90,6 +90,23 @@ func TestProber_SkipGates(t *testing.T) {
 		assert.Equal(t, int64(0), up.calls.Load())
 	})
 
+	// The probe would run the excluded upstream's methodRewrite target: a
+	// client method it renames to a write is never mirrored to it, while
+	// an upstream that keeps the method as-is is still probed.
+	t.Run("method renamed to a write", func(t *testing.T) {
+		deps := &stubEngine{}
+		renamer := &stubProbeUpstream{id: "cov-renamer", rewrite: map[string]string{"custom_send": "eth_sendRawTransaction"}}
+		plain := &stubProbeUpstream{id: "cov-plain"}
+		deps.setExcluded(network, []common.Upstream{renamer, plain})
+		p, _ := newTestProber(t, deps, &ProbeConfig{SampleRate: 1, MaxConcurrent: 2})
+		defer p.Stop()
+		before := skipped("write_method")
+		p.Publish(makeProbeReq(t, "custom_send"))
+		require.Eventually(t, func() bool { return plain.calls.Load() == 1 }, 5*time.Second, 5*time.Millisecond)
+		assert.Equal(t, before+1, skipped("write_method"))
+		assert.Equal(t, int64(0), renamer.calls.Load(), "a renamed write must not be mirrored")
+	})
+
 	t.Run("nil config and empty excluded set are no-ops", func(t *testing.T) {
 		deps := &stubEngine{}
 		up := &stubProbeUpstream{id: "cov-noop"}

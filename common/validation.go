@@ -1103,7 +1103,7 @@ func (u *ProviderConfig) Validate(c *Config) error {
 // methodPatternChars are the characters with a meaning in method patterns
 // (WildcardMatch: glob, |, &, !, parentheses, whitespace); an exact method
 // name never needs them.
-const methodPatternChars = "*?|&!() \t"
+const methodPatternChars = "*?|&!() \t\n\r"
 
 func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
@@ -1120,7 +1120,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		// |, &, !, parentheses, spaces) would never match and silently send
 		// the request unrenamed.
 		if strings.ContainsAny(from, methodPatternChars) {
-			return fmt.Errorf("upstream '%s': methodRewrite key '%s' must be an exact method name, method patterns (%s) are not supported", u.Id, from, methodPatternChars)
+			return fmt.Errorf("upstream '%s': methodRewrite key %q must be an exact method name: method-pattern characters (* ? | & ! ( ) or whitespace) are not supported", u.Id, from)
 		}
 	}
 	// A gRPC BDS client maps each method to a typed call, not a JSON-RPC

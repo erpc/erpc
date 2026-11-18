@@ -1034,9 +1034,11 @@ export interface UpstreamConfig {
    * as-is. Each upstream has its own map, so one client method can go out
    * differently per upstream. Code that interprets this upstream's answer
    * (upstream hooks such as eth_sendRawTransaction idempotency, error
-   * normalization, write-safety checks of upstream retry/hedge) uses the
-   * target method (see UpstreamMethod). Routing and request-level
-   * behaviour (allowMethods / ignoreMethods, selection, network failsafe
+   * normalization, vendor credit units) uses the target method (see
+   * UpstreamMethod). Write guards (no retry, hedge, multiplexing or probe
+   * for a write) treat a request as a write when its client method or any
+   * upstream's target is one. Routing and request-level behaviour
+   * (allowMethods / ignoreMethods, selection, network failsafe
    * matchMethod, cache, rate limits, metrics) use the client's method.
    */
   methodRewrite?: { [key: string]: string};

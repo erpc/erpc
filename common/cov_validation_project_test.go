@@ -238,16 +238,16 @@ func TestCovValidation_Upstream(t *testing.T) {
 		}, "upstream 'u1': methodRewrite needs a non-empty method on both sides"},
 		{"methodRewrite wildcard key", func(u *UpstreamConfig) {
 			u.MethodRewrite = map[string]string{"custom_*": "eth_sendRawTransaction"}
-		}, "upstream 'u1': methodRewrite key 'custom_*' must be an exact method name"},
+		}, `upstream 'u1': methodRewrite key "custom_*" must be an exact method name`},
 		{"methodRewrite or-pattern key", func(u *UpstreamConfig) {
 			u.MethodRewrite = map[string]string{"a|b": "eth_sendRawTransaction"}
-		}, "upstream 'u1': methodRewrite key 'a|b' must be an exact method name"},
+		}, `upstream 'u1': methodRewrite key "a|b" must be an exact method name`},
 		{"methodRewrite negated key", func(u *UpstreamConfig) {
 			u.MethodRewrite = map[string]string{"!eth_call": "eth_sendRawTransaction"}
-		}, "upstream 'u1': methodRewrite key '!eth_call' must be an exact method name"},
+		}, `upstream 'u1': methodRewrite key "!eth_call" must be an exact method name`},
 		{"methodRewrite key with space", func(u *UpstreamConfig) {
 			u.MethodRewrite = map[string]string{"custom send": "eth_sendRawTransaction"}
-		}, "upstream 'u1': methodRewrite key 'custom send' must be an exact method name"},
+		}, `upstream 'u1': methodRewrite key "custom send" must be an exact method name`},
 		{"methodRewrite dotted key is exact", func(u *UpstreamConfig) {
 			u.MethodRewrite = map[string]string{"rpc.custom": "eth_sendRawTransaction"}
 		}, ""},

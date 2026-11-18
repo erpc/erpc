@@ -40,6 +40,12 @@ type networkExecutor struct {
 	emptyResultAccept []string
 
 	dynamicBlockUnavailableDelay func() time.Duration
+
+	// isNonRetryableWrite reports whether a request is a write that must
+	// reach one upstream once (Network.isNonRetryableWrite: the client's
+	// method or any upstream's methodRewrite target). nil judges the
+	// client's method only.
+	isNonRetryableWrite func(*common.NormalizedRequest) bool
 }
 
 // consensusRunner is the minimal interface this package needs from
@@ -694,7 +700,11 @@ func (e *networkExecutor) runHedge(
 	// fan-out elsewhere. SVM names are bare (sendTransaction, requestAirdrop),
 	// so both architecture sets are checked.
 	if req != nil {
-		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
+		if e.isNonRetryableWrite != nil {
+			if e.isNonRetryableWrite(req) {
+				return inner(ctx, req)
+			}
+		} else if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
 			return inner(ctx, req)
 		}
 	}

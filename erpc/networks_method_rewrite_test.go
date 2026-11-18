@@ -37,6 +37,10 @@ const mevRoutingPolicy = `(upstreams, ctx) =>
 //	relay-a  — mev relay, only the custom method, renamed.
 //	relay-b  — mev relay, only the custom method, renamed.
 func setupMevRewriteNetwork(t *testing.T, ctx context.Context) *Network {
+	return setupMevRewriteNetworkWithPolicy(t, ctx, mevRoutingPolicy)
+}
+
+func setupMevRewriteNetworkWithPolicy(t *testing.T, ctx context.Context, evalFunc string) *Network {
 	t.Helper()
 
 	rewrite := map[string]string{"custom_sendMevProtected": "eth_sendRawTransaction"}
@@ -63,6 +67,16 @@ func setupMevRewriteNetwork(t *testing.T, ctx context.Context) *Network {
 			MethodRewrite: rewrite,
 		},
 	}
+	return setupRewriteNetwork(t, ctx, ups, evalFunc, []*common.FailsafeConfig{{
+		MatchMethod: "*",
+		Retry:       &common.RetryPolicyConfig{MaxAttempts: 3},
+	}})
+}
+
+// setupRewriteNetwork builds a chain-123 network over ups with a frozen
+// per-method selection policy and the given network failsafe.
+func setupRewriteNetwork(t *testing.T, ctx context.Context, ups []*common.UpstreamConfig, evalFunc string, failsafe []*common.FailsafeConfig) *Network {
+	t.Helper()
 	for _, c := range ups {
 		mockStatePollerForHost(c.Endpoint)
 		c.Routing = &common.UpstreamRoutingConfig{Probe: common.ProbeModeOff}
@@ -87,14 +101,11 @@ func setupMevRewriteNetwork(t *testing.T, ctx context.Context) *Network {
 	ntwCfg := &common.NetworkConfig{
 		Architecture: common.ArchitectureEvm,
 		Evm:          &common.EvmNetworkConfig{ChainId: 123},
-		Failsafe: []*common.FailsafeConfig{{
-			MatchMethod: "*",
-			Retry:       &common.RetryPolicyConfig{MaxAttempts: 3},
-		}},
+		Failsafe:     failsafe,
 		SelectionPolicy: &common.SelectionPolicyConfig{
 			EvalInterval: 0, // frozen — the test drives ticks
 			EvalScope:    common.EvalScopeNetworkMethod,
-			EvalFunc:     mevRoutingPolicy,
+			EvalFunc:     evalFunc,
 		},
 	}
 
@@ -250,7 +261,11 @@ func TestNetwork_MethodRewrite_AlreadyKnownIsIdempotentSuccess(t *testing.T) {
 	mockSendRaw(t, upstreamHostFromID("relay-b"), 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"already known"}}`)
 	mockSendRaw(t, upstreamHostFromID("regular"), 200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"regular must not be reached"}}`)
 
-	ntw := setupMevRewriteNetwork(t, ctx)
+	// relay-a first, so the request reaches relay-b only as a retry.
+	ntw := setupMevRewriteNetworkWithPolicy(t, ctx, `(upstreams, ctx) =>
+  methodMatches('custom_sendMevProtected')
+    ? upstreams.byId('relay-a').concat(upstreams.byId('relay-b'), upstreams.excludeTag('mev'))
+    : upstreams.excludeTag('mev')`)
 	resp, _ := ntw.Forward(ctx, customSendSignedReq())
 	if resp != nil {
 		resp.Release()
@@ -267,6 +282,8 @@ func TestNetwork_MethodRewrite_AlreadyKnownIsIdempotentSuccess(t *testing.T) {
 	jrr, err := resp.JsonRpcResponse()
 	require.NoError(t, err)
 	assert.Regexp(t, `^"0x[0-9a-f]{64}"$`, jrr.GetResultString(), "the hook answers with the transaction hash")
+	assert.Positive(t, gockHits(upstreamHostFromID("relay-a")), "relay-a must have failed first")
+	assert.Positive(t, gockHits(upstreamHostFromID("relay-b")), "the retry must reach relay-b")
 	assert.Equal(t, 0, gockHits(upstreamHostFromID("regular")), "the transaction is already known, the fallback node must not get it")
 }
 
@@ -297,4 +314,50 @@ func TestNetwork_MethodRewrite_RelayRevertFallsBack(t *testing.T) {
 	require.NotNil(t, resp)
 	defer resp.Release()
 	assert.Equal(t, "regular", resp.Upstream().Id())
+}
+
+// A method renamed to a write eRPC never sends twice
+// (evm.IsNonRetryableWriteMethod) is not hedged at network scope, though the
+// client's method is not a write: the hedge guard runs before an upstream
+// is chosen, so it asks every upstream's methodRewrite target.
+func TestNetwork_MethodRewrite_RenamedWriteIsNotHedged(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	setupGockObserver(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rewrite := map[string]string{"custom_send": "eth_sendTransaction"}
+	ups := []*common.UpstreamConfig{
+		{Id: "signer-a", Type: common.UpstreamTypeEvm, Endpoint: upstreamHostFromID("signer-a"), Evm: &common.EvmUpstreamConfig{ChainId: 123}, MethodRewrite: rewrite},
+		{Id: "signer-b", Type: common.UpstreamTypeEvm, Endpoint: upstreamHostFromID("signer-b"), Evm: &common.EvmUpstreamConfig{ChainId: 123}, MethodRewrite: rewrite},
+	}
+	for _, c := range ups {
+		gock.New(c.Endpoint).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"method":"eth_sendTransaction"`)
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond).
+			JSON([]byte(sendRawOk))
+	}
+	fs := &common.FailsafeConfig{
+		MatchMethod: "*",
+		Hedge:       &common.HedgePolicyConfig{Delay: common.NewStaticDuration(20 * time.Millisecond), MaxCount: 2},
+	}
+	require.NoError(t, fs.SetDefaults(nil))
+
+	ntw := setupRewriteNetwork(t, ctx, ups, `(upstreams, ctx) => upstreams`, []*common.FailsafeConfig{fs})
+	require.True(t, ntw.isNonRetryableWrite(common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"custom_send","params":[]}`))))
+	require.False(t, ntw.isNonRetryableWrite(common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`))))
+
+	hitsMu.Lock()
+	hits = map[string]int{}
+	hitsMu.Unlock()
+	resp, err := ntw.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"custom_send","params":[{}]}`)))
+	require.NoError(t, err)
+	resp.Release()
+	assert.Equal(t, 1, gockHits(upstreamHostFromID("signer-a"))+gockHits(upstreamHostFromID("signer-b")),
+		"a renamed write must reach exactly one upstream, never a hedge")
 }

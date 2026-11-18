@@ -707,13 +707,9 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	jrReq.RLock()
 	span.SetAttributes(attribute.String("request.method", jrReq.Method))
-	wireMethod := c.upstream.Config().WireMethod(jrReq.Method)
-	if wireMethod != jrReq.Method {
-		span.SetAttributes(attribute.String("request.wire_method", wireMethod))
-	}
 	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
-		Method:  wireMethod,
+		Method:  c.upstream.Config().WireMethod(jrReq.Method),
 		Params:  common.WireParams(ctx, req, jrReq.Params),
 		ID:      jrReq.ID,
 	})

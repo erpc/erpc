@@ -277,7 +277,6 @@ func NewUpstream(
 			if err != nil {
 				return nil, err
 			}
-			ex.wireMethod = cfg.WireMethod
 			// Wire breaker-transition metric. Side-effect-only; failsafe/
 			// package stays telemetry-free.
 			if b := ex.Breaker(); b != nil {
@@ -307,6 +306,12 @@ func NewUpstream(
 		supportedMethods:     sync.Map{},
 		networkLabel:         atomic.Value{},
 	}
+
+	// The upstream executors judge writes by the method this upstream runs,
+	// read from its current config so they agree with what the client sends.
+	for _, ex := range failsafeExecutors {
+		ex.wireMethod = func(m string) string { return pup.Config().WireMethod(m) }
+	}
 	pup.networkLabel.Store("n/a")
 
 	pup.initRateLimitAutoTuner()
@@ -326,6 +331,10 @@ func NewUpstream(
 		// credit-unit override (providers copy it onto the base config).
 		if pup.config.CreditUnits == nil {
 			pup.config.CreditUnits = cfg.CreditUnits
+		}
+		// Same for the rename: a dropped map would send the client's method.
+		if pup.config.MethodRewrite == nil {
+			pup.config.MethodRewrite = cfg.MethodRewrite
 		}
 	}
 
