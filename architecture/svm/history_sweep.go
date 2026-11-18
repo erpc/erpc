@@ -35,16 +35,17 @@ const solanaDefaultSignaturesLimit = 1000
 // upstreams. The discarded response stays the request's last-valid response, so
 // when the deeper upstream fails the client still receives this answer.
 //
-// Consensus participant slots (common.IsConsensusSlot) skip this hook: parallel
-// upstreams vote on the bodies they returned, and turning identical legitimate
-// short pages into MissingData would make consensus agree on an error.
+// On a consensus slot the hook runs too, with the round as the pool: a short
+// page or null status abstains as MissingData only when another participant
+// of the same round has a deeper known floor (see deeperFloorSelected). The
+// round's deepest participant votes its data, and the
+// waiveAgreementOnMissingData waiver releases the shallow participants'
+// quota. Consensus serves no last-valid response, so when that participant
+// fails after the others abstained, the round fails closed.
 //
 // Errors pass through untouched: -32011 / -32020 and friends are classified by
 // the error normalizer and fail over on their own.
 func upstreamPostForward_historySweep(ctx context.Context, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) (*common.NormalizedResponse, error) {
-	if common.IsConsensusSlot(ctx) {
-		return rs, nil
-	}
 	if rs == nil || r == nil {
 		return rs, nil
 	}
@@ -115,7 +116,7 @@ func signatureStatusesNullToMissingData(ctx context.Context, u common.Upstream, 
 			nulls++
 		}
 	}
-	if nulls == 0 || !deeperFloorSelected(u, r) {
+	if nulls == 0 || !deeperFloorSelected(ctx, u, r) {
 		return nil
 	}
 	return newHistorySweepMissingData(
@@ -154,7 +155,7 @@ func signaturesForAddressShortPageToMissingData(ctx context.Context, u common.Up
 	if err := common.SonicCfg.Unmarshal(raw, &page); err != nil {
 		return nil
 	}
-	if int64(len(page)) >= limit || !deeperFloorSelected(u, r) {
+	if int64(len(page)) >= limit || !deeperFloorSelected(ctx, u, r) {
 		return nil
 	}
 	return newHistorySweepMissingData(
@@ -212,13 +213,22 @@ func OrderByHistoryDepth(ups []common.Upstream, sameTier func(a, b common.Upstre
 // can reach history u cannot. Ties and unknowns are not evidence, so an
 // upstream at the pool's deepest floor, or one whose floor is unobserved, has
 // the final word.
-func deeperFloorSelected(u common.Upstream, r *common.NormalizedRequest) bool {
+//
+// On a consensus slot the peers are the round's own: upstreams r holds
+// (Reserved). A deeper upstream outside the round never answers it, so its
+// floor must not turn the round's data votes into abstentions. A deeper
+// participant that failed retryably is released and stops counting.
+func deeperFloorSelected(ctx context.Context, u common.Upstream, r *common.NormalizedRequest) bool {
 	floor, known := upstreamFloor(u)
 	if !known {
 		return false
 	}
+	inRound := common.IsConsensusSlot(ctx)
 	for _, other := range r.Upstreams() {
 		if other == u {
+			continue
+		}
+		if inRound && !r.Reserved(other) {
 			continue
 		}
 		if f, ok := upstreamFloor(other); ok && f < floor {
