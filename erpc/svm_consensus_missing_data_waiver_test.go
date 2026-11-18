@@ -113,7 +113,7 @@ func TestSvm_Consensus_MissingDataWaiver_PrunedGetBlock(t *testing.T) {
 				resp, err := svmProjectForward(ctx, net, req)
 
 				for id, c := range calls {
-					assert.GreaterOrEqual(t, c.Load(), int32(1), "%s must take part in the round", id)
+					assert.Equal(t, int32(1), c.Load(), "%s must answer its own slot exactly once, never re-routed", id)
 				}
 				if !waive {
 					require.Error(t, err, "without the waiver the internal quota must hold and the round fail closed")
