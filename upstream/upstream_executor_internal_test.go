@@ -43,3 +43,34 @@ func TestUpstreamExecutor_InternalRequestsSkipBreaker(t *testing.T) {
 	require.Equal(t, failsafe.StateClosed, run(true))
 	require.Equal(t, failsafe.StateOpen, run(false))
 }
+
+// A permanent missing-data verdict (an SVM skipped slot) is not retried on the
+// same upstream: waiting cannot make the data appear. A not-yet-available miss
+// still is.
+func TestUpstreamExecutor_PermanentMissingDataIsNotRetried(t *testing.T) {
+	lg := zerolog.Nop()
+	run := func(permanent bool) int {
+		ex, err := NewUpstreamExecutor(&common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(time.Millisecond)},
+		}, &lg)
+		require.NoError(t, err)
+		calls := 0
+		inner := func(context.Context, bool) (*common.NormalizedResponse, error) {
+			calls++
+			e := common.NewErrEndpointMissingData(errors.New("slot 500 not available"), nil)
+			if permanent {
+				e.(*common.ErrEndpointMissingData).WithPermanentMissingData(true)
+			}
+			return nil, e
+		}
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[500]}`))
+		req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+		_, err = ex.Run(context.Background(), req, inner)
+		require.Error(t, err)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+		return calls
+	}
+
+	require.Equal(t, 1, run(true), "a permanent verdict is answered at once")
+	require.Equal(t, 3, run(false), "a not-yet-available miss is retried")
+}
