@@ -1934,6 +1934,19 @@ export interface SvmNetworkConfig {
    * unavailable or unreliable on a given deployment.
    */
   enforceBlockAvailability?: boolean;
+  /**
+   * ProbeSkippedSlots checks, when an upstream answers a slot as permanently
+   * missing (-32007, -32009), whether that upstream's first finalized block
+   * after the slot names a parent below it (getBlocksWithLimit then getBlock
+   * without transactions, both to that upstream). If it does, the slot was
+   * skipped on the finalized fork and every upstream must answer the same,
+   * so the request ends with that answer instead of asking every other
+   * upstream and the fallback tier. Each such answer costs up to two extra
+   * requests to the answering upstream, so it is off by default. It applies
+   * outside consensus, to upstreams whose poller has finalized past the slot.
+   * DEFAULT: false.
+   */
+  probeSkippedSlots?: boolean;
 }
 /**
  * SvmUpstreamConfig carries per-upstream SVM settings.
