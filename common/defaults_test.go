@@ -1671,6 +1671,20 @@ func TestSetDefaults_NetworkDefaults_SvmMergesIntoNetwork(t *testing.T) {
 		require.False(t, n.Svm.SkipProcessedSlotProbe)
 	})
 
+	t.Run("networkDefaults probeSkippedSlots is inherited and a network's own value wins", func(t *testing.T) {
+		d := &NetworkDefaults{Svm: &SvmNetworkConfig{ProbeSkippedSlots: util.BoolPtr(true)}}
+		inherits := &NetworkConfig{Architecture: ArchitectureSvm, Svm: &SvmNetworkConfig{Cluster: "mainnet-beta"}}
+		optsOut := &NetworkConfig{Architecture: ArchitectureSvm, Svm: &SvmNetworkConfig{Cluster: "devnet", ProbeSkippedSlots: util.BoolPtr(false)}}
+		require.NoError(t, inherits.SetDefaults(nil, d))
+		require.NoError(t, optsOut.SetDefaults(nil, d))
+
+		require.True(t, inherits.Svm.ProbeSkippedSlotsEnabled())
+		require.False(t, optsOut.Svm.ProbeSkippedSlotsEnabled())
+		require.NotSame(t, d.Svm.ProbeSkippedSlots, inherits.Svm.ProbeSkippedSlots, "copied, not shared")
+		require.False(t, (&SvmNetworkConfig{}).ProbeSkippedSlotsEnabled(), "off when unset")
+		require.False(t, (*SvmNetworkConfig)(nil).ProbeSkippedSlotsEnabled(), "nil-safe")
+	})
+
 	t.Run("networkDefaults maxFinalizedSlotLag=0 survives the merge and disables the filter", func(t *testing.T) {
 		d := &NetworkDefaults{Svm: &SvmNetworkConfig{MaxFinalizedSlotLag: int64Ptr(0)}}
 		n := &NetworkConfig{

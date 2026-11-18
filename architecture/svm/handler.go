@@ -126,7 +126,9 @@ func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 		// caller asked becomes MissingData so the sweep tries the next upstream.
 		return upstreamPostForward_historySweep(ctx, upstream, req, resp)
 	}
-	return resp, err
+	// A slot this upstream can prove skipped ends the sweep: every upstream
+	// must answer it the same way (svm.probeSkippedSlots).
+	return resp, upstreamPostForward_provenSkippedSlot(ctx, network, upstream, req, err)
 }
 
 func (h *SvmArchitectureHandler) NewJsonRpcErrorExtractor() common.JsonRpcErrorExtractor {
