@@ -1250,8 +1250,8 @@ export interface EvmUpstreamConfig {
   queryShim?: EvmQueryShimConfig;
   /**
    * QueryNative marks a JSON-RPC upstream that serves MIP-16 eth_query*
-   * methods itself. JSON-RPC eth_query* requests go to it unchanged before
-   * the native QueryService upstreams and the query shim.
+   * methods itself. JSON-RPC eth_query* calls go to it unchanged, ranked
+   * with the native QueryService upstreams, before the query shim.
    */
   queryNative?: EvmQueryNativeConfig;
   /**
@@ -1303,10 +1303,11 @@ export interface EvmQueryShimConfig {
 }
 /**
  * EvmQueryNativeConfig marks a JSON-RPC upstream that answers MIP-16 eth_query*
- * requests itself, one page per call. A JSON-RPC eth_query* request is sent to
- * these upstreams unchanged, in selection-policy order, and the first answer is
- * returned; when all of them fail, the native QueryService upstreams and the
- * query shim are tried as before. gRPC QueryService streams do not use them.
+ * requests itself, one page per call. On a JSON-RPC eth_query* call it is a
+ * native upstream like a gRPC QueryService one: the request is sent to it
+ * unchanged, in selection-policy order among the native upstreams, after the
+ * range and availability checks, and the query shim is the fallback. gRPC
+ * QueryService streams do not use it.
  */
 export interface EvmQueryNativeConfig {
   enabled?: boolean;

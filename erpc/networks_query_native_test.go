@@ -137,7 +137,9 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryLogs","params":` + qnLogsParams + `}`))
 		_, err := ntw.Forward(ctx, req)
 		require.Error(t, err)
-		assert.False(t, isQueryMethodNotServed(err), "the upstream's error, not the executor's -32004: %v", err)
+		var jre *common.ErrJsonRpcExceptionInternal
+		require.ErrorAs(t, common.TranslateToJsonRpcException(err), &jre)
+		assert.NotEqual(t, common.JsonRpcErrorNumber(-32004), jre.NormalizedCode(), "the upstream's error, not the executor's -32004: %v", err)
 		assert.Contains(t, err.Error(), "upstream query failed")
 		assert.GreaterOrEqual(t, queries.Load(), int32(1))
 	})
@@ -180,6 +182,32 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		assert.Equal(t, -32004, code)
 		assert.Zero(t, queries.Load())
 	})
+}
+
+// gRPC QueryService and evm.queryNative upstreams share one selection-policy
+// order on JSON-RPC calls; gRPC streams use only the gRPC ones.
+func TestQueryExecutor_NativeUpstreamOrder(t *testing.T) {
+	grpcUps := newTestQueryUpstream(t, "grpc", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{}})
+	jsonUps := newTestQueryUpstream(t, "json", nil)
+	jsonUps.Config().Evm.QueryNative = queryNative()
+	plainUps := newTestQueryUpstream(t, "plain", nil)
+	ids := func(ups []common.Upstream) []string {
+		out := make([]string, len(ups))
+		for i, u := range ups {
+			out[i] = u.Id()
+		}
+		return out
+	}
+	jsonReq := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryLogs","params":[{}]}`))
+
+	qe := newTestQueryExecutor(t, "eth_queryLogs", jsonUps, plainUps, grpcUps)
+	assert.Equal(t, []string{"grpc"}, ids(qe.nativeUpstreams(context.Background(), "eth_queryLogs")), "gRPC stream")
+	qe.jsonReq = jsonReq
+	assert.Equal(t, []string{"json", "grpc"}, ids(qe.nativeUpstreams(context.Background(), "eth_queryLogs")))
+
+	qe = newTestQueryExecutor(t, "eth_queryLogs", grpcUps, plainUps, jsonUps)
+	qe.jsonReq = jsonReq
+	assert.Equal(t, []string{"grpc", "json"}, ids(qe.nativeUpstreams(context.Background(), "eth_queryLogs")), "a gRPC upstream ranked first stays first")
 }
 
 func TestEvmQueryNativeConfig(t *testing.T) {
