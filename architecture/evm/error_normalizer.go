@@ -755,6 +755,34 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
+		// "User-specified gas exceeds provider limit": the call asks for more
+		// gas than this node allows for eth_call / eth_estimateGas (Monad's
+		// RPC wording for its per-provider gas cap, -32000). The cap is node
+		// configuration, not chain state: another upstream may allow more, so
+		// the call still fails over across the network, but the upstream that
+		// refused is not asked again. Left as the server-side default, one
+		// such call was retried and hedged on every upstream until the
+		// failsafe gave up (about 70 attempts over 6 upstreams), and the
+		// caller saw ErrUpstreamsExhausted instead of the node's reason.
+		//----------------------------------------------------------------
+
+		if strings.Contains(ml, "gas exceeds provider limit") {
+			execErr := common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCallException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+			if re, ok := execErr.(common.RetryableError); ok {
+				return re.WithRetryableTowardNetwork(true)
+			}
+			return execErr
+		}
+
+		//----------------------------------------------------------------
 		// "Not found" or "disabled" errors (missing data or unsupported)
 		//----------------------------------------------------------------
 
