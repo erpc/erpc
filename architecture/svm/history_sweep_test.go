@@ -280,10 +280,11 @@ func TestPostForward_HistorySweep_ContinuesOnlyTowardDeeperFloor(t *testing.T) {
 	}
 }
 
-// Under consensus the sweep's pool is the round: a short page or null status
-// abstains only toward a deeper participant the request holds. A deeper
-// upstream outside the round must leave the vote as data, or a round of
-// shallow participants agrees on MissingData alone.
+// Under consensus the sweep's pool is the round, and only an upstream whose
+// quota can waive MissingData abstains: a short page or null status turns
+// into MissingData only toward a deeper participant the request holds. A
+// deeper upstream outside the round, or a quota without the waiver, leaves
+// the vote as data, or the round agrees on MissingData or holds the quota.
 func TestPostForward_HistorySweep_ConsensusSlotScopedToRound(t *testing.T) {
 	t.Parallel()
 	ctx := common.WithConsensusSlot(context.Background())
@@ -293,30 +294,42 @@ func TestPostForward_HistorySweep_ConsensusSlotScopedToRound(t *testing.T) {
 	archive := upstreamWithFloor("archive", 300000, 0, true)
 	const withNull = `{"context":{"slot":9},"value":[null]}`
 
-	cases := []struct {
+	methods := []struct {
 		method, params, body string
 	}{
 		{"getSignaturesForAddress", `["addr",{"limit":5}]`, sigPage(2)},
 		{"getSignatureStatuses", `[["a"],{"searchTransactionHistory":true}]`, withNull},
 	}
-	for _, tc := range cases {
-		t.Run(tc.method+": deeper participant in the round", func(t *testing.T) {
-			t.Parallel()
-			req := reqOf(t, tc.method, tc.params)
-			req.SetUpstreams([]common.Upstream{archive, pruned})
-			require.True(t, req.ReserveUpstream(archive))
-			require.True(t, req.ReserveUpstream(pruned))
-			_, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, tc.body), nil, false)
-			require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData), "got %v", err)
-		})
-		t.Run(tc.method+": deeper upstream outside the round", func(t *testing.T) {
-			t.Parallel()
-			req := reqOf(t, tc.method, tc.params)
-			req.SetUpstreams([]common.Upstream{archive, pruned})
-			require.True(t, req.ReserveUpstream(pruned))
-			rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, tc.body), nil, false)
-			require.NoError(t, err)
-			require.NotNil(t, rs)
-		})
+	rounds := []struct {
+		name                      string
+		abstainer, archiveInRound bool
+		wantMissing               bool
+	}{
+		{"waiver quota, deeper participant in the round", true, true, true},
+		{"waiver quota, deeper upstream outside the round", true, false, false},
+		{"no waiver quota, deeper participant in the round", false, true, false},
+	}
+	for _, m := range methods {
+		for _, rc := range rounds {
+			t.Run(m.method+": "+rc.name, func(t *testing.T) {
+				t.Parallel()
+				req := reqOf(t, m.method, m.params)
+				req.SetUpstreams([]common.Upstream{archive, pruned})
+				if rc.abstainer {
+					req.ExecState().SetMissingDataAbstainers(map[string]struct{}{"pruned": {}})
+				}
+				if rc.archiveInRound {
+					require.True(t, req.ReserveUpstream(archive))
+				}
+				require.True(t, req.ReserveUpstream(pruned))
+				rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, m.body), nil, false)
+				if rc.wantMissing {
+					require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData), "got %v", err)
+					return
+				}
+				require.NoError(t, err)
+				require.NotNil(t, rs)
+			})
+		}
 	}
 }

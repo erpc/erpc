@@ -99,18 +99,23 @@ func (e *executor) answerCannotProveOutsideRetention(ctx context.Context, analys
 // carry the answer's block id when the answer names one, and the request's
 // subject must be that block or one of its lookup ids (a tx hash, a
 // signature). Abstainers go first: the quota the waiver releases trusts them,
-// and a node that pruned its tx index still serves the block. The first block
-// returned decides. One that disagrees fails closed instead of asking the next
-// upstream, so a liar cannot shop for a confirmer. A null or an error moves on
-// to the next.
+// and a node that pruned its tx index still serves the block. Upstreams
+// outside the round come last. The first block returned decides. One that
+// disagrees fails closed instead of asking the next upstream, so a liar
+// cannot shop for a confirmer. A null or an error moves on to the next.
 func (e *executor) confirmAnswerBlock(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) waiverBlockProof {
 	subject := lookupSubject(ctx, analysis)
 	number, blockId := answerBlock(ctx, analysis, g)
 	if subject == "" || number <= 0 {
 		return waiverBlockProof{reason: waiverUnprovenReasonNoRequestBlock}
 	}
+	ev := analysis.historyEvidence()
 	for _, u := range confirmers(analysis, e.agreeingResults(analysis, g), e.config.requiredParticipants) {
-		probedId, subjects, ok := analysis.historyEvidence().ProbeBlock(ctx, u, number)
+		// A node declared not to serve the block cannot confirm it.
+		if ev.UpstreamLowerBound(u) > number {
+			continue
+		}
+		probedId, subjects, ok := ev.ProbeBlock(ctx, u, number)
 		if !ok {
 			continue
 		}
@@ -189,9 +194,13 @@ func answerBlock(ctx context.Context, analysis *consensusAnalysis, g *responseGr
 	return ev.AnswerBlock(ctx, analysis.originalRequest, g.LargestResult)
 }
 
-// confirmers lists the round's upstreams outside the agreeing set that
-// answered without an error, once each, in attempt order: abstainers of an
-// opted-in quota first, then the rest.
+// confirmers lists the upstreams outside the agreeing set that may confirm
+// the answer's block, once each: first the round's upstreams that answered
+// without an error, in attempt order with abstainers of an opted-in quota
+// first, then the request's upstreams that took no part in the round, in
+// routing order. The round's own abstainers often cannot help: a node that
+// answered empty because it pruned the data also lacks the block that holds
+// it, so only a node outside the round can confirm.
 func confirmers(analysis *consensusAnalysis, agreeing []*execResult, reqs []*common.ConsensusRequiredParticipant) []common.Upstream {
 	seen := make(map[string]struct{}, len(agreeing))
 	for _, r := range agreeing {
@@ -233,6 +242,28 @@ func confirmers(analysis *consensusAnalysis, agreeing []*execResult, reqs []*com
 	out := make([]common.Upstream, len(candidates))
 	for i, r := range candidates {
 		out[i] = r.Upstream
+	}
+	req := analysis.originalRequest
+	if req == nil {
+		return out
+	}
+	// A participant that failed this round is not asked again.
+	for _, g := range analysis.groups {
+		for _, r := range g.Results {
+			if r != nil && r.Upstream != nil {
+				seen[r.Upstream.Id()] = struct{}{}
+			}
+		}
+	}
+	for _, u := range req.Upstreams() {
+		if u == nil || !req.MatchesUseUpstream(u) {
+			continue
+		}
+		if _, dup := seen[u.Id()]; dup {
+			continue
+		}
+		seen[u.Id()] = struct{}{}
+		out = append(out, u)
 	}
 	return out
 }

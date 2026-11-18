@@ -172,6 +172,7 @@ func (e *executor) Run(
 			keep = e.emptyWaiverHasBlock(ctx, originalReq, upstreamsHistoryEvidence(originalReq.Upstreams()))
 		}
 		st.SetKeepEmptyConsensusSlot(keep)
+		st.SetMissingDataAbstainers(missingDataAbstainers(e.config.requiredParticipants, originalReq.Upstreams()))
 	}
 
 	labels := e.extractMetricsLabels(ctx, originalReq)

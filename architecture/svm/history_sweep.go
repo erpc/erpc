@@ -35,18 +35,23 @@ const solanaDefaultSignaturesLimit = 1000
 // upstreams. The discarded response stays the request's last-valid response, so
 // when the deeper upstream fails the client still receives this answer.
 //
-// On a consensus slot the hook runs too, with the round as the pool: a short
-// page or null status abstains as MissingData only when another participant
-// of the same round has a deeper known floor (see deeperFloorSelected). The
-// round's deepest participant votes its data, and the
-// waiveAgreementOnMissingData waiver releases the shallow participants'
-// quota. Consensus serves no last-valid response, so when that participant
-// fails after the others abstained, the round fails closed.
+// On a consensus slot the hook runs only for an upstream whose quota opts
+// into waiveAgreementOnMissingData (ExecState.MissingDataAbstainer), with the
+// round as the pool: a short page or null status abstains as MissingData only
+// when another participant of the same round has a deeper known floor (see
+// deeperFloorSelected). The round's deepest participant votes its data, and
+// the waiver releases the shallow participants' quota. Without the opt-in an
+// abstention could only hold the quota, so the answer votes as data. Consensus
+// serves no last-valid response, so when the deep participant fails after the
+// others abstained, the round fails closed.
 //
 // Errors pass through untouched: -32011 / -32020 and friends are classified by
 // the error normalizer and fail over on their own.
 func upstreamPostForward_historySweep(ctx context.Context, u common.Upstream, r *common.NormalizedRequest, rs *common.NormalizedResponse) (*common.NormalizedResponse, error) {
 	if rs == nil || r == nil {
+		return rs, nil
+	}
+	if common.IsConsensusSlot(ctx) && !r.ExecState().MissingDataAbstainer(u.Id()) {
 		return rs, nil
 	}
 	method, err := r.Method()
