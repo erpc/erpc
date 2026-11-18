@@ -61,7 +61,8 @@ type slotPaceContextKey struct{}
 // answer. A slot is idle while none of its attempts is in flight and the next
 // one waits on a timer (a hedge delay or a retry delay); it is busy otherwise.
 // The round stops waiting for slots that stay idle past its wait cap: their
-// answers could not arrive before the cap ends the round anyway.
+// answers could not arrive before the cap ends the round anyway, nor before a
+// request timeout that comes first.
 type SlotPace struct {
 	// idleUntil is when the slot's next attempt starts, in Unix nanoseconds;
 	// 0 while an attempt is in flight.

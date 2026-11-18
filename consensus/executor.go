@@ -853,8 +853,10 @@ func newRoundPace(n int) *roundPace {
 // idleThrough reports whether no slot still out can answer before deadline:
 // at least one slot is out, every slot that delivered was received, and every
 // other slot is idle until deadline or later. Ending the round then returns
-// what the wait cap returns at deadline, only sooner. A zero deadline means
-// no cap is armed: the round waits for every slot.
+// what the wait cap returns at deadline, only sooner. If the request timeout
+// falls before deadline, the cap never fires: the round returns what it holds
+// instead of a timeout error, since no slot could answer before either. A zero
+// deadline means no cap is armed: the round waits for every slot.
 func (p *roundPace) idleThrough(deadline time.Time, received int) bool {
 	if deadline.IsZero() {
 		return false
