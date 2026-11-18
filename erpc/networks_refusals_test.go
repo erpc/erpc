@@ -94,3 +94,44 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 		assert.Equal(t, int32(1), rpc2Calls.Load(), "rpc2 is asked once")
 	})
 }
+
+// An eth_simulateV1 with no block to simulate is refused with "empty input"
+// by every node: the caller gets that reason after one attempt, not after the
+// failsafe has asked every upstream again and again.
+func TestNetwork_SimulateV1_EmptyInputIsNotRetried(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	var calls atomic.Int32
+	for _, host := range []string{"rpc1.localhost", "rpc2.localhost"} {
+		host := host
+		gock.New("http://" + host).Post("").Persist().
+			Filter(func(r *http.Request) bool {
+				if r.URL.Host != host || !strings.Contains(util.SafeReadBody(r), `"eth_simulateV1"`) {
+					return false
+				}
+				calls.Add(1)
+				return true
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error":   map[string]interface{}{"code": -32000, "message": "empty input"},
+			})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
+		MaxAttempts: 6,
+		Delay:       common.Duration(10 * time.Millisecond),
+	})
+
+	_, err := network.Forward(ctx, common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"eth_simulateV1","params":[{"blockStateCalls":[]},"latest"]}`)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty input", "the caller must see the node's reason")
+	assert.Equal(t, int32(1), calls.Load(), "one attempt, then the call fails")
+}
