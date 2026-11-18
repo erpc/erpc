@@ -548,6 +548,9 @@ func TestNetworkQuery_Shim(t *testing.T) {
 	t.Run("a rate-limited shim upstream is transient, never the budget", func(t *testing.T) {
 		_, code := queryJson(t, ctx, limited, "eth_queryBlocks", `[{"fromBlock":"0x66","toBlock":"0x66"}]`)
 		assert.Equal(t, -32603, code, "a retry reads the block; -32005 would stop the client paging")
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks","params":[{"fromBlock":"0x66","toBlock":"0x66"}]}`))
+		_, err := limited.Forward(ctx, req)
+		assert.Equal(t, http.StatusTooManyRequests, determineResponseStatusCode(err), "HTTP 429 still tells the client to wait and retry")
 
 		client, gctx := queryGrpc(t, ctx, limited)
 		stream, err := client.QueryBlocks(gctx, &bdsevm.QueryBlocksRequest{FromBlock: util.StringPtr("0x66"), ToBlock: util.StringPtr("0x66")})

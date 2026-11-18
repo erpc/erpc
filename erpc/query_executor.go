@@ -495,10 +495,11 @@ func queryJsonRpcError(err error) error {
 	case errors.As(err, &paramsErr):
 		code = evm.JsonRpcCodeInvalidParams
 	case queryTransient(err):
-		// The verdict carries no cause: TranslateToJsonRpcException would
-		// find the sub-request's UpstreamsExhausted in it and answer that
-		// bundle's dominant code, -32005 for a 429. The message keeps the chain.
-		return common.NewErrJsonRpcExceptionInternal(evm.JsonRpcCodeInternalError, common.JsonRpcErrorNumber(evm.JsonRpcCodeInternalError), message, nil, nil)
+		// The cause is joined, not chained: TranslateToJsonRpcException
+		// follows a chained cause to the sub-request's UpstreamsExhausted and
+		// answers that bundle's dominant code, -32005 for a 429. A joined
+		// cause still gives the HTTP status, 429 for an upstream 429.
+		return common.NewErrJsonRpcExceptionInternal(evm.JsonRpcCodeInternalError, common.JsonRpcErrorNumber(evm.JsonRpcCodeInternalError), message, errors.Join(err), nil)
 	case errors.As(err, &baseErr):
 		code = evm.QueryErrorCode(baseErr)
 		message = baseErr.Message
