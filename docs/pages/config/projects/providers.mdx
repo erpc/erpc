@@ -313,7 +313,7 @@ Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwelli
 
 #### envio
 
-**Method allow-list injected on every upstream** (even preset static ones): `ignoreMethods: ["*"]` + 14 read-oriented methods (`eth_getLogs`, `eth_blockNumber`, `eth_getBlockByNumber`, etc.). SupportsNetwork: 61 known chain ids short-circuit true; unknown chains are live-probed via `eth_chainId` (10 s timeout; TLS error with `"failed to verify certificate"` → false). URL: `https://{chainId}.{rootDomain}[/{apiKey}]`.
+**Method allow-list injected on every upstream** (even preset static ones): `ignoreMethods: ["*"]` + 14 read-oriented methods (`eth_getLogs`, `eth_blockNumber`, `eth_getBlockByNumber`, etc.). SupportsNetwork: 83 known chain ids (Envio's active EVM chains, <https://chains.hyperquery.xyz/active_chains>) short-circuit true; unknown chains are live-probed via `eth_chainId` (10 s timeout; TLS error with `"failed to verify certificate"` → false). URL: `https://{chainId}.{rootDomain}[/{apiKey}]`.
 
 | key | required | default |
 |---|---|---|

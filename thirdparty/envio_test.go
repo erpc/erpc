@@ -28,6 +28,19 @@ func TestEnvioVendor_SupportsNetwork(t *testing.T) {
 		assert.True(t, ok)
 	})
 
+	t.Run("every active Envio EVM chain is known", func(t *testing.T) {
+		// Envio's active EVM chains: https://chains.hyperquery.xyz/active_chains
+		assert.Len(t, envioKnownSupportedChains, 83)
+		for _, id := range []int64{988, 4663, 5031, 5042, 50312, 728126428} {
+			_, ok := envioKnownSupportedChains[id]
+			assert.True(t, ok, id)
+		}
+		for _, id := range []int64{50, 51, 255, 17000, 531050104} {
+			_, ok := envioKnownSupportedChains[id]
+			assert.False(t, ok, "%d is no longer served", id)
+		}
+	})
+
 	probeCases := []struct {
 		name     string
 		settings common.VendorSettings

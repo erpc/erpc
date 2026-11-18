@@ -39,8 +39,6 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	100:        {}, // Gnosis
 	10200:      {}, // Gnosis Chiado
 	1666600000: {}, // Harmony Shard 0
-	17000:      {}, // Holesky
-	255:        {}, // Kroma
 	59144:      {}, // Linea
 	42:         {}, // Lukso
 	169:        {}, // Manta
@@ -58,8 +56,6 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	7000:       {}, // Zeta
 	324:        {}, // ZKsync
 	7777777:    {}, // Zora
-	50:         {}, // Xdc
-	51:         {}, // Xdc Testnet (Apothem)
 	2741:       {}, // Abstract
 	5115:       {}, // Citrea Testnet
 	7560:       {}, // Cyber
@@ -96,12 +92,17 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	1868:       {}, // Soneium
 	146:        {}, // Sonic
 	14601:      {}, // Sonic Testnet
-	531050104:  {}, // Sophon Testnet
 	5330:       {}, // Superseed
 	1923:       {}, // Swell
 	4217:       {}, // Tempo
 	480:        {}, // Worldchain
 	48900:      {}, // Zircuit
+	988:        {}, // Stable
+	4663:       {}, // Robinhood
+	5031:       {}, // Somnia
+	50312:      {}, // Somnia Testnet
+	5042:       {}, // Arc
+	728126428:  {}, // Tron
 }
 
 type EnvioVendor struct {
