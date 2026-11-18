@@ -16,7 +16,7 @@ import (
 )
 
 // JSON-RPC eth_query* requests to upstreams that serve MIP-16 themselves
-// (evm.queryNative): sent unchanged, with the native QueryService upstreams
+// (evm.nativeQueryMethods): sent unchanged, with the native QueryService upstreams
 // and the query shim as the fallback.
 
 const qnLogsParams = `[{"fromBlock":"0x64","toBlock":"0x66","target":"0x1","filter":{"address":"` + qtToken + `","topics":[["` + qtTopic + `"]]},` +
@@ -65,9 +65,7 @@ func mockNativeQuery(reply map[string]interface{}, queries, getLogs *atomic.Int3
 		Reply(200).JSON(qtReply(nil))
 }
 
-func queryNative() *common.EvmQueryNativeConfig {
-	return &common.EvmQueryNativeConfig{Enabled: util.BoolPtr(true)}
-}
+var qnMethods = []string{"eth_queryBlocks", "eth_queryTransactions", "eth_queryLogs"}
 
 func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 	t.Run("the request goes to the upstream unchanged and its page is returned", func(t *testing.T) {
@@ -81,7 +79,7 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		ntw := setupQueryTestNetworkWith(t, ctx, func(cfg *common.UpstreamConfig) {
-			cfg.Evm.QueryNative = queryNative()
+			cfg.Evm.NativeQueryMethods = qnMethods
 		})
 
 		result, code := queryJson(t, ctx, ntw, "eth_queryLogs", qnLogsParams)
@@ -108,7 +106,7 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		ntw := setupQueryTestNetworkWith(t, ctx, func(cfg *common.UpstreamConfig) {
-			cfg.Evm.QueryNative = queryNative()
+			cfg.Evm.NativeQueryMethods = qnMethods
 			cfg.Evm.QueryShim = &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}
 		})
 
@@ -131,7 +129,7 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		ntw := setupQueryTestNetworkWith(t, ctx, func(cfg *common.UpstreamConfig) {
-			cfg.Evm.QueryNative = queryNative()
+			cfg.Evm.NativeQueryMethods = qnMethods
 		})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryLogs","params":` + qnLogsParams + `}`))
@@ -155,7 +153,7 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		ntw := setupQueryTestNetworkWith(t, ctx, func(cfg *common.UpstreamConfig) {
-			cfg.Evm.QueryNative = queryNative()
+			cfg.Evm.NativeQueryMethods = qnMethods
 			cfg.IgnoreMethods = []string{"eth_queryLogs"}
 		})
 
@@ -164,7 +162,7 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		assert.Zero(t, queries.Load())
 	})
 
-	t.Run("allowedMethods limits the methods sent natively", func(t *testing.T) {
+	t.Run("only listed methods are sent natively", func(t *testing.T) {
 		util.ResetGock()
 		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
@@ -175,7 +173,7 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		ntw := setupQueryTestNetworkWith(t, ctx, func(cfg *common.UpstreamConfig) {
-			cfg.Evm.QueryNative = &common.EvmQueryNativeConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryBlocks"}}
+			cfg.Evm.NativeQueryMethods = []string{"eth_queryBlocks"}
 		})
 
 		_, code := queryJson(t, ctx, ntw, "eth_queryLogs", qnLogsParams)
@@ -184,12 +182,12 @@ func TestNetworkQuery_JsonRpcNative(t *testing.T) {
 	})
 }
 
-// gRPC QueryService and evm.queryNative upstreams share one selection-policy
+// gRPC QueryService and evm.nativeQueryMethods upstreams share one selection-policy
 // order on JSON-RPC calls; gRPC streams use only the gRPC ones.
 func TestQueryExecutor_NativeUpstreamOrder(t *testing.T) {
 	grpcUps := newTestQueryUpstream(t, "grpc", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{}})
 	jsonUps := newTestQueryUpstream(t, "json", nil)
-	jsonUps.Config().Evm.QueryNative = queryNative()
+	jsonUps.Config().Evm.NativeQueryMethods = qnMethods
 	plainUps := newTestQueryUpstream(t, "plain", nil)
 	ids := func(ups []common.Upstream) []string {
 		out := make([]string, len(ups))
@@ -210,20 +208,16 @@ func TestQueryExecutor_NativeUpstreamOrder(t *testing.T) {
 	assert.Equal(t, []string{"grpc", "json"}, ids(qe.nativeUpstreams(context.Background(), "eth_queryLogs")), "a gRPC upstream ranked first stays first")
 }
 
-func TestEvmQueryNativeConfig(t *testing.T) {
-	var nilCfg *common.EvmQueryNativeConfig
-	assert.False(t, nilCfg.AllowsMethod("eth_queryLogs"))
-	assert.False(t, (&common.EvmQueryNativeConfig{}).AllowsMethod("eth_queryLogs"), "disabled unless enabled is set")
-	assert.True(t, queryNative().AllowsMethod("eth_queryTraces"), "empty allowedMethods allows every method")
-	scoped := &common.EvmQueryNativeConfig{Enabled: util.BoolPtr(true), AllowedMethods: []string{"eth_queryLogs", "eth_queryBl*"}}
-	assert.True(t, scoped.AllowsMethod("eth_queryLogs"))
-	assert.True(t, scoped.AllowsMethod("eth_queryBlocks"), "wildcards match")
-	assert.False(t, scoped.AllowsMethod("eth_queryTraces"))
+func TestEvmUpstreamConfig_ServesNativeQuery(t *testing.T) {
+	var nilCfg *common.EvmUpstreamConfig
+	assert.False(t, nilCfg.ServesNativeQuery("eth_queryLogs"))
+	assert.False(t, (&common.EvmUpstreamConfig{}).ServesNativeQuery("eth_queryLogs"), "empty lists no method")
+	cfg := &common.EvmUpstreamConfig{NativeQueryMethods: []string{"eth_queryLogs", "eth_queryBl*"}}
+	assert.True(t, cfg.ServesNativeQuery("eth_queryLogs"))
+	assert.True(t, cfg.ServesNativeQuery("eth_queryBlocks"), "wildcards match")
+	assert.False(t, cfg.ServesNativeQuery("eth_queryTraces"))
 
-	copied := scoped.Copy()
-	copied.AllowedMethods[0] = "x"
-	*copied.Enabled = false
-	assert.Equal(t, "eth_queryLogs", scoped.AllowedMethods[0], "Copy is deep")
-	assert.True(t, *scoped.Enabled)
-	assert.Nil(t, nilCfg.Copy())
+	copied := cfg.Copy()
+	copied.NativeQueryMethods[0] = "x"
+	assert.Equal(t, "eth_queryLogs", cfg.NativeQueryMethods[0], "Copy is deep")
 }

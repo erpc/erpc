@@ -30,13 +30,13 @@ import (
 // falls back to the query shim, which builds pages from standard JSON-RPC
 // sub-requests sent through Network.Forward. Native upstreams are gRPC
 // QueryService upstreams and, for JSON-RPC calls, JSON-RPC upstreams that
-// serve the method themselves (evm.queryNative).
+// serve the method themselves (evm.nativeQueryMethods).
 type EvmQueryExecutor struct {
 	network         *Network
 	logger          *zerolog.Logger
 	parentRequestId interface{}
 	// jsonReq is the client's JSON-RPC eth_query* request, set by
-	// forwardQuery; jsonResp is the evm.queryNative upstream's answer to it.
+	// forwardQuery; jsonResp is the evm.nativeQueryMethods upstream's answer.
 	// Both are nil on the gRPC transport.
 	jsonReq  *common.NormalizedRequest
 	jsonResp *common.NormalizedResponse
@@ -116,7 +116,7 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 	natives := qe.nativeUpstreams(ctx, method)
 	budget, shimEnabled := qe.shimBudget(ctx, method)
 	if len(natives) == 0 && !shimEnabled {
-		return queryMethodNotServed("no upstream serves %s: none has a native QueryService, none enables evm.queryNative or evm.queryShim for it", method)
+		return queryMethodNotServed("no upstream serves %s: none has a native QueryService, none lists it in evm.nativeQueryMethods or enables evm.queryShim for it", method)
 	}
 
 	plan, err := qe.newPlan(ctx, method, req, budget)
@@ -163,8 +163,8 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 // nativeUpstreams returns, in selection-policy order (registration order
 // before the policy engine has run), the upstreams that answer method
 // themselves and accept it per their allow/ignore config: those serving
-// bds.evm.QueryService, and on a JSON-RPC call those whose evm.queryNative
-// allows it.
+// bds.evm.QueryService, and on a JSON-RPC call those whose
+// evm.nativeQueryMethods lists it.
 func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) []common.Upstream {
 	var out []common.Upstream
 	for _, u := range qe.orderedUpstreams(ctx, method) {
@@ -199,13 +199,14 @@ func (qe *EvmQueryExecutor) orderedUpstreams(ctx context.Context, method string)
 }
 
 // servesJsonRpcQuery reports whether u answers the JSON-RPC eth_query* call
-// itself (evm.queryNative). Only JSON-RPC calls can be sent to it unchanged.
+// itself (evm.nativeQueryMethods). Only JSON-RPC calls can be sent to it
+// unchanged.
 func (qe *EvmQueryExecutor) servesJsonRpcQuery(u common.Upstream, method string) bool {
 	if qe.jsonReq == nil {
 		return false
 	}
 	cfg := u.Config()
-	return cfg != nil && cfg.Evm != nil && cfg.Evm.QueryNative.AllowsMethod(method)
+	return cfg != nil && cfg.Evm.ServesNativeQuery(method)
 }
 
 // forwardJsonRpc sends the client's JSON-RPC eth_query* request unchanged to
@@ -663,7 +664,7 @@ func (n *Network) forwardQuery(ctx context.Context, req *common.NormalizedReques
 		return nil, queryJsonRpcError(err)
 	}
 	if executor.jsonResp != nil {
-		// An evm.queryNative upstream answered: its response goes back as is.
+		// An evm.nativeQueryMethods upstream answered: its response goes back as is.
 		return executor.jsonResp, nil
 	}
 	if page == nil {

@@ -1249,11 +1249,13 @@ export interface EvmUpstreamConfig {
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
   /**
-   * QueryNative marks a JSON-RPC upstream that serves MIP-16 eth_query*
-   * methods itself. JSON-RPC eth_query* calls go to it unchanged, ranked
-   * with the native QueryService upstreams, before the query shim.
+   * NativeQueryMethods lists the MIP-16 eth_query* methods this JSON-RPC
+   * upstream serves itself (wildcards allowed). On a JSON-RPC call to one of
+   * them it is a native upstream, ranked with the gRPC QueryService ones,
+   * and gets the request unchanged; the query shim is the fallback. Empty
+   * means none.
    */
-  queryNative?: EvmQueryNativeConfig;
+  nativeQueryMethods?: string[];
   /**
    * Multicall3 packs eth_calls bound for this upstream that share a block into one
    * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
@@ -1300,18 +1302,6 @@ export interface EvmQueryShimConfig {
    * block completed.
    */
   maxPageDuration?: Duration;
-}
-/**
- * EvmQueryNativeConfig marks a JSON-RPC upstream that answers MIP-16 eth_query*
- * requests itself, one page per call. On a JSON-RPC eth_query* call it is a
- * native upstream like a gRPC QueryService one: the request is sent to it
- * unchanged, in selection-policy order among the native upstreams, after the
- * range and availability checks, and the query shim is the fallback. gRPC
- * QueryService streams do not use it.
- */
-export interface EvmQueryNativeConfig {
-  enabled?: boolean;
-  allowedMethods?: string[];
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.

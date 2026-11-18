@@ -137,9 +137,9 @@ func TestEnvioVendor_GenerateConfigs(t *testing.T) {
 			assert.NotNil(t, cfgs[0].JsonRpc)
 			for _, m := range []string{"eth_queryBlocks", "eth_queryTransactions", "eth_queryLogs"} {
 				assert.Contains(t, cfgs[0].AllowMethods, m)
-				assert.True(t, cfgs[0].Evm.QueryNative.AllowsMethod(m), m)
+				assert.True(t, cfgs[0].Evm.ServesNativeQuery(m), m)
 			}
-			assert.False(t, cfgs[0].Evm.QueryNative.AllowsMethod("eth_queryTraces"), "HyperRPC does not serve it yet")
+			assert.False(t, cfgs[0].Evm.ServesNativeQuery("eth_queryTraces"), "HyperRPC does not serve it yet")
 		})
 	}
 
@@ -155,22 +155,23 @@ func TestEnvioVendor_GenerateConfigs(t *testing.T) {
 		assert.Equal(t, "https://1.rpc.hypersync.xyz/mine", cfgs[0].Endpoint)
 		assert.Equal(t, []string{"eth_getLogs"}, cfgs[0].IgnoreMethods)
 		assert.Equal(t, []string{"eth_blockNumber"}, cfgs[0].AllowMethods)
-		assert.True(t, cfgs[0].Evm.QueryNative.AllowsMethod("eth_queryLogs"), "queryNative is set, but the user's allowMethods decides")
+		assert.True(t, cfgs[0].Evm.ServesNativeQuery("eth_queryLogs"), "nativeQueryMethods is set, but the user's allowMethods decides")
 	})
 
-	t.Run("user queryNative is kept", func(t *testing.T) {
-		own := &common.EvmQueryNativeConfig{Enabled: util.BoolPtr(false)}
-		ups := &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{ChainId: 1, QueryNative: own}}
+	t.Run("user nativeQueryMethods are kept", func(t *testing.T) {
+		own := []string{"eth_queryLogs"}
+		ups := &common.UpstreamConfig{Evm: &common.EvmUpstreamConfig{ChainId: 1, NativeQueryMethods: own}}
 		cfgs, err := CreateEnvioVendor().GenerateConfigs(ctx, &logger, ups, common.VendorSettings{})
 		require.NoError(t, err)
-		assert.Same(t, own, cfgs[0].Evm.QueryNative)
+		assert.Equal(t, own, cfgs[0].Evm.NativeQueryMethods)
+		assert.False(t, cfgs[0].Evm.ServesNativeQuery("eth_queryBlocks"))
 	})
 
 	t.Run("static upstream without an evm block", func(t *testing.T) {
 		ups := &common.UpstreamConfig{Endpoint: "https://1.rpc.hypersync.xyz/mine"}
 		cfgs, err := CreateEnvioVendor().GenerateConfigs(ctx, &logger, ups, nil)
 		require.NoError(t, err)
-		assert.True(t, cfgs[0].Evm.QueryNative.AllowsMethod("eth_queryLogs"))
+		assert.True(t, cfgs[0].Evm.ServesNativeQuery("eth_queryLogs"))
 	})
 
 	t.Run("missing chain id", func(t *testing.T) {

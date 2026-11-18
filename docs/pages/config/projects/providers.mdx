@@ -320,7 +320,7 @@ Static map of 71 chains → subdomain prefixes. URL: `https://{subdomain}.dwelli
 | `rootDomain` | no | `rpc.hypersync.xyz` |
 | `apiKey` | no | `""` |
 
-**MIP-16 served natively.** The injected allow-list also admits `eth_queryBlocks`, `eth_queryTransactions` and `eth_queryLogs`, which HyperRPC serves itself on every chain, and the vendor sets `evm.queryNative` for them: HyperRPC answers JSON-RPC `eth_query*` calls itself, as a native upstream ranked with any `QueryService` upstreams, with the shim as the fallback (see the [method handlers reference](/reference/evm/method-handlers)). A user-set `allowMethods` or `evm.queryNative` is kept as is.
+**MIP-16 served natively.** The injected allow-list also admits `eth_queryBlocks`, `eth_queryTransactions` and `eth_queryLogs`, which HyperRPC serves itself on every chain, and the vendor lists them in `evm.nativeQueryMethods`: HyperRPC answers JSON-RPC `eth_query*` calls itself, as a native upstream ranked with any `QueryService` upstreams, with the shim as the fallback (see the [method handlers reference](/reference/evm/method-handlers)). A user-set `allowMethods` or `evm.nativeQueryMethods` is kept as is.
 
 <SourceLink file="thirdparty/envio.go" lines="20-258" />
 

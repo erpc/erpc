@@ -225,11 +225,8 @@ func (v *EnvioVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logge
 	if upstream.Evm == nil {
 		upstream.Evm = &common.EvmUpstreamConfig{}
 	}
-	if upstream.Evm.QueryNative == nil {
-		upstream.Evm.QueryNative = &common.EvmQueryNativeConfig{
-			Enabled:        util.BoolPtr(true),
-			AllowedMethods: append([]string(nil), envioQueryMethods...),
-		}
+	if upstream.Evm.NativeQueryMethods == nil {
+		upstream.Evm.NativeQueryMethods = append([]string(nil), envioQueryMethods...)
 	}
 
 	if upstream.Endpoint == "" {
