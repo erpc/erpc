@@ -737,12 +737,15 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		//----------------------------------------------------------------
 		// "Exceeds block gas limit": the transaction's gas limit is above the
-		// block gas limit (geth txpool ErrGasLimit). The block gas limit is
+		// block gas limit (geth txpool ErrGasLimit). Monad says "gas limit too
+		// high" for the same check on eth_call / eth_estimateGas (monad-ethcall
+		// executor: gas limit above the block header's). The block gas limit is
 		// consensus state, so every upstream refuses the same transaction:
 		// not retried, not even for eth_sendRawTransaction.
 		//----------------------------------------------------------------
 
-		if strings.Contains(ml, "exceeds block gas limit") {
+		if strings.Contains(ml, "exceeds block gas limit") ||
+			strings.Contains(ml, "gas limit too high") {
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -755,20 +758,18 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// A node's own gas cap: the call asks for more gas than this node
-		// allows for eth_call / eth_estimateGas. Monad's RPC words it
-		// "user-specified gas exceeds provider limit" or "gas limit too high"
-		// (-32000). The cap is node configuration, not chain state: another
-		// upstream may allow more, so the call still fails over across the
-		// network, but the upstream that refused is not asked again. Left as
-		// the server-side default, one such call was retried and hedged on
-		// every upstream until the failsafe gave up (about 70 attempts over 6
-		// upstreams), and the caller saw ErrUpstreamsExhausted instead of the
-		// node's reason.
+		// "User-specified gas exceeds provider limit": the call asks for more
+		// gas than this node allows for eth_call / eth_estimateGas (Monad's
+		// RPC wording for its per-provider gas cap, -32000). The cap is node
+		// configuration, not chain state: another upstream may allow more, so
+		// the call still fails over across the network, but the upstream that
+		// refused is not asked again. Left as the server-side default, one
+		// such call was retried and hedged on every upstream until the
+		// failsafe gave up (about 70 attempts over 6 upstreams), and the
+		// caller saw ErrUpstreamsExhausted instead of the node's reason.
 		//----------------------------------------------------------------
 
-		if strings.Contains(ml, "gas exceeds provider limit") ||
-			strings.Contains(ml, "gas limit too high") {
+		if strings.Contains(ml, "gas exceeds provider limit") {
 			execErr := common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -894,8 +895,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		//----------------------------------------------------------------
 		// "empty input": eth_simulateV1 with no block to simulate
-		// (`blockStateCalls: []`). go-ethereum, which defines the method,
-		// refuses it as invalid params; Monad sends the same words as -32000.
+		// (`blockStateCalls: []`). go-ethereum, Erigon and Nethermind refuse
+		// it with these words; Monad upstreams answer it as -32000.
 		// The request itself is invalid, so no upstream can answer it: not
 		// retried. Left as the server-side default, each such call was asked
 		// about 36 times over 3 upstreams before the caller saw
