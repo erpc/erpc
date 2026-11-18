@@ -169,7 +169,7 @@ func (e *executor) Run(
 	if st := originalReq.ExecState(); st != nil {
 		keep := false
 		if anyEmptyOutsideRetentionOptIn(e.config.requiredParticipants) {
-			keep = e.emptyWaiverHasBlock(ctx, originalReq)
+			keep = e.emptyWaiverHasBlock(ctx, originalReq, upstreamsHistoryEvidence(originalReq.Upstreams()))
 		}
 		st.SetKeepEmptyConsensusSlot(keep)
 	}
@@ -1326,27 +1326,24 @@ func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis
 	return reasons
 }
 
-// chainHead returns the observed EVM "latest" block for the round, or 0 when
-// unknown. The request's Head.Latest is used only when servedTip.quorum is
-// "majority" — that value is majority-corroborated across the request's
-// voters, including ones that did not participate in this round. Default
-// quorum (2) can still be a single voter's report on small pools, so one
-// inflator can raise it; trusting that for this proof would reopen the
-// fabrication hole the poller fallback closes. When majority quorum is off,
-// or the Head is still unknown, fall back to the MIN poller latest among
-// this round's own EVM participants (at least two distinct upstreams with a
-// positive latest, at least one outside the winning group). A zero head from
-// both sources means the empty-outside-retention waiver cannot prove a block
-// is outside range, so it holds the quota — fail closed.
+// chainHead returns the observed "latest" block for the round, or 0 when
+// unknown. The chain's corroborated head comes first: a value a quorum of the
+// network's voters backs, including ones that did not participate in this
+// round (EVM: only under servedTip.quorum "majority", since the default
+// quorum (2) can still be one voter's report on a small pool). When it is
+// unknown, fall back to the MIN latest among this round's own participants
+// (at least two distinct upstreams with a positive latest, at least one
+// outside the winning group). A zero head from both sources means the
+// empty-outside-retention waiver cannot prove a block is outside range, so it
+// holds the quota — fail closed.
 func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis, winner *responseGroup) int64 {
-	if analysis == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil {
 		return 0
 	}
 	if req := analysis.originalRequest; req != nil {
-		if net := req.Network(); net != nil && majorityServedLatestEnabled(net) {
-			if head := common.EvmHeadOf(net, ctx, req).Latest; head > 0 {
-				return head
-			}
+		if head := ev.CorroboratedHead(ctx, req); head > 0 {
+			return head
 		}
 	}
 	var agreeing []*execResult
@@ -1354,19 +1351,6 @@ func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis, w
 		agreeing = e.agreeingResults(analysis, winner)
 	}
 	return participantLatestBlock(analysis, agreeing)
-}
-
-// majorityServedLatestEnabled reports whether this network's served tip uses
-// quorum "majority". Nil config / default quorum returns false.
-func majorityServedLatestEnabled(net common.Network) bool {
-	if net == nil {
-		return false
-	}
-	cfg := net.Config()
-	if cfg == nil || cfg.Evm == nil || cfg.Evm.ServedTip == nil {
-		return false
-	}
-	return cfg.Evm.ServedTip.Quorum == common.ServedTipQuorumMajority
 }
 
 // logEmptyWaiverUnproven emits the fail-closed diagnostic when the
@@ -1449,7 +1433,8 @@ func (e *executor) logEmptyWaiverUnproven(ctx context.Context, lg *zerolog.Logge
 // (across any empty-outside-retention opted-in quota) expose a finite
 // availability lower bound, and the total number of such matching empties.
 func countFiniteAvailLowerBounds(analysis *consensusAnalysis, reqs []*common.ConsensusRequiredParticipant) (finite int, matchingEmpties int) {
-	if analysis == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil {
 		return 0, 0
 	}
 	seen := make(map[string]struct{})
@@ -1474,12 +1459,7 @@ func countFiniteAvailLowerBounds(analysis *consensusAnalysis, reqs []*common.Con
 				}
 				seen[id] = struct{}{}
 				matchingEmpties++
-				eu, ok := r.Upstream.(common.EvmUpstream)
-				if !ok {
-					continue
-				}
-				lower, _ := eu.EvmBlockAvailabilityBounds()
-				if lower != math.MinInt64 {
+				if ev.UpstreamLowerBound(r.Upstream) != math.MinInt64 {
 					finite++
 				}
 			}
@@ -1498,16 +1478,17 @@ const (
 	waiverUnprovenReasonRoundIncomplete      = "round_incomplete"
 )
 
-// participantLatestBlock is the chain-head fallback when the network served
-// tip is 0. It requires at least two distinct EVM participants to have reported
-// a positive latest, at least one of them outside the winning group, then takes
-// the MIN. Neither a single inflator nor the winning group alone can raise the
-// head the winner's own block is judged against. Returns 0 (fail closed)
-// otherwise, e.g. when the only non-winners are pruned internals without a
-// poller; operators then need servedTip quorum "majority" or a finite
-// blockAvailability lower bound on those internals.
+// participantLatestBlock is the chain-head fallback when the network's
+// corroborated head is 0. It requires at least two distinct participants to
+// have reported a positive latest, at least one of them outside the winning
+// group, then takes the MIN. Neither a single inflator nor the winning group
+// alone can raise the head the winner's own block is judged against. Returns
+// 0 (fail closed) otherwise, e.g. when the only non-winners are pruned
+// internals without a poller; operators then need servedTip quorum
+// "majority" or a finite blockAvailability lower bound on those internals.
 func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult) int64 {
-	if analysis == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil {
 		return 0
 	}
 	winners := make(map[string]struct{}, len(agreeing))
@@ -1533,11 +1514,7 @@ func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult)
 				continue
 			}
 			seen[id] = struct{}{}
-			eu, ok := r.Upstream.(common.EvmUpstream)
-			if !ok {
-				continue
-			}
-			b := eu.EvmEffectiveLatestBlock()
+			b := ev.UpstreamLatestBlock(r.Upstream)
 			if b <= 0 {
 				continue
 			}
@@ -1562,10 +1539,11 @@ func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult)
 // request names no concrete block (a hash lookup, a tag, an omitted range
 // bound); waiverBlock then needs a non-winner to confirm the answer's block.
 func requestBlock(ctx context.Context, analysis *consensusAnalysis) *big.Int {
-	if analysis == nil || analysis.originalRequest == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil || analysis.originalRequest == nil {
 		return nil
 	}
-	bn, ok := common.EvmRequestedBlockNumber(ctx, analysis.originalRequest)
+	bn, ok := ev.RequestedBlock(ctx, analysis.originalRequest)
 	if !ok {
 		return nil
 	}
@@ -1618,7 +1596,7 @@ func emptyOutsideRetentionWaivedQuotas(analysis *consensusAnalysis, reqs []*comm
 		// back to chain-head depth when that preferred evidence is unavailable.
 		// A finite bound that places the requested block inside the served range
 		// is positive contradictory evidence — never override it with head depth.
-		proves, contradicts := availabilityBoundProofState(empties, reqBlock)
+		proves, contradicts := availabilityBoundProofState(analysis.historyEvidence(), empties, reqBlock)
 		if proves || (!contradicts && chainHeadProvesOutsideRetention(reqBlock, head, req.RetentionBlocks)) {
 			if waived == nil {
 				waived = make(map[*common.ConsensusRequiredParticipant]struct{}, len(reqs))
@@ -1682,8 +1660,8 @@ func anyEmptyOutsideRetentionAbstention(analysis *consensusAnalysis, reqs []*com
 //   - contradicts: at least one finite lower has reqBlock >= lower (in range)
 //
 // When neither (bounds unavailable), the caller may fall back to chain-head depth.
-func availabilityBoundProofState(matching []*execResult, reqBlock *big.Int) (proves, contradicts bool) {
-	if reqBlock == nil || len(matching) == 0 {
+func availabilityBoundProofState(ev common.HistoryEvidence, matching []*execResult, reqBlock *big.Int) (proves, contradicts bool) {
+	if ev == nil || reqBlock == nil || len(matching) == 0 {
 		return false, false
 	}
 	allFiniteProve := true
@@ -1692,11 +1670,7 @@ func availabilityBoundProofState(matching []*execResult, reqBlock *big.Int) (pro
 		if r == nil || r.Upstream == nil {
 			return false, false
 		}
-		eu, ok := r.Upstream.(common.EvmUpstream)
-		if !ok {
-			return false, false
-		}
-		lower, _ := eu.EvmBlockAvailabilityBounds()
+		lower := ev.UpstreamLowerBound(r.Upstream)
 		if lower == math.MinInt64 {
 			allFiniteProve = false
 			continue
