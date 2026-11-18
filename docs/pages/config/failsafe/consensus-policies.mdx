@@ -393,6 +393,7 @@ The waiver is safe by construction:
 - **Round-complete only.** While any response can still arrive, a slower tagged upstream might return data, so the waiver holds off and the dispute stays provisional. Wait-cap cancel alone does **not** seal the bag — a result may already be buffered or the upstream call may ignore cancellation — so waivers stay fail-closed on a partial wait-capped collection.
 - **Never-decisive-masking.** The waiver only changes the outcome when releasing the entry makes the winner decisive; it can't hide a real disagreement.
 - **Floor enforced.** The `standard-waive-missing` policy keeps a never-waivable external floor (`minAgreement: 2`) — even with the internal quota waived, two externals must still agree.
+- **SVM short history pages.** A Solana node that pruned history answers `getSignaturesForAddress` with a short page, and `getSignatureStatuses` with `searchTransactionHistory` with `null`, both as success. On a consensus slot the history sweep turns that answer into `ErrEndpointMissingData` only when the upstream's quota opts into this waiver and a deeper participant in the same round holds the address's history (known lower floor). Otherwise the page stays a data vote.
 
 **Empty-outside-retention waiver (v1.1).** Some upstreams answer with an *empty*
 result (JSON `null`, `[]`, `{}`) rather than a missing-data error when asked for
@@ -408,23 +409,30 @@ Sibling errors do not
 block the empty count; a matching non-empty result holds the quota. Proof order:
 
 1. **Availability lower bound (preferred).** Each matching empty upstream must
-   expose a finite `EvmBlockAvailabilityBounds` lower bound (typically
-   `poller.latest − latestBlockMinus` from `blockAvailability.lower`) and
-   `requestedBlock < lower` for every such upstream. No network `servedTip` needed —
-   this is the reliable `head − retention` signal when internals declare retention
-   via availability bounds. Align `latestBlockMinus` with `retentionBlocks`.
-2. **Chain-head fallback.** Else `head - requestedBlock > retentionBlocks`, where
+   expose a finite lower bound (EVM: `poller.latest − latestBlockMinus` from
+   `blockAvailability.lower`; SVM: the slot bound from `svm.blockAvailability`)
+   and `requestedBlock < lower` for every such upstream. No network `servedTip`
+   needed — this is the reliable `head − retention` signal when internals declare
+   retention via availability bounds. Align `latestBlockMinus` with `retentionBlocks`.
+2. **Chain-head fallback.** Else `head - requestedBlock > retentionBlocks`. On EVM,
    `head` is the request's head `Latest` when `evm.servedTip.quorum` is
    `"majority"`, otherwise the min corroborated poller latest among this
-   round's EVM participants (≥2 positive latests; a single poller fails closed).
-   A head under the default quorum is not trusted.
+   round's participants (≥2 positive latests; a single poller fails closed).
+   On SVM, `head` is the majority latest slot of the network, else the same
+   min corroborated participant latest. A head under the default EVM quorum is
+   not trusted.
+
+The requested block is the block number or slot the request names: EVM
+`eth_getBlockByNumber` and other block-tagged reads; SVM `getBlock`,
+`getBlockTime`, and the end slot of `getBlocks`. `getBlocksWithLimit` and a
+`getBlocks` without an end run to the tip and name no highest slot.
 
 It shares the MissingData waiver's safety properties (`minAgreement` threshold,
 round-complete, never-decisive-masking, floor enforced) and adds a **block proof**
 as its anti-fabrication guard:
 
 - **Recent nulls never waive.** An empty result on a block *inside* retention / bounds fails the proof and holds the quota → dispute. So correlated externals returning `null` on recent data an internal should still serve cannot outvote that internal — the waiver only tolerates emptiness the retention model *predicts*.
-- **Hash lookups need a confirmer outside the winners.** `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockByHash` and other hash lookups name no block, so the waiver reads the block number and hash the agreeing answer names. The agreeing upstreams cannot vouch for that claim themselves: eRPC fetches `eth_getBlockByNumber(<n>, false)` from the round's other upstreams (abstainers first, then the rest, straight to the upstream with no retry or hedge). The first one that returns the block decides: its hash must match the answer's and the requested hash must be that block or one of its transactions. A mismatch fails closed at once; a `null` or an error moves on to the next. A node that pruned only its tx index still serves the block, so a geth internal can confirm its own pruned tx. When no other upstream holds the block, the quota holds → dispute. Requests that name a tag (`latest`) carry no proof → dispute.
+- **Hash lookups need a confirmer outside the winners.** `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockByHash`, other hash lookups, and SVM `getTransaction` name no block, so the waiver reads the block the agreeing answer names (EVM: number and hash; SVM: the response `slot`). The agreeing upstreams cannot vouch for that claim themselves. eRPC fetches the block (EVM `eth_getBlockByNumber(<n>, false)`; SVM `getBlock(<slot>)` with `transactionDetails: "signatures"`) straight from the upstream, with no retry or hedge. It asks the round's upstreams that answered without an error first (abstainers of an opted-in quota before the rest), then the request's upstreams outside the round. An upstream whose declared lower bound is above the block is skipped. The first one that returns the block decides: on EVM its hash must match the answer's and the requested hash must be that block or one of its transactions; on SVM the requested signature must be in the block. A mismatch fails closed at once; a `null` or an error moves on to the next. A node that pruned only its tx index still serves the block, so a geth internal can confirm its own pruned tx. When no other upstream holds the block, the quota holds → dispute. Requests that name a tag (`latest`) carry no proof → dispute.
 - **`blockEvidenceFields` trusts the winners (unsafe opt-in).** When every other upstream pruned the block too, nothing can confirm it. A policy that lists the method in `blockEvidenceFields` then judges retention against the block the agreeing answer names at those paths. The waiver no longer checks that claim: two agreeing upstreams can invent a tx or receipt in an old block and get it served. Use it only where those upstreams are already trusted to answer old data on their own. A non-winner that returns a different block still fails the round closed.
 - **Fail-closed without proof.** If neither avail-bound nor chain-head proof can be evaluated (no block; matching empties lack finite lower bounds and no majority tip or fewer than two participant pollers), the quota holds — the round disputes rather than waiving on faith. That case logs at info (warn for `block_contradicted`) and increments `erpc_consensus_composition_waiver_unproven_total{reason}` (`no_request_block`, `block_unconfirmed`, `block_contradicted`, `no_avail_bound`, or `no_head`). Mid-round deferral (responses still outstanding, collection not sealed) logs at debug only — it is not a metric.
 - **Config-forced proof.** `retentionBlocks > 0` is mandatory when opting in (startup-enforced), so an operator cannot enable the waiver in a shape where it silently never fires.
