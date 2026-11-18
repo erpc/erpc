@@ -2,7 +2,9 @@ package thirdparty
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -162,6 +164,10 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 		if strings.Contains(err.Error(), "failed to verify certificate") {
 			return false, nil
 		}
+		// A chain Envio does not serve has no {chainId}.{rootDomain} host.
+		if isHostNotFound(err) {
+			return false, nil
+		}
 		return false, err
 	}
 
@@ -277,4 +283,14 @@ func (v *EnvioVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Log
 	// Store the client for this chain ID
 	v.headlessClients.Store(chainId, client)
 	return client, nil
+}
+
+// isHostNotFound reports whether err is a DNS answer that the host does not
+// exist. Temporary DNS failures are not.
+func isHostNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsNotFound
+	}
+	return strings.Contains(err.Error(), "no such host")
 }

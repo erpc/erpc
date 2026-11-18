@@ -3,6 +3,7 @@ package thirdparty
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -92,6 +93,26 @@ func TestEnvioVendor_SupportsNetwork(t *testing.T) {
 			ReplyError(errors.New("tls: failed to verify certificate: x509: certificate is valid for other.host"))
 		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
 		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+
+	t.Run("unknown host means unsupported", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().
+			ReplyError(&net.DNSError{Err: "no such host", Name: "999888.rpc.hypersync.xyz", IsNotFound: true})
+		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+
+	t.Run("temporary DNS failure is an error", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().
+			ReplyError(&net.DNSError{Err: "server misbehaving", Name: "999888.rpc.hypersync.xyz", IsTemporary: true})
+		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
+		assert.Error(t, err)
 		assert.False(t, ok)
 	})
 
