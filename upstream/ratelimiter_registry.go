@@ -35,9 +35,13 @@ type RateLimitersRegistry struct {
 	cfg             *common.RateLimiterConfig
 	budgetsLimiters sync.Map
 	envoyCache      limiter.RateLimitCache
-	statsManager    stats.Manager
-	cacheMu         sync.RWMutex
-	initializer     *util.Initializer
+	// overLimitCache is the same freecache passed to the envoy FixedRateLimitCache.
+	// Envoy cache keys omit the limit value, so a raise via AdjustBudget must
+	// clear stale OVER_LIMIT entries or they deny until the window ends.
+	overLimitCache *freecache.Cache
+	statsManager   stats.Manager
+	cacheMu        sync.RWMutex
+	initializer    *util.Initializer
 }
 
 func NewRateLimitersRegistry(appCtx context.Context, cfg *common.RateLimiterConfig, logger *zerolog.Logger) (*RateLimitersRegistry, error) {
@@ -144,6 +148,7 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 		)
 	}
 
+	overLimitCache := freecache.NewCache(overLimitCacheBytes)
 	cache := redis.NewFixedRateLimitCacheImpl(
 		client,
 		nil,
@@ -153,7 +158,7 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 		5,
 		// Remembers keys over their limit until the window ends, so denials
 		// skip Redis. Eviction only costs a Redis call.
-		freecache.NewCache(overLimitCacheBytes),
+		overLimitCache,
 		defaultNearLimitRatio(r.cfg.Store.NearLimitRatio),
 		defaultCacheKeyPrefix(r.cfg.Store.CacheKeyPrefix),
 		mgr,
@@ -165,6 +170,7 @@ func (r *RateLimitersRegistry) connectRedisTask(ctx context.Context) (err error)
 	// The statsManager created in bootstrap() is sufficient and identical.
 	r.cacheMu.Lock()
 	r.envoyCache = cache
+	r.overLimitCache = overLimitCache
 	r.cacheMu.Unlock()
 
 	r.logger.Info().Str("url", util.RedactEndpoint(url)).Msg("successfully connected to Redis for rate limiting")
@@ -251,6 +257,18 @@ func (r *RateLimitersRegistry) GetCache() limiter.RateLimitCache {
 	r.cacheMu.RLock()
 	defer r.cacheMu.RUnlock()
 	return r.envoyCache
+}
+
+// clearOverLimitCache drops every locally cached OVER_LIMIT key. Called when
+// maxCount increases: the Redis counter key is unchanged (by design) but the
+// freecache entry would keep denying until the window ended.
+func (r *RateLimitersRegistry) clearOverLimitCache() {
+	r.cacheMu.RLock()
+	c := r.overLimitCache
+	r.cacheMu.RUnlock()
+	if c != nil {
+		c.Clear()
+	}
 }
 
 func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, error) {

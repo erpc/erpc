@@ -112,6 +112,12 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint32
 	b.logger.Warn().Str("method", rule.Config.Method).Msgf("adjusting rate limiter budget from: %d to: %d", prev, newMaxCount)
 	rule.Config.MaxCount = newMaxCount
 	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString(), rule.Config.CountModeString()).Set(float64(newMaxCount))
+	// Envoy over-limit cache keys omit the limit value; a raise would otherwise
+	// keep denying from freecache until the window ends. Clear the whole cache
+	// (shared across budgets on this replica) — next checks reconsult Redis.
+	if newMaxCount > prev && b.registry != nil {
+		b.registry.clearOverLimitCache()
+	}
 	return nil
 }
 
@@ -156,6 +162,9 @@ func (b *RateLimiterBudget) AdjustBudgetByFactor(rule *RateLimitRule, factor flo
 
 	rule.Config.MaxCount = next
 	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method, rule.Config.ScopeString(), rule.Config.CountModeString()).Set(float64(next))
+	if next > prev && b.registry != nil {
+		b.registry.clearOverLimitCache()
+	}
 	return prev, next, true
 }
 
