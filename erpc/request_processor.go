@@ -143,7 +143,7 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	}
 
 	executor := NewEvmQueryExecutor(network, &lg)
-	executor.parentRequestId = nq.ID()
+	executor.parent = nq
 	executor.projectShimPages = true
 	err = executor.Execute(ctx, queryReq, onPage)
 
