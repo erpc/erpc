@@ -68,7 +68,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install 
 FROM alpine:latest@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS symlink
 RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
 
-FROM debian:bookworm-slim AS certificates
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS certificates
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2 && \
