@@ -590,7 +590,7 @@ Top-20 operational metrics:
 | `erpc_consensus_misbehavior_detected_total` | counter | project, network, upstream, category, finality, response_type, larger_than_consensus | Upstream returned data diverging from consensus; `response_type` ∈ NonEmpty/Empty/ConsensusError/InfrastructureError |
 | `erpc_consensus_total` | counter | project, network, category, outcome, finality | Consensus round completed; `outcome` ∈ success/consensus_on_error/dispute/low_participants/generic_error/caller_abandoned |
 | `erpc_consensus_short_circuit_total` | counter | project, network, category, reason, finality | Round short-circuited; `reason` ∈ sendrawtx_first_success/consensus_error_threshold/unassailable_lead |
-| `erpc_consensus_wait_capped_total` | counter | project, network, category, trigger, finality | Round resolved early by timer; `trigger` ∈ result/empty |
+| `erpc_consensus_wait_capped_total` | counter | project, network, category, trigger, finality | Round resolved early by timer; `trigger` ∈ result/empty/idle (idle: every slot still out waits on a timer past the cap) |
 | `erpc_network_retry_attempt_total` | counter | project, network, category, reason, finality | Network-scope retry; `reason` ∈ empty_result/pending_tx/retryable_error/block_unavailable/missing_data |
 | `erpc_network_data_unavailable_wait_seconds` | LabeledHistogram | project, network, category, reason, finality | Catch-up delay before data-not-yet-available retry |
 | `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream pre-forward checks decided to skip this attempt |
