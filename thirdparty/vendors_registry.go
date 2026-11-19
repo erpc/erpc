@@ -35,6 +35,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateSatelinkVendor())
 	r.Register(CreateSpectrumVendor())
 	r.Register(CreateWillowVendor())
+	r.Register(CreateThymeVendor())
 	return r
 }
 

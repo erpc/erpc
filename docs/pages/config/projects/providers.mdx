@@ -115,7 +115,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 
 **Vendor chain-support strategies.** Vendors answer "do you support this network?" in four ways:
 
-1. **Static in-code map** (ankr, blastapi, blockdaemon, blockpi, dwellir, infura, llama, onfinality, etherspot, spectrum): instant, no I/O, works on cold start.
+1. **Static in-code map** (ankr, blastapi, blockdaemon, blockpi, dwellir, infura, llama, onfinality, etherspot, spectrum, thyme): instant, no I/O, works on cold start.
 2. **Remote catalog with static fallback** (alchemy — 134-chain map; drpc — 150-chain map; willow — 7-chain map): fetches on warm paths; cold start falls back to the built-in map so the first request never blocks on I/O.
 3. **Remote catalog, no fallback** (conduit, superchain, tenderly, quicknode, chainstack, repository): cold start returns the retryable sentinel `ErrRemoteCacheCold`; the initializer retries with 3 s → 130 s exponential backoff until the first fetch lands.
 4. **Live `eth_chainId` probe** (envio for unknown chains, erpc, pimlico for unknown chains, routemesh, thirdweb): sends a real JSON-RPC call to the candidate endpoint with a 10 s timeout; probe clients are cached per chain id in `sync.Map`.
@@ -135,7 +135,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | field | type | default | behavior / footguns |
 |---|---|---|---|
 | `id` | string | vendor name (`p.Id = p.Vendor`) | Unique handle; appears in `<PROVIDER>` placeholder and bootstrap task names `network/<networkId>/provider/<id>`. Shorthand-converted providers get `<vendor>-<n>` (process-wide counter). No duplicate-id check — two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="common/defaults.go" lines="1474-1476" /> <SourceLink file="util/ids.go" lines="32-41" /> |
-| `vendor` | string | — (required) | Must exactly match one of 26 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon, satelink, spectrum, willow`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-37" /> |
+| `vendor` | string | — (required) | Must exactly match one of 27 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon, satelink, spectrum, willow, thyme`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-38" /> |
 | `settings` | `map[string]any` (VendorSettings) | `nil` | Free-form, vendor-interpreted. Redacted in JSON/YAML marshaling (never echoed in admin dump). See per-vendor tables below. <SourceLink file="common/config.go" lines="667-700" /> |
 | `settings.creditUnits` | `map[string]int64` | `nil` | Vendor-generic (works for every vendor): per-method **credit-unit** overrides for the cost accounting behind `X-ERPC-Credits` (`server.costHeaders`). Merged per method over the vendor's built-in `CreditUnitsProvider` table (alchemy and quicknode ship their public pricing); `"*"` = the vendor's fallback for unlisted methods. Vendors with no table default to a flat **1 credit per request** — set `"*": 0` to opt a vendor out entirely. Overriding one method keeps the rest; copied onto every upstream the provider generates. <SourceLink file="thirdparty/provider.go" lines="59-77" /> |
 | `onlyNetworks` | `[]string` | `nil` | Exhaustive allow-list (`evm:<positiveInt>` format, validated). If set, vendor's own `SupportsNetwork` is **not** called. Mutually exclusive with `ignoreNetworks` (validation error). <SourceLink file="thirdparty/provider.go" lines="42-49" /> |
@@ -173,6 +173,8 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | `superchain://<spec>` | `{registryUrl: host+path}` |
 | `tenderly://<key>` | `{apiKey: key}` |
 | `thirdweb://<clientId>` | `{clientId: host}` |
+| `thyme://<key>` | `{apiKey: key}` |
+| `thyme://public` | `{apiKey: "public"}`: keyless public endpoint, no key |
 | `willow://<key>` | `{apiKey: key}` |
 | unknown scheme | config-load error: `unsupported vendor name in vendor.settings: <scheme>` |
 
@@ -464,6 +466,16 @@ Remote catalog (default `https://api.willow.tech/v1/rpc/chains`) with a 7-chain 
 | `recheckInterval` | no | `24h` |
 
 <SourceLink file="thirdparty/willow.go" lines="17-191" />
+
+#### thyme
+
+Static 7-chain map (1, 10, 56, 137, 1301, 80002, 11155111) to subdomains of `rpc.thyme.sh`. URL: `https://{subdomain}.rpc.thyme.sh/{escapedKey}`; `apiKey: public` selects the keyless public endpoint (`/public`: per-IP rate limit, a subset of methods, capped `eth_getLogs` ranges). A missing `apiKey` is an error rather than a silent switch to the public endpoint. An unknown chain id is an error. No vendor error mapping: the generic normalizer maps every Thyme error, including the public endpoint's refusals (`-32601` for a method it does not serve, `eth_getLogs is limited to …` for a range over its cap of 5,000 blocks, or 1,000 without an address or topic, which `getLogsSplitOnError` halves once; set the upstream's `getLogsAutoSplittingRangeThreshold` to `5000` to split wider ranges up front) and the gateway's HTTP 402 when a key's plan is suspended or used up (pinned in `thyme_test.go`, <SourceLink file="thirdparty/thyme_test.go" lines="55-108" />). OwnsUpstream: scheme prefixes or an endpoint containing `.rpc.thyme.sh/`.
+
+| key | required | default |
+|---|---|---|
+| `apiKey` | yes (`public` for the keyless endpoint) | — |
+
+<SourceLink file="thirdparty/thyme.go" lines="15-98" />
 
 ### Worked examples
 
