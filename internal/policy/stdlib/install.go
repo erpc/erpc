@@ -8,6 +8,7 @@ package stdlib
 import (
 	_ "embed"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -25,19 +26,32 @@ func Install(rt *common.Runtime) error {
 	vm := rt.VM()
 
 	// 1. Module-level globals exposed to the JS side.
-	if err := vm.Set("durationMs", func(d sobek.Value) int64 {
+	//
+	// durationMs answers how many milliseconds a value means, or null when it
+	// cannot read one. Null is not zero: a zero cooldown is a real instruction,
+	// and an unreadable value is not. The caller decides what an unreadable
+	// value costs, because only the caller knows its own default.
+	if err := vm.Set("durationMs", func(d sobek.Value) sobek.Value {
 		if d == nil || sobek.IsUndefined(d) || sobek.IsNull(d) {
-			return 0
+			return sobek.Null()
 		}
 		switch v := d.Export().(type) {
 		case string:
-			return parseDurationMs(v)
+			if ms, ok := parseDurationMs(v); ok {
+				return vm.ToValue(ms)
+			}
+			return sobek.Null()
 		case int64:
-			return v
+			return vm.ToValue(v)
 		case float64:
-			return int64(v)
+			// NaN and +/-Inf are JS numbers (durationMs(a / b) with b == 0).
+			// Their int64 conversion is undefined in Go, so they are unreadable.
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return sobek.Null()
+			}
+			return vm.ToValue(int64(v))
 		default:
-			return 0
+			return sobek.Null()
 		}
 	}); err != nil {
 		return err
@@ -110,15 +124,16 @@ func Install(rt *common.Runtime) error {
 	return nil
 }
 
-// parseDurationMs accepts the duration formats common across the eRPC
-// config (1s, 100ms, 5m, 1h, plus bare integer ms). On any failure, 0.
-func parseDurationMs(s string) int64 {
+// parseDurationMs accepts the duration strings common across the eRPC
+// config (1s, 100ms, 5m, 1h). The second return is false when the string
+// names no duration: an empty string, or one time.ParseDuration refuses.
+func parseDurationMs(s string) (int64, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0
+		return 0, false
 	}
 	if d, err := time.ParseDuration(s); err == nil {
-		return d.Milliseconds()
+		return d.Milliseconds(), true
 	}
-	return 0
+	return 0, false
 }
