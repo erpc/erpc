@@ -479,9 +479,10 @@ func TestCovDefaults_NetworkSetDefaults_NetworkDefaultsPrecedence(t *testing.T) 
 
 func TestCovDefaults_NetworkSetDefaults_ArchitectureAndSvm(t *testing.T) {
 	lag := int64(0)
+	zeroDur := Duration(0)
 	defaults := &NetworkDefaults{
 		Evm: &EvmNetworkConfig{GetLogsMaxAllowedRange: 5},
-		Svm: &SvmNetworkConfig{Chain: "fogo", Commitment: "confirmed", StatePollerDebounce: covDefaultsDur(time.Second), MaxFinalizedSlotLag: &lag, EnforceBlockAvailability: util.BoolPtr(false), Cluster: "ignored"},
+		Svm: &SvmNetworkConfig{Chain: "fogo", Commitment: "confirmed", StatePollerDebounce: covDefaultsDur(time.Second), StatePollerIdleAfter: &zeroDur, MaxFinalizedSlotLag: &lag, EnforceBlockAvailability: util.BoolPtr(false), Cluster: "ignored"},
 	}
 
 	evm := &NetworkConfig{}
@@ -504,11 +505,13 @@ func TestCovDefaults_NetworkSetDefaults_ArchitectureAndSvm(t *testing.T) {
 	assert.Equal(t, covDefaultsDur(time.Second), svm2.Svm.StatePollerDebounce)
 	assert.Equal(t, int64(0), *svm2.Svm.MaxFinalizedSlotLag, "explicit zero lag in defaults is kept")
 	assert.NotSame(t, defaults.Svm.MaxFinalizedSlotLag, svm2.Svm.MaxFinalizedSlotLag)
+	assert.Equal(t, Duration(0), *svm2.Svm.StatePollerIdleAfter, "explicit zero idle window in defaults is kept: poll always")
 	assert.False(t, *svm2.Svm.EnforceBlockAvailability)
 
 	bare := &NetworkConfig{Architecture: ArchitectureSvm}
 	require.NoError(t, bare.SetDefaults(nil, nil))
 	assert.Equal(t, MaxShredInsertSlotLagThreshold, *bare.Svm.MaxFinalizedSlotLag)
+	assert.Equal(t, Duration(60*time.Second), *bare.Svm.StatePollerIdleAfter)
 
 	bareEvm := &NetworkConfig{Architecture: "evm"}
 	require.NoError(t, bareEvm.SetDefaults(nil, nil))

@@ -2939,8 +2939,8 @@ type SvmNetworkConfig struct {
 	// StatePollerIdleAfter stops an upstream's state poller once no request
 	// routed on the network for this long; the next request polls at once
 	// and waits for that poll, at most one statePollerDebounce. 0 polls
-	// always. Default: 60s.
-	StatePollerIdleAfter Duration `yaml:"statePollerIdleAfter,omitempty" json:"statePollerIdleAfter" tstype:"Duration"`
+	// always; unset is 60s (pointer, so the two differ).
+	StatePollerIdleAfter *Duration `yaml:"statePollerIdleAfter,omitempty" json:"statePollerIdleAfter" tstype:"Duration"`
 
 	// SkipProcessedSlotProbe skips the state poller's getSlot(processed)
 	// probe and lets the finalized probe feed LatestSlot. Default false
