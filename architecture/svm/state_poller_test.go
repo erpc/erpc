@@ -876,6 +876,61 @@ func TestSvmStatePoller_Poll_DebouncesWithinInterval(t *testing.T) {
 	}
 }
 
+// Idle gate across a full cycle: the first request after an idle window
+// polls once however many requests arrive together, a busy network polls on
+// ticks, and an idle one sends nothing until the next request.
+func TestSvmStatePoller_IdleGate_PollsOnDemandOnly(t *testing.T) {
+	t.Parallel()
+	up := newScriptedUpstream()
+	scriptAllProbes(up)
+	p := newPollerWithUpstream(t, up)
+	p.SetDebounceInterval(10 * time.Millisecond)
+	p.SetIdleAfter(100 * time.Millisecond)
+	calls := func() int { return up.callCount("getSlot:processed") }
+	wait := func(ch <-chan struct{}) {
+		t.Helper()
+		require.NotNil(t, ch, "idle edge must hand back a channel to wait on")
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("idle edge never closed")
+		}
+	}
+
+	// Never-demanded poller is idle: a tick sends nothing.
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 0, calls())
+
+	// Two requests at the idle edge share one poll, and both see its views.
+	a, b := p.MarkDemand(), p.MarkDemand()
+	wait(a)
+	wait(b)
+	require.Equal(t, 1, calls())
+	require.Equal(t, int64(1000), p.LatestSlot())
+
+	// Busy: ticks past the debounce poll as before.
+	time.Sleep(20 * time.Millisecond)
+	require.Nil(t, p.MarkDemand(), "a busy network must not wait")
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 2, calls())
+
+	// Idle again: ticks send nothing, views hold.
+	time.Sleep(120 * time.Millisecond)
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 2, calls())
+	require.Equal(t, int64(1000), p.LatestSlot())
+
+	// The next request wakes it.
+	wait(p.MarkDemand())
+	require.Equal(t, 3, calls())
+
+	// 0 polls always, demand or not.
+	p.SetIdleAfter(0)
+	time.Sleep(120 * time.Millisecond)
+	require.NoError(t, p.Poll(context.Background()))
+	require.Equal(t, 4, calls())
+}
+
 // scriptAllProbes registers healthy canned responses for every poller request
 // so the traffic-gate tests can focus on WHICH calls fire, not what they return.
 func scriptAllProbes(up *scriptedUpstream) {

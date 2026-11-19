@@ -547,6 +547,7 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 		}
 		u.svmStatePoller.SetDebounceInterval(debounce)
 		u.svmStatePoller.SetSkipProcessedSlotProbe(cfg.Svm.SkipProcessedSlotProbe)
+		u.svmStatePoller.SetIdleAfter(cfg.Svm.StatePollerIdleAfter.Duration())
 	}
 	// Always set networkId from the provided config
 	nid := cfg.NetworkId()

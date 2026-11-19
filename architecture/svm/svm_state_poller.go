@@ -68,6 +68,9 @@ const deadPollsBeforeUnhealthy = 2
 // only on restart or with updateRate set.
 const floorRetryInterval = 30 * time.Second
 
+// pollTimeout bounds one poll, from the ticker or from an idle edge.
+const pollTimeout = 15 * time.Second
+
 // Static request payloads — avoid allocating on every tick.
 var (
 	reqGetSlotProcessed      = []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"processed"}]}`)
@@ -160,6 +163,18 @@ type SvmStatePoller struct {
 	// loopsRunning counts LIVE polling goroutines. Invariant: never above 1;
 	// back to 0 once appCtx cancellation tears the loop down.
 	loopsRunning atomic.Int32
+
+	// demandAt stamps (UnixMilli) the last request that routed on this
+	// upstream's network (MarkDemand), or Bootstrap. idleAfter (nanoseconds,
+	// SvmNetworkConfig.StatePollerIdleAfter) is how long the poller keeps
+	// polling after it; 0 polls always. idle is the last gate verdict, for
+	// the transition log; guarded by pollMu.
+	demandAt  atomic.Int64
+	idleAfter atomic.Int64
+	idle      bool
+	// edge is the running idle-edge poll: open until that poll ends or one
+	// debounce interval passes. nil when no edge runs.
+	edge atomic.Pointer[chan struct{}]
 
 	// cordonedByHealth records whether THIS poller took the upstream out of
 	// rotation, making cordon/uncordon edge-triggered and keeping a recovery
@@ -296,6 +311,10 @@ func (e *SvmStatePoller) Bootstrap(ctx context.Context) error {
 	// Idempotent w.r.t. the loop: at most one goroutine per poller instance no
 	// matter how many times Bootstrap runs. Genesis validation (the caller's
 	// fail-closed gate) may still be retried freely.
+	//
+	// Bootstrap counts as demand: the poller runs one idle window before it
+	// can idle, so a new upstream gets its first views and health verdict.
+	e.demandAt.Store(time.Now().UnixMilli())
 	if !e.loopStarted.CompareAndSwap(false, true) {
 		e.logger.Debug().Msg("svm state poller loop already running; skipping duplicate start")
 		return nil
@@ -322,6 +341,90 @@ func (e *SvmStatePoller) SetSkipProcessedSlotProbe(v bool) {
 	e.skipProcessed.Store(v)
 }
 
+// SetIdleAfter wires SvmNetworkConfig.StatePollerIdleAfter (see
+// upstream.SetNetworkConfig): how long the poller keeps polling after the
+// last request on its network. 0 polls always.
+func (e *SvmStatePoller) SetIdleAfter(d time.Duration) {
+	if d >= 0 {
+		e.idleAfter.Store(int64(d))
+	}
+}
+
+// MarkDemand records a request about to route on this upstream's network.
+// The first one after an idle window is the idle edge: it starts a poll at
+// once. It returns the running edge's channel, closed when that poll ends or
+// one debounce interval passes, whichever is first, so a request routes and
+// guards on views no older than a running poller keeps; nil when no edge runs.
+func (e *SvmStatePoller) MarkDemand() <-chan struct{} {
+	// The edge is claimed before demandAt moves: a request that reads the
+	// new demandAt then finds the edge to wait on.
+	var ch chan struct{}
+	if e.idleNow() {
+		c := make(chan struct{})
+		if e.edge.CompareAndSwap(nil, &c) {
+			ch = c
+		}
+	}
+	e.demandAt.Store(time.Now().UnixMilli())
+	if ch == nil {
+		if cur := e.edge.Load(); cur != nil {
+			return *cur
+		}
+		return nil
+	}
+	polled := make(chan struct{})
+	go func() {
+		defer close(polled)
+		e.pollOnce()
+	}()
+	go func() {
+		defer close(ch)
+		defer e.edge.Store(nil)
+		wait := time.NewTimer(time.Duration(e.debounceInterval.Load()))
+		defer wait.Stop()
+		select {
+		case <-polled:
+		case <-wait.C:
+		case <-e.appCtx.Done():
+		}
+	}()
+	return ch
+}
+
+// AwaitPollers marks a request's demand on every SVM upstream's poller
+// (MarkDemand) before it waits on any, so idle pollers poll in parallel, then
+// waits for those polls or ctx. Busy networks return without waiting.
+func AwaitPollers[U common.Upstream](ctx context.Context, ups []U) {
+	var buf [8]<-chan struct{}
+	edges := buf[:0]
+	for _, u := range ups {
+		su, ok := any(u).(common.SvmUpstream)
+		if !ok {
+			continue
+		}
+		p := su.SvmStatePoller()
+		if p == nil || p.IsObjectNull() {
+			continue
+		}
+		if ch := p.MarkDemand(); ch != nil {
+			edges = append(edges, ch)
+		}
+	}
+	for _, ch := range edges {
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// idleNow reports whether no request routed on the network within idleAfter.
+func (e *SvmStatePoller) idleNow() bool {
+	idle := time.Duration(e.idleAfter.Load())
+	return idle > 0 && time.Since(time.UnixMilli(e.demandAt.Load())) >= idle
+}
+
 func (e *SvmStatePoller) loop(interval time.Duration) {
 	e.loopsRunning.Add(1)
 	defer e.loopsRunning.Add(-1)
@@ -333,16 +436,18 @@ func (e *SvmStatePoller) loop(interval time.Duration) {
 			e.logger.Debug().Msg("shutting down svm state poller due to app context interruption")
 			return
 		case <-ticker.C:
-			func() {
-				defer e.recoverPanic("loop")
-				nctx, cancel := context.WithTimeout(e.appCtx, 15*time.Second)
-				defer cancel()
-				if err := e.Poll(nctx); err != nil {
-					if !errors.Is(nctx.Err(), context.Canceled) {
-						e.logger.Warn().Err(err).Msg("svm state poll failed")
-					}
-				}
-			}()
+			e.pollOnce()
+		}
+	}
+}
+
+func (e *SvmStatePoller) pollOnce() {
+	defer e.recoverPanic("poll")
+	nctx, cancel := context.WithTimeout(e.appCtx, pollTimeout)
+	defer cancel()
+	if err := e.Poll(nctx); err != nil {
+		if !errors.Is(nctx.Err(), context.Canceled) {
+			e.logger.Warn().Err(err).Msg("svm state poll failed")
 		}
 	}
 }
@@ -370,9 +475,25 @@ func (e *SvmStatePoller) loop(interval time.Duration) {
 // calls. No dedicated health probe — its verdict was redundant with probe
 // outcomes plus the shred-lag cordon, and on a dead endpoint its failure
 // re-probe was the poller's most expensive path.
+//
+// Idle gate: with no request on the network within idleAfter, Poll sends
+// nothing; views, health verdict and cordon hold until the next request's
+// idle edge (MarkDemand) polls again.
 func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	e.pollMu.Lock()
 	defer e.pollMu.Unlock()
+
+	if e.idleNow() {
+		if !e.idle {
+			e.idle = true
+			e.logger.Debug().Dur("idleAfter", time.Duration(e.idleAfter.Load())).Msg("svm state poller idle: no requests on the network")
+		}
+		return nil
+	}
+	if e.idle {
+		e.idle = false
+		e.logger.Debug().Msg("svm state poller resumed: a request routed on the network")
+	}
 
 	d := time.Duration(e.debounceInterval.Load())
 	if d > 0 {

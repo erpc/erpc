@@ -1896,6 +1896,13 @@ export interface SvmNetworkConfig {
    */
   statePollerDebounce?: Duration;
   /**
+   * StatePollerIdleAfter stops an upstream's state poller once no request
+   * routed on the network for this long; the next request polls at once
+   * and waits for that poll, at most one statePollerDebounce. 0 polls
+   * always. Default: 60s.
+   */
+  statePollerIdleAfter?: Duration;
+  /**
    * SkipProcessedSlotProbe skips the state poller's getSlot(processed)
    * probe and lets the finalized probe feed LatestSlot. Default false
    * (probe runs) — correct for any finality gap. Set true only on chains
@@ -3107,6 +3114,13 @@ export interface EvmHead {
    * head's anchor lowered it) or unknown.
    */
   latestat: any /* time.Time */;
+  /**
+   * Anchored is set when the read follows the cache's fresh head
+   * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+   * read of latest is served from the cache or by number, never sent to
+   * an upstream as the tag. Unset with no cache head, or a stale one.
+   */
+  anchored: boolean;
   /**
    * NextAt is the earliest time the lane's next block may come: LatestAt
    * plus the shorter of half a block and the shortest recent step of the

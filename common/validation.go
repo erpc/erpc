@@ -2085,6 +2085,9 @@ func (s *SvmNetworkConfig) Validate() error {
 	if s.StatePollerDebounce.Duration() < 0 {
 		return fmt.Errorf("network.*.svm.statePollerDebounce must be greater than or equal to 0")
 	}
+	if s.StatePollerIdleAfter.Duration() < 0 {
+		return fmt.Errorf("network.*.svm.statePollerIdleAfter must be greater than or equal to 0")
+	}
 	// nil is "unset" (SetDefaults fills 100) and 0 is the documented disable
 	// switch; only a negative value is meaningless.
 	if s.MaxFinalizedSlotLag != nil && *s.MaxFinalizedSlotLag < 0 {

@@ -152,6 +152,8 @@ func (m *mockSvmStatePollerWiring) IsHealthy() bool                   { return t
 func (m *mockSvmStatePollerWiring) FirstAvailableSlot() (int64, bool) { return 0, false }
 func (m *mockSvmStatePollerWiring) SuggestLatestSlot(int64)           {}
 func (m *mockSvmStatePollerWiring) SuggestFinalizedSlot(int64)        {}
+func (m *mockSvmStatePollerWiring) SetIdleAfter(time.Duration)        {}
+func (m *mockSvmStatePollerWiring) MarkDemand() <-chan struct{}       { return nil }
 
 func TestUpstreamState_SetNetworkConfig_WiresSvmSkipProcessedSlotProbe(t *testing.T) {
 	cases := map[string]struct {

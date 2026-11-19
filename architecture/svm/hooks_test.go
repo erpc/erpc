@@ -631,6 +631,8 @@ func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggeste
 func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   { r.lastFinalizedSuggested = slot }
 func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
 func (r *recordingSvmPoller) SetSkipProcessedSlotProbe(bool)    {}
+func (r *recordingSvmPoller) SetIdleAfter(time.Duration)        {}
+func (r *recordingSvmPoller) MarkDemand() <-chan struct{}       { return nil }
 func (r *recordingSvmPoller) FirstAvailableSlot() (int64, bool) {
 	return r.floor, r.floorKnown
 }

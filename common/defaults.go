@@ -2665,6 +2665,9 @@ func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
 	if dst.StatePollerDebounce.Duration() == 0 && defaults.StatePollerDebounce.Duration() != 0 {
 		dst.StatePollerDebounce = defaults.StatePollerDebounce
 	}
+	if dst.StatePollerIdleAfter.Duration() == 0 && defaults.StatePollerIdleAfter.Duration() != 0 {
+		dst.StatePollerIdleAfter = defaults.StatePollerIdleAfter
+	}
 	if dst.MaxFinalizedSlotLag == nil && defaults.MaxFinalizedSlotLag != nil {
 		v := *defaults.MaxFinalizedSlotLag
 		dst.MaxFinalizedSlotLag = &v
@@ -2699,6 +2702,11 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 	// cluster by more than a slot.
 	if s.StatePollerDebounce.Duration() == 0 {
 		s.StatePollerDebounce = Duration(400 * time.Millisecond)
+	}
+	// 60s: a network with requests seconds apart polls as before; one with
+	// none stops paying its vendors for slot and health probes.
+	if s.StatePollerIdleAfter.Duration() == 0 {
+		s.StatePollerIdleAfter = Duration(60 * time.Second)
 	}
 	// 100 slots (~40s) matches MaxShredInsertSlotLagThreshold so the consensus
 	// slot-lag filter and the per-upstream health check use the same staleness
