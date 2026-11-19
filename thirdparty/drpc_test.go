@@ -54,7 +54,7 @@ func TestDrpcVendor_ColdStartFallback_GenerateConfigs(t *testing.T) {
 	configs, err := vendor.GenerateConfigs(ctx, &logger, upstream, settings)
 	require.NoError(t, err)
 	require.Len(t, configs, 1)
-	assert.Contains(t, configs[0].Endpoint, "lb.drpc.org")
+	assert.Contains(t, configs[0].Endpoint, "lb.drpc.live")
 	assert.Contains(t, configs[0].Endpoint, "ethereum")
 	assert.Contains(t, configs[0].Endpoint, "test-key")
 }
@@ -176,7 +176,7 @@ func TestDrpcVendor_GenerateConfigsBranches(t *testing.T) {
 	t.Run("built-in fallback url", func(t *testing.T) {
 		cfg, err := svtGenerate(t, CreateDrpcVendor(), svtEvm(42161), key)
 		require.NoError(t, err)
-		assert.Equal(t, "https://lb.drpc.org/ogrpc?network=arbitrum&dkey=KEY", cfg.Endpoint)
+		assert.Equal(t, "https://lb.drpc.live/ogrpc?network=arbitrum&dkey=KEY", cfg.Endpoint)
 		assert.Equal(t, common.UpstreamTypeEvm, cfg.Type)
 		require.NotNil(t, cfg.AutoIgnoreUnsupportedMethods)
 		assert.False(t, *cfg.AutoIgnoreUnsupportedMethods)
@@ -187,7 +187,7 @@ func TestDrpcVendor_GenerateConfigsBranches(t *testing.T) {
 		defer swapDrpcNetworksURL(t, prev)
 		cfg, err := svtGenerate(t, CreateDrpcVendor(), svtEvm(1), common.VendorSettings{"apiKey": "KEY"})
 		require.NoError(t, err)
-		assert.Equal(t, "https://lb.drpc.org/ogrpc?network=ethereum&dkey=KEY", cfg.Endpoint)
+		assert.Equal(t, "https://lb.drpc.live/ogrpc?network=ethereum&dkey=KEY", cfg.Endpoint)
 	})
 
 	t.Run("fetched snapshot wins over built-in", func(t *testing.T) {
@@ -195,7 +195,7 @@ func TestDrpcVendor_GenerateConfigsBranches(t *testing.T) {
 		primeRemoteCache(t, v.cache, drpcOfflineURL, map[int64]string{1: "eth-custom"})
 		cfg, err := svtGenerate(t, v, svtEvm(1), common.VendorSettings{"apiKey": "KEY", "chainsUrl": drpcOfflineURL, "recheckInterval": time.Hour})
 		require.NoError(t, err)
-		assert.Equal(t, "https://lb.drpc.org/ogrpc?network=eth-custom&dkey=KEY", cfg.Endpoint)
+		assert.Equal(t, "https://lb.drpc.live/ogrpc?network=eth-custom&dkey=KEY", cfg.Endpoint)
 	})
 
 	t.Run("preset owned endpoint gets evm type", func(t *testing.T) {
@@ -251,8 +251,9 @@ func TestDrpcVendor_OwnsUpstream(t *testing.T) {
 	svtAssertOwns(t, CreateDrpcVendor(), map[string]bool{
 		"drpc://key":     true,
 		"evm+drpc://key": true,
-		"https://lb.drpc.org/ogrpc?network=ethereum&dkey=key": true,
-		"https://rpc.ankr.com/eth/key":                        false,
+		"https://lb.drpc.live/ogrpc?network=ethereum&dkey=key": true,
+		"https://lb.drpc.org/ogrpc?network=ethereum&dkey=key":  true,
+		"https://rpc.ankr.com/eth/key":                         false,
 	})
 }
 
