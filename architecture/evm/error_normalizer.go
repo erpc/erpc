@@ -406,7 +406,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			}
 			return execErr
 		}
-		// Aurora (Borealis engine) answers debug_trace* with -32603 for two
+		// Aurora (Borealis engine) answers debug_trace* with -32603 for
 		// per-transaction outcomes that no other node can change:
 		//   "no EVM execution in transaction 0x…": a NEAR-native transaction
 		//     surfaced in the EVM block, so there is nothing to trace;
@@ -414,13 +414,17 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		//     the engine's own verdict for that transaction;
 		//   "StandaloneError(TransactionHashNotFound(0x…))": the tracer has no
 		//     EVM record of a transaction the chain does list (engine system
-		//     calls to 0x4444…192b), for old and new blocks alike.
+		//     calls to 0x4444…192b), for old and new blocks alike;
+		//   `StandaloneError(Borsh("Unexpected length of input"))`: the
+		//     engine cannot decode its stored record of that transaction and
+		//     answers the same way, in ~15 ms, on every attempt.
 		// As a server-side exception every request was retried until the
 		// failsafe gave up (12 attempts each) and the caller saw
 		// ErrUpstreamsExhausted instead of the real reason.
 		if strings.Contains(msg, "no EVM execution in transaction") ||
 			strings.Contains(msg, "EVM tracing failed in transaction") ||
-			strings.Contains(msg, "StandaloneError(TransactionHashNotFound(") {
+			strings.Contains(msg, "StandaloneError(TransactionHashNotFound(") ||
+			strings.Contains(msg, "StandaloneError(Borsh(") {
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
