@@ -2643,7 +2643,7 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 // mergeSvmNetworkDefaults copies project-level SVM defaults into a network config.
 // Cluster is never copied — it is network identity (like chainId for EVM), so one
 // networkDefaults.svm block can front many clusters. Everything else is policy and
-// inherits. (Still true after the pointer fields below were added: neither of them
+// inherits. (Still true after the pointer fields below were added: none of them
 // is identity.)
 //
 // Pointer fields are copied on nil, not on zero. An operator writing

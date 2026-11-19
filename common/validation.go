@@ -1958,6 +1958,9 @@ func (n *NetworkDefaults) Validate() error {
 	if n.MaxClientBatchSize != nil && *n.MaxClientBatchSize < 0 {
 		return fmt.Errorf("networkDefaults.maxClientBatchSize must be 0 (no limit) or greater, got %d", *n.MaxClientBatchSize)
 	}
+	if n.Svm != nil && n.Svm.StatePollerIdleAfter != nil && n.Svm.StatePollerIdleAfter.Duration() < 0 {
+		return fmt.Errorf("networkDefaults.svm.statePollerIdleAfter must be greater than or equal to 0")
+	}
 	return validateCacheKeySuffix("networkDefaults.cacheKeySuffix", n.CacheKeySuffix)
 }
 
