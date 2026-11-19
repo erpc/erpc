@@ -111,6 +111,10 @@ func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, er
 		}
 	}
 
+	if err := rejectEmptyConfigItems(&cfg); err != nil {
+		return nil, err
+	}
+
 	if LegacyTranslateFn != nil {
 		warnings, err := LegacyTranslateFn(&cfg)
 		if err != nil {
