@@ -203,8 +203,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				lg.Error().Err(cerr).Msgf("failed to clone json-rpc response for shadow requests")
 			} else {
 				cloneResp := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrc)
-				cloneResp.SetUpstream(resp.Upstream())
-				cloneResp.SetFromCache(resp.FromCache())
+				cloneResp.WithSourceOf(resp)
 				cloneResp.SetAttempts(resp.Attempts())
 				cloneResp.SetRetries(resp.Retries())
 				cloneResp.SetHedges(resp.Hedges())
@@ -246,16 +245,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				}
 			}
 		}
-		upstream := resp.Upstream()
-		vendor := "n/a"
-		upstreamId := "n/a"
-		if resp.FromCache() {
-			vendor = "<cache>"
-			upstreamId = "<cache>"
-		} else if upstream != nil {
-			vendor = upstream.VendorName()
-			upstreamId = upstream.Id()
-		}
+		vendor, upstreamId := resp.SourceLabels()
 
 		if network.cfg.Architecture == common.ArchitectureEvm {
 			if _, bn, e := evm.ExtractBlockReferenceFromResponse(ctx, resp); e == nil && bn > 0 {

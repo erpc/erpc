@@ -422,7 +422,7 @@ func networkPreForward_eth_getLogs(ctx context.Context, n common.Network, ups []
 	if err != nil {
 		return true, nil, err
 	}
-	return true, common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
+	return true, common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(merged).SetFromCache(fromCache).SetSource(common.SourceSplit), nil
 }
 
 // cacheLogsHead is the newest block the cache req reads holds for its
@@ -630,7 +630,7 @@ func networkPostForward_eth_getLogs(ctx context.Context, n common.Network, rq *c
 	if rs != nil {
 		rs.Release()
 	}
-	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
+	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged).SetFromCache(fromCache).SetSource(common.SourceSplit), nil
 }
 
 type GetLogsMultiResponseWriter struct {
