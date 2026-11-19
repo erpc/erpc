@@ -68,8 +68,16 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install 
 FROM alpine:latest@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS symlink
 RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
 
+FROM debian:bookworm-slim AS certificates
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2 && \
+    rm -rf /var/lib/apt/lists/*
+
 # Final stage
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35 AS final
+
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # Copy Go binaries from go-builder
 COPY --from=go-builder /build/erpc-server /

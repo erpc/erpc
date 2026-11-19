@@ -179,6 +179,7 @@ docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
 6. **Monitoring container is not HA**: Both Prometheus and Grafana run in one container via `tail -f /dev/null`; a crash in either is not detected and the container stays running. Not suitable for production.
 7. **gRPC port not exposed by default**: The image exposes `4000`, `4001`, `6060`. If you configure a separate `server.grpcPortV4`, add `-p <grpc_port>:<grpc_port>` explicitly.
 8. **`prometheus.yaml` at repo root is NOT the monitoring container's config**: It is the production Prometheus Operator config. The monitoring container uses `monitoring/prometheus/prometheus.yml`. They have different scrape configs and targets.
+9. **Runtime CA bundle**: The image uses Debian bookworm `ca-certificates >= 20250419~deb12u2` rather than the bundle in the pinned distroless base. This removes trust in emSign ECC Root CA - G3 and AAA Certificate Services while retaining emSign G1, C1, and C3. The Docker build fails if the package is older than this version.
 
 ### Observability
 
