@@ -43,3 +43,30 @@ func TestUpstreamExecutor_InternalRequestsSkipBreaker(t *testing.T) {
 	require.Equal(t, failsafe.StateClosed, run(true))
 	require.Equal(t, failsafe.StateOpen, run(false))
 }
+
+// The normalizer tags an error retryableTowardNetwork=false when no other
+// node can answer differently. The same node cannot either, so the upstream
+// retry must stop at one call. An untagged client-side error keeps its retry.
+func TestUpstreamExecutor_AClientErrorNoNodeCanFixIsNotRetriedOnTheSameNode(t *testing.T) {
+	lg := zerolog.Nop()
+	run := func(callErr error) int {
+		ex, err := NewUpstreamExecutor(&common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{MaxAttempts: 3},
+		}, &lg)
+		require.NoError(t, err)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[]}`))
+		calls := 0
+		_, err = ex.Run(context.Background(), req, func(context.Context, bool) (*common.NormalizedResponse, error) {
+			calls++
+			return nil, callErr
+		})
+		require.Error(t, err)
+		return calls
+	}
+
+	untagged := common.NewErrEndpointClientSideException(errors.New("invalid params"))
+	require.Equal(t, 3, run(untagged), "sanity: an untagged client-side error still retries")
+
+	final := common.NewErrEndpointClientSideException(errors.New("invalid params")).WithRetryableTowardNetwork(false)
+	require.Equal(t, 1, run(final))
+}

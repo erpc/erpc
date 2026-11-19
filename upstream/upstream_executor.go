@@ -247,6 +247,12 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 	if req != nil && req.IsCompositeRequest() {
 		return false
 	}
+	// A client-side error the normalizer tagged retryableTowardNetwork=false
+	// is one no other node can answer differently. The same node cannot
+	// either.
+	if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) && !common.IsRetryableTowardNetwork(err) {
+		return false
+	}
 	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 		return common.IsRetryableExecutionException(err)
 	}
