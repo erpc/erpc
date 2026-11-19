@@ -42,6 +42,13 @@ func TestHttpServer_ConsensusMisbehaviorScoring(t *testing.T) {
 									Consensus: &common.ConsensusPolicyConfig{
 										MaxParticipants:    3, // Use top 3 upstreams
 										AgreementThreshold: 2, // Need 2 to agree
+										// Wait for every participant. The default wait caps
+										// resolve to their 5ms floor against in-process mocks,
+										// so a loaded runner can cut off rpc2 and turn the
+										// 2-vs-1 round into a 1-vs-1 dispute. Caps are not
+										// what this test checks.
+										MaxWaitOnResult: &common.AdaptiveDuration{},
+										MaxWaitOnEmpty:  &common.AdaptiveDuration{},
 									},
 								},
 							},
