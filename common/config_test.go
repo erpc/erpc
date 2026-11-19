@@ -1469,3 +1469,59 @@ func TestUpstreamConfig_ValidateCreditSourceConflict(t *testing.T) {
 		Rules:       []*RateLimitRuleConfig{{Method: "*", MaxCount: 10, Period: RateLimitPeriodSecond, CountMode: RateLimitCountModeCredit}},
 	}), false))
 }
+
+// TestLoadConfig_RoutingProbe pins routing.probe validation at load. A YAML
+// boolean such as `probe: false` decodes to ProbeMode("false"), which never
+// equals ProbeModeOff, so probing stayed on with no error (#1150).
+func TestLoadConfig_RoutingProbe(t *testing.T) {
+	cases := []struct {
+		name    string
+		probe   string
+		wantErr string
+	}{
+		{"unset", "", ""},
+		{"on", "probe: on", ""},
+		{"off", "probe: off", ""},
+		{"quoted off", `probe: "off"`, ""},
+		{"yaml false", "probe: false", "routing.probe 'false' is invalid"},
+		{"yaml true", "probe: true", "routing.probe 'true' is invalid"},
+		{"unknown", "probe: disabled", "routing.probe 'disabled' is invalid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			routing := ""
+			if tc.probe != "" {
+				routing = "\n        routing:\n          " + tc.probe
+			}
+			yamlSrc := `
+logLevel: error
+projects:
+  - id: main
+    upstreams:
+      - id: rpc1
+        endpoint: https://eth.example/
+        evm: { chainId: 1 }` + routing + `
+    networks:
+      - architecture: evm
+        evm: { chainId: 1 }
+`
+			fs := afero.NewMemMapFs()
+			tmp, err := afero.TempFile(fs, "", "probe.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tmp.WriteString(yamlSrc); err != nil {
+				t.Fatal(err)
+			}
+			_, err = LoadConfig(fs, tmp.Name(), &DefaultOptions{})
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), tc.wantErr)
+				assert.Contains(t, err.Error(), "rpc1")
+			}
+		})
+	}
+}
