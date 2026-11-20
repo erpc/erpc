@@ -1451,8 +1451,10 @@ type EvmUpstreamConfig struct {
 	// finalized-tag refresh and its step polls. Its finalized block also
 	// moves by its answers to requests that name the tag. For an upstream
 	// billed per request on a chain whose finality moves every block, while
-	// other voters keep the network's finalized fresh. 0 (default): the
-	// regular finalized debounce.
+	// other voters keep the network's finalized fresh. A failed poll waits
+	// the gap too, so a refused tag takes 10 gaps to give up, and the
+	// tracker credits the upstream's finalized for one gap after each
+	// report. 0 (default): the regular finalized debounce.
 	FinalizedPollerDebounce            Duration                    `yaml:"finalizedPollerDebounce,omitempty" json:"finalizedPollerDebounce" tstype:"Duration"`
 	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
