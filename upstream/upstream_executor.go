@@ -264,6 +264,13 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 				return false
 			}
 		}
+		// A permanently-absent answer (an SVM skipped slot) will not change on
+		// a wait-and-retry against the same upstream — the network executor
+		// already stops on it for the same reason. Other upstreams still get
+		// their turn: permanence is not a network-scope verdict.
+		if common.IsPermanentlyMissingData(err) {
+			return false
+		}
 	}
 	return common.IsRetryableTowardsUpstream(err)
 }
