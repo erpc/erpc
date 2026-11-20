@@ -4313,17 +4313,18 @@ func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u commo
 	// to a number, so the target never moves; waiting helps only when the bound
 	// itself moves and the gap is within MaxRetryableBlockDistance. A bound
 	// that follows the upstream's head reads the head routing reads
-	// (mayHold): a counter polled every 10s is blocks stale, so ordering
-	// put a credited upstream first that a gate on the counter alone then
-	// skipped. One that still lacks the block answers missing, and the
-	// refusal rule's retry takes the next.
+	// (reachedHead, thinHolds), its counter credited up to the ceiling the
+	// block was decided against (gateCredit): a counter polled every 10s is
+	// blocks stale, so ordering put a credited upstream first that a gate on
+	// the counter alone then skipped. One that still lacks the block answers
+	// missing, and the refusal rule's retry takes the next.
 	var upper *common.EvmAvailabilityBoundConfig
 	if cfg := eu.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.BlockAvailability != nil {
 		upper = cfg.Evm.BlockAvailability.Upper
 	}
 	if maxBound != math.MaxInt64 && bn > maxBound && upper != nil && upper.LatestBlockMinus != nil {
 		head := n.requestHead(ctx, req)
-		reached := n.reachedHead(u, creditCap(head))
+		reached := n.reachedHead(u, gateCredit(head, req.HeadRefusal()))
 		if holds := n.thinHolds(req, head, bn); holds != nil && holds(u) {
 			reached = max(reached, bn)
 		}
@@ -4952,6 +4953,24 @@ func creditCap(h *common.EvmHead) int64 {
 	return h.Latest
 }
 
+// gateCredit is the highest head a credit may grant in the availability
+// gate of a latestBlockMinus bound (spec §6.4): the ceiling r's block was
+// decided against (the one its near-future wait saw), else h's, a block a
+// counted upstream reported; at least creditCap. Ordering keeps creditCap,
+// so evidence of the block still goes first. The gate only decides whether
+// u is tried: an upstream credited past a block it lacks answers missing,
+// and the refusal rule's retry takes the next, where a skip failed the
+// read (a 0.4 s chain polled every 10s: by-number reads 6-15 blocks above
+// every counter were skipped on all upstreams, while another voter's
+// counter held the block). A block above the ceiling gets no credit.
+func gateCredit(h *common.EvmHead, r *common.HeadRefusal) int64 {
+	c := max(creditCap(h), h.Ceiling)
+	if r != nil {
+		c = max(c, r.Ceiling)
+	}
+	return c
+}
+
 // partitionUpstreamsByLatestBlock moves the upstreams that may not hold
 // block bn (mayHold) behind the rest, preserving order within each group
 // (spec §6.1, §6.4, §8).
@@ -4977,8 +4996,9 @@ func (n *Network) splitHolders(ups []common.Upstream, bn, credit int64, holds fu
 	return front, back
 }
 
-// mayHold reports whether u may hold block bn, the one predicate routing
-// and the availability gate read (spec §6.4): its reachedHead reaches bn,
+// mayHold reports whether u may hold block bn, the predicate routing reads
+// (spec §6.4; the availability gate reads its parts, credited to
+// gateCredit): its reachedHead reaches bn,
 // or, when holds is set, holds says so (thinHolds). An upstream with no
 // known head may hold any block; one whose hash vote left the pins holds
 // none above its fork point, however high its branch runs (EvmVotesForked).
@@ -5067,7 +5087,9 @@ func (n *Network) preferTipLeaderForNearTipGetBlock(ups []common.Upstream, metho
 // a slow one polled more often. The report is u's head counter and its
 // report time. A head that is unknown, at or above latest, capped by a
 // configured exactBlock, or a push source's gets none, and so does a
-// benched one (Tracker.HeadCredit). It orders only.
+// benched one (Tracker.HeadCredit). It orders, and lifts the availability
+// gate's latestBlockMinus bound (gateCredit); it never decides serve, band
+// or future.
 func (n *Network) creditedHead(u common.Upstream, head, latest int64) int64 {
 	if head <= 0 || head >= latest || n.metricsTracker == nil || n.sources.pushSource(u.Id()) {
 		return head

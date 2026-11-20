@@ -200,6 +200,14 @@ func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *
 				res.ContentLength = -1
 				return res
 			})
+		gock.New("http://" + host).
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return r.URL.Host == host && strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x2a"}`))
 	}
 	network, ups := setupServedTipNetworkWith(t, ctx, fixtures, nil)
 	e.network = network
@@ -258,7 +266,8 @@ func (e *pollAgeEnv) headOf(id string) int64 {
 func (e *pollAgeEnv) polled(id string) int64 { return e.ups[id].EvmStatePoller().LatestBlock() }
 
 // A polled head ages by up to a poll interval (10s here, on a 2s chain); the
-// tracker credits that age (HeadCredit) and tip reads order by it. Each row is
+// tracker credits that age (HeadCredit), tip reads order by it, and the
+// availability gate of a latestBlockMinus bound reads it. Each row is
 // one way an upstream can be wrong, and asserts that the credit never puts it
 // where a fresh head would be. "reader" and "late" come last in routing
 // order: they move the network head, and vote on eth_getBlockByNumber's
@@ -401,5 +410,46 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 		assert.Equal(t, "slow", e.first(e.head), "same order as without the credit")
 		e.step(20)
 		assert.Equal(t, "slow", e.first(e.head), "still demoted once benched")
+	})
+
+	// The sei-mainnet shape: every upstream that serves the method declares
+	// upper latestBlockMinus 0 and was polled 6s ago; a reader that serves
+	// only blocks reports the chain 3 blocks on. A read by number of the
+	// block the reader reports is above every serving counter: capped at
+	// Firm, the gate skipped them all, "2 upstream not synced".
+	t.Run("upper latestBlockMinus 0 gate credits the poll age", func(t *testing.T) {
+		zero := int64(0)
+		e := newPollAgeEnv(t, []servedTipFixture{
+			{id: "a", latestBlock: 1000, upperLatestMinus: &zero},
+			{id: "b", latestBlock: 1000, upperLatestMinus: &zero},
+			{id: "reader", latestBlock: 1000, ignoreMethods: []string{"eth_getBalance"}},
+		}, "a", "b", "reader")
+		s := e.head
+		e.movers = []string{"reader"}
+		e.step(3)
+		require.Equal(t, s, e.polled("a"))
+		require.Equal(t, s, e.polled("b"))
+		balance := func(bn int64) (string, error) {
+			e.network.refreshHeads()
+			req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x%x"]}`, bn)))
+			req.SetNetwork(e.network)
+			resp, err := e.network.Forward(e.ctx, req)
+			if err != nil {
+				return "", err
+			}
+			defer resp.Release()
+			jrr, err := resp.JsonRpcResponse(e.ctx)
+			if err != nil {
+				return "", err
+			}
+			return jrr.GetResultString(), nil
+		}
+		got, err := balance(e.head)
+		require.NoError(t, err, "block %d, 3 above both counters (%d) and polled 6s ago on a 2s chain: tried, not skipped", e.head, s)
+		assert.Contains(t, got, "0x2a")
+
+		_, err = balance(e.head + 5000)
+		require.Error(t, err, "far above the ceiling: no credit reaches it")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable), "skipped by the gate, got %v", err)
 	})
 }
