@@ -1221,6 +1221,46 @@ func TestSvmStatePoller_Poll_ShredWatermarkBehindProcessedClampsToZero(t *testin
 	require.Empty(t, up.cordons(), "skewed samples must not cordon")
 }
 
+// TestSvmStatePoller_Poll_FrozenShredWatermarkBelowFinalizedIsUnknown: a
+// getMaxShredInsertSlot answer that repeats across polls while the upstream had
+// already finalized past it is not a frontier (seen on a Firedancer-based
+// client). It reads as
+// unknown, as for a node without the method. A watermark that moves keeps
+// bounding, even below finalized, and so does one that repeats while still at
+// or above finalized.
+func TestSvmStatePoller_Poll_FrozenShredWatermarkBelowFinalizedIsUnknown(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		finalized string
+		shreds    []string
+		want      int64
+	}{
+		{"frozen below finalized", `9990`, []string{`9000`, `9000`}, 0},
+		{"frozen below finalized stays unknown", `9990`, []string{`9000`, `9000`, `9000`}, 0},
+		{"moving below finalized (lagging indexer)", `9990`, []string{`9000`, `9001`}, 9001},
+		{"repeating at or above finalized", `990`, []string{`1002`, `1002`}, 1002},
+		{"frozen then moving again", `9990`, []string{`9000`, `9000`, `10001`}, 10001},
+		{"single sample", `9990`, []string{`9000`}, 9000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			up := newScriptedUpstream()
+			up.script("getSlot:processed", []byte(`10000`))
+			up.script("getSlot:finalized", []byte(tc.finalized))
+			p := newPollerWithUpstream(t, up)
+			for _, s := range tc.shreds {
+				up.script("getMaxShredInsertSlot", []byte(s))
+				require.NoError(t, p.Poll(context.Background()))
+			}
+			require.Equal(t, tc.want, p.ShredInsertSlot())
+			require.True(t, p.IsHealthy(), "a frozen watermark is not evidence of a degraded node")
+		})
+	}
+}
+
 // TestSvmStatePoller_HealthToRouting_EdgeTriggered: the health verdict must
 // reach upstream selection exactly on TRANSITIONS. A level-triggered cordon
 // would re-stamp the reason every 400ms tick (spawning a fresh
