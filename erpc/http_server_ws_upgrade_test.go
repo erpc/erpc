@@ -21,6 +21,8 @@ import (
 // wss://host/ (common with domain aliasing) was served as health and never
 // upgraded.
 func TestHttpServer_WebSocketUpgradeReachesDispatch(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
