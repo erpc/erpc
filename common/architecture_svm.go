@@ -43,6 +43,17 @@ type SvmStatePoller interface {
 	// via upstream.SetNetworkConfig. Default false (probe runs).
 	SetSkipProcessedSlotProbe(v bool)
 
+	// SetIdleAfter wires SvmNetworkConfig.StatePollerIdleAfter via
+	// upstream.SetNetworkConfig: the poller sends nothing once no request
+	// routed on its network for this long. 0 polls always.
+	SetIdleAfter(d time.Duration)
+
+	// MarkDemand records a request about to route on the network. After an
+	// idle window it polls at once and returns a channel that closes when
+	// that poll ends or one debounce interval passes; nil when no poll is
+	// pending.
+	MarkDemand() <-chan struct{}
+
 	Poll(ctx context.Context) error
 
 	LatestSlot() int64

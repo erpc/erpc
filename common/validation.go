@@ -1958,6 +1958,9 @@ func (n *NetworkDefaults) Validate() error {
 	if n.MaxClientBatchSize != nil && *n.MaxClientBatchSize < 0 {
 		return fmt.Errorf("networkDefaults.maxClientBatchSize must be 0 (no limit) or greater, got %d", *n.MaxClientBatchSize)
 	}
+	if n.Svm != nil && n.Svm.StatePollerIdleAfter != nil && n.Svm.StatePollerIdleAfter.Duration() < 0 {
+		return fmt.Errorf("networkDefaults.svm.statePollerIdleAfter must be greater than or equal to 0")
+	}
 	return validateCacheKeySuffix("networkDefaults.cacheKeySuffix", n.CacheKeySuffix)
 }
 
@@ -2084,6 +2087,9 @@ func (s *SvmNetworkConfig) Validate() error {
 	}
 	if s.StatePollerDebounce.Duration() < 0 {
 		return fmt.Errorf("network.*.svm.statePollerDebounce must be greater than or equal to 0")
+	}
+	if s.StatePollerIdleAfter != nil && s.StatePollerIdleAfter.Duration() < 0 {
+		return fmt.Errorf("network.*.svm.statePollerIdleAfter must be greater than or equal to 0")
 	}
 	// nil is "unset" (SetDefaults fills 100) and 0 is the documented disable
 	// switch; only a negative value is meaningless.

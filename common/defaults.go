@@ -2643,7 +2643,7 @@ func DefaultMarkEmptyAsErrorMethods() []string {
 // mergeSvmNetworkDefaults copies project-level SVM defaults into a network config.
 // Cluster is never copied — it is network identity (like chainId for EVM), so one
 // networkDefaults.svm block can front many clusters. Everything else is policy and
-// inherits. (Still true after the pointer fields below were added: neither of them
+// inherits. (Still true after the pointer fields below were added: none of them
 // is identity.)
 //
 // Pointer fields are copied on nil, not on zero. An operator writing
@@ -2664,6 +2664,10 @@ func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
 	}
 	if dst.StatePollerDebounce.Duration() == 0 && defaults.StatePollerDebounce.Duration() != 0 {
 		dst.StatePollerDebounce = defaults.StatePollerDebounce
+	}
+	if dst.StatePollerIdleAfter == nil && defaults.StatePollerIdleAfter != nil {
+		v := *defaults.StatePollerIdleAfter
+		dst.StatePollerIdleAfter = &v
 	}
 	if dst.MaxFinalizedSlotLag == nil && defaults.MaxFinalizedSlotLag != nil {
 		v := *defaults.MaxFinalizedSlotLag
@@ -2699,6 +2703,12 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 	// cluster by more than a slot.
 	if s.StatePollerDebounce.Duration() == 0 {
 		s.StatePollerDebounce = Duration(400 * time.Millisecond)
+	}
+	// 60s: a network with requests seconds apart polls as before; one with
+	// none stops paying its vendors for slot and health probes.
+	if s.StatePollerIdleAfter == nil {
+		v := Duration(60 * time.Second)
+		s.StatePollerIdleAfter = &v
 	}
 	// 100 slots (~40s) matches MaxShredInsertSlotLagThreshold so the consensus
 	// slot-lag filter and the per-upstream health check use the same staleness

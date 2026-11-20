@@ -2815,6 +2815,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		defer n.cleanupMultiplexer(mlx)
 	}
 
+	// A request after an idle window wakes the network's Solana pollers and
+	// waits for their poll, so the Prism cache's finalized bound, routing,
+	// history order and the availability guards read current slots.
+	if n.cfg.Architecture == common.ArchitectureSvm && n.upstreamsRegistry != nil {
+		svm.AwaitPollers(ctx, n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId))
+	}
+
 	if n.cacheDal != nil && !req.ShouldSkipCacheRead("") {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
