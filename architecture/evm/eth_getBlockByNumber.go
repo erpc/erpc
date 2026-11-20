@@ -202,7 +202,7 @@ func NullAnswer(req *common.NormalizedRequest, block int64) (*common.NormalizedR
 	if err != nil {
 		return nil, false
 	}
-	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
+	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).SetSource(common.SourceHead)
 	resp.SetEvmBlockNumber(block)
 	return resp, true
 }

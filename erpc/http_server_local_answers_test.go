@@ -9,6 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/stretchr/testify/assert"
@@ -103,6 +104,13 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 		require.NoError(t, sonic.UnmarshalString(upstreamAnswers[method], &v))
 		return v
 	}
+	// answeredBy counts the successful requests for method that the metrics
+	// name source answered, as both the vendor and the upstream.
+	answeredBy := func(source, method string) float64 {
+		return metricSum(telemetry.MetricNetworkSuccessfulRequests, map[string]string{
+			"project": "test_project", "vendor": source, "upstream": source, "category": method,
+		})
+	}
 
 	t.Run("on by default: eRPC answers, no upstream call", func(t *testing.T) {
 		mockUpstream()
@@ -111,8 +119,10 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 		defer shutdown()
 
 		for method := range upstreamAnswers {
+			before := answeredBy(common.SourceLocal, method)
 			got, n := call(t, send, method, nil)
 			assert.Zero(t, n, "%s must not reach the upstream", method)
+			assert.Equal(t, 1.0, answeredBy(common.SourceLocal, method)-before, "%s is counted as a <local> answer", method)
 			if method == "web3_clientVersion" {
 				assert.True(t, strings.HasPrefix(got.(string), "erpc/"), "%s = %v", method, got)
 				continue
@@ -152,9 +162,11 @@ func TestHttpServer_LocalAnswers(t *testing.T) {
 		send, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		before := answeredBy(common.SourceStatic, "web3_clientVersion")
 		got, n := call(t, send, "web3_clientVersion", nil)
 		assert.Zero(t, n)
 		assert.Equal(t, "my-chain/v1", got)
+		assert.Equal(t, 1.0, answeredBy(common.SourceStatic, "web3_clientVersion")-before, "a static response is counted as <static>")
 
 		got, n = call(t, send, "net_version", nil)
 		assert.Zero(t, n)

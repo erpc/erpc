@@ -573,7 +573,7 @@ Top-20 operational metrics:
 |---|---|---|---|
 | `erpc_network_request_received_total` | counter | project, network, category, finality, user, agent_name | Request received for a network |
 | `erpc_network_failed_request_total` | counter | project, network, category, attempt, error, severity, finality, user, agent_name | Request failed at network level; `severity` ∈ critical/warning/info |
-| `erpc_network_successful_request_total` | counter | project, network, vendor, upstream, category, attempt, finality, emptyish, user, agent_name | Request succeeded at network level |
+| `erpc_network_successful_request_total` | counter | project, network, vendor, upstream, category, attempt, finality, emptyish, user, agent_name | Request succeeded at network level; `vendor`/`upstream` = `<cache>`, `<head>`, `<local>`, … when no upstream answered (see the [metrics reference](/reference/metrics#area-2-network-request-accounting)) |
 | `erpc_network_request_duration_seconds` | LabeledHistogram | project, network, vendor, upstream, category, finality, user | End-to-end request duration |
 | `erpc_upstream_request_total` | counter | project, vendor, network, upstream, category, attempt, composite, finality, user, agent_name | Each attempt sent to an upstream |
 | `erpc_upstream_request_errors_total` | counter | project, vendor, network, upstream, category, error, severity, composite, finality, user, agent_name | Upstream attempt returned an error |

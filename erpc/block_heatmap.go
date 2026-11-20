@@ -18,18 +18,12 @@ func recordEvmBlockRangeHeatmap(ctx context.Context, projectId string, network *
 		return
 	}
 
-	vendor := "n/a"
-	upstreamId := "n/a"
+	vendor, upstreamId := resp.SourceLabels()
 	label := "n/a"
 	finalityStr := "n/a"
 	userId := "n/a"
 	size := int64(0)
 
-	if resp.Upstream() != nil {
-		u := resp.Upstream()
-		vendor = u.VendorName()
-		upstreamId = u.Id()
-	}
 	if req != nil {
 		userId = req.UserId()
 	}
