@@ -35,6 +35,11 @@ type GrpcServer struct {
 	logger    *zerolog.Logger
 	server    *grpc.Server
 
+	// streams ends when the server stops its long-lived streams
+	// (StopStreams); their handlers then return UNAVAILABLE.
+	streams     context.Context
+	stopStreams context.CancelFunc
+
 	trustedForwarderNets []net.IPNet
 	trustedForwarderIPs  map[string]struct{}
 	trustedIPHeaders     []string
@@ -70,6 +75,7 @@ func NewGrpcServer(
 		processor: NewRequestProcessor(erpcInstance, logger),
 		logger:    logger,
 	}
+	gs.streams, gs.stopStreams = context.WithCancel(context.Background())
 	if cfg != nil {
 		gs.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
 		for _, entry := range cfg.TrustedIPForwarders {
@@ -154,10 +160,18 @@ func (gs *GrpcServer) Start(logger *zerolog.Logger) error {
 	logger.Info().Str("addr", addr).Msg("starting gRPC server")
 	go func() {
 		<-gs.appCtx.Done()
+		gs.StopStreams()
 		gs.server.GracefulStop()
 	}()
 	return gs.server.Serve(lis)
 }
+
+// StopStreams ends every long-lived stream with UNAVAILABLE "server shutting
+// down", written by the stream's own handler, so its client reconnects
+// elsewhere at once. Cancelling the request instead loses that status: the
+// shared port's handler transport closes when its request context ends, and
+// the client reads a stream ended without trailers or CANCELLED.
+func (gs *GrpcServer) StopStreams() { gs.stopStreams() }
 
 func (gs *GrpcServer) extractRequestInput(ctx context.Context, method string) (*RequestInput, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
