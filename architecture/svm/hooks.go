@@ -449,7 +449,7 @@ func projectPreForward_getGenesisHash(ctx context.Context, n common.Network, r *
 	if err != nil {
 		return true, nil, fmt.Errorf("failed to build getGenesisHash response: %w", err)
 	}
-	nr := common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(jrr)
+	nr := common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(jrr).SetSource(common.SourceLocal)
 	return true, nr, nil
 }
 
@@ -1402,7 +1402,7 @@ func networkPostForward_getSlot(ctx context.Context, network common.Network, nq 
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
-	corrected := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(newJrr)
+	corrected := common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(newJrr).SetSource(common.SourceHead)
 	if nr.FromCache() {
 		corrected.WithFromCache(true)
 	}

@@ -3,6 +3,7 @@ package thirdparty
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -26,6 +27,19 @@ func TestEnvioVendor_SupportsNetwork(t *testing.T) {
 		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{}, "evm:1")
 		require.NoError(t, err)
 		assert.True(t, ok)
+	})
+
+	t.Run("every active Envio EVM chain is known", func(t *testing.T) {
+		// Envio's active EVM chains: https://chains.hyperquery.xyz/active_chains
+		assert.Len(t, envioKnownSupportedChains, 83)
+		for _, id := range []int64{988, 4663, 5031, 5042, 50312, 728126428} {
+			_, ok := envioKnownSupportedChains[id]
+			assert.True(t, ok, id)
+		}
+		for _, id := range []int64{50, 51, 255, 17000, 531050104} {
+			_, ok := envioKnownSupportedChains[id]
+			assert.False(t, ok, "%d is no longer served", id)
+		}
 	})
 
 	probeCases := []struct {
@@ -79,6 +93,26 @@ func TestEnvioVendor_SupportsNetwork(t *testing.T) {
 			ReplyError(errors.New("tls: failed to verify certificate: x509: certificate is valid for other.host"))
 		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
 		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+
+	t.Run("unknown host means unsupported", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().
+			ReplyError(&net.DNSError{Err: "no such host", Name: "999888.rpc.hypersync.xyz", IsNotFound: true})
+		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+
+	t.Run("temporary DNS failure is an error", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		gock.New("https://999888.rpc.hypersync.xyz").Post("/k1").Persist().
+			ReplyError(&net.DNSError{Err: "server misbehaving", Name: "999888.rpc.hypersync.xyz", IsTemporary: true})
+		ok, err := CreateEnvioVendor().SupportsNetwork(ctx, &logger, common.VendorSettings{"apiKey": "k1"}, envioUnknownChain)
+		assert.Error(t, err)
 		assert.False(t, ok)
 	})
 

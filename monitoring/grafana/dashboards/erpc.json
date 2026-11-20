@@ -8596,7 +8596,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (vendor, finality) (\n  erpc_network_successful_request_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\", network!~\"${ignore_network:regex}\",\n    project=~\"${project:regex}\",\n    user=~\"${user:regex}\",\n    vendor=~\"${vendor:regex}\", vendor!~\"${ignore_vendor:regex}\",\n    vendor!=\"n/a\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
+              "expr": "sum by (vendor, finality) (\n  erpc_network_successful_request_total{\n    namespace=~\"${namespace:regex}\",\n    upstream=~\"${upstream:regex}\",\n    region=~\"${region:regex}\",\n    cluster=~\"${cluster:regex}\",\n    network=~\"${network:regex}\", network!~\"${ignore_network:regex}\",\n    project=~\"${project:regex}\",\n    user=~\"${user:regex}\",\n    vendor=~\"${vendor:regex}\", vendor!~\"${ignore_vendor:regex}\",\n    vendor!~\"n/a|<(erpc|head|local|static|split|query|idempotent)>\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",

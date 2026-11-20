@@ -69,8 +69,7 @@ func (m *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse
 					err = cerr
 				} else {
 					multiplexerResp := common.NewNormalizedResponse()
-					multiplexerResp.SetUpstream(resp.Upstream())
-					multiplexerResp.SetFromCache(resp.FromCache())
+					multiplexerResp.WithSourceOf(resp)
 					multiplexerResp.SetAttempts(resp.Attempts())
 					multiplexerResp.SetRetries(resp.Retries())
 					multiplexerResp.SetHedges(resp.Hedges())

@@ -9,7 +9,7 @@
 #     - final -> Final stage where we copy the Go binary and the TS files
 
 # Build stage for Go
-FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS go-builder
+FROM golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS go-builder
 
 WORKDIR /build
 
@@ -68,8 +68,16 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install 
 FROM alpine:latest@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS symlink
 RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
 
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS certificates
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2 && \
+    rm -rf /var/lib/apt/lists/*
+
 # Final stage
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35 AS final
+
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # Copy Go binaries from go-builder
 COPY --from=go-builder /build/erpc-server /
