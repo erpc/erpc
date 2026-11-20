@@ -1176,6 +1176,11 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	default:
 		return fmt.Errorf("upstream '%s': upstreams[].evm.subscriptionSource '%s' is invalid, must be one of: %s, %s, %s", u.Id, e.SubscriptionSource, SubscriptionSourceOff, SubscriptionSourceOnDemand, SubscriptionSourceAlways)
 	}
+	switch e.FinalizedSource {
+	case "", EvmFinalizedSourceUpstream, EvmFinalizedSourceNetwork:
+	default:
+		return fmt.Errorf("upstream '%s': upstreams[].evm.finalizedSource '%s' is invalid, must be one of: %s, %s", u.Id, e.FinalizedSource, EvmFinalizedSourceUpstream, EvmFinalizedSourceNetwork)
+	}
 	pushes := e.SubscriptionSource != "" && e.SubscriptionSource != SubscriptionSourceOff
 	// A source is push only (spec §5.1): heads of any other endpoint come
 	// from the block clock.

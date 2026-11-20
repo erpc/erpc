@@ -1480,6 +1480,14 @@ type EvmUpstreamConfig struct {
 	// fetches every upstream's head. Unset: onDemand for ws/wss endpoints,
 	// off otherwise.
 	SubscriptionSource SubscriptionSourceMode `yaml:"subscriptionSource,omitempty" json:"subscriptionSource"`
+	// FinalizedSource is where this upstream's finalized block comes from:
+	// upstream (unset) polls its own finalized tag; network takes the
+	// network's finalized block, at most the upstream's own latest, and
+	// polls none, for an upstream billed per call. It then casts no
+	// finalized vote. While fewer than the served-tip quorum of the
+	// network's other voters reported their own finalized within two of
+	// this upstream's full polls, it polls its own as with upstream.
+	FinalizedSource EvmFinalizedSource `yaml:"finalizedSource,omitempty" json:"finalizedSource"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
 	DeprecatedIntegrity *UpstreamIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
@@ -1710,6 +1718,21 @@ func (u *UpstreamConfig) SubscriptionSource() SubscriptionSourceMode {
 		return SubscriptionSourceOnDemand
 	}
 	return SubscriptionSourceOff
+}
+
+// EvmFinalizedSource is where an upstream's finalized block comes from
+// (evm.finalizedSource).
+type EvmFinalizedSource string
+
+const (
+	EvmFinalizedSourceUpstream EvmFinalizedSource = "upstream"
+	EvmFinalizedSourceNetwork  EvmFinalizedSource = "network"
+)
+
+// FinalizedFromNetwork reports whether the upstream takes its finalized
+// block from its network (evm.finalizedSource: network).
+func (u *UpstreamConfig) FinalizedFromNetwork() bool {
+	return u != nil && u.Evm != nil && u.Evm.FinalizedSource == EvmFinalizedSourceNetwork
 }
 
 // IsShadow reports whether the upstream only receives copies of served

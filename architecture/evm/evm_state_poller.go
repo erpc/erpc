@@ -122,6 +122,10 @@ type EvmStatePoller struct {
 	// the three poller methods (giveUp); stateMu guards them.
 	syncingGiveUp, finalizedGiveUp, latestGiveUp giveUp
 
+	// finalizedFromNetwork: the upstream takes its finalized block from its
+	// network now (sourceFinalized), as its last full poll decided.
+	finalizedFromNetwork atomic.Bool
+
 	// Avoid making redundant calls based on a networks block time
 	// i.e. latest/finalized block is not going to change within the debounce interval
 	debounceInterval time.Duration
@@ -437,10 +441,14 @@ func (e *EvmStatePoller) poll(ctx context.Context, latestPace time.Duration) err
 		}
 	}()
 
-	// Fetch finalized block (if upstream supports)
+	// Fetch finalized block (if upstream supports), unless the upstream
+	// takes it from its network now
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if e.sourceFinalized() {
+			return
+		}
 		_, err := e.PollFinalizedBlockNumber(ctx)
 		if err != nil {
 			e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
@@ -1287,9 +1295,10 @@ func nodeFailedPoll(err error) bool {
 // poll itself runs on the app's context, so a waiter that leaves ends no
 // other waiter's poll. fetched is false when the stored one is fresh, a
 // refresh ended within maxAge, or the upstream has no finalized poll to
-// refresh: its finalized tag is given up (spec §6.8).
+// refresh: its finalized tag is given up (spec §6.8), or it takes its
+// finalized from its network (sourceFinalized).
 func (e *EvmStatePoller) RefreshFinalized(ctx context.Context, maxAge time.Duration) (fetched bool) {
-	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.givenUp(&e.finalizedGiveUp) {
+	if e.IsObjectNull() || e.finalizedBlockShared == nil || e.finalizedFromNetwork.Load() || e.givenUp(&e.finalizedGiveUp) {
 		return false
 	}
 	if maxAge <= 0 {
@@ -1432,7 +1441,9 @@ const (
 // it arrives as a push does.
 func (k HeaderKind) pushed() bool { return k == HeaderStreamed || k == HeaderCached }
 
-// PollIntake takes a bound poller's latest and finalized headers.
+// PollIntake takes a bound poller's latest and finalized headers, and
+// gives a poller that takes its finalized block from its network the
+// network's (evm.finalizedSource: network).
 type PollIntake interface {
 	// Polled takes the header a poll of latest, sent at sent, fetched;
 	// malformed: why it failed intake check 0, h then unset. passed: h
@@ -1445,6 +1456,13 @@ type PollIntake interface {
 	PolledFinalized(upstreamId string, h SourceHeader)
 	// PushSource reports whether upstreamId pushes its heads now.
 	PushSource(upstreamId string) bool
+	// FinalizedQuorum reports whether the served-tip quorum of the
+	// network's voters, counting those that take their finalized from
+	// the network, is met by those that poll their own and reported it
+	// within the last within.
+	FinalizedQuorum(within time.Duration) bool
+	// Finalized is the network's served finalized block, 0 while unknown.
+	Finalized() int64
 }
 
 // BindIntake sends this poller's latest headers to intake. An upstream
@@ -1845,6 +1863,9 @@ func absInt64(v int64) int64 {
 }
 
 func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
+	if e.finalizedFromNetwork.Load() {
+		return e.FinalizedBlock(), nil
+	}
 	if e.givenUp(&e.finalizedGiveUp) {
 		return 0, nil
 	}
@@ -1875,6 +1896,49 @@ func (e *EvmStatePoller) finalizedDebounce() time.Duration {
 		return max(d, e.backoff())
 	}
 	return d
+}
+
+// sourceFinalized decides, at each full poll, whether an upstream set to
+// take its finalized block from its network (evm.finalizedSource: network)
+// does now: while the served-tip quorum of its network's voters is met by
+// those that poll their own finalized and reported it within two of this
+// upstream's full polls, so the network's is never older than its own poll
+// would make it. It then polls none and reports its finalized to the
+// tracker, so routing's finalization lag reads it too. Otherwise it polls
+// its own, as any upstream does: a network whose other voters went stale
+// or left never holds Finalized at a number no poll moves.
+func (e *EvmStatePoller) sourceFinalized() bool {
+	cfg := e.upstream.Config()
+	src := e.pollSrc.Load()
+	on := cfg.FinalizedFromNetwork() && src != nil &&
+		src.intake.FinalizedQuorum(2*max(cfg.Evm.StatePollerInterval.Duration(), e.finalizedDebounce()))
+	if e.finalizedFromNetwork.Swap(on) != on {
+		e.logger.Info().Bool("fromNetwork", on).Msg("upstream finalized block source changed")
+	}
+	if !on {
+		return false
+	}
+	if fin := e.FinalizedBlock(); fin > 0 {
+		e.tracker.SetFinalizedBlockNumber(e.upstream, fin)
+	}
+	return true
+}
+
+// networkFinalized is the finalized block of an upstream that takes it
+// from its network: the network's, at most the upstream's own latest.
+func (e *EvmStatePoller) networkFinalized() int64 {
+	src := e.pollSrc.Load()
+	if src == nil {
+		return 0
+	}
+	return min(src.intake.Finalized(), e.latestBlockShared.GetValue())
+}
+
+// FinalizedFromNetwork reports whether the upstream takes its finalized
+// block from its network now (sourceFinalized): it has no finalized poll,
+// and its finalized is no attestation of its own.
+func (e *EvmStatePoller) FinalizedFromNetwork() bool {
+	return e.finalizedFromNetwork.Load()
 }
 
 // fetchFinalized fetches the upstream's finalized block: the shared
@@ -1996,8 +2060,13 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64, at time.Time) 
 // have no finalized tag (finalizedGiveUp given) reports latest −
 // fallbackFinalityDepth instead: a tagged upstream reports 0 until its tag
 // first answers, so a derived guess never enters the Head.Finalized ballot
-// on a chain whose real finality is slower (#1079).
+// on a chain whose real finality is slower (#1079). An upstream that takes
+// its finalized from its network reports the network's, at most its own
+// latest (sourceFinalized).
 func (e *EvmStatePoller) FinalizedBlock() int64 {
+	if e.finalizedFromNetwork.Load() {
+		return e.networkFinalized()
+	}
 	if fin := e.finalizedBlockShared.GetValue(); fin > 0 {
 		return fin
 	}
@@ -2016,9 +2085,10 @@ func (e *EvmStatePoller) FinalizedBlock() int64 {
 
 // DerivedFinalized is FinalizedBlock while the upstream has no finalized
 // tag, latest − the derived finality depth (spec §6.4); ok false while it
-// has the tag.
+// has the tag, or takes its finalized from its network, which is no
+// evidence of its own.
 func (e *EvmStatePoller) DerivedFinalized() (number int64, ok bool) {
-	if !e.FinalizedTagless() {
+	if !e.FinalizedTagless() || e.finalizedFromNetwork.Load() {
 		return 0, false
 	}
 	return e.FinalizedBlock(), true
@@ -2321,8 +2391,16 @@ func (e *EvmStatePoller) fallbackFinalityDepth() int64 {
 // at or below its finalized tag's answer, or, while it has none (its tag
 // refused, given up or not yet), at or below latest − the derived depth
 // (spec §6.4): an upstream still retrying its tag never makes fewer
-// blocks permanent than a tagless one.
+// blocks permanent than a tagless one. An upstream that takes its
+// finalized from its network reads FinalizedBlock.
 func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
+	if e.finalizedFromNetwork.Load() {
+		fin := e.networkFinalized()
+		if fin <= 0 {
+			return false, common.NewErrFinalizedBlockUnavailable(blockNumber)
+		}
+		return blockNumber <= fin, nil
+	}
 	latest, tagged := e.latestBlockShared.GetValue(), e.finalizedBlockShared.GetValue()
 	if latest == 0 && tagged == 0 {
 		return false, common.NewErrFinalizedBlockUnavailable(blockNumber)

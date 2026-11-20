@@ -219,6 +219,37 @@ func (in *networkIntake) PolledFinalized(upstreamId string, sh evm.SourceHeader)
 	}
 }
 
+// FinalizedQuorum reports whether the served-tip quorum of the
+// network-wide voters with a finalized tag, those that take their
+// finalized from the network counted, is met by those that poll their own
+// and reported it within the last within (evm.finalizedSource, spec §6.4):
+// the network's Finalized then moves without the others' polls.
+func (in *networkIntake) FinalizedQuorum(within time.Duration) bool {
+	var q common.ServedTipQuorum
+	if in.nw.cfg != nil {
+		q = in.nw.cfg.Evm.ServedTipQuorum()
+	}
+	voters, fresh := 0, 0
+	in.nw.voters(tipScope{}, voterQuery{kind: numberVote}).each(func(u common.Upstream, _ int64) bool {
+		sp := u.(common.EvmUpstream).EvmStatePoller()
+		if finalizedTagless(sp) {
+			return true
+		}
+		voters++
+		if !u.Config().FinalizedFromNetwork() && sp.FinalizedBlock() > 0 && time.Since(sp.FinalizedReportAt()) <= within {
+			fresh++
+		}
+		return true
+	})
+	return voters > 0 && fresh >= q.Of(voters)
+}
+
+// Finalized is the network-wide lane's served Finalized: the finalized
+// block of a voter that takes its own from the network.
+func (in *networkIntake) Finalized() int64 {
+	return in.nw.servedTipAll.published().Finalized
+}
+
 // pollsFailing reports whether upstreamId's polls of latest are failing
 // (PollFailed).
 func (in *networkIntake) pollsFailing(upstreamId string) bool {
@@ -655,12 +686,12 @@ func (s voterSet) count() int {
 }
 
 // attesting is how many of the set's voters can attest a finalized block
-// (no finalized tag given up, spec §6.4); every voter when none can, as
-// the derived values then decide.
+// (finalizedUnattested, spec §6.4); every voter when none can, as the
+// derived values then decide.
 func (s voterSet) attesting() int {
 	n := 0
 	s.each(func(u common.Upstream, _ int64) bool {
-		if !finalizedTagless(u.(common.EvmUpstream).EvmStatePoller()) {
+		if !finalizedUnattested(u.(common.EvmUpstream).EvmStatePoller()) {
 			n++
 		}
 		return true
@@ -674,7 +705,7 @@ func (s voterSet) attesting() int {
 // live reports whether live heads, benched or not, rank best: a cap-only
 // set gives the regression guard no live reference.
 func (s voterSet) live() bool {
-	return s.best >= 0 && s.best%taglessRank <= 1
+	return s.best >= 0 && s.best%unattestedRank <= 1
 }
 
 // each calls yield with each voter, in routing order, and its head on the
@@ -705,8 +736,8 @@ func (s voterSet) list() []common.Upstream {
 // upstream with no head on the axis: non-EVM, no state poller, syncing, or
 // no head yet. Otherwise rank orders the voters, and a voter set counts
 // only the lowest rank present: 0 live, 1 benched, 2 static cap, 3 benched
-// static cap; on the finalized axis, each plus taglessRank for a voter
-// whose finalized tag is given up.
+// static cap; on the finalized axis, each plus unattestedRank for a voter
+// whose finalized is no attestation of its own (finalizedUnattested).
 //
 // STATIC-CAP UPSTREAMS DO NOT VOTE while any live head is present. An upstream
 // configured with `blockAvailability.upper.exactBlock` below the chain's head is
@@ -728,7 +759,9 @@ func (s voterSet) list() []common.Upstream {
 // can attest one (spec §6.4): its finalized tag was refused until given up
 // (its own answers, no chain list), so its vote is a derived depth or a
 // number stored before, which no poll refreshes. Measured on celo, such a
-// voter, Prism's, was one of two and held Finalized 9-13 min behind.
+// voter, Prism's, was one of two and held Finalized 9-13 min behind. Nor
+// does a voter that takes its finalized from the network: its vote is the
+// network's own Finalized.
 func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (head int64, rank int, ok bool) {
 	eu, isEvm := u.(common.EvmUpstream)
 	if !isEvm {
@@ -748,15 +781,15 @@ func tipVoterRank(u common.Upstream, finalized bool, tracker *health.Tracker) (h
 	if tracker != nil && tracker.IsHeadBenched(u) {
 		rank++
 	}
-	if finalized && finalizedTagless(sp) {
-		rank += taglessRank
+	if finalized && finalizedUnattested(sp) {
+		rank += unattestedRank
 	}
 	return head, rank, true
 }
 
-// taglessRank is the rank offset of a voter without a finalized tag on the
-// finalized axis (tipVoterRank).
-const taglessRank = 4
+// unattestedRank is the rank offset on the finalized axis of a voter whose
+// finalized is no attestation of its own (tipVoterRank).
+const unattestedRank = 4
 
 // finalizedTagless reports whether sp's finalized tag is given up and has
 // not answered since: its finalized is derived, no attestation.
@@ -765,8 +798,21 @@ func finalizedTagless(sp common.EvmStatePoller) bool {
 	return ok && p.FinalizedTagless()
 }
 
+// finalizedUnattested reports whether sp's finalized is no attestation of
+// its own: its tag is given up (finalizedTagless), or it takes the
+// network's (evm.finalizedSource: network). Such a voter casts no
+// finalized vote while any voter attests, and no finality step waits on
+// it (pollFinalized).
+func finalizedUnattested(sp common.EvmStatePoller) bool {
+	if finalizedTagless(sp) {
+		return true
+	}
+	p, ok := sp.(interface{ FinalizedFromNetwork() bool })
+	return ok && p.FinalizedFromNetwork()
+}
+
 // tipRanks counts a voter set's candidates by tipVoterRank.
-type tipRanks [2 * taglessRank]int
+type tipRanks [2 * unattestedRank]int
 
 // voterSnapshot is the network-wide voters read from one eligible set
 // (Network.eligibleSet).

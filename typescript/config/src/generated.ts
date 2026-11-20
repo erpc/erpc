@@ -1235,6 +1235,16 @@ export interface EvmUpstreamConfig {
    */
   subscriptionSource?: SubscriptionSourceMode;
   /**
+   * FinalizedSource is where this upstream's finalized block comes from:
+   * upstream (unset) polls its own finalized tag; network takes the
+   * network's finalized block, at most the upstream's own latest, and
+   * polls none, for an upstream billed per call. It then casts no
+   * finalized vote. While fewer than the served-tip quorum of the
+   * network's other voters reported their own finalized within two of
+   * this upstream's full polls, it polls its own as with upstream.
+   */
+  finalizedSource?: EvmFinalizedSource;
+  /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.
    */
@@ -1329,6 +1339,13 @@ export type SubscriptionSourceMode = string;
 export const SubscriptionSourceOff: SubscriptionSourceMode = "off";
 export const SubscriptionSourceOnDemand: SubscriptionSourceMode = "onDemand";
 export const SubscriptionSourceAlways: SubscriptionSourceMode = "always";
+/**
+ * EvmFinalizedSource is where an upstream's finalized block comes from
+ * (evm.finalizedSource).
+ */
+export type EvmFinalizedSource = string;
+export const EvmFinalizedSourceUpstream: EvmFinalizedSource = "upstream";
+export const EvmFinalizedSourceNetwork: EvmFinalizedSource = "network";
 export interface FailsafeConfig {
   matchMethod?: string;
   matchFinality?: DataFinalityState[];
@@ -3107,6 +3124,13 @@ export interface EvmHead {
    * head's anchor lowered it) or unknown.
    */
   latestat: any /* time.Time */;
+  /**
+   * Anchored is set when the read follows the cache's fresh head
+   * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+   * read of latest is served from the cache or by number, never sent to
+   * an upstream as the tag. Unset with no cache head, or a stale one.
+   */
+  anchored: boolean;
   /**
    * NextAt is the earliest time the lane's next block may come: LatestAt
    * plus the shorter of half a block and the shortest recent step of the

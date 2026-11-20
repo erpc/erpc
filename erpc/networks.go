@@ -1051,7 +1051,7 @@ func (n *Network) refreshFinalized(ctx context.Context, sel string) {
 	fresh := 0
 	s.each(func(u common.Upstream, _ int64) bool {
 		sp := u.(common.EvmUpstream).EvmStatePoller()
-		if sp.FinalizedBlock() > 0 && !finalizedTagless(sp) && time.Since(sp.FinalizedReportAt()) <= w {
+		if sp.FinalizedBlock() > 0 && !finalizedUnattested(sp) && time.Since(sp.FinalizedReportAt()) <= w {
 			fresh++
 		}
 		return true
@@ -1128,7 +1128,8 @@ func (n *Network) goPollFinalized(ctx context.Context, l *servedTipLane, sel str
 // finalized number yet polls at its cadence, so a cold instance gets its
 // first ballot, or gives a tagless voter's tag up, as soon as it would
 // with every voter polled. Each poller joins a poll in flight, and has
-// none once its finalized tag is given up.
+// none once its finalized tag is given up or while it takes its finalized
+// from the network (evm.finalizedSource).
 func (n *Network) pollFinalized(ctx context.Context, sel string, s voterSet, q common.ServedTipQuorum, w time.Duration, slots int, step int64) {
 	ctx, cancel := context.WithTimeout(ctx, w)
 	defer cancel()
@@ -1153,7 +1154,7 @@ func (n *Network) pollFinalized(ctx context.Context, sel string, s voterSet, q c
 		var below []voter
 		s.each(func(u common.Upstream, _ int64) bool {
 			switch sp := u.(common.EvmUpstream).EvmStatePoller(); {
-			case finalizedTagless(sp):
+			case finalizedUnattested(sp):
 			case sp.FinalizedBlock() >= top:
 				lacks--
 			case sp.FinalizedReportAt().Before(at):

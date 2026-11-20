@@ -340,6 +340,12 @@ export interface ServerConfig {
     responseHeaders?: {
         [key: string]: string;
     };
+    /**
+     * MaxRequestBodySize caps one HTTP request body in bytes, counted after
+     * gzip decompression (0 = unlimited). An over-limit body gets HTTP 413
+     * and none of it runs.
+     */
+    maxRequestBodySize?: number;
     webSocket?: WebSocketServerConfig;
     /**
      * ExecutionHeaders controls the per-request diagnostic headers
@@ -860,6 +866,7 @@ export interface NetworkDefaults {
     multiplexing?: boolean;
     cacheKeySuffix?: string;
     failover?: FailoverConfig;
+    maxClientBatchSize?: number;
 }
 /**
  * FailoverConfig controls per-request escalation to fallback-tier upstreams,
@@ -1201,6 +1208,16 @@ export interface EvmUpstreamConfig {
      */
     subscriptionSource?: SubscriptionSourceMode;
     /**
+     * FinalizedSource is where this upstream's finalized block comes from:
+     * upstream (unset) polls its own finalized tag; network takes the
+     * network's finalized block, at most the upstream's own latest, and
+     * polls none, for an upstream billed per call. It then casts no
+     * finalized vote. While fewer than the served-tip quorum of the
+     * network's other voters reported their own finalized within two of
+     * this upstream's full polls, it polls its own as with upstream.
+     */
+    finalizedSource?: EvmFinalizedSource;
+    /**
      * Deprecated: never read at runtime. Configure data integrity via the network
      * `integrity` block instead. Retained only so existing YAML still parses.
      */
@@ -1295,6 +1312,13 @@ export type SubscriptionSourceMode = string;
 export declare const SubscriptionSourceOff: SubscriptionSourceMode;
 export declare const SubscriptionSourceOnDemand: SubscriptionSourceMode;
 export declare const SubscriptionSourceAlways: SubscriptionSourceMode;
+/**
+ * EvmFinalizedSource is where an upstream's finalized block comes from
+ * (evm.finalizedSource).
+ */
+export type EvmFinalizedSource = string;
+export declare const EvmFinalizedSourceUpstream: EvmFinalizedSource;
+export declare const EvmFinalizedSourceNetwork: EvmFinalizedSource;
 export interface FailsafeConfig {
     matchMethod?: string;
     matchFinality?: DataFinalityState[];
@@ -1756,6 +1780,14 @@ export interface NetworkConfig {
      * network id are escaped; see CachePartitionKey.
      */
     cacheKeySuffix?: string;
+    /**
+     * MaxClientBatchSize caps how many requests one client JSON-RPC batch may
+     * address to this network. Unset inherits networkDefaults; unset there or
+     * 0 means no limit. An over-limit batch runs none of its requests.
+     * Distinct from upstream jsonRpc.batchMaxSize, which shapes the batches
+     * eRPC itself sends to an upstream.
+     */
+    maxClientBatchSize?: number;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2162,15 +2194,17 @@ export interface EvmServedTipConfig {
     guaranteedFor?: string[];
     /**
      * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-     * (the second-highest live head) the pick may fall before it is treated as
-     * a poisoned ballot rather than as reality. While a pick is below that
-     * bound the network keeps serving its last corroborated pick (in-process,
-     * for at most one minute, then it fails open and serves the pick as
-     * computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
-     * rollback tolerance the state poller and health tracker apply to a
-     * retreating head, so all three layers agree on what counts as a genuine
-     * deep correction. -1 disables the regression guard entirely; no other
-     * negative value is accepted.
+     * (the second-highest live head) the finalized pick may fall before it is
+     * treated as a poisoned ballot rather than as reality. While a pick is
+     * below that bound the network keeps serving its last corroborated pick
+     * (in-process, for at most one minute, then it fails open and serves the
+     * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) - the
+     * same rollback tolerance the state poller and health tracker apply to a
+     * retreating head - widened to twice the lane's typical finality step
+     * (the lower median of its last eight finalized advances), so a chain
+     * that finalizes in larger batches does not hold when one voter lags a
+     * batch. -1 disables the regression guard entirely; no other negative
+     * value is accepted.
      */
     maxRegressionBlocks?: number;
     /**
@@ -3066,6 +3100,13 @@ export interface EvmHead {
      * head's anchor lowered it) or unknown.
      */
     latestat: any;
+    /**
+     * Anchored is set when the read follows the cache's fresh head
+     * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+     * read of latest is served from the cache or by number, never sent to
+     * an upstream as the tag. Unset with no cache head, or a stale one.
+     */
+    anchored: boolean;
     /**
      * NextAt is the earliest time the lane's next block may come: LatestAt
      * plus the shorter of half a block and the shortest recent step of the

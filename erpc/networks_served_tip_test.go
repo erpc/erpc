@@ -54,6 +54,8 @@ type servedTipFixture struct {
 	// statePollerInterval sets evm.statePollerInterval; the tracker credits a
 	// head for one poll period after each report.
 	statePollerInterval time.Duration
+	// finalizedSource sets evm.finalizedSource.
+	finalizedSource common.EvmFinalizedSource
 	// endpoint, when set, replaces http://<id>.localhost.
 	endpoint string
 }
@@ -103,7 +105,7 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 		if f.endpoint != "" {
 			endpoint = f.endpoint
 		}
-		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce), StatePollerInterval: common.Duration(f.statePollerInterval)}
+		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce), StatePollerInterval: common.Duration(f.statePollerInterval), FinalizedSource: f.finalizedSource}
 		if f.upperExactBlock > 0 {
 			upper := f.upperExactBlock
 			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{
@@ -1954,8 +1956,12 @@ func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 // poll outlasts the shared counter's foreground budget (UpdateMaxWait), so
 // the next request takes their answer. While q reports are fresh the
 // refresh polls one voter. A voter whose finalized tag is given up has no
-// finalized poll and gets none.
-func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
+// finalized poll and gets none. Nor does one that takes its finalized
+// from the network (evm.finalizedSource: network), from its timed poll or
+// any refresh, while q voters that poll their own reported within two of
+// its full polls: it reports the network's Finalized, at most its own
+// latest. With fewer, it polls its own again.
+func TestServedTip_FinalizedRefreshPassesOverUnattestedVoters(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
@@ -1996,6 +2002,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 		finalizedMock(id, at(1), slowPoll, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270f","timestamp":"0x6702a8e1"}}`)
 		finalizedMock(id, at(0), 0, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270e","timestamp":"0x6702a8e0"}}`)
 	}
+	finalizedMock("network", always, 0, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x2710","timestamp":"0x6702a8e2"}}`)
 	finalizedPolls := func() map[string]int {
 		mu.Lock()
 		defer mu.Unlock()
@@ -2010,8 +2017,13 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 		{id: "tagless", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
 		{id: "fin-a", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
 		{id: "fin-b", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
+		{id: "network", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond, statePollerInterval: 10 * time.Second, finalizedSource: common.EvmFinalizedSourceNetwork},
 	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorum(2)})
 	tagless := ups[0].EvmStatePoller()
+	// As a registry's network does: every poller is bound to intake, which
+	// gives a network-sourced one the network's Finalized.
+	network.sources.start(ctx)
+	require.NoError(t, network.sources.sync(ctx))
 	require.Eventually(t, func() bool {
 		_, _ = tagless.PollFinalizedBlockNumber(ctx)
 		return tagless.GetDiagnostics().SkipFinalizedCheck
@@ -2021,6 +2033,16 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	setServedTipFinalized(t, ups[1], 9_998)
 	setServedTipFinalized(t, ups[2], 9_998)
 	time.Sleep(10 * time.Millisecond) // past every finalized debounce
+
+	// The network-sourced voter's timed poll polls no finalized while
+	// fin-a and fin-b, q of the 3 voters with a tag, reported theirs within
+	// two of its full polls; it reports the network's Finalized.
+	sourced := ups[3]
+	fromBoot := finalizedPolls()["network"]
+	_ = sourced.EvmStatePoller().Poll(ctx)
+	assert.Equal(t, fromBoot, finalizedPolls()["network"], "the timed poll polls no finalized of a network-sourced upstream")
+	assert.Eventually(t, func() bool { return sourced.EvmStatePoller().FinalizedBlock() == 9_998 }, 3*time.Second, 10*time.Millisecond,
+		"a network-sourced upstream reports the network's Finalized, not its own tag's 10000")
 
 	// Reads above Finalized poll no finalized (spec §6.4 Finality): only
 	// the full poll and the finalized-tag refresh move it. The vendors
@@ -2066,6 +2088,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
 		"at the idle edge the refresh polls both voters with a finalized tag (polls %v → %v)", before, now)
 	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
+	assert.Equal(t, before["network"], now["network"], "a network-sourced upstream is not polled")
 
 	// Both reports are fresh now: each request takes Finalized at once,
 	// and once a report is past its poll cadence one starts the
@@ -2084,4 +2107,27 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
 		"the step reaches both voters (polls %v → %v)", before, now)
 	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
+	assert.Equal(t, fromBoot, now["network"], "no refresh, step or timed poll polled the network-sourced upstream")
+
+	// Its finalized is the network's at most its own latest, for every
+	// reader: routing, integrity, availability, response finality.
+	sp := sourced.EvmStatePoller()
+	assert.Equal(t, int64(10_000), sp.FinalizedBlock(), "a network-sourced upstream follows the network's Finalized")
+	sp.RewindLatestBlock(9_999)
+	assert.Equal(t, int64(9_999), sp.FinalizedBlock(), "a network-sourced upstream's finalized is at most its own latest")
+	final, err := sourced.EvmIsBlockFinalized(ctx, 10_000, false)
+	require.NoError(t, err)
+	assert.False(t, final, "a block above its own latest is not final on the network-sourced upstream")
+
+	// Fallback: with fin-b out of the voters, 1 of the 2 voters with a tag
+	// polls its own, below q: the network-sourced upstream polls its own
+	// again until q return, so Finalized never waits on stale voters.
+	ups[2].EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+	_ = sp.Poll(ctx)
+	assert.Greater(t, finalizedPolls()["network"], fromBoot, "below q fresh voters a network-sourced upstream polls its own finalized")
+	assert.Equal(t, int64(10_000), sp.FinalizedBlock(), "below q it reports its own tag's answer")
+	ups[2].EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+	fallback := finalizedPolls()["network"]
+	_ = sp.Poll(ctx)
+	assert.Equal(t, fallback, finalizedPolls()["network"], "with q fresh voters back it polls none again")
 }
