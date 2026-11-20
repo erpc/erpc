@@ -3371,16 +3371,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					switch {
 					case refusal.Rule == common.HeadBand && evm.AnswersAtOnce(effectiveReq):
-						// An eth_getBlockByNumber above Latest asks only
-						// upstreams whose evidence reaches the block, then
+						// An eth_getBlockByNumber above Latest asks the
+						// upstreams whose evidence reaches the block, else,
+						// on the leg's first miss, its one retry, then
 						// takes the answer, the truthful null included: no
 						// other upstream, leg or network retry asks again
 						// (spec §6.4 band). Swept, a block no vendor served
 						// yet cost every upstream a call, and the ones that
 						// hold such a read until the block exists held it
 						// seconds.
+						next := n.bandHolders(loopCtx, effectiveReq, attempted, refusal.Block, verdict == common.MissRetry)
 						verdict = common.MissFinal
-						if next := n.bandHolders(loopCtx, effectiveReq, attempted, refusal.Block); next != nil {
+						if next != nil {
 							verdict, nextUpstream = common.MissRetry, next
 						} else {
 							// The truthful null, whatever form the miss

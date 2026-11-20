@@ -123,8 +123,10 @@ func IsRangeQuery(method string) bool {
 // whose one head fetch every such read shares, and is decided again on
 // the ceiling the wait saw: still above it, n is future; Latest stays the
 // request's own (spec §7). Without wait, a near n above a report 1 bt old
-// or older is in the band, the cheaper way to be wrong. A band block is
-// the lane's read ahead too, in the background.
+// or older, or at most reachMargin above Reach now, is in the band, the
+// cheaper way to be wrong: the chain may have made it since the reports,
+// and a node's head can lead its report. A band block is the lane's read
+// ahead too, in the background.
 func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64, wait bool) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt, cold := health.ColdBlockTime, true
@@ -155,6 +157,10 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 			if v.Rule == common.HeadStale {
 				v.Rule = common.HeadFuture
 			}
+		case !wait:
+			if d, ok := aboveReach(h, bt, n, now); !ok || d <= reachMargin {
+				v.Rule = common.HeadBand
+			}
 		}
 	}
 	if v.Rule == common.HeadStale {
@@ -167,18 +173,27 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 	return v
 }
 
-// nearFuture reports whether n, above h's ceiling, waits for it (spec §6.4
-// near future): n is at most W of chain plus 2 blocks above where the
-// counted reports put the chain now, the report furthest along once the
-// blocks made since each are counted (Reach). The margin is the block the
-// chain may have made right after a report, and one for a reporter that
-// trailed it by a block. A report with no time bounds nothing.
-func nearFuture(h common.EvmHead, bt time.Duration, n int64, now time.Time) bool {
+// reachMargin is the blocks above Reach that the chain may have made
+// already: the block right after a report, and one for a reporter that
+// trailed it by a block.
+const reachMargin = 2
+
+// aboveReach is how many blocks n is above where the counted reports put
+// the chain now, the report furthest along once the blocks made since
+// each are counted (Reach); ok is false while a report has no time, which
+// bounds nothing.
+func aboveReach(h common.EvmHead, bt time.Duration, n int64, now time.Time) (int64, bool) {
 	if h.ReachAt.IsZero() {
-		return true
+		return 0, false
 	}
-	reach := h.Reach + int64(max(0, now.Sub(h.ReachAt))/bt)
-	return n-reach <= int64(health.FreshnessWindow(bt)/bt)+2
+	return n - h.Reach - int64(max(0, now.Sub(h.ReachAt))/bt), true
+}
+
+// nearFuture reports whether n, above h's ceiling, waits for it (spec §6.4
+// near future): n is at most W of chain plus reachMargin above Reach now.
+func nearFuture(h common.EvmHead, bt time.Duration, n int64, now time.Time) bool {
+	d, ok := aboveReach(h, bt, n, now)
+	return !ok || d <= int64(health.FreshnessWindow(bt)/bt)+reachMargin
 }
 
 // EmptyResultBeyondConfidence reports whether an empty answer for rq is its answer rather
