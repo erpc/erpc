@@ -1458,9 +1458,9 @@ type PollIntake interface {
 	PushSource(upstreamId string) bool
 	// FinalizedQuorum reports whether the served-tip quorum of the
 	// network's voters, counting those that take their finalized from
-	// the network, is met by those that poll their own and reported it
-	// within the last within.
-	FinalizedQuorum(within time.Duration) bool
+	// the network, is met by those that poll their own and follow the
+	// chain: a fresh report, a finalized near their own head.
+	FinalizedQuorum() bool
 	// Finalized is the network's served finalized block, 0 while unknown.
 	Finalized() int64
 }
@@ -1898,20 +1898,24 @@ func (e *EvmStatePoller) finalizedDebounce() time.Duration {
 	return d
 }
 
+// FinalizedPollPeriod is how often the full poll refreshes the upstream's
+// finalized block at most: its state poll interval or its finalized
+// debounce, the longer.
+func (e *EvmStatePoller) FinalizedPollPeriod() time.Duration {
+	return max(e.upstream.Config().Evm.StatePollerInterval.Duration(), e.finalizedDebounce())
+}
+
 // sourceFinalized decides, at each full poll, whether an upstream set to
 // take its finalized block from its network (evm.finalizedSource: network)
-// does now: while the served-tip quorum of its network's voters is met by
-// those that poll their own finalized and reported it within two of this
-// upstream's full polls, so the network's is never older than its own poll
-// would make it. It then polls none and reports its finalized to the
-// tracker, so routing's finalization lag reads it too. Otherwise it polls
-// its own, as any upstream does: a network whose other voters went stale
-// or left never holds Finalized at a number no poll moves.
+// does now: while the network's voters that poll their own finalized and
+// follow the chain meet the served-tip quorum (PollIntake.FinalizedQuorum).
+// It then polls none and reports its finalized to the tracker, so
+// routing's finalization lag reads it too. Otherwise it polls its own, as
+// any upstream does: a network whose other voters went stale, stopped
+// finalizing or left never holds Finalized at a number no poll moves.
 func (e *EvmStatePoller) sourceFinalized() bool {
-	cfg := e.upstream.Config()
 	src := e.pollSrc.Load()
-	on := cfg.FinalizedFromNetwork() && src != nil &&
-		src.intake.FinalizedQuorum(2*max(cfg.Evm.StatePollerInterval.Duration(), e.finalizedDebounce()))
+	on := e.upstream.Config().FinalizedFromNetwork() && src != nil && src.intake.FinalizedQuorum()
 	if e.finalizedFromNetwork.Swap(on) != on {
 		e.logger.Info().Bool("fromNetwork", on).Msg("upstream finalized block source changed")
 	}
@@ -2458,6 +2462,9 @@ func (e *EvmStatePoller) GetDiagnostics() *common.EvmStatePollerDiagnostics {
 		FinalizedBlockSuccessfulOnce: e.finalizedGiveUp.succeeded,
 	}
 	e.stateMu.RUnlock()
+	if e.finalizedFromNetwork.Load() {
+		diag.FinalizedBlock = e.networkFinalized()
+	}
 
 	if diag.SkipSyncingCheck {
 		diag.SyncingCheckError = "syncing check given up after consecutive refusals (method may not be supported); retried every " + PollerGiveUpExpiry.Load().String()

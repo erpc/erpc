@@ -1146,7 +1146,7 @@ func (i *covPollerIntake) Polled(_ string, sh SourceHeader, malformed error, _ H
 func (i *covPollerIntake) PollFailed(string, time.Time)         { i.failed.Add(1) }
 func (i *covPollerIntake) PolledFinalized(string, SourceHeader) {}
 func (i *covPollerIntake) PushSource(string) bool               { return false }
-func (i *covPollerIntake) FinalizedQuorum(time.Duration) bool   { return false }
+func (i *covPollerIntake) FinalizedQuorum() bool                { return false }
 func (i *covPollerIntake) Finalized() int64                     { return 0 }
 
 // A counter another path keeps fresh meets a number need, but never a hash

@@ -221,27 +221,46 @@ func (in *networkIntake) PolledFinalized(upstreamId string, sh evm.SourceHeader)
 
 // FinalizedQuorum reports whether the served-tip quorum of the
 // network-wide voters with a finalized tag, those that take their
-// finalized from the network counted, is met by those that poll their own
-// and reported it within the last within (evm.finalizedSource, spec §6.4):
-// the network's Finalized then moves without the others' polls.
-func (in *networkIntake) FinalizedQuorum(within time.Duration) bool {
-	var q common.ServedTipQuorum
-	if in.nw.cfg != nil {
-		q = in.nw.cfg.Evm.ServedTipQuorum()
+// finalized from the network counted, is met by voters that poll their own
+// and follow the chain (evm.finalizedSource, spec §6.4): the network's
+// Finalized then moves without the others' polls. A voter follows when it
+// reported within two of its own finalized polls plus W, and its finalized
+// trails its own latest by at most twice the network-wide lane's learned
+// finality step and depth plus the blocks of that poll period. A node that
+// stopped finalizing still answers, and its same answer dates its report
+// anew: only its distance below its own head shows it. With no step
+// learned yet no voter follows, so the network-sourced voters poll, and
+// the advances of their votes teach the step.
+func (in *networkIntake) FinalizedQuorum() bool {
+	n := in.nw
+	step, depth := n.servedTipAll.finalizedStepSize.Load(), n.servedTipAll.finalizedStepDepth.Load()
+	if step <= 0 {
+		return false
 	}
-	voters, fresh := 0, 0
-	in.nw.voters(tipScope{}, voterQuery{kind: numberVote}).each(func(u common.Upstream, _ int64) bool {
+	var q common.ServedTipQuorum
+	if n.cfg != nil {
+		q = n.cfg.Evm.ServedTipQuorum()
+	}
+	bt, w := n.blockTimeOrCold(), health.FreshnessWindow(n.EvmBlockTime())
+	voters, following := 0, 0
+	n.voters(tipScope{}, voterQuery{kind: numberVote}).each(func(u common.Upstream, _ int64) bool {
 		sp := u.(common.EvmUpstream).EvmStatePoller()
 		if finalizedTagless(sp) {
 			return true
 		}
 		voters++
-		if !u.Config().FinalizedFromNetwork() && sp.FinalizedBlock() > 0 && time.Since(sp.FinalizedReportAt()) <= within {
-			fresh++
+		p, ok := sp.(interface{ FinalizedPollPeriod() time.Duration })
+		if !ok || u.Config().FinalizedFromNetwork() {
+			return true
+		}
+		period, fin := p.FinalizedPollPeriod(), sp.FinalizedBlock()
+		if fin > 0 && time.Since(sp.FinalizedReportAt()) <= 2*period+w &&
+			sp.LatestBlock()-fin <= 2*(step+depth+int64(period/bt)) {
+			following++
 		}
 		return true
 	})
-	return voters > 0 && fresh >= q.Of(voters)
+	return voters > 0 && following >= q.Of(voters)
 }
 
 // Finalized is the network-wide lane's served Finalized: the finalized

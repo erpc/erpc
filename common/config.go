@@ -1485,8 +1485,9 @@ type EvmUpstreamConfig struct {
 	// network's finalized block, at most the upstream's own latest, and
 	// polls none, for an upstream billed per call. It then casts no
 	// finalized vote. While fewer than the served-tip quorum of the
-	// network's other voters reported their own finalized within two of
-	// this upstream's full polls, it polls its own as with upstream.
+	// network's other voters follow the chain on their own polls (a fresh
+	// report for their poll period, a finalized near their own head), it
+	// polls its own as with upstream.
 	FinalizedSource EvmFinalizedSource `yaml:"finalizedSource,omitempty" json:"finalizedSource"`
 	// Deprecated: never read at runtime. Configure data integrity via the network
 	// `integrity` block instead. Retained only so existing YAML still parses.
