@@ -98,24 +98,12 @@ func RequestRangeEndSlot(ctx context.Context, r *common.NormalizedRequest, start
 
 	switch method {
 	case "getBlocks":
-		if len(rpcReq.Params) >= 2 {
-			// Commitment injection appends the options object where an omitted
-			// end would sit ([start] becomes [start, {options}]), so a trailing
-			// object means "no end named" and the range extends to the tip.
-			// Explicit JSON null is the same omitted end ([start, null] or
-			// [start, null, {options}]) — do not fail-open past the upper gate.
-			if rpcReq.Params[1] != nil {
-				if _, isOptions := rpcReq.Params[1].(map[string]interface{}); !isOptions {
-					// A present-but-invalid end (fractional, string, negative) is
-					// not ours to interpret — fail open and let the node answer
-					// -32602.
-					named, ok := toInt64Exact(rpcReq.Params[1])
-					if !ok || named < 0 {
-						return 0, false, false
-					}
-					return named, false, true
-				}
-			}
+		if named, present, valid := getBlocksEndParam(rpcReq.Params); !valid {
+			// A present-but-invalid end (fractional, string, negative) is not
+			// ours to interpret — fail open and let the node answer -32602.
+			return 0, false, false
+		} else if present {
+			return named, false, true
 		}
 		if limit := start + maxGetBlocksRange; latest <= 0 || limit <= latest {
 			return limit, false, true
@@ -137,6 +125,26 @@ func RequestRangeEndSlot(ctx context.Context, r *common.NormalizedRequest, start
 		return latest, true, true
 	}
 	return start, false, true
+}
+
+// getBlocksEndParam reads getBlocks' end slot, param 1. Commitment injection
+// appends the options object where an omitted end would sit ([start] becomes
+// [start, {options}]), so a trailing object means "no end named" and the
+// range extends to the tip. Explicit JSON null is the same omitted end
+// ([start, null] or [start, null, {options}]). valid is false when an end is
+// present but is not a slot.
+func getBlocksEndParam(params []interface{}) (end int64, present, valid bool) {
+	if len(params) < 2 || params[1] == nil {
+		return 0, false, true
+	}
+	if _, isOptions := params[1].(map[string]interface{}); isOptions {
+		return 0, false, true
+	}
+	named, ok := toInt64Exact(params[1])
+	if !ok || named < 0 {
+		return 0, true, false
+	}
+	return named, true, true
 }
 
 // RequestLowerBoundSlot extracts the slot a request asks us to read at or

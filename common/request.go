@@ -1691,6 +1691,22 @@ func (r *NormalizedRequest) ReserveUpstream(upstream Upstream) bool {
 	return r.reserveLocked(upstream)
 }
 
+// Reserved reports whether this request selected upstream and holds it: the
+// attempt is in flight or answered for good. A cancelled or retryable miss
+// releases it.
+func (r *NormalizedRequest) Reserved(upstream Upstream) bool {
+	if r == nil {
+		return false
+	}
+	r.upstreamMutex.Lock()
+	defer r.upstreamMutex.Unlock()
+	if r.ConsumedUpstreams == nil {
+		return false
+	}
+	_, ok := r.ConsumedUpstreams.Load(upstream)
+	return ok
+}
+
 // Untried reports whether NextUpstream may still select upstream for a
 // first answer: selectable, not consumed, and with no answer of it stored.
 func (r *NormalizedRequest) Untried(upstream Upstream) bool {
