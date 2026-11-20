@@ -2133,6 +2133,9 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.SubscriptionSource == "" && defaults != nil {
 		e.SubscriptionSource = defaults.SubscriptionSource
 	}
+	if e.FinalizedPollerDebounce == 0 && defaults != nil {
+		e.FinalizedPollerDebounce = defaults.FinalizedPollerDebounce
+	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {
 			e.NodeType = defaults.NodeType

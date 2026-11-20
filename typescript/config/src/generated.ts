@@ -1190,6 +1190,16 @@ export interface EvmUpstreamConfig {
    * time × dynamicBlockTimeDebounceMultiplier).
    */
   statePollerDebounce?: Duration;
+  /**
+   * FinalizedPollerDebounce is the least time between two polls of this
+   * upstream's finalized tag, from every path: the state poller, the
+   * finalized-tag refresh and its step polls. Its finalized block also
+   * moves by its answers to requests that name the tag. For an upstream
+   * billed per request on a chain whose finality moves every block, while
+   * other voters keep the network's finalized fresh. 0 (default): the
+   * regular finalized debounce.
+   */
+  finalizedPollerDebounce?: Duration;
   blockAvailability?: EvmBlockAvailabilityConfig;
   getLogsAutoSplittingRangeThreshold?: number /* int64 */;
   /**
@@ -3033,6 +3043,22 @@ export interface ExecStateSnapshot {
 }
 
 //////////
+// source: history_evidence.go
+
+/**
+ * HistoryEvidence is what an architecture tells the consensus history waivers
+ * (waiveAgreementOnEmptyOutsideRetention, waiveAgreementOnMissingData) about
+ * where data sits on its chain. A block is the chain's height unit: an EVM
+ * block number, an SVM slot. Every method fails closed: it answers 0, false or
+ * "" when it cannot tell, and the waiver then holds the quota.
+ */
+export type HistoryEvidence = any;
+
+//////////
+// source: history_evidence_evm.go
+
+
+//////////
 // source: network.go
 
 export type NetworkArchitecture = string;
@@ -3107,6 +3133,13 @@ export interface EvmHead {
    * head's anchor lowered it) or unknown.
    */
   latestat: any /* time.Time */;
+  /**
+   * Anchored is set when the read follows the cache's fresh head
+   * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+   * read of latest is served from the cache or by number, never sent to
+   * an upstream as the tag. Unset with no cache head, or a stale one.
+   */
+  anchored: boolean;
   /**
    * NextAt is the earliest time the lane's next block may come: LatestAt
    * plus the shorter of half a block and the shortest recent step of the

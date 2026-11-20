@@ -340,6 +340,12 @@ export interface ServerConfig {
     responseHeaders?: {
         [key: string]: string;
     };
+    /**
+     * MaxRequestBodySize caps one HTTP request body in bytes, counted after
+     * gzip decompression (0 = unlimited). An over-limit body gets HTTP 413
+     * and none of it runs.
+     */
+    maxRequestBodySize?: number;
     webSocket?: WebSocketServerConfig;
     /**
      * ExecutionHeaders controls the per-request diagnostic headers
@@ -860,6 +866,7 @@ export interface NetworkDefaults {
     multiplexing?: boolean;
     cacheKeySuffix?: string;
     failover?: FailoverConfig;
+    maxClientBatchSize?: number;
 }
 /**
  * FailoverConfig controls per-request escalation to fallback-tier upstreams,
@@ -1156,6 +1163,16 @@ export interface EvmUpstreamConfig {
      * time × dynamicBlockTimeDebounceMultiplier).
      */
     statePollerDebounce?: Duration;
+    /**
+     * FinalizedPollerDebounce is the least time between two polls of this
+     * upstream's finalized tag, from every path: the state poller, the
+     * finalized-tag refresh and its step polls. Its finalized block also
+     * moves by its answers to requests that name the tag. For an upstream
+     * billed per request on a chain whose finality moves every block, while
+     * other voters keep the network's finalized fresh. 0 (default): the
+     * regular finalized debounce.
+     */
+    finalizedPollerDebounce?: Duration;
     blockAvailability?: EvmBlockAvailabilityConfig;
     getLogsAutoSplittingRangeThreshold?: number;
     /**
@@ -1756,6 +1773,14 @@ export interface NetworkConfig {
      * network id are escaped; see CachePartitionKey.
      */
     cacheKeySuffix?: string;
+    /**
+     * MaxClientBatchSize caps how many requests one client JSON-RPC batch may
+     * address to this network. Unset inherits networkDefaults; unset there or
+     * 0 means no limit. An over-limit batch runs none of its requests.
+     * Distinct from upstream jsonRpc.batchMaxSize, which shapes the batches
+     * eRPC itself sends to an upstream.
+     */
+    maxClientBatchSize?: number;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -2162,15 +2187,17 @@ export interface EvmServedTipConfig {
     guaranteedFor?: string[];
     /**
      * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-     * (the second-highest live head) the pick may fall before it is treated as
-     * a poisoned ballot rather than as reality. While a pick is below that
-     * bound the network keeps serving its last corroborated pick (in-process,
-     * for at most one minute, then it fails open and serves the pick as
-     * computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the same
-     * rollback tolerance the state poller and health tracker apply to a
-     * retreating head, so all three layers agree on what counts as a genuine
-     * deep correction. -1 disables the regression guard entirely; no other
-     * negative value is accepted.
+     * (the second-highest live head) the finalized pick may fall before it is
+     * treated as a poisoned ballot rather than as reality. While a pick is
+     * below that bound the network keeps serving its last corroborated pick
+     * (in-process, for at most one minute, then it fails open and serves the
+     * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) - the
+     * same rollback tolerance the state poller and health tracker apply to a
+     * retreating head - widened to twice the lane's typical finality step
+     * (the lower median of its last eight finalized advances), so a chain
+     * that finalizes in larger batches does not hold when one voter lags a
+     * batch. -1 disables the regression guard entirely; no other negative
+     * value is accepted.
      */
     maxRegressionBlocks?: number;
     /**
@@ -2995,6 +3022,14 @@ export interface ExecStateSnapshot {
     consensuspolicy: string;
     startedat: any;
 }
+/**
+ * HistoryEvidence is what an architecture tells the consensus history waivers
+ * (waiveAgreementOnEmptyOutsideRetention, waiveAgreementOnMissingData) about
+ * where data sits on its chain. A block is the chain's height unit: an EVM
+ * block number, an SVM slot. Every method fails closed: it answers 0, false or
+ * "" when it cannot tell, and the waiver then holds the quota.
+ */
+export type HistoryEvidence = any;
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
 export declare const ArchitectureSvm: NetworkArchitecture;
@@ -3066,6 +3101,13 @@ export interface EvmHead {
      * head's anchor lowered it) or unknown.
      */
     latestat: any;
+    /**
+     * Anchored is set when the read follows the cache's fresh head
+     * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+     * read of latest is served from the cache or by number, never sent to
+     * an upstream as the tag. Unset with no cache head, or a stale one.
+     */
+    anchored: boolean;
     /**
      * NextAt is the earliest time the lane's next block may come: LatestAt
      * plus the shorter of half a block and the shortest recent step of the

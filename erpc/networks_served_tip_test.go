@@ -54,6 +54,8 @@ type servedTipFixture struct {
 	// statePollerInterval sets evm.statePollerInterval; the tracker credits a
 	// head for one poll period after each report.
 	statePollerInterval time.Duration
+	// finalizedPollerDebounce sets evm.finalizedPollerDebounce.
+	finalizedPollerDebounce time.Duration
 	// endpoint, when set, replaces http://<id>.localhost.
 	endpoint string
 }
@@ -103,7 +105,7 @@ func setupServedTipNetworkEvery(t testing.TB, ctx context.Context, fixtures []se
 		if f.endpoint != "" {
 			endpoint = f.endpoint
 		}
-		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce), StatePollerInterval: common.Duration(f.statePollerInterval)}
+		evmCfg := &common.EvmUpstreamConfig{ChainId: cid, StatePollerDebounce: common.Duration(f.debounce), StatePollerInterval: common.Duration(f.statePollerInterval), FinalizedPollerDebounce: common.Duration(f.finalizedPollerDebounce)}
 		if f.upperExactBlock > 0 {
 			upper := f.upperExactBlock
 			evmCfg.BlockAvailability = &common.EvmBlockAvailabilityConfig{
@@ -1954,7 +1956,8 @@ func TestServedTip_Finalized_FloorLimits(t *testing.T) {
 // poll outlasts the shared counter's foreground budget (UpdateMaxWait), so
 // the next request takes their answer. While q reports are fresh the
 // refresh polls one voter. A voter whose finalized tag is given up has no
-// finalized poll and gets none.
+// finalized poll and gets none; nor does a voter within its
+// evm.finalizedPollerDebounce: a refresh or step slot passes over it.
 func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -1991,6 +1994,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	always := func() bool { return true }
 	at := func(s int32) func() bool { return func() bool { return stage.Load() == s } }
 	finalizedMock("tagless", always, 0, `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid block number tag finalized"}}`)
+	finalizedMock("paid", always, 0, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270e","timestamp":"0x6702a8e0"}}`)
 	for _, id := range []string{"fin-a", "fin-b"} {
 		finalizedMock(id, at(2), slowPoll, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x2710","timestamp":"0x6702a8e2"}}`)
 		finalizedMock(id, at(1), slowPoll, `{"jsonrpc":"2.0","id":1,"result":{"number":"0x270f","timestamp":"0x6702a8e1"}}`)
@@ -2010,6 +2014,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 		{id: "tagless", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
 		{id: "fin-a", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
 		{id: "fin-b", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond},
+		{id: "paid", chainID: 123, latestBlock: 10_000, debounce: time.Millisecond, finalizedPollerDebounce: time.Hour},
 	}, &common.EvmServedTipConfig{Quorum: common.ServedTipQuorum(2)})
 	tagless := ups[0].EvmStatePoller()
 	require.Eventually(t, func() bool {
@@ -2020,6 +2025,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	// depth's fraction stays below the poll cadence (§6.8 #1265).
 	setServedTipFinalized(t, ups[1], 9_998)
 	setServedTipFinalized(t, ups[2], 9_998)
+	setServedTipFinalized(t, ups[3], 9_998)
 	time.Sleep(10 * time.Millisecond) // past every finalized debounce
 
 	// Reads above Finalized poll no finalized (spec §6.4 Finality): only
@@ -2066,6 +2072,7 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
 		"at the idle edge the refresh polls both voters with a finalized tag (polls %v → %v)", before, now)
 	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
+	assert.Equal(t, before["paid"], now["paid"], "a voter within its finalizedPollerDebounce is not polled")
 
 	// Both reports are fresh now: each request takes Finalized at once,
 	// and once a report is past its poll cadence one starts the
@@ -2084,4 +2091,5 @@ func TestServedTip_FinalizedRefreshPassesOverTaglessVoters(t *testing.T) {
 	assert.True(t, now["fin-a"] > before["fin-a"] && now["fin-b"] > before["fin-b"],
 		"the step reaches both voters (polls %v → %v)", before, now)
 	assert.Equal(t, before["tagless"], now["tagless"], "a given-up finalized tag is not polled")
+	assert.Equal(t, before["paid"], now["paid"], "a step passes over a voter within its finalizedPollerDebounce")
 }

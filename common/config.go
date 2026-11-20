@@ -1445,7 +1445,15 @@ type EvmUpstreamConfig struct {
 	// observed block time; until that is known, the network-level
 	// FallbackStatePollerDebounce when set, else 0.7s (the 1s cold block
 	// time × dynamicBlockTimeDebounceMultiplier).
-	StatePollerDebounce                Duration                    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+	StatePollerDebounce Duration `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+	// FinalizedPollerDebounce is the least time between two polls of this
+	// upstream's finalized tag, from every path: the state poller, the
+	// finalized-tag refresh and its step polls. Its finalized block also
+	// moves by its answers to requests that name the tag. For an upstream
+	// billed per request on a chain whose finality moves every block, while
+	// other voters keep the network's finalized fresh. 0 (default): the
+	// regular finalized debounce.
+	FinalizedPollerDebounce            Duration                    `yaml:"finalizedPollerDebounce,omitempty" json:"finalizedPollerDebounce" tstype:"Duration"`
 	BlockAvailability                  *EvmBlockAvailabilityConfig `yaml:"blockAvailability,omitempty" json:"blockAvailability"`
 	GetLogsAutoSplittingRangeThreshold int64                       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
 	// TraceFilterAutoSplittingRangeThreshold proactively splits trace_filter and
