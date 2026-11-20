@@ -1249,6 +1249,14 @@ export interface EvmUpstreamConfig {
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
   /**
+   * NativeQueryMethods lists the MIP-16 eth_query* methods this JSON-RPC
+   * upstream serves itself (wildcards allowed). On a JSON-RPC call to one of
+   * them it is a native upstream, ranked with the gRPC QueryService ones,
+   * and gets the request unchanged; the query shim is the fallback. Empty
+   * means none.
+   */
+  nativeQueryMethods?: string[];
+  /**
    * Multicall3 packs eth_calls bound for this upstream that share a block into one
    * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
    * per pack. Nil (default) sends every eth_call alone.

@@ -1500,6 +1500,12 @@ type EvmUpstreamConfig struct {
 	DeprecatedGetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 
 	QueryShim *EvmQueryShimConfig `yaml:"queryShim,omitempty" json:"queryShim"`
+	// NativeQueryMethods lists the MIP-16 eth_query* methods this JSON-RPC
+	// upstream serves itself (wildcards allowed). On a JSON-RPC call to one of
+	// them it is a native upstream, ranked with the gRPC QueryService ones,
+	// and gets the request unchanged; the query shim is the fallback. Empty
+	// means none.
+	NativeQueryMethods []string `yaml:"nativeQueryMethods,omitempty" json:"nativeQueryMethods"`
 	// Multicall3 packs eth_calls bound for this upstream that share a block into one
 	// Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
 	// per pack. Nil (default) sends every eth_call alone.
@@ -1555,6 +1561,20 @@ func (c *EvmQueryShimConfig) Copy() *EvmQueryShimConfig {
 		copy(copied.AllowedMethods, c.AllowedMethods)
 	}
 	return copied
+}
+
+// ServesNativeQuery reports whether the upstream serves the eth_query* method
+// itself: the method matches an entry of NativeQueryMethods.
+func (c *EvmUpstreamConfig) ServesNativeQuery(method string) bool {
+	if c == nil {
+		return false
+	}
+	for _, m := range c.NativeQueryMethods {
+		if match, err := WildcardMatch(m, method); err == nil && match {
+			return true
+		}
+	}
+	return false
 }
 
 // AllowsMethod reports whether the shim is enabled for the eth_query* method:
@@ -1681,6 +1701,7 @@ func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
 	if c.QueryShim != nil {
 		copied.QueryShim = c.QueryShim.Copy()
 	}
+	copied.NativeQueryMethods = slices.Clone(c.NativeQueryMethods)
 	if c.Multicall3 != nil {
 		v := *c.Multicall3
 		v.BypassContracts = slices.Clone(c.Multicall3.BypassContracts)
