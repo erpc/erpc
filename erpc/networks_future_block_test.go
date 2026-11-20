@@ -870,9 +870,9 @@ func TestForward_BandBlock_AsksEvidenceHoldersOnly(t *testing.T) {
 // a log range at most W / bt + 1 above the ceiling waits for it, at most
 // W, as the lane's read ahead (near future): it is served once the nodes
 // reach it, and a range still above the ceiling after W is refused,
-// counted future_after_wait. A numbered block read there never waits
-// (§6.4 band sweep): it answers what the nodes answer, null before they
-// hold it.
+// counted future_after_wait. A numbered block or receipts read there never
+// waits (§6.4 band sweep): it answers what the nodes answer, null before
+// they hold it.
 func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -1034,6 +1034,18 @@ func TestForward_FutureBlock_FirstNullIsAMiss(t *testing.T) {
 	assert.Equal(t, "null", jrr.GetResultString(), "a block 2 above the ceiling, as the nodes answer it")
 	assert.Less(t, time.Since(start), time.Second, "no wait for the chain")
 	assert.Positive(t, nearCalls.Load())
+
+	var receiptsCalls atomic.Int64
+	mockMethodAnswer("eth_getBlockReceipts", "null", &receiptsCalls, ids...)
+	start = time.Now()
+	resp, err = network.Forward(ctx, common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x66"]}`)))
+	require.NoError(t, err, "a tip block's receipts the nodes lack yet")
+	jrr, err = resp.JsonRpcResponse(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "null", jrr.GetResultString(), "the receipts of a block 2 above the ceiling, as the nodes answer them")
+	assert.Less(t, time.Since(start), time.Second, "no wait for the chain")
+	assert.Positive(t, receiptsCalls.Load())
+	assert.Equal(t, refused, afterWait(), "not refused")
 
 	logs := func(toHex string) (*common.NormalizedResponse, error) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"` + toHex + `","toBlock":"` + toHex + `"}]}`))

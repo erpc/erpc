@@ -3371,7 +3371,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 					switch {
 					case refusal.Rule == common.HeadBand && evm.AnswersAtOnce(effectiveReq):
-						// An eth_getBlockByNumber above Latest asks only
+						// A block or receipts read above Latest asks only
 						// upstreams whose evidence reaches the block, then
 						// takes the answer, the truthful null included: no
 						// other upstream, leg or network retry asks again
@@ -3403,7 +3403,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					case verdict == common.MissRetry:
 						nextUpstream = n.headFirst(loopCtx, effectiveReq, attempted, refusal.Block)
 					case refusal.Held && evm.AnswersAtOnce(effectiveReq):
-						// A held block's eth_getBlockByNumber missed on its
+						// A held block's block or receipts read missed on its
 						// retry too: the block exists, so the leg sweeps
 						// for a holder, at most W, as a thin miss does
 						// (spec §6.4 held). Served as final, the retry's
