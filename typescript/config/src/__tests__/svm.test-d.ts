@@ -80,6 +80,8 @@ const _realisticSvmConfig = createConfig({
             maxFinalizedSlotLag: 0,
             // Opt out of the getBlock slot-availability guard.
             enforceBlockAvailability: false,
+            // Opt in to proving skipped slots on the answering upstream.
+            probeSkippedSlots: true,
           },
         },
         {
@@ -185,6 +187,21 @@ createConfig({
           architecture: "svm",
           // @ts-expect-error — maxFinalizedSlotLag is a number of slots, not a duration
           svm: { cluster: "mainnet-beta", maxFinalizedSlotLag: "100ms" },
+        },
+      ],
+    },
+  ],
+});
+
+createConfig({
+  projects: [
+    {
+      id: "bad-probe-type",
+      networks: [
+        {
+          architecture: "svm",
+          // @ts-expect-error — probeSkippedSlots is a boolean switch
+          svm: { cluster: "mainnet-beta", probeSkippedSlots: "on" },
         },
       ],
     },
