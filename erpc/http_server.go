@@ -454,14 +454,18 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				return
 			}
 			// Every message on the connection authenticates with this upgrade
-			// request's credentials, so refuse the upgrade when no strategy
-			// accepts them rather than hold a connection that can never be
-			// served. Method scoping and rate limits still apply per message.
+			// request's credentials and targets this network, so refuse the
+			// upgrade with the HTTP answer when either fails rather than hold
+			// a connection that can never be served. Method scoping and rate
+			// limits still apply per message.
 			nq := common.NewNormalizedRequest(nil)
 			nq.SetClientIP(s.resolveRealClientIP(r))
 			ap, err := auth.NewPayloadFromHttp("", r.RemoteAddr, r.Header, r.URL.Query())
 			if err == nil {
 				err = project.AcceptsConsumerPayload(httpCtx, nq, ap)
+			}
+			if err == nil {
+				_, err = project.GetNetwork(httpCtx, architecture+":"+chainId)
 			}
 			if err != nil {
 				handleErrorResponse(
