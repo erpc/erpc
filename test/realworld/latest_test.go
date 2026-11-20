@@ -14,10 +14,6 @@ import (
 const (
 	// p13W is W of both shapes' chains: its 2s floor (§1).
 	p13W = 2 * time.Second
-	// p13NumberLatency: an idle eth_blockNumber answers from memory, as
-	// the old image's: latency p99 at most this, or at most the old
-	// image's.
-	p13NumberLatency = 50 * time.Millisecond
 	// p13Steady: reads at 1/s, alternating the methods, for p13SteadyFor.
 	// Each lands one background refresh behind the tip (§6.8): at most
 	// p13SteadyLag blocks at p99, as on main for eth_blockNumber.
@@ -36,8 +32,8 @@ const (
 	// fetches of the missing heights, 14 a round trip (class 1's share of
 	// 16 less a slot per idle class, §8): P13-lone's 26-29 in three, the
 	// read of the served block, and the walk of a block minted meanwhile.
-	// The new image's eth_getBlockByNumber after an idle edge takes at
-	// most these round trips more than the old image's one.
+	// A read after an idle edge on the new image takes at most these
+	// round trips more than the old image's.
 	p13WalkRounds = 6
 	// p13LagSlack: the blocks those round trips mint on P13-lone's chain,
 	// beyond the old image's.
@@ -51,49 +47,53 @@ var p13Methods = []string{"eth_getBlockByNumber", "eth_blockNumber"}
 // p13Shape is one sporadic reader's chain: its block time, each vendor's
 // round trip, the full poll, the reader's gap (longer than 2 W, so each
 // read meets the idle edge, §6.8) and reads, the methods the reads
-// alternate, and the new image's reorgWindow, the walk's depth (0: the
-// suite's).
+// alternate, or send at once (together), as a client's batch does, and
+// the new image's reorgWindow, the walk's depth (0: the suite's).
 type p13Shape struct {
-	name    string
-	bt      time.Duration
-	slow    []time.Duration
-	poll    string
-	idle    time.Duration
-	reads   int
-	methods []string
-	window  int
+	name     string
+	bt       time.Duration
+	slow     []time.Duration
+	poll     string
+	idle     time.Duration
+	reads    int
+	methods  []string
+	together bool
+	window   int
 }
 
 // p13Pair: a sparse chain's 2 HTTP voters 80-100 ms away, 0.6s blocks, a
 // full poll every 10s, a read every 7.5 s, shorter than the full poll.
 var p13Pair = p13Shape{"P13", 600 * time.Millisecond, []time.Duration{80 * time.Millisecond, 100 * time.Millisecond}, "10s", 7500 * time.Millisecond, 40,
-	[]string{"eth_getBlockByNumber", "eth_blockNumber"}, 0}
+	[]string{"eth_getBlockByNumber", "eth_blockNumber"}, false, 0}
 
 // p13Lone: a 0.5s chain with one HTTP upstream 250 ms away, the default
 // full poll and reorgWindow, read every 17 s, as LightLink's public RPC:
 // the clock stops 2 W after a read, so each read finds about 26 heights
 // the pins lack, which one walk fetch a round trip linked 8 of within W
-// (df07357e: 40 blocks behind, served 17.5 s old, each read 2.5 s). Only
-// eth_getBlockByNumber: an idle eth_blockNumber answers the view from
-// before the idle spell (§7 family 1), as the old image answers its 30 s
-// poll, so their ages compare poll phases.
+// (df07357e: 40 blocks behind, served 17.5 s old, each read 2.5 s).
 var p13Lone = p13Shape{"P13-lone", 500 * time.Millisecond, []time.Duration{250 * time.Millisecond}, "30s", 17 * time.Second, 12,
-	[]string{"eth_getBlockByNumber"}, 32}
+	[]string{"eth_getBlockByNumber", "eth_blockNumber"}, false, 32}
+
+// p13Aurora: Aurora on Edge, a 0.57 s chain with one HTTP upstream 200 ms
+// away and a 10 s full poll, read every 15 s with eth_blockNumber and
+// eth_getBlockByNumber(latest) at once (4d88a4f8: eth_blockNumber 19-24
+// blocks behind; the tag read beside it skipped the edge's wait, 16).
+var p13Aurora = p13Shape{"P13-aurora", 570 * time.Millisecond, []time.Duration{200 * time.Millisecond}, "10s", 15 * time.Second, 12,
+	[]string{"eth_getBlockByNumber", "eth_blockNumber"}, true, 0}
 
 // P13: a sparse chain's HTTP voters, blocks served p13Delay plus up to
 // p13Jitter after their mint, no subscription; pod-1 runs the branch's
 // image, pod-2 the old one, own state each. A sporadic reader sends each
-// read to both pods at once. Its eth_getBlockByNumber(latest) on the new
-// image answers a block no older than W of chain time when sent: a lane
-// whose Latest rests on reports older than W waits for its refresh, at
-// most W (§6.8, §7 family 2), and the walk links the heights the edge
-// jumped in p13WalkRounds round trips (§8): latency within those of the
-// old image's, and at most p13LagSlack blocks more behind the tip. Its
-// eth_blockNumber never waits (§7 family 1): latency p99 within
-// p13NumberLatency or the old image's, served age p50 and p90 no older
-// than the old image's. Steady reads at 1/s on the new image keep their
-// lag and cost: p99 at most p13SteadyLag blocks, at most q refresh Asks
-// per read.
+// read to both pods at once. On the new image each read, eth_blockNumber
+// and eth_getBlockByNumber(latest) alike, answers a block no older than W
+// of chain time when sent: a lane whose Latest rests on reports older
+// than W waits for its refresh, at most W (§6.8, §7 families 1 and 2), and
+// the walk links the heights the edge jumped in p13WalkRounds round trips
+// (§8): latency within those of the old image's, eth_getBlockByNumber at
+// most p13LagSlack blocks more behind the tip, eth_blockNumber's served
+// age p50 and p90 no older than the old image's. Steady reads at 1/s on
+// the new image keep their lag and cost: p99 at most p13SteadyLag blocks,
+// at most q refresh Asks per read.
 func p13(sh p13Shape) spec {
 	upEvm := map[string]map[string]interface{}{}
 	vendors := []vendorSpec{{"http-a", "vendor-a", false}, {"http-b", "vendor-b", false}}[:len(sh.slow)]
@@ -123,38 +123,42 @@ func p13(sh p13Shape) spec {
 			for _, m := range p13Methods {
 				ages[m], took[m] = map[string][]time.Duration{}, map[string][]time.Duration{}
 			}
+			read := func(p *pod, method string) {
+				img := s.image(p.idx)
+				sent := time.Now()
+				n, tip, err := p13Read(s, p.idx, method)
+				d := time.Since(sent)
+				if err != nil {
+					s.violate(s.name, "pod-%d (%s image) %s: %v", p.idx+1, img, method, err)
+					return
+				}
+				age := time.Duration(0)
+				if next := s.chain.CanonAt(n + 1); next != nil && next.MintedAt.Before(sent) {
+					age = sent.Sub(next.MintedAt)
+				}
+				mu.Lock()
+				lags = append(lags, fmt.Sprintf("%s %s %d (%s, %s)", img, strings.TrimPrefix(method, "eth_"), int64(tip)-int64(n), age.Round(time.Millisecond), d.Round(time.Millisecond)))
+				ages[method][img] = append(ages[method][img], age)
+				took[method][img] = append(took[method][img], d)
+				if method == "eth_getBlockByNumber" {
+					behind[img] = append(behind[img], int(int64(tip)-int64(n)))
+				}
+				mu.Unlock()
+				if !p.old && age > p13W {
+					s.violate(s.name, "%s after %s idle answered %d, %d blocks below the tip %d: the tip had moved on %s before the request, more than W %s", method, sh.idle, n, int64(tip)-int64(n), tip, age.Round(time.Millisecond), p13W)
+				}
+			}
 			for i := range sh.reads {
 				time.Sleep(sh.idle)
-				method := sh.methods[i%len(sh.methods)]
+				methods := sh.methods[i%len(sh.methods) : i%len(sh.methods)+1]
+				if sh.together {
+					methods = sh.methods
+				}
 				var wg sync.WaitGroup
 				for _, p := range s.h.pods {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						img := s.image(p.idx)
-						sent := time.Now()
-						n, tip, err := p13Read(s, p.idx, method)
-						d := time.Since(sent)
-						if err != nil {
-							s.violate(s.name, "pod-%d (%s image) %s: %v", p.idx+1, img, method, err)
-							return
-						}
-						age := time.Duration(0)
-						if next := s.chain.CanonAt(n + 1); next != nil && next.MintedAt.Before(sent) {
-							age = sent.Sub(next.MintedAt)
-						}
-						mu.Lock()
-						lags = append(lags, fmt.Sprintf("%s %s %d (%s, %s)", img, strings.TrimPrefix(method, "eth_"), int64(tip)-int64(n), age.Round(time.Millisecond), d.Round(time.Millisecond)))
-						ages[method][img] = append(ages[method][img], age)
-						took[method][img] = append(took[method][img], d)
-						if method == "eth_getBlockByNumber" {
-							behind[img] = append(behind[img], int(int64(tip)-int64(n)))
-						}
-						mu.Unlock()
-						if !p.old && method == "eth_getBlockByNumber" && age > p13W {
-							s.violate(s.name, "%s after %s idle answered %d, %d blocks below the tip %d: the tip had moved on %s before the request, more than W %s", method, sh.idle, n, int64(tip)-int64(n), tip, age.Round(time.Millisecond), p13W)
-						}
-					}()
+					for _, method := range methods {
+						wg.Go(func() { read(p, method) })
+					}
 				}
 				wg.Wait()
 			}
@@ -169,20 +173,17 @@ func p13(sh p13Shape) spec {
 				}
 			}
 			to := time.Now()
-			bt, ot := took["eth_getBlockByNumber"]["new"], took["eth_getBlockByNumber"]["old"]
-			if limit := pctl(ot, 90) + p13WalkRounds*rtt; pctl(bt, 90) > limit {
-				s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image eth_getBlockByNumber after %s idle: latency p90 %s, above the old image's %s plus %d round trips of %s: the walk linked the edge's gap one height a round trip",
-					sh.idle, pctl(bt, 90), pctl(ot, 90), p13WalkRounds, rtt)))
+			for _, m := range p13Methods {
+				nt, ot := took[m]["new"], took[m]["old"]
+				if limit := pctl(ot, 90) + p13WalkRounds*rtt; pctl(nt, 90) > limit {
+					s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image %s after %s idle: latency p90 %s, above the old image's %s plus %d round trips of %s: the walk linked the edge's gap one height a round trip",
+						m, sh.idle, pctl(nt, 90), pctl(ot, 90), p13WalkRounds, rtt)))
+				}
 			}
 			slices.Sort(behind["new"])
 			slices.Sort(behind["old"])
 			if nb, ob := p13Pctl(behind["new"], 90), p13Pctl(behind["old"], 90); nb > ob+p13LagSlack {
 				s.violate(s.name, "new image eth_getBlockByNumber after %s idle: p90 %d blocks below the tip, more than the old image's %d plus %d", sh.idle, nb, ob, p13LagSlack)
-			}
-			nt, ot := took["eth_blockNumber"]["new"], took["eth_blockNumber"]["old"]
-			if p99 := pctl(nt, 99); p99 > p13NumberLatency && p99 > pctl(ot, 99)+latencyNoise {
-				s.violate(s.name, "%s", s.h.host.verdict(from, to, fmt.Sprintf("new image eth_blockNumber after %s idle: latency p99 %s, above %s and the old image's %s: it waited for the idle edge",
-					sh.idle, p99, p13NumberLatency, pctl(ot, 99))))
 			}
 			na, oa := ages["eth_blockNumber"]["new"], ages["eth_blockNumber"]["old"]
 			for _, p := range []int{50, 90} {

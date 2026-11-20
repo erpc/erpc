@@ -290,7 +290,7 @@ func TestBlockClockColdStart(t *testing.T) {
 			n.mintEvery(tc.bt)
 			var last uint64
 			for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-				n.c.LatestRead(t.Context(), true)
+				n.c.LatestRead(t.Context())
 				if s := n.sampledAt(); s > 0 {
 					last = s + tc.blocks
 					if _, ok := n.lag(last); ok {
@@ -394,7 +394,7 @@ func TestIdleEdgeWaitsForItsHedgedFetch(t *testing.T) {
 				time.AfterFunc(tc.answer+walk, func() { n.release("0x9") })
 			}
 			start := time.Now()
-			n.c.LatestRead(t.Context(), false)
+			n.c.LatestRead(t.Context())
 			took := time.Since(start)
 			assert.GreaterOrEqual(t, took, tc.from, "the read waits for the edge")
 			assert.Less(t, took, tc.to)

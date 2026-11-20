@@ -127,6 +127,7 @@ func catalogue() []phaseSpec {
 		{"k1", 12101, []spec{k1()}},
 		{"p13", 12901, []spec{p13(p13Pair)}},
 		{"p13-lone", 15601, []spec{p13(p13Lone)}},
+		{"p13-aurora", 15651, []spec{p13(p13Aurora)}},
 		{"p15", 13401, []spec{p15()}},
 		{"p16", 13451, []spec{p16()}},
 		{"p16-spread", 14351, []spec{p16Spread(false)}},
