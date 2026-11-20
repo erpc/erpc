@@ -36,7 +36,7 @@ type GrpcServer struct {
 	server    *grpc.Server
 
 	// streams ends when the server stops its long-lived streams
-	// (StopStreams); their handlers then return UNAVAILABLE.
+	// (StopStreams).
 	streams     context.Context
 	stopStreams context.CancelFunc
 
@@ -166,12 +166,19 @@ func (gs *GrpcServer) Start(logger *zerolog.Logger) error {
 	return gs.server.Serve(lis)
 }
 
-// StopStreams ends every long-lived stream with UNAVAILABLE "server shutting
-// down", written by the stream's own handler, so its client reconnects
-// elsewhere at once. Cancelling the request instead loses that status: the
-// shared port's handler transport closes when its request context ends, and
-// the client reads a stream ended without trailers or CANCELLED.
+// StopStreams ends every long-lived stream. StreamBlocks ends itself with
+// UNAVAILABLE "server shutting down", so its client reconnects elsewhere at
+// once (endsAtStopStreams). On the shared port HttpServer cancels the request
+// of any other stream, as a handler blocked in Recv sees nothing else; that
+// closes the handler transport, so its client reads a stream ended without
+// trailers or CANCELLED.
 func (gs *GrpcServer) StopStreams() { gs.stopStreams() }
+
+// endsAtStopStreams reports whether method's handler ends its own stream at
+// StopStreams.
+func (gs *GrpcServer) endsAtStopStreams(method string) bool {
+	return method == evm.StreamService_StreamBlocks_FullMethodName
+}
 
 func (gs *GrpcServer) extractRequestInput(ctx context.Context, method string) (*RequestInput, error) {
 	md, ok := metadata.FromIncomingContext(ctx)

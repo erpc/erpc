@@ -182,11 +182,14 @@ func NewHttpServer(
 			return nil, err
 		}
 		srv.sharedGrpcServer = sharedGrpcServer
-		streamingMethods := make(map[string]struct{})
+		// streamingMethods maps each streaming method to whether it ends
+		// itself at StopStreams.
+		streamingMethods := make(map[string]bool)
 		for svc, info := range sharedGrpcServer.server.GetServiceInfo() {
 			for _, m := range info.Methods {
 				if m.IsServerStream || m.IsClientStream {
-					streamingMethods["/"+svc+"/"+m.Name] = struct{}{}
+					method := "/" + svc + "/" + m.Name
+					streamingMethods[method] = sharedGrpcServer.endsAtStopStreams(method)
 				}
 			}
 		}
@@ -194,13 +197,20 @@ func NewHttpServer(
 			if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
 				// net/http applies ReadTimeout and WriteTimeout to each HTTP/2 stream
 				// and resets it on expiry; long-lived gRPC streams must outlive them.
-				if _, ok := streamingMethods[r.URL.Path]; ok {
+				if endsItself, ok := streamingMethods[r.URL.Path]; ok {
 					rc := http.NewResponseController(w)
 					if err := rc.SetReadDeadline(time.Time{}); err != nil {
 						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear read deadline of gRPC stream")
 					}
 					if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear write deadline of gRPC stream")
+					}
+					if !endsItself {
+						ctx, cancel := context.WithCancel(r.Context())
+						defer cancel()
+						stop := context.AfterFunc(sharedGrpcServer.streams, cancel)
+						defer stop()
+						r = r.WithContext(ctx)
 					}
 				}
 				sharedGrpcServer.server.ServeHTTP(w, r)
