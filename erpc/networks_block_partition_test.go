@@ -136,6 +136,9 @@ type pollAgeEnv struct {
 	// wrongChain makes id answer eth_chainId with another chain, so its
 	// poller refuses any major head move it verifies.
 	wrongChain map[string]*atomic.Bool
+	// lacksAbove, when above 0, makes id answer null for a block by number
+	// above it, as a node that lacks the block.
+	lacksAbove map[string]*atomic.Int64
 }
 
 var pollAgeBlockParam = regexp.MustCompile(`"params":\["(0x[0-9a-fA-F]+)"`)
@@ -152,7 +155,7 @@ func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	e := &pollAgeEnv{t: t, ctx: ctx, advance: advance, head: 1000,
-		ups: map[string]*upstream.Upstream{}, offset: map[string]int64{}, wrongChain: map[string]*atomic.Bool{}}
+		ups: map[string]*upstream.Upstream{}, offset: map[string]int64{}, wrongChain: map[string]*atomic.Bool{}, lacksAbove: map[string]*atomic.Int64{}}
 	for i, f := range fixtures {
 		fixtures[i].chainID = 123
 		fixtures[i].statePollerInterval = 10 * time.Second
@@ -163,6 +166,8 @@ func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *
 		host := f.id + ".localhost"
 		wrong := &atomic.Bool{}
 		e.wrongChain[f.id] = wrong
+		lacks := &atomic.Int64{}
+		e.lacksAbove[f.id] = lacks
 		gock.New("http://" + host).
 			Post("").
 			Persist().
@@ -195,6 +200,11 @@ func newPollAgeEnv(t *testing.T, fixtures []servedTipFixture, order ...string) *
 				n, err := strconv.ParseUint(hex[2:], 16, 64)
 				if err != nil {
 					panic(err)
+				}
+				if top := lacks.Load(); top > 0 && int64(n) > top {
+					res.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":null}`))
+					res.ContentLength = -1
+					return res
 				}
 				res.Body = io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"number":"` + hex + `","hash":"` + tipHash("a", n) + `","parentHash":"` + tipHash("a", n-1) + `","timestamp":"0x6702a8f1"}}`))
 				res.ContentLength = -1
@@ -414,24 +424,26 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 
 	// The sei-mainnet shape: every upstream that serves the method declares
 	// upper latestBlockMinus 0 and was polled 6s ago; a reader that serves
-	// only blocks reports the chain 3 blocks on. A read by number of the
+	// neither method reports the chain 3 blocks on. A read by number of the
 	// block the reader reports is above every serving counter: capped at
-	// Firm, the gate skipped them all, "2 upstream not synced".
+	// Firm, the gate skipped them all, "2 upstream not synced". An
+	// eth_getBlockByNumber takes its first miss's answer (band: only
+	// holders by evidence are asked again), so its gate keeps that cap.
 	t.Run("upper latestBlockMinus 0 gate credits the poll age", func(t *testing.T) {
 		zero := int64(0)
 		e := newPollAgeEnv(t, []servedTipFixture{
 			{id: "a", latestBlock: 1000, upperLatestMinus: &zero},
 			{id: "b", latestBlock: 1000, upperLatestMinus: &zero},
-			{id: "reader", latestBlock: 1000, ignoreMethods: []string{"eth_getBalance"}},
+			{id: "reader", latestBlock: 1000, ignoreMethods: []string{"eth_getBalance", "eth_getBlockByNumber"}},
 		}, "a", "b", "reader")
 		s := e.head
 		e.movers = []string{"reader"}
 		e.step(3)
 		require.Equal(t, s, e.polled("a"))
 		require.Equal(t, s, e.polled("b"))
-		balance := func(bn int64) (string, error) {
+		call := func(body string) (string, error) {
 			e.network.refreshHeads()
-			req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x%x"]}`, bn)))
+			req := common.NewNormalizedRequest([]byte(body))
 			req.SetNetwork(e.network)
 			resp, err := e.network.Forward(e.ctx, req)
 			if err != nil {
@@ -444,7 +456,22 @@ func TestNetwork_TipGetBlockOrdersByPollAgeCreditedHead(t *testing.T) {
 			}
 			return jrr.GetResultString(), nil
 		}
-		got, err := balance(e.head)
+		balance := func(bn int64) (string, error) {
+			return call(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000","0x%x"]}`, bn))
+		}
+		// First, before any answer by number shows either holding the
+		// block (heldAtLeast): both lack it and answer null.
+		for _, id := range []string{"a", "b"} {
+			e.lacksAbove[id].Store(s)
+		}
+		got, err := call(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, e.head))
+		require.Error(t, err, "block %d at the ceiling, both serving upstreams at %d: skipped as on main, never a null from the first one asked (got %.300q)", e.head, s, got)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable), "skipped by the gate, got %v", err)
+		for _, id := range []string{"a", "b"} {
+			e.lacksAbove[id].Store(0)
+		}
+
+		got, err = balance(e.head)
 		require.NoError(t, err, "block %d, 3 above both counters (%d) and polled 6s ago on a 2s chain: tried, not skipped", e.head, s)
 		assert.Contains(t, got, "0x2a")
 

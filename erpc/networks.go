@@ -4324,7 +4324,7 @@ func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u commo
 	}
 	if maxBound != math.MaxInt64 && bn > maxBound && upper != nil && upper.LatestBlockMinus != nil {
 		head := n.requestHead(ctx, req)
-		reached := n.reachedHead(u, gateCredit(head, req.HeadRefusal()))
+		reached := n.reachedHead(u, gateCredit(req, head))
 		if holds := n.thinHolds(req, head, bn); holds != nil && holds(u) {
 			reached = max(reached, bn)
 		}
@@ -4954,18 +4954,26 @@ func creditCap(h *common.EvmHead) int64 {
 }
 
 // gateCredit is the highest head a credit may grant in the availability
-// gate of a latestBlockMinus bound (spec §6.4): the ceiling r's block was
-// decided against (the one its near-future wait saw), else h's, a block a
-// counted upstream reported; at least creditCap. Ordering keeps creditCap,
-// so evidence of the block still goes first. The gate only decides whether
-// u is tried: an upstream credited past a block it lacks answers missing,
-// and the refusal rule's retry takes the next, where a skip failed the
-// read (a 0.4 s chain polled every 10s: by-number reads 6-15 blocks above
-// every counter were skipped on all upstreams, while another voter's
-// counter held the block). A block above the ceiling gets no credit.
-func gateCredit(h *common.EvmHead, r *common.HeadRefusal) int64 {
-	c := max(creditCap(h), h.Ceiling)
-	if r != nil {
+// gate of a latestBlockMinus bound for req (spec §6.4): the ceiling its
+// block was decided against (the one its near-future wait saw), else h's,
+// a block a counted upstream reported; at least creditCap. Ordering keeps
+// creditCap, so evidence of the block still goes first. The gate only
+// decides whether u is tried: an upstream credited past a block it lacks
+// answers missing, and the refusal rule's sweep or retry takes the next,
+// where a skip failed the read (a 0.4 s chain polled every 10s: by-number
+// reads 6-15 blocks above every counter were skipped on all upstreams,
+// while another voter's counter held the block). A block above the
+// ceiling gets no credit. A request that answers at once
+// (evm.AnswersAtOnce) keeps creditCap: its band miss asks again only
+// holders by evidence (bandHolders), so the first credited upstream's
+// null would be its answer.
+func gateCredit(req *common.NormalizedRequest, h *common.EvmHead) int64 {
+	c := creditCap(h)
+	if evm.AnswersAtOnce(req) {
+		return c
+	}
+	c = max(c, h.Ceiling)
+	if r := req.HeadRefusal(); r != nil {
 		c = max(c, r.Ceiling)
 	}
 	return c
