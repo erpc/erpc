@@ -45,7 +45,6 @@ type HttpServer struct {
 	serverV4                *http.Server
 	serverV6                *http.Server
 	sharedGrpcServer        *GrpcServer
-	stopGrpcStreams         context.CancelFunc
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
@@ -183,13 +182,14 @@ func NewHttpServer(
 			return nil, err
 		}
 		srv.sharedGrpcServer = sharedGrpcServer
-		streamsCtx, stopStreams := context.WithCancel(context.Background())
-		srv.stopGrpcStreams = stopStreams
-		streamingMethods := make(map[string]struct{})
+		// streamingMethods maps each streaming method to whether it ends
+		// itself at StopStreams.
+		streamingMethods := make(map[string]bool)
 		for svc, info := range sharedGrpcServer.server.GetServiceInfo() {
 			for _, m := range info.Methods {
 				if m.IsServerStream || m.IsClientStream {
-					streamingMethods["/"+svc+"/"+m.Name] = struct{}{}
+					method := "/" + svc + "/" + m.Name
+					streamingMethods[method] = sharedGrpcServer.endsAtStopStreams(method)
 				}
 			}
 		}
@@ -197,7 +197,7 @@ func NewHttpServer(
 			if r.ProtoMajor == 2 && strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/grpc") {
 				// net/http applies ReadTimeout and WriteTimeout to each HTTP/2 stream
 				// and resets it on expiry; long-lived gRPC streams must outlive them.
-				if _, ok := streamingMethods[r.URL.Path]; ok {
+				if endsItself, ok := streamingMethods[r.URL.Path]; ok {
 					rc := http.NewResponseController(w)
 					if err := rc.SetReadDeadline(time.Time{}); err != nil {
 						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear read deadline of gRPC stream")
@@ -205,11 +205,13 @@ func NewHttpServer(
 					if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 						logger.Warn().Err(err).Str("method", r.URL.Path).Msg("failed to clear write deadline of gRPC stream")
 					}
-					ctx, cancel := context.WithCancel(r.Context())
-					defer cancel()
-					stop := context.AfterFunc(streamsCtx, cancel)
-					defer stop()
-					r = r.WithContext(ctx)
+					if !endsItself {
+						ctx, cancel := context.WithCancel(r.Context())
+						defer cancel()
+						stop := context.AfterFunc(sharedGrpcServer.streams, cancel)
+						defer stop()
+						r = r.WithContext(ctx)
+					}
 				}
 				sharedGrpcServer.server.ServeHTTP(w, r)
 				return
@@ -2283,8 +2285,8 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 
 	// Streams on the shared port have no deadlines, so nothing else ends an
 	// idle one and it would hold Shutdown for its whole budget.
-	if s.stopGrpcStreams != nil {
-		s.stopGrpcStreams()
+	if s.sharedGrpcServer != nil {
+		s.sharedGrpcServer.StopStreams()
 	}
 	s.shutdownWebSockets(logger, 0)
 
