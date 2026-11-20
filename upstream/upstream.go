@@ -306,6 +306,12 @@ func NewUpstream(
 		supportedMethods:     sync.Map{},
 		networkLabel:         atomic.Value{},
 	}
+
+	// The upstream executors judge writes by the method this upstream runs,
+	// read from its current config so they agree with what the client sends.
+	for _, ex := range failsafeExecutors {
+		ex.wireMethod = func(m string) string { return pup.Config().WireMethod(m) }
+	}
 	pup.networkLabel.Store("n/a")
 
 	pup.initRateLimitAutoTuner()
@@ -325,6 +331,10 @@ func NewUpstream(
 		// credit-unit override (providers copy it onto the base config).
 		if pup.config.CreditUnits == nil {
 			pup.config.CreditUnits = cfg.CreditUnits
+		}
+		// Same for the rename: a dropped map would send the client's method.
+		if pup.config.MethodRewrite == nil {
+			pup.config.MethodRewrite = cfg.MethodRewrite
 		}
 	}
 
@@ -680,7 +690,14 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 		}
 	}
 
-	lg := u.logger.With().Str("method", method).Str("networkId", u.NetworkId()).Interface("id", nrq.ID()).Logger()
+	lgc := u.logger.With().Str("method", method).Str("networkId", u.NetworkId()).Interface("id", nrq.ID())
+	// methodRewrite: record what this upstream actually receives, so a
+	// "method not found" from it can be traced to the renamed method.
+	if wire := cfg.WireMethod(method); wire != method {
+		span.SetAttributes(attribute.String("request.wire_method", wire))
+		lgc = lgc.Str("wireMethod", wire)
+	}
+	lg := lgc.Logger()
 
 	if limitersBudget != nil && nrq.UpstreamPolicies() != common.UpstreamPoliciesHeadAsk {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")

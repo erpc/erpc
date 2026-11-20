@@ -218,6 +218,12 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 	}
 
 	for _, u := range excluded {
+		// The write gate above judged the client's method; an upstream that
+		// renames it (methodRewrite) runs another one, possibly a write.
+		if wire := u.Config().WireMethod(method); wire != method && isProbeUnsafeMethod(wire) {
+			telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "write_method").Inc()
+			continue
+		}
 		if !p.tryReserveProbe(u, cfg) {
 			continue
 		}

@@ -229,7 +229,9 @@ var drpcCreditUnits = map[string]int64{
 // CreditUnits implements common.CreditUnitsProvider: dRPC's flat CU model,
 // overridable per method via `providers[].settings.creditUnits`.
 func (v *DrpcVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
+	// The vendor bills the method it ran (methodRewrite target).
 	method, _ := req.Method()
+	method = upstream.WireMethod(method)
 	var override map[string]int64
 	if upstream != nil {
 		override = upstream.CreditUnits

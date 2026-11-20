@@ -338,7 +338,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		if strings.Contains(msg, "gas exhausted during precompiled contract execution") {
 			isSendRawTx := false
 			if nr != nil && nr.Request() != nil {
-				m, _ := nr.Request().Method()
+				m, _ := common.UpstreamMethod(nr.Request(), upstream)
 				isSendRawTx = strings.EqualFold(m, "eth_sendRawTransaction")
 			}
 			if !isSendRawTx {
@@ -398,7 +398,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// For eth_sendRawTransaction, execution reverted is retryable toward other upstreams
 			// because different providers may have different simulation/pre-check behavior
 			if nr != nil && nr.Request() != nil {
-				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+				if m, _ := common.UpstreamMethod(nr.Request(), upstream); strings.ToLower(m) == "eth_sendrawtransaction" {
 					if re, ok := execErr.(common.RetryableError); ok {
 						return re.WithRetryableTowardNetwork(true)
 					}
@@ -473,7 +473,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 			// For eth_sendRawTransaction, execution reverted is retryable toward other upstreams
 			if nr != nil && nr.Request() != nil {
-				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+				if m, _ := common.UpstreamMethod(nr.Request(), upstream); strings.ToLower(m) == "eth_sendrawtransaction" {
 					if re, ok := execErr.(common.RetryableError); ok {
 						return re.WithRetryableTowardNetwork(true)
 					}
@@ -574,7 +574,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm
 		if strings.Contains(ml, "code=10055") &&
 			nr != nil && nr.Request() != nil {
-			if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+			if m, _ := common.UpstreamMethod(nr.Request(), upstream); strings.ToLower(m) == "eth_sendrawtransaction" {
 				return common.NewErrEndpointNonceException(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
@@ -632,7 +632,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// failover, consistent with the -32003 "transaction rejected" branch
 			// below; the upstream that refused is not asked again.
 			if nr != nil && nr.Request() != nil {
-				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+				if m, _ := common.UpstreamMethod(nr.Request(), upstream); strings.ToLower(m) == "eth_sendrawtransaction" {
 					if re, ok := execErr.(common.RetryableError); ok {
 						return re.WithRetryableTowardNetwork(true)
 					}
@@ -671,7 +671,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// Writes (eth_sendRawTransaction) and live simulations (eth_call /
 			// eth_estimateGas) remain deterministic and non-retried.
 			if nr != nil && nr.Request() != nil {
-				if m, _ := nr.Request().Method(); strings.HasPrefix(m, "trace_") ||
+				if m, _ := common.UpstreamMethod(nr.Request(), upstream); strings.HasPrefix(m, "trace_") ||
 					strings.HasPrefix(m, "debug_") || strings.HasPrefix(m, "eth_trace") {
 					if re, ok := execErr.(common.RetryableError); ok {
 						return re.WithRetryableTowardNetwork(true)
@@ -712,7 +712,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// For eth_sendRawTransaction, these errors are retryable toward other upstreams
 			// because different providers may have different balance-checking or gas-estimation logic
 			if nr != nil && nr.Request() != nil {
-				if m, _ := nr.Request().Method(); strings.ToLower(m) == "eth_sendrawtransaction" {
+				if m, _ := common.UpstreamMethod(nr.Request(), upstream); strings.ToLower(m) == "eth_sendrawtransaction" {
 					if re, ok := execErr.(common.RetryableError); ok {
 						return re.WithRetryableTowardNetwork(true)
 					}
@@ -860,7 +860,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "is not included in your current plan") {
 			method := ""
 			if nr != nil && nr.Request() != nil {
-				method, _ = nr.Request().Method()
+				method, _ = common.UpstreamMethod(nr.Request(), upstream)
 			}
 			details["vendorMessage"] = msg
 			return common.NewErrEndpointUnsupported(
@@ -1048,7 +1048,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// so we need to check the response body for a timeout message.
 			// We avoid using JSON parsing to keep it fast on large (50MB) trace data.
 			if rq := nr.Request(); rq != nil {
-				m, _ := rq.Method()
+				m, _ := common.UpstreamMethod(rq, upstream)
 				if strings.HasPrefix(m, "trace_") ||
 					strings.HasPrefix(m, "debug_") ||
 					strings.HasPrefix(m, "eth_trace") {

@@ -1016,6 +1016,20 @@ type UpstreamConfig struct {
 	// inherits the project-level `upstreamDefaults.routing` (all-or-nothing,
 	// matching the Tags inheritance pattern).
 	Routing *UpstreamRoutingConfig `yaml:"routing,omitempty" json:"routing,omitempty"`
+
+	// MethodRewrite renames a method on the way to this upstream: a request
+	// for a key method is sent with the value method. Keys are exact method
+	// names as the client sends them; methods absent from the map go out
+	// as-is. Each upstream has its own map, so one client method can go out
+	// differently per upstream. Code that interprets this upstream's answer
+	// (upstream hooks such as eth_sendRawTransaction idempotency, error
+	// normalization, vendor credit units) uses the target method (see
+	// UpstreamMethod). Write guards (no retry, hedge, multiplexing or probe
+	// for a write) treat a request as a write when its client method or any
+	// upstream's target is one. Routing and request-level behaviour
+	// (allowMethods / ignoreMethods, selection, network failsafe
+	// matchMethod, cache, rate limits, metrics) use the client's method.
+	MethodRewrite map[string]string `yaml:"methodRewrite,omitempty" json:"methodRewrite,omitempty"`
 }
 
 // UpstreamRoutingConfig holds per-upstream routing hints. Today this is
@@ -1135,6 +1149,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		Grpc                         *GrpcUpstreamConfig      `yaml:"grpc,omitempty"`
 		IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty"`
 		AllowMethods                 []string                 `yaml:"allowMethods,omitempty"`
+		MethodRewrite                map[string]string        `yaml:"methodRewrite,omitempty"`
 		AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty"`
 		Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty"`
 		RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty"`
@@ -1158,6 +1173,7 @@ func (u *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	u.Grpc = old.Grpc
 	u.IgnoreMethods = old.IgnoreMethods
 	u.AllowMethods = old.AllowMethods
+	u.MethodRewrite = old.MethodRewrite
 	u.AutoIgnoreUnsupportedMethods = old.AutoIgnoreUnsupportedMethods
 	u.RateLimitBudget = old.RateLimitBudget
 	u.RateLimitAutoTune = old.RateLimitAutoTune
@@ -1253,7 +1269,36 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 		copy(copied.AllowMethods, c.AllowMethods)
 	}
 
+	copied.MethodRewrite = maps.Clone(c.MethodRewrite)
+
 	return copied
+}
+
+// WireMethod returns the method name this upstream receives for a client
+// request of method: the methodRewrite target when one is configured, else
+// method unchanged.
+func (c *UpstreamConfig) WireMethod(method string) string {
+	if c == nil {
+		return method
+	}
+	if to, ok := c.MethodRewrite[method]; ok {
+		return to
+	}
+	return method
+}
+
+// UpstreamMethod returns the method u runs for req: u's methodRewrite target
+// for req's method, else req's method. Code that interprets what an
+// upstream did (upstream hooks, error normalization, write-safety checks)
+// reads this; code that describes the client's request (cache, failsafe
+// matchMethod, rate limits, metrics) reads req.Method(). A nil u gives
+// req's method.
+func UpstreamMethod(req *NormalizedRequest, u Upstream) (string, error) {
+	method, err := req.Method()
+	if err != nil || u == nil {
+		return method, err
+	}
+	return u.Config().WireMethod(method), nil
 }
 
 type ShadowUpstreamConfig struct {

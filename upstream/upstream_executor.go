@@ -32,6 +32,20 @@ type upstreamExecutor struct {
 
 	// emptyResultAccept is the method list for hedge cancellation.
 	emptyResultAccept []string
+
+	// wireMethod maps a client method to the method this upstream runs
+	// (its methodRewrite); nil sends every method as-is.
+	wireMethod func(string) string
+}
+
+// isNonRetryableWrite reports whether req is a write this upstream must not
+// retry or hedge, judged by the method the upstream runs.
+func (e *upstreamExecutor) isNonRetryableWrite(req *common.NormalizedRequest) bool {
+	m, _ := req.Method()
+	if e.wireMethod != nil {
+		m = e.wireMethod(m)
+	}
+	return m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m))
 }
 
 // NewUpstreamExecutor builds a per-(method, finality) executor for an
@@ -250,10 +264,8 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 		return common.IsRetryableExecutionException(err)
 	}
-	if req != nil {
-		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
-			return false
-		}
+	if req != nil && e.isNonRetryableWrite(req) {
+		return false
 	}
 	// Missing-data errors: respect the EXPLICIT RetryEmpty=false
 	// directive (caller said "don't retry on empty/missing data").
@@ -289,7 +301,7 @@ func (e *upstreamExecutor) runHedge(
 		if req.IsCompositeRequest() {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
-		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
+		if e.isNonRetryableWrite(req) {
 			return e.callBreakerWithTimeout(ctx, req, inner, false)
 		}
 	}

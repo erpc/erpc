@@ -119,6 +119,7 @@ func TestRepositoryVendor_GenerateConfigs(t *testing.T) {
 			RateLimitAutoTune: &common.RateLimitAutoTuneConfig{},
 			RateLimitBudget:   budget,
 			IgnoreMethods:     []string{"debug_*"},
+			MethodRewrite:     map[string]string{"custom_send": "eth_sendRawTransaction"},
 		}
 		got, err := v.GenerateConfigs(ctx, &logger, ups, common.VendorSettings{"repositoryUrl": repoUrl, "recheckInterval": time.Hour})
 		require.NoError(t, err)
@@ -132,6 +133,7 @@ func TestRepositoryVendor_GenerateConfigs(t *testing.T) {
 			assert.Equal(t, []string{"public"}, c.Tags)
 			assert.Equal(t, budget, c.RateLimitBudget)
 			assert.Equal(t, []string{"debug_*"}, c.IgnoreMethods)
+			assert.Equal(t, map[string]string{"custom_send": "eth_sendRawTransaction"}, c.MethodRewrite, "methodRewrite is passed to every generated upstream")
 			require.NotNil(t, c.AutoIgnoreUnsupportedMethods)
 			assert.True(t, *c.AutoIgnoreUnsupportedMethods, "auto-ignore defaults to true")
 			require.NotNil(t, c.Evm)

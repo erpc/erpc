@@ -836,6 +836,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	// matches, and that copy runs in a background bootstrap task. The
 	// executor's rejection is then only a log line and the upstream drops out.
 	if p.UpstreamDefaults != nil {
+		// methodRewrite is per upstream only: defaults never copy it, so it
+		// would be silently dropped here.
+		if len(p.UpstreamDefaults.MethodRewrite) > 0 {
+			return fmt.Errorf("project.*.upstreamDefaults: methodRewrite is only supported on each upstream, set it on upstreams[]")
+		}
 		for _, fs := range p.UpstreamDefaults.Failsafe {
 			if fs != nil && fs.Consensus != nil {
 				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
@@ -1095,12 +1100,33 @@ func (u *ProviderConfig) Validate(c *Config) error {
 	return nil
 }
 
+// methodPatternChars are the characters with a meaning in method patterns
+// (WildcardMatch: glob, |, &, !, parentheses, whitespace); an exact method
+// name never needs them.
+const methodPatternChars = "*?|&!() \t\n\r"
+
 func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
 	if ca := u.CreditAllowance; ca != nil && (ca.Credits <= 0 || ca.ApiKey == "") {
 		return fmt.Errorf("upstream '%s': creditAllowance needs credits > 0 and apiKey", u.Id)
+	}
+	for from, to := range u.MethodRewrite {
+		if from == "" || to == "" {
+			return fmt.Errorf("upstream '%s': methodRewrite needs a non-empty method on both sides, got '%s' -> '%s'", u.Id, from, to)
+		}
+		// Keys match exactly; a key written as a method pattern (glob,
+		// |, &, !, parentheses, spaces) would never match and silently send
+		// the request unrenamed.
+		if strings.ContainsAny(from, methodPatternChars) {
+			return fmt.Errorf("upstream '%s': methodRewrite key %q must be an exact method name: method-pattern characters (* ? | & ! ( ) or whitespace) are not supported", u.Id, from)
+		}
+	}
+	// A gRPC BDS client maps each method to a typed call, not a JSON-RPC
+	// body, so it has no method name to rename.
+	if len(u.MethodRewrite) > 0 && util.IsGrpcEndpoint(u.Endpoint) {
+		return fmt.Errorf("upstream '%s': methodRewrite is only supported on http(s) and ws(s) endpoints, not gRPC", u.Id)
 	}
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {

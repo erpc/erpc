@@ -187,6 +187,11 @@ func NewNetwork(
 		bareExecutor:      noop,
 		initializer:       util.NewInitializer(appCtx, &lg, nil),
 	}
+	// The network-scope hedge runs before an upstream is chosen, so it asks
+	// the network whether any upstream would run the request as a write.
+	for _, ex := range failsafeExecutors {
+		ex.isNonRetryableWrite = network.isNonRetryableWrite
+	}
 	network.servedTipAll.label = "all"
 	if upstreamsRegistry != nil {
 		if ssr := upstreamsRegistry.SharedStateRegistry(); ssr != nil {
