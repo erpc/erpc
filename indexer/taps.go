@@ -18,9 +18,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// MempoolWakeEvery is the shortest time between two reads of a mempool
-// tap, so a busy mempool reaches it in batches; a var so tests can change it.
-var MempoolWakeEvery = util.NewDuration(50 * time.Millisecond)
+// RelayWakeEvery is the shortest time between two reads of a relay tap, so
+// a busy relay topic reaches it in batches; a var so tests can change it.
+var RelayWakeEvery = util.NewDuration(50 * time.Millisecond)
 
 // Taps runs read loops: read, emit, repeat. It counts open taps per network,
 // topic and pace, so sources know what to feed and how often.
@@ -163,13 +163,15 @@ func (t *Taps) gap(networkId, transport, kind string, c Cursor, b Batch) {
 	ev.Msg("tap batch does not link to its cursor")
 }
 
-// RunMempool runs one tap on f's variant from after its Tail until ctx
+// RunRelay runs one tap on f's relay topic from after its Tail until ctx
 // ends, emit fails, or f returns an error other than ErrOutOfRange: out of
 // range skips to the newest. transport labels metrics.
-func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant string,
-	f MempoolFeed, emit func([]json.RawMessage) error) (err error) {
-	kind := SubTypeNewPendingTransactions
-	topic := PendingTxTopic(variant)
+func (t *Taps) RunRelay(ctx context.Context, networkId, transport string, topic Topic,
+	f RelayFeed, emit func([]json.RawMessage) error) (err error) {
+	kind, _, ok := topic.Relay()
+	if !ok {
+		return fmt.Errorf("%q is not a relay topic", topic)
+	}
 	t.add(networkId, topic, 0)
 	defer t.remove(networkId, topic, 0)
 	open := telemetry.GaugeHandle(telemetry.MetricTaps, t.projectId, networkId, transport, kind)
@@ -186,10 +188,10 @@ func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant str
 		}
 	}()
 
-	seq := f.Tail(variant)
+	seq := f.Tail(topic)
 	var last time.Time
 	for {
-		if wait := MempoolWakeEvery.Load() - time.Since(last); wait > 0 {
+		if wait := RelayWakeEvery.Load() - time.Since(last); wait > 0 {
 			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
@@ -198,17 +200,17 @@ func (t *Taps) RunMempool(ctx context.Context, networkId, transport, variant str
 			case <-timer.C:
 			}
 		}
-		txs, next, err := f.Read(ctx, variant, seq)
+		msgs, next, err := f.Read(ctx, topic, seq)
 		if errors.Is(err, ErrOutOfRange) {
 			t.countEnd(networkId, transport, kind, OutOfRangeError{Reason: OutOfRangeLag})
-			seq = f.Tail(variant)
+			seq = f.Tail(topic)
 			continue
 		}
 		if err != nil {
 			return err
 		}
 		last = time.Now()
-		if err := emit(txs); err != nil {
+		if err := emit(msgs); err != nil {
 			return err
 		}
 		seq = next

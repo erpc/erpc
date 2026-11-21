@@ -100,6 +100,9 @@ type WsJsonRpcClient struct {
 	onReconnectCbs map[string]func()
 
 	errorExtractor common.JsonRpcErrorExtractor
+	// dialect speaks the upstream's subscriptions; nil: the client sends
+	// subscribe methods as plain requests and ignores notifications.
+	dialect common.PubSubDialect
 
 	// metricLabels are the labels the connectivity gauge was last set under.
 	metricMu     sync.Mutex
@@ -111,36 +114,37 @@ type WsJsonRpcClient struct {
 	wireIDCounter atomic.Uint64
 }
 
-// WsSubscription ties an eth_subscribe or eth_unsubscribe request to the
+// WsSubscription ties a subscribe or unsubscribe request to the
 // connection it is scoped to. The client only sends these methods when the
 // request context carries one (see WithWsSubscription): a subscription
 // created by a routed request would have no owner to receive or cancel it.
 type WsSubscription struct {
-	// Handler receives the subscription's notifications (eth_subscribe
-	// only). It is registered before the next frame is read, so nothing
-	// sent right after the subscribe response is missed.
+	// Handler receives the subscription's notifications (subscribe only).
+	// It is registered before the next frame is read, so nothing sent
+	// right after the subscribe response is missed.
 	Handler func(params []byte)
-	// ID and Epoch are set when an eth_subscribe succeeds. eth_unsubscribe
-	// must carry the Epoch of the subscription it cancels; it is not sent
-	// once that connection is gone, since ids are reused across connections.
+	// ID and Epoch are set when a subscribe succeeds. An unsubscribe must
+	// carry the Epoch of the subscription it cancels; it is not sent once
+	// that connection is gone, since ids are reused across connections.
 	ID    string
 	Epoch uint64
 }
 
 type wsSubscriptionCtxKey struct{}
 
-// WithWsSubscription returns ctx carrying sub for an eth_subscribe or
-// eth_unsubscribe sent through SendRequest.
+// WithWsSubscription returns ctx carrying sub for a subscribe or
+// unsubscribe sent through SendRequest.
 func WithWsSubscription(ctx context.Context, sub *WsSubscription) context.Context {
 	return context.WithValue(ctx, wsSubscriptionCtxKey{}, sub)
 }
 
 type wsPending struct {
 	ch chan *wsPendingResult
-	// sub is set for eth_subscribe. If the caller gives up, the entry is
-	// kept (abandoned, guarded by pendingMu) so a late success is
+	// sub is set for a subscribe, of kind. If the caller gives up, the
+	// entry is kept (abandoned, guarded by pendingMu) so a late success is
 	// unsubscribed instead of leaked.
 	sub       *WsSubscription
+	kind      string
 	abandoned bool
 }
 
@@ -159,8 +163,7 @@ type wsMessage struct {
 }
 
 type wsNotificationParams struct {
-	Subscription string          `json:"subscription"`
-	Result       json.RawMessage `json:"result"`
+	Subscription json.RawMessage `json:"subscription"`
 }
 
 func NewWsJsonRpcClient(
@@ -171,6 +174,7 @@ func NewWsJsonRpcClient(
 	parsedUrl *url.URL,
 	jsonRpcCfg *common.JsonRpcUpstreamConfig,
 	extractor common.JsonRpcErrorExtractor,
+	dialect common.PubSubDialect,
 ) (ClientInterface, error) {
 	headers := http.Header{}
 	if jsonRpcCfg != nil {
@@ -194,6 +198,7 @@ func NewWsJsonRpcClient(
 		onDisconnectCbs: make(map[string]func()),
 		onReconnectCbs:  make(map[string]func()),
 		errorExtractor:  extractor,
+		dialect:         dialect,
 	}
 
 	if err := client.connect(); err != nil {
@@ -210,6 +215,9 @@ func NewWsJsonRpcClient(
 
 	return client, nil
 }
+
+// Dialect is the pub/sub dialect the client speaks; nil if it has none.
+func (c *WsJsonRpcClient) Dialect() common.PubSubDialect { return c.dialect }
 
 func (c *WsJsonRpcClient) GetType() ClientType {
 	return ClientTypeWsJsonRpc
@@ -268,6 +276,15 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 	jrReq.RLock()
 	originalID := jrReq.ID
 	method := jrReq.Method
+	var subscribe, unsubscribe bool
+	var subKind string
+	if c.dialect != nil {
+		if subscribe = c.dialect.IsSubscribe(method); subscribe {
+			subKind, _ = c.dialect.SubscribeKind(method, jrReq.Params)
+		} else {
+			unsubscribe = c.dialect.IsUnsubscribe(method)
+		}
+	}
 	requestBody, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": jrReq.JSONRPC,
 		"id":      wireID,
@@ -287,8 +304,8 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 	}
 
 	pending := &wsPending{ch: make(chan *wsPendingResult, 1)}
-	var unsubscribe *WsSubscription
-	if method == "eth_subscribe" || method == "eth_unsubscribe" {
+	var unsubscribing *WsSubscription
+	if subscribe || unsubscribe {
 		sub, _ := ctx.Value(wsSubscriptionCtxKey{}).(*WsSubscription)
 		if sub == nil {
 			return nil, common.NewErrUpstreamRequestSkipped(
@@ -296,10 +313,10 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 				c.upstream.Id(),
 			)
 		}
-		if method == "eth_subscribe" {
-			pending.sub = sub
+		if subscribe {
+			pending.sub, pending.kind = sub, subKind
 		} else {
-			unsubscribe = sub
+			unsubscribing = sub
 		}
 	}
 
@@ -307,7 +324,7 @@ func (c *WsJsonRpcClient) SendRequest(ctx context.Context, req *common.Normalize
 	// teardown swaps conn and drains pending under the same lock.
 	c.connMu.Lock()
 	conn := c.conn
-	stale := unsubscribe != nil && unsubscribe.Epoch != c.epoch.Load()
+	stale := unsubscribing != nil && unsubscribing.Epoch != c.epoch.Load()
 	if conn != nil && !stale {
 		c.pendingMu.Lock()
 		c.pending[idKey] = pending
@@ -642,20 +659,22 @@ func (c *WsJsonRpcClient) handleMessage(message []byte, epoch uint64) {
 			c.logger.Debug().Str("id", idKey).Msg("received response for unknown request ID")
 			return
 		}
-		var subID string
-		if p.sub != nil && common.SonicCfg.Unmarshal(msg.Result, &subID) == nil && subID != "" {
-			if abandoned {
-				go c.UnsubscribeOrphan(subID, epoch)
-				return
+		if p.sub != nil {
+			// p.sub is only set when the client has a dialect.
+			if subID, ok := c.dialect.DecodeSubID(msg.Result); ok && subID != "" {
+				// The id outlives the frame it was decoded from.
+				subID = strings.Clone(subID)
+				if abandoned {
+					go c.UnsubscribeOrphan(p.kind, subID, epoch)
+					return
+				}
+				// Register before the next frame is read so no notification
+				// is dropped as belonging to an unknown subscription.
+				c.subHandlersMu.Lock()
+				c.subHandlers[subID] = p.sub.Handler
+				c.subHandlersMu.Unlock()
+				p.sub.ID, p.sub.Epoch = subID, epoch
 			}
-			// The id outlives the frame it was decoded from.
-			subID = strings.Clone(subID)
-			// Register before the next frame is read so no notification
-			// is dropped as belonging to an unknown subscription.
-			c.subHandlersMu.Lock()
-			c.subHandlers[subID] = p.sub.Handler
-			c.subHandlersMu.Unlock()
-			p.sub.ID, p.sub.Epoch = subID, epoch
 		}
 		if !abandoned {
 			p.ch <- &wsPendingResult{message: message}
@@ -667,7 +686,12 @@ func (c *WsJsonRpcClient) handleMessage(message []byte, epoch uint64) {
 }
 
 func (c *WsJsonRpcClient) handleNotification(method string, params []byte, epoch uint64) {
-	if method != "eth_subscription" {
+	var kind string
+	ok := false
+	if c.dialect != nil {
+		kind, ok = c.dialect.NotificationKind(method)
+	}
+	if !ok {
 		c.logger.Debug().Str("method", method).Msg("received non-subscription notification")
 		return
 	}
@@ -677,17 +701,18 @@ func (c *WsJsonRpcClient) handleNotification(method string, params []byte, epoch
 		c.logger.Warn().Err(err).Msg("failed to parse subscription notification params")
 		return
 	}
+	subID, _ := c.dialect.DecodeSubID(notifParams.Subscription)
 
 	c.subHandlersMu.RLock()
-	handler, ok := c.subHandlers[notifParams.Subscription]
+	handler, ok := c.subHandlers[subID]
 	c.subHandlersMu.RUnlock()
 
 	if !ok {
-		c.logger.Debug().Str("subscriptionId", notifParams.Subscription).Msg("received notification for unknown subscription")
+		c.logger.Debug().Str("subscriptionId", subID).Msg("received notification for unknown subscription")
 		// Nothing owns it: cancel it, unless a subscribe in flight may be
 		// about to claim it. Each later notification retries the cancel.
-		if notifParams.Subscription != "" && !c.subscribeInFlight() {
-			go c.UnsubscribeOrphan(strings.Clone(notifParams.Subscription), epoch)
+		if subID != "" && !c.subscribeInFlight() {
+			go c.UnsubscribeOrphan(kind, strings.Clone(subID), epoch)
 		}
 		return
 	}
@@ -695,7 +720,7 @@ func (c *WsJsonRpcClient) handleNotification(method string, params []byte, epoch
 	handler(params)
 }
 
-// subscribeInFlight reports whether an eth_subscribe still has a caller
+// subscribeInFlight reports whether a subscribe still has a caller
 // waiting for its response.
 func (c *WsJsonRpcClient) subscribeInFlight() bool {
 	c.pendingMu.Lock()
@@ -735,14 +760,19 @@ func (c *WsJsonRpcClient) probe(conn *websocket.Conn) {
 	}
 }
 
-// UnsubscribeOrphan cancels a subscription of connection epoch that nobody
-// owns any more. Fire-and-forget: the response is dropped as unknown.
-func (c *WsJsonRpcClient) UnsubscribeOrphan(subID string, epoch uint64) {
+// UnsubscribeOrphan cancels subscription subID of connection epoch that
+// nobody owns any more; kind is as the dialect's UnsubscribeRequest takes
+// it. Fire-and-forget: the response is dropped as unknown.
+func (c *WsJsonRpcClient) UnsubscribeOrphan(kind, subID string, epoch uint64) {
+	if c.dialect == nil {
+		return
+	}
+	method, params := c.dialect.UnsubscribeRequest(kind, subID)
 	body, err := common.SonicCfg.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      c.wireIDCounter.Add(1),
-		"method":  "eth_unsubscribe",
-		"params":  []string{subID},
+		"method":  method,
+		"params":  params,
 	})
 	if err != nil {
 		return

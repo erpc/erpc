@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 )
 
@@ -37,3 +38,7 @@ func (h *EvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 func (h *EvmArchitectureHandler) NewJsonRpcErrorExtractor() common.JsonRpcErrorExtractor {
 	return NewJsonRpcErrorExtractor()
 }
+
+func (h *EvmArchitectureHandler) PubSub() common.PubSubDialect { return evmpubsub.Dialect{} }
+
+func (h *EvmArchitectureHandler) IgnoresNotification(string) bool { return false }

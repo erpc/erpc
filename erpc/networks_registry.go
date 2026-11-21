@@ -14,7 +14,7 @@ import (
 	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/indexer"
-	"github.com/erpc/erpc/indexer/mempool"
+	"github.com/erpc/erpc/indexer/relay"
 	"github.com/erpc/erpc/internal/policy"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -227,7 +227,11 @@ func NewNetwork(
 			network.sources.demandChanged()
 			evm.DemandChanged(network)
 		})
-		network.mempool = mempool.New(projectId, network.Label())
+		var dialect common.PubSubDialect
+		if network.architectureHandler != nil {
+			dialect = network.architectureHandler.PubSub()
+		}
+		network.relay = relay.New(projectId, network.Label(), dialect)
 		network.chainTracker = evm.StartChainTrackers(appCtx, network)
 		evm.OnCheckSuspended(network, network.intake.replayRejected)
 	}

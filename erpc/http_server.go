@@ -705,7 +705,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				// WebSocket path (handleWebSocket, which returns before this
 				// loop). Over HTTP they would sweep the upstreams and fail with
 				// an opaque error; reject them as unsupported (-32601) up front.
-				if IsSubscriptionMethod(method) {
+				if common.IsPubSubMethod(method) {
 					err := common.NewErrNotImplemented(method + " is only supported over a WebSocket connection")
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 					common.EndRequestSpan(requestCtx, nil, err)

@@ -24,7 +24,7 @@ type Adapter struct {
 
 type clientSub struct {
 	id        string
-	kind      EventKind
+	kind      string
 	networkID string
 
 	// opened is closed once the client has the subscription id: nothing is
@@ -62,7 +62,7 @@ func (a *Adapter) Open(clientSubID string) {
 // is closed by Open; stop ends that tap when the subscription is removed.
 // It fails with ErrLimitExceeded when the connection already holds
 // maxSubs, and with ErrClosed once the adapter was drained.
-func (a *Adapter) AddSubscription(clientSubID, networkID string, kind EventKind, maxSubs int, stop func()) (Subscription, <-chan struct{}, error) {
+func (a *Adapter) AddSubscription(clientSubID, networkID string, kind string, maxSubs int, stop func()) (Subscription, <-chan struct{}, error) {
 	sub := &clientSub{id: clientSubID, kind: kind, networkID: networkID, opened: make(chan struct{}), stop: stop}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -78,13 +78,13 @@ func (a *Adapter) AddSubscription(clientSubID, networkID string, kind EventKind,
 
 // RemoveSubscription marks a subscription removed, removes it and stops
 // its tap.
-func (a *Adapter) RemoveSubscription(clientSubID string) (kind EventKind, existed bool) {
+func (a *Adapter) RemoveSubscription(clientSubID string) (kind string, existed bool) {
 	a.mu.Lock()
 	sub, ok := a.subs[clientSubID]
 	delete(a.subs, clientSubID)
 	a.mu.Unlock()
 	if !ok {
-		return 0, false
+		return "", false
 	}
 	sub.removed.Store(true)
 	sub.stop()
@@ -113,7 +113,7 @@ func (a *Adapter) Drain() []Subscription {
 // Subscription describes one subscription.
 type Subscription struct {
 	ClientSubID string
-	Kind        EventKind
+	Kind        string
 	NetworkID   string
 
 	removed *atomic.Bool

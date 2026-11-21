@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -26,8 +27,8 @@ import (
 // --- test doubles -------------------------------------------------------
 
 type txEvent struct {
-	variant string
-	raw     string
+	topic indexer.Topic
+	raw   string
 }
 
 type answer struct {
@@ -51,8 +52,8 @@ func (s *fakeSink) Subscribed(_ string, t indexer.Topic, err error) {
 	}
 }
 
-func (s *fakeSink) PendingTx(_ string, variant string, raw json.RawMessage) {
-	s.txs <- txEvent{variant, string(raw)}
+func (s *fakeSink) Relayed(_ string, t indexer.Topic, raw json.RawMessage) {
+	s.txs <- txEvent{t, string(raw)}
 }
 
 // notifyServer is a WS upstream that answers eth_subscribe with ids from a
@@ -119,7 +120,7 @@ func (nc *notifyConn) serve(gate chan struct{}, rejectNewHeads bool) {
 		if common.SonicCfg.Unmarshal(msg, &req) != nil {
 			continue
 		}
-		if req.Method != methodEthSubscribe {
+		if req.Method != evmpubsub.MethodSubscribe {
 			nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":true}`)
 			nc.requests <- req.notifyRequest
 			continue
@@ -130,12 +131,12 @@ func (nc *notifyConn) serve(gate chan struct{}, rejectNewHeads bool) {
 		if gate != nil {
 			<-gate
 		}
-		if rejectNewHeads && req.Params[0] == indexer.SubTypeNewHeads {
+		if rejectNewHeads && req.Params[0] == evmpubsub.KindNewHeads {
 			nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"error":{"code":-32601,"message":"the method eth_subscribe does not exist/is not available"}}`)
 			continue
 		}
 		nc.write(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":"` + req.SubID + `"}`)
-		if req.Params[0] == indexer.SubTypeNewPendingTransactions {
+		if req.Params[0] == evmpubsub.KindNewPendingTransactions {
 			nc.sendTx(req.SubID, 1)
 		}
 	}
@@ -188,7 +189,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	logger := zerolog.New(zerolog.NewTestWriter(t)).Level(zerolog.WarnLevel)
-	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), u, nil, evm.NewJsonRpcErrorExtractor())
+	ci, err := clients.NewWsJsonRpcClient(ctx, &logger, "test-project", common.NewFakeUpstream("test-ws-upstream"), u, nil, evm.NewJsonRpcErrorExtractor(), evmpubsub.Dialect{})
 	require.NoError(t, err)
 	wsc := ci.(*clients.WsJsonRpcClient)
 	sink := &fakeSink{heads: make(chan json.RawMessage, 64), txs: make(chan txEvent, 64), answers: make(chan answer, 64)}
@@ -198,7 +199,7 @@ func newTestAdapter(t *testing.T, u *url.URL) (*Adapter, *fakeSink) {
 		networkLabel: "evm:123",
 		wsClient:     wsc,
 		logger:       &logger,
-		topics:       make(map[indexer.Topic]*pendingSub),
+		topics:       make(map[indexer.Topic]*relaySub),
 		resubWake:    make(chan struct{}, 1),
 		intake:       sink,
 		forward: func(ctx context.Context, nq *common.NormalizedRequest, _ bool) (*common.NormalizedResponse, error) {
@@ -233,9 +234,9 @@ func subscribedHeads(a *Adapter) func() bool {
 // txTopic is a newPendingTransactions topic; tag tells topics apart.
 func txTopic(t *testing.T, tag string) indexer.Topic {
 	t.Helper()
-	v, err := indexer.PendingTxVariantOf([]interface{}{indexer.SubTypeNewPendingTransactions, map[string]interface{}{"tag": tag}})
+	v, err := indexer.RelayVariant([]interface{}{map[string]interface{}{"tag": tag}})
 	require.NoError(t, err)
-	return indexer.PendingTxTopic(v)
+	return indexer.RelayTopic(evmpubsub.KindNewPendingTransactions, v)
 }
 
 // topicLive reports whether topic's subscription is live on the current
@@ -324,7 +325,7 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 	require.GreaterOrEqual(t, forwardCalls.Load(), int64(failuresPerEpoch+1),
 		"expected the subscribe to be retried through failures")
 
-	conn1.sendNewHead(conn1.nextRequest(t, methodEthSubscribe).SubID, 100)
+	conn1.sendNewHead(conn1.nextRequest(t, evmpubsub.MethodSubscribe).SubID, 100)
 	require.Equal(t, int64(100), nextHead(t, sink))
 
 	// Ungraceful upstream death: kill the TCP connection with no close
@@ -341,7 +342,7 @@ func TestAdapterResubscribesWithRetryAfterReconnect(t *testing.T) {
 
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond,
 		"adapter never re-established the newHeads subscription after reconnect")
-	conn2.sendNewHead(conn2.nextRequest(t, methodEthSubscribe).SubID, 101)
+	conn2.sendNewHead(conn2.nextRequest(t, evmpubsub.MethodSubscribe).SubID, 101)
 	require.Equal(t, int64(101), nextHead(t, sink))
 }
 
@@ -363,7 +364,7 @@ func TestAdapterResubscribesAllTopicsAfterReconnect(t *testing.T) {
 	}
 	a.Set(topics)
 	for range numTopics + 1 {
-		conn1.nextRequest(t, methodEthSubscribe)
+		conn1.nextRequest(t, evmpubsub.MethodSubscribe)
 	}
 	require.Eventually(t, func() bool {
 		for _, topic := range topics[1:] {
@@ -381,26 +382,26 @@ func TestAdapterResubscribesAllTopicsAfterReconnect(t *testing.T) {
 	conn2 := <-server.newConn
 	subscribes := make(map[string]string) // sub id -> first param
 	for range numTopics + 1 {
-		req := conn2.nextRequest(t, methodEthSubscribe)
+		req := conn2.nextRequest(t, evmpubsub.MethodSubscribe)
 		subscribes[req.SubID] = fmt.Sprint(req.Params[0])
 	}
 	require.Eventually(t, subscribedHeads(a), 3*time.Second, 10*time.Millisecond)
 
 	for id, subType := range subscribes {
-		if subType == indexer.SubTypeNewPendingTransactions {
+		if subType == evmpubsub.KindNewPendingTransactions {
 			conn2.sendTx(id, 2)
 		}
 	}
-	delivered := make(map[string]bool)
+	delivered := make(map[indexer.Topic]bool)
 	for len(delivered) < numTopics {
 		if tx := nextTx(t, sink); tx.raw == `"0xtx2"` {
-			delivered[tx.variant] = true
+			delivered[tx.topic] = true
 		}
 	}
 
 	select {
 	case req := <-conn2.requests:
-		if req.Method == methodEthSubscribe {
+		if req.Method == evmpubsub.MethodSubscribe {
 			t.Fatalf("unexpected extra subscribe after resubscribe: %v", req.Params)
 		}
 	case <-time.After(200 * time.Millisecond):
@@ -418,8 +419,7 @@ func TestAdapterDeliversFirstNotificationAfterSubscribe(t *testing.T) {
 	topic := txTopic(t, "0xabc")
 	a.Set([]indexer.Topic{topic})
 	require.NoError(t, nextAnswer(t, sink, topic))
-	variant, _ := topic.PendingTxVariant()
-	assert.Equal(t, txEvent{variant: variant, raw: `"0xtx1"`}, nextTx(t, sink))
+	assert.Equal(t, txEvent{topic: topic, raw: `"0xtx1"`}, nextTx(t, sink))
 }
 
 // TestAdapterDropTopicDuringSubscribe: a Set that drops a topic while its
@@ -434,12 +434,12 @@ func TestAdapterDropTopicDuringSubscribe(t *testing.T) {
 
 	topic := txTopic(t, "0xabc")
 	a.Set([]indexer.Topic{topic})
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+	subID := conn.nextRequest(t, evmpubsub.MethodSubscribe).SubID
 
 	a.Set(nil)
 	server.gate <- struct{}{}
 
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
+	unsub := conn.nextRequest(t, evmpubsub.MethodUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 	a.subsMu.Lock()
 	assert.Empty(t, a.topics)
@@ -483,7 +483,7 @@ func TestAdapterRetriesFailedTopic(t *testing.T) {
 	failuresLeft.Store(2)
 	send := a.forward
 	a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
-		if m, _ := nq.Method(); m == methodEthSubscribe && failuresLeft.Add(-1) >= 0 {
+		if m, _ := nq.Method(); m == evmpubsub.MethodSubscribe && failuresLeft.Add(-1) >= 0 {
 			return nil, errors.New("circuit breaker is open on upstream-level")
 		}
 		return send(ctx, nq, bypass)
@@ -517,11 +517,11 @@ func TestAdapterDroppedTopicUnsubscribes(t *testing.T) {
 
 	topic := txTopic(t, "0xabc")
 	a.Set([]indexer.Topic{topic})
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+	subID := conn.nextRequest(t, evmpubsub.MethodSubscribe).SubID
 	require.NoError(t, nextAnswer(t, sink, topic))
 
 	a.Set(nil)
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
+	unsub := conn.nextRequest(t, evmpubsub.MethodUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 }
 
@@ -537,7 +537,7 @@ func TestAdapterSetDoesNotWaitOnRelease(t *testing.T) {
 
 	topic := txTopic(t, "0xabc")
 	a.Set([]indexer.Topic{topic})
-	_ = conn.nextRequest(t, methodEthSubscribe)
+	_ = conn.nextRequest(t, evmpubsub.MethodSubscribe)
 	require.NoError(t, nextAnswer(t, sink, topic))
 
 	// The upstream never answers the unsubscribe.
@@ -563,7 +563,7 @@ func failFirstUnsubscribe(a *Adapter) *atomic.Bool {
 	var failed atomic.Bool
 	send := a.forward
 	a.forward = func(ctx context.Context, nq *common.NormalizedRequest, bypass bool) (*common.NormalizedResponse, error) {
-		if m, _ := nq.Method(); m == methodEthUnsubscribe && failed.CompareAndSwap(false, true) {
+		if m, _ := nq.Method(); m == evmpubsub.MethodUnsubscribe && failed.CompareAndSwap(false, true) {
 			return nil, errors.New("upstream-level rate limit exceeded") // never reaches the wire
 		}
 		return send(ctx, nq, bypass)
@@ -582,14 +582,14 @@ func TestAdapterFailedUnsubscribeIsRetried(t *testing.T) {
 
 	topic := txTopic(t, "0xabc")
 	a.Set([]indexer.Topic{topic})
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+	subID := conn.nextRequest(t, evmpubsub.MethodSubscribe).SubID
 	nextTx(t, sink)
 
 	a.Set(nil)
 	require.Eventually(t, failed.Load, 3*time.Second, 10*time.Millisecond)
 
 	conn.sendTx(subID, 2) // the upstream subscription is still live
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
+	unsub := conn.nextRequest(t, evmpubsub.MethodUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 	select {
 	case tx := <-sink.txs:
@@ -610,13 +610,13 @@ func TestAdapterFailedReleaseOfUncommittedSubscribeIsRetried(t *testing.T) {
 	failed := failFirstUnsubscribe(a)
 
 	a.Set([]indexer.Topic{txTopic(t, "0xabc")})
-	subID := conn.nextRequest(t, methodEthSubscribe).SubID
+	subID := conn.nextRequest(t, evmpubsub.MethodSubscribe).SubID
 	a.Set(nil)
 	close(gate)
 	require.Eventually(t, failed.Load, 3*time.Second, 10*time.Millisecond)
 
 	conn.sendTx(subID, 2)
-	unsub := conn.nextRequest(t, methodEthUnsubscribe)
+	unsub := conn.nextRequest(t, evmpubsub.MethodUnsubscribe)
 	assert.Equal(t, []interface{}{subID}, unsub.Params)
 }
 

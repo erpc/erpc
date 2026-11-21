@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
-	"github.com/erpc/erpc/indexer/mempool"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -25,23 +25,17 @@ import (
 var (
 	// sourceIdleStop is how long a push topic keeps running after the
 	// last tap needing it closed: an onDemand source's newHeads, every
-	// pending-transaction topic.
+	// relay topic.
 	sourceIdleStop = util.NewDuration(60 * time.Second)
-	// pendingSilentAfter: a pending-transaction topic with no message this
-	// long, while heads carry transactions, is subscribed again; each
-	// further silence of the topic on that source waits twice as long, up
-	// to pendingSilentMax, until it sends a message.
-	pendingSilentAfter = util.NewDuration(60 * time.Second)
-	pendingSilentMax   = util.NewDuration(30 * time.Minute)
-	// pendingOpenWait bounds how long a subscribe that opens a variant
+	// relayOpenWait bounds how long a subscribe that opens a relay topic
 	// waits for its push sources' first answers.
-	pendingOpenWait = util.NewDuration(10 * time.Second)
+	relayOpenWait = util.NewDuration(10 * time.Second)
 )
 
 // sourceReconciler decides which topics each source of one network feeds:
 //
 //	push u: newHeads                    always, or onDemand while heads are wanted
-//	push u: newPendingTransactions:<v>  while demand has it and admitted(u)
+//	push u: <kind>:<variant>            while demand has it and admitted(u)
 //
 // Heads are wanted while a tap needs every block (pace 0: eth_subscribe
 // newHeads or logs, a gRPC block stream) and sourceIdleStop after; a
@@ -66,62 +60,64 @@ type sourceReconciler struct {
 	sources map[string]*source
 	mu      sync.Mutex
 	// heads: some upstream is a subscription source or has a poller the
-	// block clock fetches; push: some push source can carry pending
-	// transactions.
+	// block clock fetches; push: some push source can carry relay
+	// topics.
 	heads, push bool
 	// headsSeen is when a pass last saw heads wanted by a tap, or saw that
 	// demand end; headsDemanded is whether the last pass saw it.
 	headsSeen     time.Time
 	headsDemanded bool
-	// pending holds each pending-transaction topic that is held, demanded,
-	// idle within sourceIdleStop, or still set on a source.
-	pending map[indexer.Topic]*pendingTopic
+	// relays holds each relay topic that is held, demanded, idle within
+	// sourceIdleStop, or still set on a source.
+	relays map[indexer.Topic]*relayTopic
 }
 
-// pendingTopic is one pending-transaction topic: who holds it, when it was
-// last wanted, and the push sources it is set on with their answers.
-type pendingTopic struct {
-	// holders are the subscribes holding the topic; its variant's ring on
-	// the mempool feed is open while there are some.
+// relayTopic is one relay topic of kind: who holds it, when it was last
+// wanted, and the push sources it is set on with their answers.
+type relayTopic struct {
+	kind string
+	spec *common.RelaySpec
+	// holders are the subscribes holding the topic; its ring on the relay
+	// feed is open while there are some.
 	holders int
 	// open is the verdict every holder since the first waits for; nil
 	// while there are no holders.
-	open    *pendingOpen
+	open    *relayOpen
 	seen    time.Time
-	on      map[string]*pendingOn
+	on      map[string]*relayOn
 	answers int
 	// changed is closed and replaced on each answer and each change of on.
 	changed chan struct{}
 }
 
-// pendingOpen is one open of a topic: decided by the first holder to see
+// relayOpen is one open of a topic: decided by the first holder to see
 // the sources' answers settle, or open at deadline.
-type pendingOpen struct {
+type relayOpen struct {
 	deadline time.Time
 	decided  bool
 	refusal  error
 }
 
-// pendingOn is the topic on one push source since it was set: its first
+// relayOn is the topic on one push source since it was set: its first
 // subscribe answer, and when it was last subscribed again for silence.
-type pendingOn struct {
+type relayOn struct {
 	since time.Time
-	// silentAfter is the silence that subscribes it again; 0 is
-	// pendingSilentAfter.
+	// silentAfter is the silence that subscribes it again; 0 is the
+	// kind's RelaySpec.SilentAfter.
 	silentAfter time.Duration
 	answered    bool
 	err         error
 	order       int
 }
 
-func (st *pendingTopic) notifyLocked() {
+func (st *relayTopic) notifyLocked() {
 	close(st.changed)
 	st.changed = make(chan struct{})
 }
 
-// activeLocked: st counts against mempool.MaxVariants while it is held or
-// set on sources within sourceIdleStop of when it was last wanted.
-func (st *pendingTopic) activeLocked(now time.Time, idle time.Duration) bool {
+// activeLocked: st counts against its kind's MaxVariants while it is held
+// or set on sources within sourceIdleStop of when it was last wanted.
+func (st *relayTopic) activeLocked(now time.Time, idle time.Duration) bool {
 	return st.holders > 0 || (!st.seen.IsZero() && now.Sub(st.seen) < idle)
 }
 
@@ -129,13 +125,13 @@ func (st *pendingTopic) activeLocked(now time.Time, idle time.Duration) bool {
 // is set on: open once one answered other than with a refusal; the first
 // refusal once every one refused; not done while none accepted and some
 // has not answered.
-func (st *pendingTopic) verdictLocked() (refusal error, done bool) {
+func (st *relayTopic) verdictLocked() (refusal error, done bool) {
 	first, waiting := -1, false
 	for _, on := range st.on {
 		switch {
 		case !on.answered:
 			waiting = true
-		case !pendingRefusal(on.err):
+		case !relayRefusal(on.err):
 			return nil, true
 		case first < 0 || on.order < first:
 			first, refusal = on.order, on.err
@@ -147,10 +143,10 @@ func (st *pendingTopic) verdictLocked() (refusal error, done bool) {
 	return refusal, true
 }
 
-// pendingRefusal: the upstream itself answered the subscribe with an error
+// relayRefusal: the upstream itself answered the subscribe with an error
 // other than a capacity error. Capacity, connection errors and timeouts
 // leave the subscription open while the source retries.
-func pendingRefusal(err error) bool {
+func relayRefusal(err error) bool {
 	if err == nil || common.IsCapacityIssue(err) {
 		return false
 	}
@@ -176,7 +172,7 @@ func newSourceReconciler(nw *Network) *sourceReconciler {
 		wakeCh:  make(chan struct{}, 1),
 		syncCh:  make(chan chan struct{}),
 		sources: make(map[string]*source),
-		pending: make(map[indexer.Topic]*pendingTopic),
+		relays:  make(map[indexer.Topic]*relayTopic),
 	}
 }
 
@@ -209,17 +205,17 @@ func (r *sourceReconciler) demandChanged() {
 	r.wake()
 }
 
-// subscribed takes a push source's subscribe answer for t. For a
-// pending-transaction topic it keeps the source's first answer since the
-// topic was set on it. For newHeads only an unsupported answer, and its
+// subscribed takes a push source's subscribe answer for t. For a relay
+// topic it keeps the source's first answer since the topic was set on it.
+// For newHeads only an unsupported answer, and its
 // later success, change a topic; the push source holds which one it is.
 func (r *sourceReconciler) subscribed(upstreamId string, t indexer.Topic, err error) {
 	if r == nil {
 		return
 	}
-	if _, ok := t.PendingTxVariant(); ok {
+	if _, _, ok := t.Relay(); ok {
 		r.mu.Lock()
-		if st := r.pending[t]; st != nil {
+		if st := r.relays[t]; st != nil {
 			if on := st.on[upstreamId]; on != nil && !on.answered {
 				on.answered, on.err, on.order = true, err, st.answers
 				st.answers++
@@ -237,34 +233,39 @@ func (r *sourceReconciler) subscribed(upstreamId string, t indexer.Topic, err er
 	}
 }
 
-// openPending holds variant's topic until release: its ring on the mempool
-// feed opens with the first holder and closes with the last. A topic not
-// counted against mempool.MaxVariants takes the place of the idle topic
-// wanted longest ago, or is refused with ErrSubscriptionLimitExceeded when
-// none is idle. Every subscribe from the first holder on waits for the
-// same verdict, up to pendingOpenWait from the first: the first refusal
-// when every push source a pass set the topic on refused it (spec §11).
-func (r *sourceReconciler) openPending(ctx context.Context, variant string) (release func(), err error) {
-	t := indexer.PendingTxTopic(variant)
+// openRelay holds relay topic t until release: its ring on the relay feed
+// opens with the first holder and closes with the last. A topic not
+// counted against its kind's MaxVariants takes the place of the kind's
+// idle topic wanted longest ago, or is refused with
+// ErrRelayVariantLimitExceeded when none is idle. Every subscribe from the
+// first holder on waits for the same verdict, up to relayOpenWait from the
+// first: the first refusal when every push source a pass set the topic on
+// refused it (spec §12).
+func (r *sourceReconciler) openRelay(ctx context.Context, t indexer.Topic) (release func(), err error) {
+	kind, _, ok := t.Relay()
+	spec := r.nw.relay.Spec(kind)
+	if !ok || spec == nil {
+		return nil, fmt.Errorf("%q is not a relay topic of the network", t)
+	}
 	now, idle := time.Now(), sourceIdleStop.Load()
 	r.mu.Lock()
-	st := r.pending[t]
+	st := r.relays[t]
 	if st == nil || !st.activeLocked(now, idle) {
-		if err := r.admitLocked(now, idle); err != nil {
+		if err := r.admitLocked(kind, spec, now, idle); err != nil {
 			r.mu.Unlock()
 			return nil, err
 		}
 	}
 	if st == nil {
-		st = &pendingTopic{on: make(map[string]*pendingOn), changed: make(chan struct{})}
-		r.pending[t] = st
+		st = newRelayTopic(kind, spec)
+		r.relays[t] = st
 	}
 	if st.holders == 0 {
-		if err := r.nw.mempool.Open(variant); err != nil {
+		if err := r.nw.relay.Open(t); err != nil {
 			r.mu.Unlock()
-			return nil, common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
+			return nil, err
 		}
-		st.open = &pendingOpen{deadline: now.Add(pendingOpenWait.Load())}
+		st.open = &relayOpen{deadline: now.Add(relayOpenWait.Load())}
 	}
 	st.holders++
 	st.seen = now
@@ -272,7 +273,7 @@ func (r *sourceReconciler) openPending(ctx context.Context, variant string) (rel
 	r.mu.Unlock()
 
 	var once sync.Once
-	release = func() { once.Do(func() { r.releasePending(variant, st) }) }
+	release = func() { once.Do(func() { r.releaseRelay(t, st) }) }
 	if err := r.awaitOpen(ctx, st, o); err != nil {
 		release()
 		return nil, err
@@ -280,14 +281,18 @@ func (r *sourceReconciler) openPending(ctx context.Context, variant string) (rel
 	return release, nil
 }
 
-// admitLocked makes room for one more active topic: at mempool.MaxVariants
-// it stops the idle one wanted longest ago, so the next pass releases it
-// on its sources.
-func (r *sourceReconciler) admitLocked(now time.Time, idle time.Duration) error {
+func newRelayTopic(kind string, spec *common.RelaySpec) *relayTopic {
+	return &relayTopic{kind: kind, spec: spec, on: make(map[string]*relayOn), changed: make(chan struct{})}
+}
+
+// admitLocked makes room for one more active topic of kind: at the kind's
+// MaxVariants it stops the kind's idle topic wanted longest ago, so the
+// next pass releases it on its sources.
+func (r *sourceReconciler) admitLocked(kind string, spec *common.RelaySpec, now time.Time, idle time.Duration) error {
 	active := 0
-	var oldest *pendingTopic
-	for _, st := range r.pending {
-		if !st.activeLocked(now, idle) {
+	var oldest *relayTopic
+	for _, st := range r.relays {
+		if st.kind != kind || !st.activeLocked(now, idle) {
 			continue
 		}
 		active++
@@ -295,20 +300,20 @@ func (r *sourceReconciler) admitLocked(now time.Time, idle time.Duration) error 
 			oldest = st
 		}
 	}
-	if active < mempool.MaxVariants {
+	if active < spec.MaxVariants {
 		return nil
 	}
 	if oldest == nil {
-		return common.NewErrPendingVariantLimitExceeded(mempool.MaxVariants)
+		return common.NewErrRelayVariantLimitExceeded(kind, spec.MaxVariants)
 	}
 	oldest.seen = time.Time{}
 	r.wake()
 	return nil
 }
 
-// releasePending drops one holder of st. The last closes the ring; the
-// topic then idles from now, or stops at the next pass if refused.
-func (r *sourceReconciler) releasePending(variant string, st *pendingTopic) {
+// releaseRelay drops one holder of st, topic t. The last closes the ring;
+// the topic then idles from now, or stops at the next pass if refused.
+func (r *sourceReconciler) releaseRelay(t indexer.Topic, st *relayTopic) {
 	r.mu.Lock()
 	st.holders--
 	last := st.holders == 0
@@ -319,7 +324,7 @@ func (r *sourceReconciler) releasePending(variant string, st *pendingTopic) {
 			st.seen = time.Now()
 		}
 		st.open = nil
-		r.nw.mempool.Close(variant)
+		r.nw.relay.Close(t)
 	}
 	r.mu.Unlock()
 	if last {
@@ -330,7 +335,7 @@ func (r *sourceReconciler) releasePending(variant string, st *pendingTopic) {
 // awaitOpen waits for o's verdict. A pass that started after the call sets
 // the topic on the push sources first, so the answers are theirs; ctx
 // ending first fails only this subscribe.
-func (r *sourceReconciler) awaitOpen(ctx context.Context, st *pendingTopic, o *pendingOpen) error {
+func (r *sourceReconciler) awaitOpen(ctx context.Context, st *relayTopic, o *relayOpen) error {
 	wctx, cancel := context.WithDeadline(ctx, o.deadline)
 	defer cancel()
 	synced := r.sync(wctx) == nil
@@ -448,7 +453,7 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 
 	demand := r.nw.taps.Demand(r.nw.Label())
 	pace, demanded := r.nw.taps.Pace(r.nw.Label(), indexer.TopicNewHeads)
-	wantHeads, pending, left := r.wanted(demand, demanded && pace == 0, now)
+	wantHeads, relays, left := r.wanted(demand, demanded && pace == 0, now)
 	if left > 0 {
 		next = min(next, left)
 	}
@@ -466,7 +471,7 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 			continue
 		}
 		push = true
-		r.setPush(s, wantHeads || s.mode == common.SubscriptionSourceAlways, pending, now, txHeadAt)
+		r.setPush(s, wantHeads || s.mode == common.SubscriptionSourceAlways, relays, now, txHeadAt)
 		if slices.Contains(s.pushTopics, indexer.TopicNewHeads) {
 			pushes[s.id] = s.push
 		}
@@ -480,10 +485,10 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 	return next
 }
 
-// wanted marks heads, when headsDemanded, and the demanded and held
-// pending topics seen now. It returns whether heads were seen within
-// sourceIdleStop, and, sorted, every pending topic that was, with the time
-// until the next idle topic stops (0 if none). A pending topic no longer
+// wanted marks heads, when headsDemanded, and the demanded and held relay
+// topics seen now. It returns whether heads were seen within
+// sourceIdleStop, and, sorted, every relay topic that was, with the time
+// until the next idle topic stops (0 if none). A relay topic no longer
 // wanted and set on no source is forgotten.
 func (r *sourceReconciler) wanted(demand []indexer.Topic, headsDemanded bool, now time.Time) (heads bool, wanted []indexer.Topic, left time.Duration) {
 	idle := sourceIdleStop.Load()
@@ -503,17 +508,22 @@ func (r *sourceReconciler) wanted(demand []indexer.Topic, headsDemanded bool, no
 	r.headsDemanded = headsDemanded
 	heads = keep(r.headsSeen)
 	for _, t := range demand {
-		if _, ok := t.PendingTxVariant(); !ok {
+		kind, _, ok := t.Relay()
+		if !ok {
 			continue
 		}
-		st := r.pending[t]
+		st := r.relays[t]
 		if st == nil {
-			st = &pendingTopic{on: make(map[string]*pendingOn), changed: make(chan struct{})}
-			r.pending[t] = st
+			spec := r.nw.relay.Spec(kind)
+			if spec == nil {
+				continue
+			}
+			st = newRelayTopic(kind, spec)
+			r.relays[t] = st
 		}
 		st.seen = now
 	}
-	for t, st := range r.pending {
+	for t, st := range r.relays {
 		if st.holders > 0 {
 			st.seen = now
 		}
@@ -521,7 +531,7 @@ func (r *sourceReconciler) wanted(demand []indexer.Topic, headsDemanded bool, no
 		case keep(st.seen):
 			wanted = append(wanted, t)
 		case len(st.on) == 0:
-			delete(r.pending, t)
+			delete(r.relays, t)
 		}
 	}
 	slices.Sort(wanted)
@@ -529,17 +539,23 @@ func (r *sourceReconciler) wanted(demand []indexer.Topic, headsDemanded bool, no
 }
 
 // setPush sets push source s to newHeads, when heads, plus the wanted
-// pending topics while s is admitted. While s is connected, each pending
-// topic it carries that stayed silent for its silentAfter, while heads
-// carried transactions, is subscribed again, and its next silentAfter
-// doubles.
+// relay topics its kind's placement puts on s while s is admitted. While s
+// is connected, each relay topic of a kind with a silence rule that s
+// carries and that stayed silent for its silentAfter, while heads carried
+// transactions, is subscribed again, and its next silentAfter doubles.
 func (r *sourceReconciler) setPush(s *source, heads bool, wanted []indexer.Topic, now, txHeadAt time.Time) {
 	var topics []indexer.Topic
 	if heads {
 		topics = append(topics, indexer.TopicNewHeads)
 	}
 	if len(wanted) > 0 && r.nw.intake.admits(s.id) {
-		topics = append(topics, wanted...)
+		for _, t := range wanted {
+			kind, _, _ := t.Relay()
+			switch r.nw.relay.Spec(kind).Placement {
+			case common.PlacementAll:
+				topics = append(topics, t)
+			}
+		}
 	}
 	type activity struct{ heard, subscribed time.Time }
 	var acts []activity
@@ -551,10 +567,9 @@ func (r *sourceReconciler) setPush(s *source, heads bool, wanted []indexer.Topic
 			}
 		}
 	}
-	minSilent, maxSilent := pendingSilentAfter.Load(), pendingSilentMax.Load()
 	var silent []indexer.Topic
 	r.mu.Lock()
-	for t, st := range r.pending {
+	for t, st := range r.relays {
 		on := st.on[s.id]
 		i := slices.Index(topics, t)
 		switch {
@@ -565,17 +580,17 @@ func (r *sourceReconciler) setPush(s *source, heads bool, wanted []indexer.Topic
 			}
 		case on == nil:
 			// Recorded before Set, so its first answer finds it.
-			st.on[s.id] = &pendingOn{since: now}
+			st.on[s.id] = &relayOn{since: now}
 			st.notifyLocked()
-		case acts != nil:
+		case acts != nil && st.spec.SilentAfter != nil:
 			a := acts[i]
 			if a.heard.After(on.since) {
 				on.silentAfter = 0
 			}
-			after := max(on.silentAfter, minSilent)
+			after := max(on.silentAfter, st.spec.SilentAfter.Load())
 			if base := later(later(on.since, a.heard), a.subscribed); now.Sub(base) >= after && txHeadAt.After(base) {
 				silent = append(silent, t)
-				on.since, on.silentAfter = now, min(2*after, maxSilent)
+				on.since, on.silentAfter = now, min(2*after, st.spec.SilentMax)
 			}
 		}
 	}
@@ -587,7 +602,7 @@ func (r *sourceReconciler) setPush(s *source, heads bool, wanted []indexer.Topic
 	s.pushTopics = topics
 	for _, t := range silent {
 		r.nw.logger.Warn().Str("upstreamId", s.id).Str("topic", string(t)).
-			Msg("pending-transaction subscription silent while heads carry transactions, subscribing again")
+			Msg("relay subscription silent while heads carry transactions, subscribing again")
 		s.push.Resubscribe(t)
 	}
 }
@@ -641,7 +656,7 @@ func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 func (r *sourceReconciler) dropSource(s *source) {
 	r.stop(s)
 	r.mu.Lock()
-	for _, st := range r.pending {
+	for _, st := range r.relays {
 		if st.on[s.id] != nil {
 			delete(st.on, s.id)
 			st.notifyLocked()
@@ -670,13 +685,13 @@ func (r *sourceReconciler) stopAll() {
 // requireSubscriptionSource fails with ErrNoSubscriptionSource when nothing
 // on the network can feed subType, after the sources caught up with the
 // network's upstreams. logs need heads and a feed that serves receipts or
-// their fallback (spec §10); pending transactions need a push source (§11).
+// their fallback (spec §10); relayed kinds need a push source (§12).
 // A subscribe skips the source pass when the last pass found a source and
 // one feeds now (sourceReconciler.live), so subscribes on a fed topic never
 // queue behind a pass.
-func (n *Network) requireSubscriptionSource(ctx context.Context, subType string) error {
+func (n *Network) requireSubscriptionSource(ctx context.Context, method, subType string) error {
 	if n.sources == nil {
-		return common.NewErrNoSubscriptionSource(n.networkId, subType)
+		return common.NewErrNoSubscriptionSource(n.networkId, method, subType)
 	}
 	if n.subscriptionSourced(subType) && n.sources.live(subType) {
 		return nil
@@ -685,7 +700,7 @@ func (n *Network) requireSubscriptionSource(ctx context.Context, subType string)
 		return err
 	}
 	if !n.subscriptionSourced(subType) {
-		return common.NewErrNoSubscriptionSource(n.networkId, subType)
+		return common.NewErrNoSubscriptionSource(n.networkId, method, subType)
 	}
 	return nil
 }
@@ -696,12 +711,12 @@ func (n *Network) subscriptionSourced(subType string) bool {
 	n.sources.mu.Lock()
 	heads, push := n.sources.heads, n.sources.push
 	n.sources.mu.Unlock()
-	switch subType {
-	case indexer.SubTypeNewHeads:
+	switch {
+	case subType == evmpubsub.KindNewHeads:
 		return heads
-	case indexer.SubTypeLogs:
+	case subType == evmpubsub.KindLogs:
 		return heads && n.chainTracker != nil && n.chainTracker.ServesLogs()
-	case indexer.SubTypeNewPendingTransactions:
+	case n.relay.Spec(subType) != nil:
 		return push
 	default:
 		return true
@@ -712,9 +727,8 @@ func (n *Network) subscriptionSourced(subType string) bool {
 // connected push source, or for heads the block clock of a network with a
 // poller.
 func (r *sourceReconciler) live(subType string) bool {
-	switch subType {
-	case indexer.SubTypeNewHeads, indexer.SubTypeLogs, indexer.SubTypeNewPendingTransactions:
-	default:
+	relayed := r.nw.relay.Spec(subType) != nil
+	if subType != evmpubsub.KindNewHeads && subType != evmpubsub.KindLogs && !relayed {
 		return true
 	}
 	if p := r.pushes.Load(); p != nil {
@@ -724,7 +738,7 @@ func (r *sourceReconciler) live(subType string) bool {
 			}
 		}
 	}
-	if subType == indexer.SubTypeNewPendingTransactions {
+	if relayed {
 		return false
 	}
 	r.mu.Lock()

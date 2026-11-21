@@ -15,6 +15,12 @@ type ArchitectureHandler interface {
 	HandleUpstreamPreForward(ctx context.Context, network Network, upstream Upstream, req *NormalizedRequest, skipCacheRead bool) (handled bool, resp *NormalizedResponse, err error)
 	HandleUpstreamPostForward(ctx context.Context, network Network, upstream Upstream, req *NormalizedRequest, resp *NormalizedResponse, err error, skipCacheRead bool) (*NormalizedResponse, error)
 	NewJsonRpcErrorExtractor() JsonRpcErrorExtractor
+	// PubSub is the architecture's WebSocket subscription dialect; nil if
+	// it serves no subscriptions.
+	PubSub() PubSubDialect
+	// IgnoresNotification reports whether a client's id-less request of
+	// method on a WebSocket is dropped unrun and unanswered.
+	IgnoresNotification(method string) bool
 }
 
 // ArchitectureRegistry maps architecture names to their handlers.
