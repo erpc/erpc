@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -214,5 +215,35 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.True(t, result.IsResultEmptyish())
+	})
+}
+
+func TestUnservedNull_PreservesNullRoundError(t *testing.T) {
+	t.Parallel()
+	newReq := func() *common.NormalizedRequest {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x65",false]}`))
+		req.TakeHeadRefusal(&common.HeadRefusal{Block: 101, Latest: 100, Rule: common.HeadBand})
+		return req
+	}
+
+	t.Run("direct null-round missing data stays an error", func(t *testing.T) {
+		out, ok := unservedNull(context.Background(), newReq(), lotusNull(t, 101))
+		assert.False(t, ok, "a null round must not be rewritten to synthetic JSON null")
+		assert.Nil(t, out)
+	})
+
+	t.Run("exhausted bundle containing null round stays an error", func(t *testing.T) {
+		exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(lotusNull(t, 101), common.NewErrUpstreamBlockUnavailable("rpc2", 101, 100, 0)))
+		out, ok := unservedNull(context.Background(), newReq(), exhausted)
+		assert.False(t, ok, "an exhausted bundle with a null round must not be rewritten to synthetic JSON null")
+		assert.Nil(t, out)
+	})
+
+	t.Run("transient missing data above Latest still synthesizes null", func(t *testing.T) {
+		transient := common.NewErrEndpointMissingData(errors.New("block not found"), nil)
+		out, ok := unservedNull(context.Background(), newReq(), transient)
+		require.True(t, ok)
+		require.NotNil(t, out)
+		assert.True(t, out.IsResultEmptyish())
 	})
 }

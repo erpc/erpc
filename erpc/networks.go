@@ -1734,9 +1734,37 @@ func (n *Network) countHeadRefusal(rule string) {
 }
 
 // missingDataErr reports whether err says an upstream lacks the block
-// (spec §6.4): a missing-data error, or a range refused per upstream.
+// (spec §6.4): a transient missing-data error, or a range refused per upstream.
+// A permanent missing-data verdict (e.g. a Filecoin null round) says the height
+// has no block rather than that this upstream has not caught up to it, so it
+// never triggers head-refusal waits, synthetic nulls, or served_missing counts.
 func missingDataErr(err error) bool {
+	if isAllPermanentMissingData(err) {
+		return false
+	}
 	return common.HasErrorCode(err, common.ErrCodeEndpointMissingData, common.ErrCodeUpstreamBlockUnavailable)
+}
+
+// isAllPermanentMissingData reports whether err is a permanent missing-data
+// verdict, or an ErrUpstreamsExhausted whose every recorded cause is one.
+func isAllPermanentMissingData(err error) bool {
+	if common.IsPermanentlyMissingData(err) {
+		return true
+	}
+	var ue *common.ErrUpstreamsExhausted
+	if errors.As(err, &ue) {
+		causes := ue.Errors()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, c := range causes {
+			if !common.IsPermanentlyMissingData(c) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // guardServedTipRegression returns the tip to serve for `pick`, substituting the
@@ -3783,7 +3811,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			// SVM history sweep uses MissingData to continue a sweep after an
 			// incomplete 200 — not evidence this upstream disagreed with the winner.
-			if common.IsHistorySweepContinuation(upstreamErr) {
+			// Permanent missing-data verdicts (e.g. a Filecoin null round on a
+			// minority fork or a Solana skipped slot) are explicit protocol
+			// answers, not silent wrong-empty responses.
+			if common.IsHistorySweepContinuation(upstreamErr) || common.IsPermanentlyMissingData(upstreamErr) {
 				return true
 			}
 			upstream := key.(*upstream.Upstream)

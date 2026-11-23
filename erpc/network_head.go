@@ -248,7 +248,7 @@ func viewHead(h *common.EvmHead, v evm.View, limit int64) {
 			h.Latest, h.LatestHash, h.Firm, h.LatestAt = 0, [32]byte{}, 0, time.Time{}
 			return
 		}
-		head, at = indexer.Cursor{Number: n}, time.Time{}
+		head, at = indexer.Cursor{Number: v.Block(n)}, time.Time{}
 	}
 	if limit > 0 && uint64(limit) < head.Number {
 		c, pinned := v.PinAt(uint64(limit))
