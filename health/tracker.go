@@ -447,18 +447,22 @@ type Tracker struct {
 	// adversarial cardinality.
 	idleEvictionAfter time.Duration
 
-	// Cache of pre-bound Prometheus observers for upstream request duration
-	// Keyed by the full label set to avoid per-request MetricVec map lookups.
-	urdObsCache sync.Map // map[urdoKey]prometheus.Observer
+	// Pre-bound MetricUpstreamRequestDuration observers. urdObsCache keeps
+	// the per-request lookup on the full label tuple (no allocation);
+	// urdSeriesCache holds one entry per projected series, which is what the
+	// idle sweep evicts. urdCreateMu serializes the miss path against that
+	// eviction.
+	urdObsCache    sync.Map // map[urdoKey]*urdSeries
+	urdSeriesCache sync.Map // map[string]*urdSeries, keyed by projected labels
+	urdCreateMu    sync.Mutex
 
 	// Caches for other hot-path metrics
-	remoteRateLimitedCounterCache sync.Map // map[rrltKey]prometheus.Counter
-	latestBlockGaugeCache         sync.Map // map[ubKey]prometheus.Gauge
-	finalizedBlockGaugeCache      sync.Map // map[ubKey]prometheus.Gauge
-	headLagGaugeCache             sync.Map // map[ubKey]prometheus.Gauge
-	finalizationLagGaugeCache     sync.Map // map[ubKey]prometheus.Gauge
-	cordonedGaugeCache            sync.Map // map[cordKey]prometheus.Gauge
-	rollbackGaugeCache            sync.Map // map[rbKey]prometheus.Gauge
+	latestBlockGaugeCache     sync.Map // map[ubKey]prometheus.Gauge
+	finalizedBlockGaugeCache  sync.Map // map[ubKey]prometheus.Gauge
+	headLagGaugeCache         sync.Map // map[ubKey]prometheus.Gauge
+	finalizationLagGaugeCache sync.Map // map[ubKey]prometheus.Gauge
+	cordonedGaugeCache        sync.Map // map[cordKey]prometheus.Gauge
+	rollbackGaugeCache        sync.Map // map[rbKey]prometheus.Gauge
 
 	// now is the clock of the head bench state machine.
 	now func() time.Time
@@ -476,27 +480,18 @@ type urdoKey struct {
 	user      string
 }
 
-// cachedObserver wraps a Prometheus Observer with an idle timestamp so
-// the tracker's sweep loop can evict label-sets that haven't received
-// an observation in `idleEvictionAfter` — and call
-// `MetricVec.DeleteLabelValues(...)` to release the matching series
-// from the Prometheus registry. Without this, every unique label
-// combination a request EVER triggers stays in the registry forever
-// (Prometheus's append-only model).
-//
-// Hot-path overhead: one atomic.Int64 store per cache hit. The cache
-// itself is sync.Map (LoadOrStore on miss, Load on hit) — same as
-// before, just unwrapping a pointer.
-type cachedObserver struct {
-	obs              prometheus.Observer
+// urdSeries is one MetricUpstreamRequestDuration series with an idle stamp,
+// so the sweep can release it from the registry (append-only otherwise).
+// Under a label customization several urdoKeys project onto one series
+// (Edge drops `user`), so the stamp lives here: the series is deleted only
+// once every tuple writing it has gone quiet. A stamp per tuple let a quiet
+// user's eviction delete the series a busy user kept writing into.
+type urdSeries struct {
+	obs prometheus.Observer
+	// vals is a full-schema tuple that projects onto this series.
+	vals             []string
 	lastAccessedAtMs atomic.Int64
-}
-
-// cachedCounter is the parallel wrapper for the rate-limited counter
-// cache — same idle-tracking story, different Prom type.
-type cachedCounter struct {
-	ctr              prometheus.Counter
-	lastAccessedAtMs atomic.Int64
+	evicted          atomic.Bool
 }
 
 func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method, composite string, finality common.DataFinalityState, userId string) prometheus.Observer {
@@ -512,59 +507,45 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 	}
 	nowMs := time.Now().UnixMilli()
 	if v, ok := t.urdObsCache.Load(key); ok {
-		co := v.(*cachedObserver)
-		co.lastAccessedAtMs.Store(nowMs)
-		return co.obs
+		s := v.(*urdSeries)
+		if !s.evicted.Load() {
+			s.lastAccessedAtMs.Store(nowMs)
+			return s.obs
+		}
 	}
-	co := &cachedObserver{
-		obs: telemetry.MetricUpstreamRequestDuration.WithLabelValues(
-			key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
-		),
+	t.urdCreateMu.Lock()
+	defer t.urdCreateMu.Unlock()
+	vals := []string{key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user}
+	seriesKey := strings.Join(telemetry.MetricUpstreamRequestDuration.ActiveLabelValues(vals), "\x1f")
+	var s *urdSeries
+	if v, ok := t.urdSeriesCache.Load(seriesKey); ok {
+		s = v.(*urdSeries)
+	} else {
+		s = &urdSeries{obs: telemetry.MetricUpstreamRequestDuration.WithLabelValues(vals...), vals: vals}
+		t.urdSeriesCache.Store(seriesKey, s)
 	}
-	co.lastAccessedAtMs.Store(nowMs)
-	actual, _ := t.urdObsCache.LoadOrStore(key, co)
-	return actual.(*cachedObserver).obs
+	s.lastAccessedAtMs.Store(nowMs)
+	t.urdObsCache.Store(key, s)
+	return s.obs
 }
 
-// Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
-type rrltKey struct {
-	project   string
-	vendor    string
-	network   string
-	upstream  string
-	category  string
-	user      string
-	agentName string
-	finality  string
-}
-
+// getRemoteRateLimitedCounter goes through telemetry.CounterHandle, which
+// keys and sweeps on the projected series for the same reason as urdSeries.
 func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId, agentName, finality string) prometheus.Counter {
-	key := rrltKey{t.projectId, up.VendorName(), up.NetworkLabel(), up.Id(), method, userId, agentName, finality}
-	nowMs := time.Now().UnixMilli()
-	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
-		cc := v.(*cachedCounter)
-		cc.lastAccessedAtMs.Store(nowMs)
-		return cc.ctr
-	}
-	cc := &cachedCounter{
-		ctr: telemetry.MetricRateLimitsTotal.WithLabelValues(
-			key.project,   // project
-			key.network,   // network
-			key.vendor,    // vendor
-			key.upstream,  // upstream
-			key.category,  // category
-			key.finality,  // finality
-			key.user,      // user
-			key.agentName, // agent_name
-			"<remote>",    // budget
-			"remote",      // scope (remote upstream)
-			"",            // auth
-			"upstream",    // origin
-		),
-	}
-	cc.lastAccessedAtMs.Store(nowMs)
-	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, cc)
-	return actual.(*cachedCounter).ctr
+	return telemetry.CounterHandle(telemetry.MetricRateLimitsTotal,
+		t.projectId,       // project
+		up.NetworkLabel(), // network
+		up.VendorName(),   // vendor
+		up.Id(),           // upstream
+		method,            // category
+		finality,          // finality
+		userId,            // user
+		agentName,         // agent_name
+		"<remote>",        // budget
+		"remote",          // scope (remote upstream)
+		"",                // auth
+		"upstream",        // origin
+	)
 }
 
 type ubKey struct {
@@ -777,12 +758,9 @@ const sweepEveryRotations = uint64(rollingBuckets)
 //     If a cordoned upstream has been silent for 30 min the cordon
 //     would otherwise vanish on the next request.
 //
-// Prometheus side: idle entries in the urdObsCache /
-// remoteRateLimitedCounterCache get DeleteLabelValues'd on their
-// parent MetricVec, releasing the registered series so the
-// `/metrics` endpoint stops re-emitting stale label combos. Without
-// this, even with the in-memory cache evicted, the Prometheus
-// registry would keep the series forever (append-only model).
+// Prometheus side: idle upstream-duration series get DeleteLabelValues'd
+// on their parent vec (sweepIdleObservers), so `/metrics` stops
+// re-emitting stale label combos; the registry is append-only otherwise.
 func (t *Tracker) sweepIdle() {
 	cutoffMs := time.Now().Add(-t.idleEvictionAfter).UnixMilli()
 
@@ -818,41 +796,32 @@ func (t *Tracker) sweepIdle() {
 	t.sweepIdleObservers(cutoffMs)
 }
 
-// sweepIdleObservers drops idle Prometheus observer/counter cache
-// entries AND deletes their underlying MetricVec label-sets so the
-// registry side of the cardinality blow-up actually shrinks. The
-// cache key IS the label tuple — we reuse it directly for the
-// DeleteLabelValues call, which is why the labels stayed structured
-// throughout (the audit found the cache, the cache held the labels,
-// the labels are what we now release).
+// sweepIdleObservers releases idle upstream-duration series: the registry
+// series and every cached tuple that writes it. Eviction holds urdCreateMu
+// so a racing miss either refreshes the stamp first or binds a fresh series
+// after; a hit that loaded the series just before eviction may lose that one
+// observation, which is bounded and restart-equivalent.
 func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
+	t.urdSeriesCache.Range(func(key, value any) bool {
+		s := value.(*urdSeries)
+		if s.lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
+		t.urdCreateMu.Lock()
+		if s.lastAccessedAtMs.Load() < cutoffMs {
+			t.urdSeriesCache.Delete(key)
+			s.evicted.Store(true)
+			telemetry.MetricUpstreamRequestDuration.DeleteLabelValues(s.vals...)
+		}
+		t.urdCreateMu.Unlock()
+		return true
+	})
 	t.urdObsCache.Range(func(key, value any) bool {
-		co := value.(*cachedObserver)
-		if co.lastAccessedAtMs.Load() >= cutoffMs {
-			return true
+		if value.(*urdSeries).evicted.Load() {
+			t.urdObsCache.CompareAndDelete(key, value)
 		}
-		k := key.(urdoKey)
-		t.urdObsCache.Delete(key)
-		telemetry.MetricUpstreamRequestDuration.DeleteLabelValues(
-			k.project, k.vendor, k.network, k.upstream, k.category, k.composite, k.finality, k.user,
-		)
 		return true
 	})
-
-	t.remoteRateLimitedCounterCache.Range(func(key, value any) bool {
-		cc := value.(*cachedCounter)
-		if cc.lastAccessedAtMs.Load() >= cutoffMs {
-			return true
-		}
-		k := key.(rrltKey)
-		t.remoteRateLimitedCounterCache.Delete(key)
-		telemetry.MetricRateLimitsTotal.DeleteLabelValues(
-			k.project, k.network, k.vendor, k.upstream, k.category, k.finality, k.user, k.agentName,
-			"<remote>", "remote", "", "upstream",
-		)
-		return true
-	})
-
 	// Direct counter emissions (upstream/erpc hot paths) route through
 	// telemetry.CounterHandle; sweep their idle label-sets so
 	// caller-controlled label combinations (method, userId, agentName, ...)

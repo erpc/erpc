@@ -13,7 +13,9 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1737,6 +1739,62 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		require.Less(t, metricAfter, metricBefore,
 			"Prometheus registry must release evicted series — without DeleteLabelValues the count stays sticky (got after=%d, before=%d)",
 			metricAfter, metricBefore)
+	})
+
+	t.Run("idle_sweep_keeps_series_a_hot_tuple_shares", func(t *testing.T) {
+		// Edge drops `user` from histograms, so every user's tuple for one
+		// (upstream, method, finality) writes one series. Evicting a quiet
+		// user's tuple must not delete the series a busy user still writes.
+		origReg := prometheus.DefaultRegisterer
+		prometheus.DefaultRegisterer = prometheus.NewRegistry()
+		require.NoError(t, telemetry.Configure(&telemetry.Options{
+			LegacyLabels: telemetry.LegacyLabelConfig{HistogramDropLabels: []string{"user"}},
+		}))
+		t.Cleanup(func() {
+			prometheus.DefaultRegisterer = prometheus.NewRegistry()
+			_ = telemetry.Configure(&telemetry.Options{})
+			prometheus.DefaultRegisterer = origReg
+		})
+
+		tracker := NewTracker(&log.Logger, "test-project-shared", 2*time.Second)
+		tracker.SetIdleEvictionAfter(150 * time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("shared-series-target")
+		recorded := uint64(0)
+		record := func(user string) {
+			tracker.RecordUpstreamDuration(ups, "eth_call", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, user)
+			recorded++
+		}
+		collected := func() uint64 {
+			ch := make(chan prometheus.Metric, 64)
+			go func() {
+				telemetry.MetricUpstreamRequestDuration.Collect(ch)
+				close(ch)
+			}()
+			var n uint64
+			for m := range ch {
+				var d dto.Metric
+				require.NoError(t, m.Write(&d))
+				for _, lp := range d.GetLabel() {
+					if lp.GetName() == "upstream" && lp.GetValue() == ups.Id() {
+						n += d.GetHistogram().GetSampleCount()
+					}
+				}
+			}
+			return n
+		}
+
+		record("quiet-user")
+		// The sweep fires once per windowSize (2s); stay busy past one.
+		for deadline := time.Now().Add(2500 * time.Millisecond); time.Now().Before(deadline); {
+			record("busy-user")
+			time.Sleep(20 * time.Millisecond)
+		}
+		assert.Equal(t, recorded, collected(),
+			"every observation must reach the collected series after the quiet tuple is swept")
 	})
 
 	t.Run("idle_sweep_preserves_cordoned_state", func(t *testing.T) {
