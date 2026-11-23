@@ -657,3 +657,29 @@ func TestUpstreamForward_AutoTunerShrinksBudgetUnderRemoteThrottling(t *testing.
 }
 
 func (*syncingPoller) HeadBackingOff() bool { return false }
+
+func TestUpstreamExecutor_PermanentMissingData_NoRetryAndNoBreakerFailure(t *testing.T) {
+	md := common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(12, 12, "requested epoch was a null round (6568208)", nil, nil),
+		nil,
+	)
+	md.(*common.ErrEndpointMissingData).WithPermanentMissingData(true)
+
+	exec := &upstreamExecutor{
+		cfg: &common.UpstreamFailsafeConfig{
+			Retry: &common.RetryPolicyConfig{MaxAttempts: 3},
+		},
+	}
+	req := fwdReq("eth_getBlockByNumber")
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: true})
+
+	assert.False(t, exec.shouldRetry(req, nil, md, 0),
+		"permanent missing-data verdict must not retry against the same upstream even when RetryEmpty=true")
+	assert.Equal(t, failsafe.OutcomeIgnore, upstreamBreakerOutcome(nil, md),
+		"permanent missing-data verdict must not count as a circuit-breaker failure")
+
+	// Transient missing data with RetryEmpty=true still retries.
+	transient := common.NewErrEndpointMissingData(errors.New("block not found"), nil)
+	assert.True(t, exec.shouldRetry(req, nil, transient, 0),
+		"transient missing data with RetryEmpty=true must still retry")
+}

@@ -1099,6 +1099,17 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
+	// routing.probe is compared by value against the two constants, so an
+	// unrecognised spelling — a YAML boolean such as `probe: false` lands here
+	// as the string "false" — silently means "not off", i.e. probing stays on
+	// while the config reads as though it were disabled.
+	if u.Routing != nil && u.Routing.Probe != "" {
+		allowed := []ProbeMode{ProbeModeOn, ProbeModeOff}
+		if !slices.Contains(allowed, u.Routing.Probe) {
+			return fmt.Errorf("upstream '%s': routing.probe '%s' is invalid, must be one of: %v",
+				u.Id, u.Routing.Probe, allowed)
+		}
+	}
 	if ca := u.CreditAllowance; ca != nil && (ca.Credits <= 0 || ca.ApiKey == "") {
 		return fmt.Errorf("upstream '%s': creditAllowance needs credits > 0 and apiKey", u.Id)
 	}

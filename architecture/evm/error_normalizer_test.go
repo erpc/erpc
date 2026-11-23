@@ -950,8 +950,18 @@ func TestNullRoundOf(t *testing.T) {
 	}
 
 	t.Run("the client gets the upstream's code and message", func(t *testing.T) {
+		err := lotusNull(t, 6545215)
+		if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			t.Fatalf("null round must classify as ErrEndpointMissingData, got %T (%v)", err, err)
+		}
+		if !common.IsPermanentlyMissingData(err) {
+			t.Fatalf("null round must be marked permanently missing data, got %v", err)
+		}
+		if !common.IsRetryableTowardNetwork(err) {
+			t.Fatalf("null round must stay retryable across upstreams once (e.g. minority fork), got %v", err)
+		}
 		jre := &common.ErrJsonRpcExceptionInternal{}
-		if !errors.As(common.TranslateToJsonRpcException(lotusNull(t, 6545215)), &jre) {
+		if !errors.As(common.TranslateToJsonRpcException(err), &jre) {
 			t.Fatal("no json-rpc exception for the client")
 		}
 		if jre.NormalizedCode() != 12 || jre.Message != "requested epoch was a null round (6545215)" {

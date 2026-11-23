@@ -2,13 +2,11 @@ package consensus
 
 import (
 	"context"
-	"fmt"
 	"math/big"
+	"slices"
 	"sort"
-	"strings"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 )
 
 // waiverBlockProof is the block the empty-outside-retention waiver judges
@@ -72,7 +70,7 @@ func (e *executor) answerCannotProveOutsideRetention(ctx context.Context, analys
 	if analysis == nil || g == nil || analysis.originalRequest == nil {
 		return false
 	}
-	number, _ := answerBlock(ctx, analysis.originalRequest, g.LargestResult)
+	number, _ := answerBlock(ctx, analysis, g)
 	if number <= 0 {
 		return false
 	}
@@ -85,7 +83,7 @@ func (e *executor) answerCannotProveOutsideRetention(ctx context.Context, analys
 			continue
 		}
 		any = true
-		proves, contradicts := availabilityBoundProofState(empties, claimed)
+		proves, contradicts := availabilityBoundProofState(analysis.historyEvidence(), empties, claimed)
 		if proves {
 			return false
 		}
@@ -98,24 +96,30 @@ func (e *executor) answerCannotProveOutsideRetention(ctx context.Context, analys
 
 // confirmAnswerBlock checks the block g's answer names against an upstream
 // outside the agreeing set. The confirmer's block at the answer's number must
-// carry the answer's block hash, and the request's hash must be that block or
-// one of its transactions. Abstainers go first: the quota the waiver releases
-// trusts them, and a node that pruned its tx index still serves the block.
-// The first block returned decides. One that disagrees fails closed instead of
-// asking the next upstream, so a liar cannot shop for a confirmer. A null or
-// an error moves on to the next.
+// carry the answer's block id when the answer names one, and the request's
+// subject must be that block or one of its lookup ids (a tx hash, a
+// signature). Abstainers go first: the quota the waiver releases trusts them,
+// and a node that pruned its tx index still serves the block. Upstreams
+// outside the round come last. The first block returned decides. One that
+// disagrees fails closed instead of asking the next upstream, so a liar
+// cannot shop for a confirmer. A null or an error moves on to the next.
 func (e *executor) confirmAnswerBlock(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) waiverBlockProof {
-	subject := requestHash(ctx, analysis.originalRequest)
-	number, hash := answerBlock(ctx, analysis.originalRequest, g.LargestResult)
-	if subject == "" || number <= 0 || hash == "" {
+	subject := lookupSubject(ctx, analysis)
+	number, blockId := answerBlock(ctx, analysis, g)
+	if subject == "" || number <= 0 {
 		return waiverBlockProof{reason: waiverUnprovenReasonNoRequestBlock}
 	}
+	ev := analysis.historyEvidence()
 	for _, u := range confirmers(analysis, e.agreeingResults(analysis, g), e.config.requiredParticipants) {
-		blockHash, txs, ok := probeBlock(ctx, u, number)
+		// A node declared not to serve the block cannot confirm it.
+		if ev.UpstreamLowerBound(u) > number {
+			continue
+		}
+		probedId, subjects, ok := ev.ProbeBlock(ctx, u, number)
 		if !ok {
 			continue
 		}
-		if !strings.EqualFold(blockHash, hash) || (subject != hash && !containsFold(txs, subject)) {
+		if (blockId != "" && probedId != blockId) || (subject != probedId && !slices.Contains(subjects, subject)) {
 			return waiverBlockProof{reason: waiverUnprovenReasonBlockContradicted}
 		}
 		return waiverBlockProof{block: big.NewInt(number)}
@@ -124,13 +128,10 @@ func (e *executor) confirmAnswerBlock(ctx context.Context, analysis *consensusAn
 }
 
 // emptyWaiverHasBlock reports whether the empty-outside-retention waiver can
-// get a block for req: the request names one, the policy opts the method into
-// blockEvidenceFields, or it names a hash and the method's answer names a
-// block (respRefs) that confirmAnswerBlock can check.
-func (e *executor) emptyWaiverHasBlock(ctx context.Context, req *common.NormalizedRequest) bool {
-	if _, ok := common.EvmRequestedBlockNumber(ctx, req); ok {
-		return true
-	}
+// get a block for req under ev: the request names one, the policy opts the
+// method into blockEvidenceFields, or it names a lookup subject whose answer
+// names a block that confirmAnswerBlock can check.
+func (e *executor) emptyWaiverHasBlock(ctx context.Context, req *common.NormalizedRequest, ev common.HistoryEvidence) bool {
 	method, err := req.Method()
 	if err != nil {
 		return false
@@ -138,11 +139,13 @@ func (e *executor) emptyWaiverHasBlock(ctx context.Context, req *common.Normaliz
 	if fields, ok := methodFields(e.config.blockEvidenceFields, method); ok && len(fields) > 0 {
 		return true
 	}
-	if requestHash(ctx, req) == "" {
+	if ev == nil {
 		return false
 	}
-	mc := common.ResolveMethodConfig(method, req.Network())
-	return mc != nil && len(mc.RespRefs) > 0
+	if _, ok := ev.RequestedBlock(ctx, req); ok {
+		return true
+	}
+	return ev.LookupSubject(ctx, req) != ""
 }
 
 // winnerBlockEvidence is the block g's answer names at the policy's
@@ -170,70 +173,34 @@ func (e *executor) winnerBlockEvidence(analysis *consensusAnalysis, g *responseG
 	return nil
 }
 
-// requestHash is the 32-byte hash (a tx or block hash) a request names as its
-// first param, lowercased, or "" when it names none.
-func requestHash(ctx context.Context, req *common.NormalizedRequest) string {
-	if req == nil {
+// lookupSubject is the id the round's lookup request names (a tx or block
+// hash, a tx signature) when its answer names the block that holds it, or "".
+func lookupSubject(ctx context.Context, analysis *consensusAnalysis) string {
+	ev := analysis.historyEvidence()
+	if ev == nil || analysis.originalRequest == nil {
 		return ""
 	}
-	jrq, err := req.JsonRpcRequest(ctx)
-	if err != nil || jrq == nil {
-		return ""
-	}
-	jrq.RLock()
-	defer jrq.RUnlock()
-	if len(jrq.Params) == 0 {
-		return ""
-	}
-	s, ok := jrq.Params[0].(string)
-	if !ok || !isHash(s) {
-		return ""
-	}
-	return strings.ToLower(s)
+	return ev.LookupSubject(ctx, analysis.originalRequest)
 }
 
-// answerBlock reads the block number and hash an answer names at the method's
-// respRefs: blockNumber/blockHash for a tx or receipt, number/hash for a block.
-// A malformed value returns nothing, which fails the waiver closed.
-func answerBlock(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) (int64, string) {
-	if req == nil || resp == nil {
+// answerBlock is the block g's answer names and that block's own id, when
+// the chain's answer carries one. A malformed value returns nothing, which
+// fails the waiver closed.
+func answerBlock(ctx context.Context, analysis *consensusAnalysis, g *responseGroup) (int64, string) {
+	ev := analysis.historyEvidence()
+	if ev == nil || analysis.originalRequest == nil || g == nil {
 		return 0, ""
 	}
-	method, err := req.Method()
-	if err != nil {
-		return 0, ""
-	}
-	mc := common.ResolveMethodConfig(method, req.Network())
-	if mc == nil || len(mc.RespRefs) == 0 {
-		return 0, ""
-	}
-	jrr, err := resp.JsonRpcResponse(ctx)
-	if err != nil || jrr == nil {
-		return 0, ""
-	}
-	var number int64
-	var hash string
-	for _, path := range mc.RespRefs {
-		val, err := jrr.PeekStringByPath(ctx, path...)
-		if err != nil {
-			continue
-		}
-		ref, bn, err := common.ParseEvmBlockParam(val)
-		if err != nil {
-			return 0, ""
-		}
-		if bn > 0 && number == 0 {
-			number = bn
-		} else if isHash(ref) && hash == "" {
-			hash = ref
-		}
-	}
-	return number, hash
+	return ev.AnswerBlock(ctx, analysis.originalRequest, g.LargestResult)
 }
 
-// confirmers lists the round's upstreams outside the agreeing set that
-// answered without an error, once each, in attempt order: abstainers of an
-// opted-in quota first, then the rest.
+// confirmers lists the upstreams outside the agreeing set that may confirm
+// the answer's block, once each: first the round's upstreams that answered
+// without an error, in attempt order with abstainers of an opted-in quota
+// first, then the request's upstreams that took no part in the round, in
+// routing order. The round's own abstainers often cannot help: a node that
+// answered empty because it pruned the data also lacks the block that holds
+// it, so only a node outside the round can confirm.
 func confirmers(analysis *consensusAnalysis, agreeing []*execResult, reqs []*common.ConsensusRequiredParticipant) []common.Upstream {
 	seen := make(map[string]struct{}, len(agreeing))
 	for _, r := range agreeing {
@@ -276,61 +243,27 @@ func confirmers(analysis *consensusAnalysis, agreeing []*execResult, reqs []*com
 	for i, r := range candidates {
 		out[i] = r.Upstream
 	}
+	req := analysis.originalRequest
+	if req == nil {
+		return out
+	}
+	// A participant that failed this round is not asked again.
+	for _, g := range analysis.groups {
+		for _, r := range g.Results {
+			if r != nil && r.Upstream != nil {
+				seen[r.Upstream.Id()] = struct{}{}
+			}
+		}
+	}
+	for _, u := range req.Upstreams() {
+		if u == nil || !req.MatchesUseUpstream(u) {
+			continue
+		}
+		if _, dup := seen[u.Id()]; dup {
+			continue
+		}
+		seen[u.Id()] = struct{}{}
+		out = append(out, u)
+	}
 	return out
-}
-
-// probeBlock fetches block n with its tx hashes from u the way the state
-// poller fetches heads: straight to u under the timeout policy alone, so it
-// never re-enters consensus or the network's availability gate. u's configured
-// range says where clients are routed, not what u still stores; a node without
-// the block answers null and the caller moves on.
-func probeBlock(ctx context.Context, u common.Upstream, n int64) (hash string, txs []string, ok bool) {
-	pr := common.NewProbeRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, util.RandomID(), n,
-	)))
-	resp, err := u.Forward(ctx, pr, true, false)
-	if resp != nil {
-		defer resp.Release()
-	}
-	if err != nil || resp == nil {
-		return "", nil, false
-	}
-	jrr, err := resp.JsonRpcResponse(ctx)
-	if err != nil || jrr == nil || jrr.Error != nil || jrr.IsResultEmptyish(ctx) {
-		return "", nil, false
-	}
-	var blk struct {
-		Number       string   `json:"number"`
-		Hash         string   `json:"hash"`
-		Transactions []string `json:"transactions"`
-	}
-	if err := common.SonicCfg.Unmarshal(jrr.GetResultBytes(), &blk); err != nil {
-		return "", nil, false
-	}
-	if bn, err := common.HexToInt64(blk.Number); err != nil || bn != n || !isHash(blk.Hash) {
-		return "", nil, false
-	}
-	return blk.Hash, blk.Transactions, true
-}
-
-func isHash(s string) bool {
-	if len(s) != 66 || s[0] != '0' || (s[1] != 'x' && s[1] != 'X') {
-		return false
-	}
-	for i := 2; i < len(s); i++ {
-		c := s[i]
-		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
-			return false
-		}
-	}
-	return true
-}
-
-func containsFold(list []string, s string) bool {
-	for _, v := range list {
-		if strings.EqualFold(v, s) {
-			return true
-		}
-	}
-	return false
 }

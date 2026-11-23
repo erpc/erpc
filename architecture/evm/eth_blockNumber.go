@@ -77,7 +77,7 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	if err != nil {
 		return true, nil, err
 	}
-	return true, common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr), nil
+	return true, common.NewNormalizedResponse().WithRequest(nq).WithJsonRpcResponse(jrr).SetSource(common.SourceHead), nil
 }
 
 // networkPostForward_eth_blockNumber pins every eth_blockNumber response to the
@@ -200,12 +200,13 @@ func networkPostForward_eth_blockNumber(ctx context.Context, network common.Netw
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
+	// The head gave the value; an upstream or the cache that answered keeps
+	// its attribution.
 	corrected := common.NewNormalizedResponse().
 		WithRequest(nq).
-		WithJsonRpcResponse(jrr)
-	if ups != nil {
-		corrected.SetUpstream(ups)
-	}
+		WithJsonRpcResponse(jrr).
+		SetSource(common.SourceHead).
+		SetUpstream(ups)
 	if nr.FromCache() {
 		// Preserve cache attribution: the value was upgraded in-memory and no
 		// upstream call was made to produce this response.

@@ -215,7 +215,7 @@ func networkPreForward_trace_filter(ctx context.Context, n common.Network, ups [
 			return true, nil, err
 		}
 
-		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse).SetFromCache(fromCache)
+		nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse).SetFromCache(fromCache).SetSource(common.SourceSplit)
 		nrq.SetLastValidResponse(ctx, nrs)
 		return true, nrs, nil
 	}
@@ -273,7 +273,7 @@ func networkPostForward_trace_filter(ctx context.Context, n common.Network, rq *
 	if rs != nil {
 		rs.Release()
 	}
-	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged).SetFromCache(fromCache), nil
+	return common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(merged).SetFromCache(fromCache).SetSource(common.SourceSplit), nil
 }
 
 // upstreamPreForward_trace_filter performs block range availability checking

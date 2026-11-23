@@ -726,7 +726,7 @@ POST /main                    →  body {"networkId": "svm:fogo:mainnet", ...}
 | Metric | Type | Labels | When it fires |
 |---|---|---|---|
 | `erpc_network_request_received_total` | counter | `project`, `network`, `category`, `finality`, `user`, `agent_name` | On project forward entry |
-| `erpc_network_successful_request_total` | counter | `project`, `network`, `vendor`, `upstream`, `category`, `attempt`, `finality`, `emptyish`, `user`, `agent_name` | Successful response (vendor/upstream = `<cache>` for cache hits) |
+| `erpc_network_successful_request_total` | counter | `project`, `network`, `vendor`, `upstream`, `category`, `attempt`, `finality`, `emptyish`, `user`, `agent_name` | Successful response (vendor/upstream = `<cache>` for cache hits, `<static>` for static responses, `<local>` for local answers; see the [metrics reference](/reference/metrics#area-2-network-request-accounting)) |
 | `erpc_network_failed_request_total` | counter | `project`, `network`, `category`, `attempt`, `error`, `severity`, `finality`, `user`, `agent_name` | Failed response |
 | `erpc_network_request_duration_seconds` | histogram | `project`, `network`, `vendor`, `upstream`, `category`, `finality`, `user` | Request completed (vendor/upstream = `<error>` on failure) |
 | `erpc_network_multiplexed_request_total` | counter | `project`, `network`, `category`, `finality`, `user`, `agent_name` | Follower registered with the in-flight deduplicator |

@@ -1891,6 +1891,11 @@ func (e *EvmStatePoller) fetchFinalized(ctx context.Context) (int64, error) {
 	if err != nil || b.number == 0 {
 		// A node with no finalized tag can answer it as missing data, but
 		// so does a node that holds no block yet: only the first counts.
+		// A null round means the node supports the tag, not that it refused it.
+		if _, null := NullRoundOf(err); null {
+			e.logger.Debug().Err(err).Msg("finalized epoch was a null round in evm state poller")
+			return 0, nil
+		}
 		missing := common.HasErrorCode(err, common.ErrCodeEndpointMissingData)
 		if missing && e.latestBlockShared.GetValue() <= 0 {
 			e.logger.Debug().Err(err).Msg("upstream holds no finalized block yet in evm state poller")
