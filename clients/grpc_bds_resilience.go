@@ -444,10 +444,17 @@ func (p *bdsPool) watchServable(c *bdsConn) {
 
 // awaitReady starts c connecting and reports whether it became READY —
 // resolved, connected and, with a health check, SERVING — within
-// bdsReadyTimeout.
+// bdsReadyTimeout. Shutdown ends the wait at once.
 func (p *bdsPool) awaitReady(c *bdsConn) bool {
 	ctx, cancel := context.WithTimeout(p.appCtx, bdsReadyTimeout)
 	defer cancel()
+	go func() {
+		select {
+		case <-p.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	c.conn.Connect()
 	for {
 		state := c.conn.GetState()
