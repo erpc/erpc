@@ -576,13 +576,14 @@
     // Map the on-wire `common.UpstreamAttemptOutcome` enum
     // (upstream/upstream.go classifyUpstreamOutcome) to a UI-friendly
     // bucket. A coarse fold here is OK — visualization wants ~6
-    // visually-distinct categories rather than the full 13.
+    // visually-distinct categories rather than the full 14.
     //
     //   success       → "ok"        (winning response)
     //   hedge-winner  → "ok"        (winning response — flagged by Won)
     //   empty         → "miss"      (upstream answered, no data — NOT a failure)
     //   missing_data  → "miss"
     //   block_unavailable → "miss"
+    //   unsupported   → "miss"      (upstream does not serve the method — NOT a failure)
     //   timeout       → "timeout"
     //   rate_limited  → "throttled" (429 at upstream)
     //   skipped       → "hedge-loser"
@@ -597,6 +598,7 @@
         case "empty":
         case "missing_data":
         case "block_unavailable":
+        case "unsupported":
           return "miss";
         case "timeout":
           return "timeout";
