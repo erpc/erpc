@@ -732,3 +732,162 @@ func TestProxyPoolRegistry_Configs(t *testing.T) {
 	_, err = (&ProxyPool{ID: "none"}).GetClient()
 	require.Error(t, err)
 }
+
+func TestHttpBodyIdleTimeout_SingleStallFailsFast(t *testing.T) {
+	stalled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x`))
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-stalled:
+		}
+	}))
+	t.Cleanup(func() {
+		close(stalled)
+		srv.Close()
+	})
+
+	c := newHttpTestClient(t, srv.URL, nil, nil, nil)
+	c.bodyIdleTimeout = 120 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	resp, err := c.SendRequest(ctx, rpcReq(1, "debug_traceBlockByNumber"))
+	elapsed := time.Since(started)
+
+	require.Nil(t, resp)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout), "expected ErrEndpointRequestTimeout, got: %v", err)
+	assert.Less(t, elapsed, 2*time.Second, "stalled body should abort at bodyIdleTimeout, not parent deadline")
+}
+
+func TestHttpBodyIdleTimeout_SlowHeadersAndStreamingChunksSucceed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Delay response headers longer than bodyIdleTimeout: header wait is
+		// governed by ResponseHeaderTimeout / request context, not bodyIdleTimeout.
+		time.Sleep(180 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fl, _ := w.(http.Flusher)
+		chunks := []string{
+			`{"jsonrpc":"2.0",`,
+			`"id":1,`,
+			`"result":`,
+			`"0xabc"}`,
+		}
+		// Total body transfer (4 * 60ms = 240ms) also exceeds bodyIdleTimeout
+		// (120ms), proving the idle timer resets on every read.
+		for _, ch := range chunks {
+			time.Sleep(60 * time.Millisecond)
+			_, _ = w.Write([]byte(ch))
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newHttpTestClient(t, srv.URL, nil, nil, nil)
+	c.bodyIdleTimeout = 120 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := c.SendRequest(ctx, rpcReq(1, "debug_traceBlockByNumber"))
+	require.NoError(t, err)
+	defer resp.Release()
+
+	jrr, err := resp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, `"0xabc"`, jrr.GetResultString())
+}
+
+func TestHttpBodyIdleTimeout_GzipStallFailsFast(t *testing.T) {
+	stalled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x`))
+		_ = gz.Flush()
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-stalled:
+		}
+	}))
+	t.Cleanup(func() {
+		close(stalled)
+		srv.Close()
+	})
+
+	c := newHttpTestClient(t, srv.URL, nil, nil, nil)
+	c.bodyIdleTimeout = 120 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	resp, err := c.SendRequest(ctx, rpcReq(1, "debug_traceBlockByNumber"))
+	elapsed := time.Since(started)
+
+	require.Nil(t, resp)
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout), "expected ErrEndpointRequestTimeout, got: %v", err)
+	assert.Less(t, elapsed, 2*time.Second)
+}
+
+func TestHttpBodyIdleTimeout_BatchStallFailsFast(t *testing.T) {
+	stalled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"jsonrpc":"2.0","id":1`))
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-stalled:
+		}
+	}))
+	t.Cleanup(func() {
+		close(stalled)
+		srv.Close()
+	})
+
+	c := newHttpTestClient(t, srv.URL, batchCfg(2, 50*time.Millisecond), nil, nil)
+	c.bodyIdleTimeout = 120 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	started := time.Now()
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = c.SendRequest(ctx, rpcReq(idx+1, "debug_traceBlockByNumber"))
+		}(i)
+	}
+	wg.Wait()
+	elapsed := time.Since(started)
+
+	for i, err := range errs {
+		require.Error(t, err, "batch request %d should fail", i)
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout), "batch request %d expected ErrEndpointRequestTimeout, got: %v", i, err)
+	}
+	assert.Less(t, elapsed, 2*time.Second)
+}

@@ -171,6 +171,7 @@ Same values apply to both direct and proxy transports (source: <SourceLink file=
 | `MaxConnsPerHost` | `0` (unlimited) | Prevents connection queuing under high RPS / high latency |
 | `IdleConnTimeout` | `90s` | Idle connection closure |
 | `ResponseHeaderTimeout` | `30s` | Time to first response header byte |
+| `defaultBodyIdleTimeout` | `10s` | Max idle pause between response body reads once headers arrive; resets on every read so large streaming bodies succeed while mid-body stalls fail over as `ErrEndpointRequestTimeout` |
 | `TLSHandshakeTimeout` | `10s` | TLS negotiation deadline |
 | `ExpectContinueTimeout` | `1s` | 100-continue wait |
 | `http.Client.Timeout` | `60s` | End-to-end timeout including body read |
