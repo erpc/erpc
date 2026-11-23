@@ -23,7 +23,11 @@ func init() {
 // ErrNullRound is the cause eRPC gives an upstream's answer that the
 // height it was asked has no block: a Filecoin null round. Lotus answers
 // it with code 12, "requested epoch was a null round (N)", data N; a
-// future epoch is code 1 and no null round. The answer reaches clients as
+// future epoch is code 1 and no null round. It is classified as a
+// permanent missing-data verdict: retryable across upstreams once (another
+// branch or a fresher node on "latest" may hold a block), never retried
+// against the same upstream or after a delay, consensus-valid, and never a
+// circuit-breaker or health-score failure. The answer reaches clients as
 // the upstream sent it; this cause is the one place that recognises it, so
 // no reader matches its text (NullRoundOf).
 type ErrNullRound struct{ Epoch uint64 }
@@ -121,11 +125,14 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		if epoch, ok := nullRoundEpoch(code, err); ok {
-			return common.NewErrEndpointServerSideException(
+			md := common.NewErrEndpointMissingData(
 				common.NewErrJsonRpcExceptionInternal(int(code), code, err.Message, &ErrNullRound{Epoch: epoch}, details),
-				nil,
-				r.StatusCode,
+				upstream,
 			)
+			if me, ok := md.(*common.ErrEndpointMissingData); ok {
+				me.WithPermanentMissingData(true)
+			}
+			return md
 		}
 
 		//----------------------------------------------------------------

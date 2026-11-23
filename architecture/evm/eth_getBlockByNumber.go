@@ -184,6 +184,15 @@ func unservedNull(ctx context.Context, nq *common.NormalizedRequest, re error) (
 	if RequestBlockTag(ctx, nq) != "" || !common.HasErrorCode(re, common.ErrCodeEndpointMissingData, common.ErrCodeUpstreamBlockUnavailable) {
 		return nil, false
 	}
+	// A permanent missing-data verdict (e.g. a Filecoin null round) proves the
+	// height is absent on-chain rather than merely not yet served, so surface
+	// the upstream's error verbatim instead of synthesizing JSON null.
+	if common.IsPermanentlyMissingData(re) {
+		return nil, false
+	}
+	if _, null := NullRoundOf(re); null {
+		return nil, false
+	}
 	v := HeadRefusalOf(ctx, nq)
 	if v == nil || v.Latest <= 0 || v.Block <= v.Latest {
 		return nil, false
