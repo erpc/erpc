@@ -103,10 +103,49 @@ type consensusAnalysis struct {
 	cachedBestBySize   *responseGroup
 	cachedValidGroups  []*responseGroup
 
+	// evidence is the history-waiver evidence of the participants' chain
+	// architecture, resolved on first use by historyEvidence.
+	evidence         common.HistoryEvidence
+	evidenceResolved bool
+
 	// waiverBlocks memoizes waiverBlock per winning group: confirming a hash
 	// lookup's block is a network probe, and one determineWinner can ask
 	// for the same group more than once.
 	waiverBlocks map[*responseGroup]waiverBlockProof
+}
+
+// historyEvidence is the history-waiver evidence of the architecture the
+// participants' network id names, or nil when it has none: the waivers then
+// fail closed. Every participant serves the request's one network.
+func (a *consensusAnalysis) historyEvidence() common.HistoryEvidence {
+	if a == nil {
+		return nil
+	}
+	if a.evidenceResolved {
+		return a.evidence
+	}
+	a.evidenceResolved = true
+	for _, g := range a.groups {
+		for _, r := range g.Results {
+			if r != nil && r.Upstream != nil {
+				a.evidence = common.HistoryEvidenceOfNetworkId(r.Upstream.NetworkId())
+				return a.evidence
+			}
+		}
+	}
+	return nil
+}
+
+// upstreamsHistoryEvidence is the history-waiver evidence of the
+// architecture the upstreams' network id names. Every upstream of a request
+// serves its one network, so the first decides.
+func upstreamsHistoryEvidence(ups []common.Upstream) common.HistoryEvidence {
+	for _, u := range ups {
+		if u != nil {
+			return common.HistoryEvidenceOfNetworkId(u.NetworkId())
+		}
+	}
+	return nil
 }
 
 func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *config, responses []*execResult) *consensusAnalysis {

@@ -20,8 +20,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // TestHttpServer_H2C_WithoutSharedGrpc pins issue #965: a non-TLS HTTP
@@ -327,7 +329,10 @@ func TestHttpServer_H2C_ShutdownGoAwaysAndDrainsInFlightStream(t *testing.T) {
 // GracefulStop never runs for it, so the HTTP drain is all that keeps its RPCs
 // alive on SIGTERM: a unary RPC in flight when Shutdown starts must complete,
 // and the client must then be pushed off the connection instead of sending
-// more RPCs to the dying process.
+// more RPCs to the dying process. Its long-lived streams end with
+// UNAVAILABLE, never a stream without trailers or CANCELLED, so their clients
+// reconnect at once: production starts Shutdown at SIGTERM (waitBeforeShutdown
+// 0s), so it races the network stopping under them.
 func TestHttpServer_SharedGrpc_ShutdownDrainsInFlightRPC(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
@@ -359,7 +364,7 @@ func TestHttpServer_SharedGrpc_ShutdownDrainsInFlightRPC(t *testing.T) {
 
 	cfg := h2cTestConfig()
 	cfg.Server.GrpcEnabled = util.BoolPtr(true)
-	cfg.Server.WaitBeforeShutdown = common.Duration(100 * time.Millisecond).Ptr()
+	cfg.Server.WaitBeforeShutdown = common.Duration(0).Ptr()
 	require.NoError(t, cfg.SetDefaults(nil))
 	require.True(t, grpcSharesHttpV4(cfg.Server), "precondition: gRPC must share the HTTP port")
 
@@ -399,6 +404,20 @@ func TestHttpServer_SharedGrpc_ShutdownDrainsInFlightRPC(t *testing.T) {
 	chainId, err := client.ChainId(grpcCtx, &evm.ChainIdRequest{})
 	require.NoError(t, err)
 	require.Equal(t, uint64(123), chainId.ChainId)
+
+	streams := make(chan error, 8)
+	for range cap(streams) {
+		s, err := evm.NewStreamServiceClient(conn).StreamBlocks(grpcCtx, &evm.StreamBlocksRequest{})
+		require.NoError(t, err)
+		go func() {
+			for {
+				if _, err := s.Recv(); err != nil {
+					streams <- err
+					return
+				}
+			}
+		}()
+	}
 
 	type result struct {
 		resp *evm.GetBlockResponse
@@ -444,4 +463,15 @@ func TestHttpServer_SharedGrpc_ShutdownDrainsInFlightRPC(t *testing.T) {
 	defer cancelNew()
 	_, err = client.ChainId(newCtx, &evm.ChainIdRequest{})
 	require.Error(t, err, "a new RPC after the drain must not be served by the shutting-down server")
+
+	for range cap(streams) {
+		select {
+		case err := <-streams:
+			st := status.Convert(err)
+			assert.Equal(t, codes.Unavailable, st.Code(), "a stream ended with %v", err)
+			assert.Contains(t, []string{"server shutting down", "network is stopping"}, st.Message())
+		case <-time.After(5 * time.Second):
+			t.Fatal("a stream outlived Shutdown")
+		}
+	}
 }

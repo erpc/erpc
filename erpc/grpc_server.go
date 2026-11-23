@@ -35,6 +35,11 @@ type GrpcServer struct {
 	logger    *zerolog.Logger
 	server    *grpc.Server
 
+	// streams ends when the server stops its long-lived streams
+	// (StopStreams).
+	streams     context.Context
+	stopStreams context.CancelFunc
+
 	trustedForwarderNets []net.IPNet
 	trustedForwarderIPs  map[string]struct{}
 	trustedIPHeaders     []string
@@ -70,6 +75,7 @@ func NewGrpcServer(
 		processor: NewRequestProcessor(erpcInstance, logger),
 		logger:    logger,
 	}
+	gs.streams, gs.stopStreams = context.WithCancel(context.Background())
 	if cfg != nil {
 		gs.trustedForwarderIPs = make(map[string]struct{}, len(cfg.TrustedIPForwarders))
 		for _, entry := range cfg.TrustedIPForwarders {
@@ -154,9 +160,24 @@ func (gs *GrpcServer) Start(logger *zerolog.Logger) error {
 	logger.Info().Str("addr", addr).Msg("starting gRPC server")
 	go func() {
 		<-gs.appCtx.Done()
+		gs.StopStreams()
 		gs.server.GracefulStop()
 	}()
 	return gs.server.Serve(lis)
+}
+
+// StopStreams ends every long-lived stream. StreamBlocks ends itself with
+// UNAVAILABLE "server shutting down", so its client reconnects elsewhere at
+// once (endsAtStopStreams). On the shared port HttpServer cancels the request
+// of any other stream, as a handler blocked in Recv sees nothing else; that
+// closes the handler transport, so its client reads a stream ended without
+// trailers or CANCELLED.
+func (gs *GrpcServer) StopStreams() { gs.stopStreams() }
+
+// endsAtStopStreams reports whether method's handler ends its own stream at
+// StopStreams.
+func (gs *GrpcServer) endsAtStopStreams(method string) bool {
+	return method == evm.StreamService_StreamBlocks_FullMethodName
 }
 
 func (gs *GrpcServer) extractRequestInput(ctx context.Context, method string) (*RequestInput, error) {

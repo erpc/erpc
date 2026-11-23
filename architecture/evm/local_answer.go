@@ -33,7 +33,7 @@ func projectPreForward_localAnswer(ctx context.Context, n common.Network, r *com
 	if err != nil {
 		return true, nil, err
 	}
-	return true, common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(jrr), nil
+	return true, common.NewNormalizedResponse().WithRequest(r).WithJsonRpcResponse(jrr).SetSource(common.SourceLocal), nil
 }
 
 func hasStaticResponse(ctx context.Context, n common.Network, r *common.NormalizedRequest, method string) bool {

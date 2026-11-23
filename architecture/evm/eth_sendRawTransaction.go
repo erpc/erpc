@@ -189,7 +189,8 @@ func createSyntheticSuccessResponse(ctx context.Context, rq *common.NormalizedRe
 
 	resp := common.NewNormalizedResponse().
 		WithRequest(rq).
-		WithJsonRpcResponse(jrr)
+		WithJsonRpcResponse(jrr).
+		SetSource(common.SourceIdempotent)
 
 	return resp, nil
 }

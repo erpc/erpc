@@ -127,6 +127,13 @@ func TestExtractJsonRpcError_InsufficientFunds_TracingMethodsRetryable(t *testin
 			message:       "StandaloneError(TransactionHashNotFound(0x1e5f1daaab9c1e10582a8defeb63f0716e8e1071c8a0327e973ff47732f50141))",
 			wantRetryable: false,
 		},
+		{
+			// Aurora engine cannot decode its stored record of the tx; same answer every time.
+			name:          "debug_traceTransaction Aurora Borsh decode failure stays non-retried",
+			method:        "debug_traceTransaction",
+			message:       `StandaloneError(Borsh("Unexpected length of input"))`,
+			wantRetryable: false,
+		},
 	}
 
 	for _, tc := range cases {
