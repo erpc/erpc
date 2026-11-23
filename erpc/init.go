@@ -192,11 +192,15 @@ func Init(
 		if cfg.Metrics.Port == nil {
 			return fmt.Errorf("metrics.port is not configured")
 		}
-		logger.Info().Msgf("starting metrics server on port: %d", *cfg.Metrics.Port)
+		metricsAddr, err := cfg.Metrics.ListenAddr()
+		if err != nil {
+			return err
+		}
+		logger.Info().Msgf("starting metrics server on %s", metricsAddr)
 		// No appCtx BaseContext: scrapes keep working after SIGTERM, until the
 		// shutdown below.
 		metricsSrv = &http.Server{
-			Addr: fmt.Sprintf(":%d", *cfg.Metrics.Port),
+			Addr: metricsAddr,
 			// promhttp.Handler() with the gatherer wrapped, so drop customizations
 			// also govern the stock collectors the manager does not own.
 			Handler: promhttp.InstrumentMetricHandler(
