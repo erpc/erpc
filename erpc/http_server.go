@@ -1581,6 +1581,12 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	                        single network, so a disagreement means the value
 //	                        is not a fact about the response and is omitted
 //	                        rather than guessed.
+//	X-ERPC-Finality:        `finalized`, `unfinalized`, `realtime` or `unknown`:
+//	                        the response's finality, else the request's — the
+//	                        value eRPC's own `finality` metric label carries,
+//	                        so a proxy can split its latency by how recent the
+//	                        data is. Emitted only when every routed sub-call
+//	                        has the same one, for the reason the network is.
 //
 // nil when the group is off or there are no items: early errors that never
 // routed a request have no routed call to account for.
@@ -1594,6 +1600,7 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 	var creditsTotal int64
 	networkId, networkAlias := "", ""
 	networkAmbiguous := false
+	finality, finalityAmbiguous := "", false
 	for _, item := range items {
 		if isBillableItem(ctx, item) {
 			billable++
@@ -1612,6 +1619,11 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 			case networkId != id:
 				networkAmbiguous = true
 			}
+		}
+		if f := itemFinality(ctx, item, req); finality == "" {
+			finality = f
+		} else if finality != f {
+			finalityAmbiguous = true
 		}
 		method, _ := req.Method()
 		if method != "" {
@@ -1638,6 +1650,9 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 			h.Set("X-ERPC-Network-Alias", networkAlias)
 		}
 	}
+	if finality != "" && !finalityAmbiguous {
+		h.Set("X-ERPC-Finality", finality)
+	}
 	if len(methods) > 0 {
 		names := make([]string, 0, len(methods))
 		for m := range methods {
@@ -1661,6 +1676,16 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 		h.Set("X-ERPC-Credits-Version", common.ErpcVersion)
 	}
 	return h
+}
+
+// itemFinality is the finality eRPC's own metrics give one routed sub-call:
+// the response's when there is one (it can read the block from the answer),
+// else the request's.
+func itemFinality(ctx context.Context, item interface{}, req *common.NormalizedRequest) string {
+	if resp, ok := item.(*common.NormalizedResponse); ok && resp != nil {
+		return resp.Finality(ctx).String()
+	}
+	return req.Finality(ctx).String()
 }
 
 // writeCostHeaders sets costHeaders on an HTTP response, before WriteHeader.

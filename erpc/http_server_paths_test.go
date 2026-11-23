@@ -670,6 +670,16 @@ func TestHttpPaths_CostHeaders(t *testing.T) {
 	assert.Empty(t, h.Get("X-ERPC-Network-Id"), "disagreeing networks are not reported")
 	assert.Empty(t, h.Get("X-ERPC-Network-Alias"))
 
+	// Finality is derived the way eRPC's metrics derive it: a block tag reads
+	// realtime data; a call with no block reads unknown; the two do not agree.
+	rLatest := httpPathsRequest(t, `{"jsonrpc":"2.0","id":4,"method":"eth_getBlockByNumber","params":["latest",false]}`, nwA)
+	h = on.costHeaders(ctx, []interface{}{httpPathsResponse(t, rLatest, map[string]interface{}{"number": "0x10"})})
+	assert.Equal(t, "realtime", h.Get("X-ERPC-Finality"))
+	h = on.costHeaders(ctx, []interface{}{httpPathsResponse(t, r1, "0x1"), reverted})
+	assert.Equal(t, "unknown", h.Get("X-ERPC-Finality"))
+	h = on.costHeaders(ctx, []interface{}{httpPathsResponse(t, rLatest, map[string]interface{}{"number": "0x10"}), reverted})
+	assert.Empty(t, h.Get("X-ERPC-Finality"))
+
 	assert.Nil(t, on.costHeaders(ctx, nil))
 	off := &HttpServer{serverCfg: &common.ServerConfig{}}
 	assert.Nil(t, off.costHeaders(ctx, []interface{}{reverted}))
