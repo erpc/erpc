@@ -1959,6 +1959,9 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	if err := n.Integrity.Validate(); err != nil {
 		return fmt.Errorf("network.*: %w", err)
 	}
+	if err := n.Failover.Validate("network.*.failover"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1968,6 +1971,9 @@ func (n *NetworkDefaults) Validate() error {
 	}
 	if n.MaxClientBatchSize != nil && *n.MaxClientBatchSize < 0 {
 		return fmt.Errorf("networkDefaults.maxClientBatchSize must be 0 (no limit) or greater, got %d", *n.MaxClientBatchSize)
+	}
+	if err := n.Failover.Validate("networkDefaults.failover"); err != nil {
+		return err
 	}
 	return validateCacheKeySuffix("networkDefaults.cacheKeySuffix", n.CacheKeySuffix)
 }

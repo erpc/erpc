@@ -918,6 +918,17 @@ export interface FailoverConfig {
    * other upstream failed with an error retryable toward the network.
    */
   onDefaultsExhausted?: boolean;
+  /**
+   * OnDemandFallbackHeads holds the `newHeads` subscription of every
+   * `tier:fallback` WebSocket upstream while a primary source leads (it
+   * streamed heads for 60s without a break), as topic admission holds
+   * their pending-transaction topics; the fallback subscribes again once no
+   * primary streams. Saves a provider that bills each notification its
+   * stream while the primaries are healthy; the fallback's head then comes
+   * from its polls, so the confirmed head is corroborated by the primaries
+   * alone. Requires onDefaultsExhausted.
+   */
+  onDemandFallbackHeads?: boolean;
 }
 export interface CORSConfig {
   allowedOrigins: string[];

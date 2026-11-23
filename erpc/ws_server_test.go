@@ -2923,6 +2923,8 @@ type mockWsVendor struct {
 	pushing       atomic.Bool
 	subscribes    atomic.Int32
 	latestPolls   atomic.Int64
+	// headsUnsubscribes counts the eth_unsubscribe of a newHeads subscription.
+	headsUnsubscribes atomic.Int32
 
 	pendingSubscribes atomic.Int32
 	pendingMu         sync.Mutex
@@ -3042,6 +3044,9 @@ func newMockWsVendor(t *testing.T, chain *mockChain, configure func(v *mockWsVen
 				}
 			case "eth_unsubscribe":
 				if id, ok := params[0].(string); ok {
+					if strings.HasPrefix(id, "0xheads") {
+						v.headsUnsubscribes.Add(1)
+					}
 					v.pendingMu.Lock()
 					delete(v.pendingSubs, id)
 					v.pendingMu.Unlock()
