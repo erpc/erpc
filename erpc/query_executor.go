@@ -30,9 +30,11 @@ import (
 // order and falls back to the query shim, which builds pages from standard
 // JSON-RPC sub-requests sent through Network.Forward.
 type EvmQueryExecutor struct {
-	network         *Network
-	logger          *zerolog.Logger
-	parentRequestId interface{}
+	network *Network
+	logger  *zerolog.Logger
+	// parent is the eth_query* request: shim sub-requests carry its id and
+	// roll their billing into it (ExecState.RecordSubrequest).
+	parent *common.NormalizedRequest
 	// projectShimPages clears unselected fields on shim pages for gRPC
 	// clients; the JSON renderer reads only the selected fields anyway.
 	projectShimPages bool
@@ -605,7 +607,7 @@ func (n *Network) forwardQuery(ctx context.Context, req *common.NormalizedReques
 
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Logger()
 	executor := NewEvmQueryExecutor(n, &lg)
-	executor.parentRequestId = req.ID()
+	executor.parent = req
 	var page proto.Message
 	err = executor.Execute(ctx, queryReq, func(p proto.Message) error {
 		page = p
