@@ -145,6 +145,12 @@ type EvmStatePoller struct {
 	// passed intake (Pushed); 0 before any.
 	pushedAt atomic.Int64
 
+	// callGasCap is the upstream's measured eth_call gas cap, 0 while
+	// unknown; callGasCapAt is the unix nanoseconds its last probe started
+	// (CallGasCap).
+	callGasCap   atomic.Uint64
+	callGasCapAt atomic.Int64
+
 	// chainIdRecheck is the pending eth_chainId check of a chain-identity
 	// cordon, nil while none; chainIdRecheckUnwatch stops watching appCtx
 	// for it; chainIdMatches counts its matching checks in a row.

@@ -221,7 +221,7 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 2. **Static response** match — returns immediately if hit (before multiplexer, cache, upstreams).
 3. **Multiplexer** — leader/follower on `CacheHash`; followers copy the leader's response.
 4. **Cache read** — non-null hit closes the mux and returns.
-5. **Policy-engine upstream ordering** — falls back to registration order if empty; `ErrNoUpstreamsFound` (404) if still empty.
+5. **Policy-engine upstream ordering** — falls back to registration order if empty; `ErrNoUpstreamsFound` (404) if still empty. An `eth_call` that names more `gas` than an upstream's measured cap (`erpc_upstream_call_gas_cap`) tries that upstream after all others: the node lowers the gas to its cap, and the out-of-gas answer that follows is never retried.
 6. EVM pre-forward hook (future-block short-circuit; never cached).
 7. Stateful-method guard, network rate-limit, request normalization.
 8. **Failsafe executor selection** — first config-order entry matching method + finality.

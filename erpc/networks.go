@@ -2558,7 +2558,9 @@ func (n *Network) heldOrder(ctx context.Context, req *common.NormalizedRequest, 
 // as the tag (bn its Head's Latest), only an upstream whose evidence shows
 // it behind bn goes last (tagHolds): its answer is its own head, served
 // once the view takes it. Then failover tiers, then voters with a stale
-// hash vote, and voters on a minority fork last.
+// hash vote, and voters on a minority fork last. An eth_call that names
+// more gas than some upstreams give puts those after all others
+// (gasShortLast).
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64, tag bool) []common.Upstream {
 	if n.Architecture() == common.ArchitectureEvm && len(upsList) > 1 && (bn > 0 || evm.ReadsBlock(method)) {
 		head := n.requestHead(ctx, req)
@@ -2588,7 +2590,68 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	if n.cfg.Failover.Enabled() {
 		upsList = tierUpstreamsByGroup(upsList)
 	}
-	return n.lateLast(upsList)
+	return gasShortLast(ctx, req, n.lateLast(upsList))
+}
+
+// gasFit is the gas an eth_call names, which orders upstreams by their
+// measured eth_call gas cap (EvmStatePoller.CallGasCap): a node lowers a
+// larger gas to its cap, and the out-of-gas revert that follows is an
+// answer, not retried. 0, for any other request, orders nothing.
+type gasFit uint64
+
+func callGasFit(ctx context.Context, req *common.NormalizedRequest) gasFit {
+	if method, _ := req.Method(); method != "eth_call" {
+		return 0
+	}
+	return gasFit(evm.CallGas(ctx, req))
+}
+
+// short reports whether u's measured cap is below the gas. An upstream
+// with no measured cap counts as giving it.
+func (g gasFit) short(u common.Upstream) bool {
+	if g == 0 {
+		return false
+	}
+	c := upstreamCallGasCap(u)
+	return c > 0 && c < uint64(g)
+}
+
+// compare puts upstreams that give the gas before those short of it, these
+// largest cap first; 0 between two that give it, so a stable sort keeps
+// their order.
+func (g gasFit) compare(a, b common.Upstream) int {
+	sa, sb := g.short(a), g.short(b)
+	switch {
+	case sa && sb:
+		return cmp.Compare(upstreamCallGasCap(b), upstreamCallGasCap(a))
+	case sa:
+		return 1
+	case sb:
+		return -1
+	}
+	return 0
+}
+
+// gasShortLast moves the upstreams short of an eth_call's gas (gasFit) to
+// the end of ups; ups itself when none is.
+func gasShortLast(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream) []common.Upstream {
+	g := callGasFit(ctx, req)
+	if !slices.ContainsFunc(ups, g.short) {
+		return ups
+	}
+	out := slices.Clone(ups)
+	slices.SortStableFunc(out, g.compare)
+	return out
+}
+
+// upstreamCallGasCap is u's measured eth_call gas cap, 0 while unknown.
+func upstreamCallGasCap(u common.Upstream) uint64 {
+	if eu, ok := u.(common.EvmUpstream); ok {
+		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			return sp.CallGasCap()
+		}
+	}
+	return 0
 }
 
 // readsHeadTag reports whether req's block tag reads the newest head
@@ -4947,7 +5010,8 @@ func isFallbackTier(u common.Upstream) bool {
 // not yet attempted that NextUpstream may still select, ordered by their
 // heads as they are now, those holding bn first, with no I/O; for a Held
 // block, by when each most likely holds it, after waiting for the first
-// (awaitHolder). Upstreams the policy did not route stay the fallback
+// (awaitHolder). Upstreams short of an eth_call's gas go last either way
+// (gasShortLast). Upstreams the policy did not route stay the fallback
 // escape's.
 func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
 	var rest []common.Upstream
@@ -4959,7 +5023,7 @@ func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, 
 	if r := req.HeadRefusal(); r != nil && r.Held {
 		rest = n.awaitHolder(ctx, req, rest, bn, true)
 	} else {
-		rest = n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil)
+		rest = gasShortLast(ctx, req, n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil))
 	}
 	return func() (common.Upstream, error) {
 		for len(rest) > 0 {

@@ -657,6 +657,7 @@ func TestUpstreamForward_AutoTunerShrinksBudgetUnderRemoteThrottling(t *testing.
 }
 
 func (*syncingPoller) HeadBackingOff() bool { return false }
+func (*syncingPoller) CallGasCap() uint64   { return 0 }
 
 func TestUpstreamExecutor_PermanentMissingData_NoRetryAndNoBreakerFailure(t *testing.T) {
 	md := common.NewErrEndpointMissingData(
