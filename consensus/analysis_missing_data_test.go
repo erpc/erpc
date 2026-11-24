@@ -56,8 +56,7 @@ func decide(t *testing.T, parts ...*execResult) *slotResult {
 }
 
 // decideWithMethod is decide with an optional JSON-RPC method on the request
-// context. Permanent skip→Empty rewriting only fires when method is getBlock
-// or getBlockTime; leave method empty to exercise the MissingData path.
+// context (used when classification is method-sensitive).
 func decideWithMethod(t *testing.T, method string, parts ...*execResult) *slotResult {
 	t.Helper()
 	cfg := &config{
