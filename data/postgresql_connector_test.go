@@ -140,6 +140,10 @@ func TestPostgreSQLConnector_WildcardGet(t *testing.T) {
 		{"evm:1:300", "eth_call:foo-bar", "dash"},
 		{"evm:2:999", "eth_getBlockByNumber:abc", "other-chain"},
 		{"svm:mainnet-beta:*", "getTransaction:sig1", "svm-no-slot"},
+		{"evm:1:*", "eth_getTransactionReceipt:h", "unsuffixed"},
+		{"evm:1:systx:*", "eth_getTransactionReceipt:h", "systx"},
+		{"evm:4:systx:*", "eth_getTransactionReceipt:h", "systx-only"},
+		{`evm:5:a\:b`, "eth_getTransactionReceipt:h", "escaped-ref"},
 	}
 	for _, r := range rows {
 		require.NoError(t, c.Set(ctx, r.pk, r.rk, []byte(r.v), nil))
@@ -157,6 +161,10 @@ func TestPostgreSQLConnector_WildcardGet(t *testing.T) {
 		{name: "reverse index picks highest live partition", index: ConnectorReverseIndex, pk: "evm:1:*", rk: "eth_getBlockByNumber:abc", want: "b200"},
 		{name: "reverse index is scoped to the chain prefix", index: ConnectorReverseIndex, pk: "evm:2:*", rk: "eth_getBlockByNumber:abc", want: "other-chain"},
 		{name: "reverse index with no match is not-found", index: ConnectorReverseIndex, pk: "evm:3:*", rk: "eth_getBlockByNumber:abc", missing: true},
+		{name: "reverse index skips a cacheKeySuffix partition", index: ConnectorReverseIndex, pk: "evm:1:*", rk: "eth_getTransactionReceipt:h", want: "unsuffixed"},
+		{name: "reverse index reads its own cacheKeySuffix", index: ConnectorReverseIndex, pk: "evm:1:systx:*", rk: "eth_getTransactionReceipt:h", want: "systx"},
+		{name: "reverse index never falls back to a suffixed entry", index: ConnectorReverseIndex, pk: "evm:4:*", rk: "eth_getTransactionReceipt:h", missing: true},
+		{name: "reverse index reads a ref with an escaped colon", index: ConnectorReverseIndex, pk: "evm:5:*", rk: "eth_getTransactionReceipt:h", want: "escaped-ref"},
 		{name: "main index range prefix", index: ConnectorMainIndex, pk: "evm:1:100", rk: "eth_getBlockByNumber:*", want: "b100"},
 		{name: "underscore in range pattern is literal", index: ConnectorMainIndex, pk: "evm:1:300", rk: "eth_call:foo_b*", want: "underscore"},
 		{name: "dash pattern does not match underscore row", index: ConnectorMainIndex, pk: "evm:1:300", rk: "eth_call:foo-b*", want: "dash"},

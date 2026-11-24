@@ -145,6 +145,11 @@ func TestDynamoDBConnector_ReverseIndexGet(t *testing.T) {
 	bad := ddbItem("evm:3:1", "bad-rk")
 	bad["value"] = &dynamodb.AttributeValue{N: aws.String("1")}
 	putRawItem(t, c, bad)
+	// A trailing '*' stands for the block ref only, never for a cacheKeySuffix.
+	require.NoError(t, c.Set(ctx, "evm:1:*", "receipt", []byte("unsuffixed"), nil))
+	require.NoError(t, c.Set(ctx, "evm:1:systx:*", "receipt", []byte("systx"), nil))
+	require.NoError(t, c.Set(ctx, "evm:4:systx:*", "receipt", []byte("systx-only"), nil))
+	require.NoError(t, c.Set(ctx, `evm:5:a\:b`, "receipt", []byte("escaped-ref"), nil))
 
 	cases := []struct {
 		name    string
@@ -162,6 +167,10 @@ func TestDynamoDBConnector_ReverseIndexGet(t *testing.T) {
 		{name: "empty range key rejected", pk: "evm:1:*", rk: "", errMsg: "rangeKey must be a non-empty string"},
 		{name: "wildcard range key rejected", pk: "evm:1:*", rk: "r*", errMsg: "not contain wildcards"},
 		{name: "value neither binary nor string", pk: "evm:3:*", rk: "bad-rk", errMsg: "neither binary nor string"},
+		{name: "prefix skips a cacheKeySuffix partition", pk: "evm:1:*", rk: "receipt", want: "unsuffixed"},
+		{name: "prefix reads its own cacheKeySuffix", pk: "evm:1:systx:*", rk: "receipt", want: "systx"},
+		{name: "prefix never falls back to a suffixed item", pk: "evm:4:*", rk: "receipt", missing: true},
+		{name: "prefix reads a ref with an escaped colon", pk: "evm:5:*", rk: "receipt", want: "escaped-ref"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

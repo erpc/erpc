@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -1178,6 +1179,11 @@ func postgresLikePattern(s string) string {
 	return b.String()
 }
 
+// postgresPartitionSegmentRegex is common.IsPartitionSegment as a Postgres
+// regex. A reverse-index '*' stands for the block ref only: LIKE alone lets
+// "evm:1:%" read "evm:1:systx:*", the same chain under cacheKeySuffix systx.
+const postgresPartitionSegmentRegex = `^([^:\\]|\\.)*$`
+
 // getWithWildcard takes an already-acquired pool from the caller so it
 // shares the same RLock-scope and skips a redundant nil check. Caller is
 // responsible for ensuring `pool` is non-nil and that the connMu read lock
@@ -1196,17 +1202,20 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 	var args []interface{}
 
 	if index == ConnectorReverseIndex {
+		args = []interface{}{rangeKey, postgresLikePattern(partitionKey)}
+		segment := ""
+		if prefix, ok := strings.CutSuffix(partitionKey, "*"); ok && prefix != "" {
+			segment = fmt.Sprintf("AND substr(partition_key, %d) ~ $3", utf8.RuneCountInString(prefix)+1)
+			args = append(args, postgresPartitionSegmentRegex)
+		}
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE range_key = $1 AND partition_key LIKE $2 ESCAPE E'\\'
+			  %s
 			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
 			ORDER BY partition_key DESC
 			LIMIT 1
-		`, p.table)
-		args = []interface{}{
-			strings.ReplaceAll(rangeKey, "*", "%"),
-			postgresLikePattern(partitionKey),
-		}
+		`, p.table, segment)
 	} else {
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
