@@ -1063,30 +1063,19 @@ func (n *Network) bandOrder(req *common.NormalizedRequest, ups []common.Upstream
 }
 
 // bandHolders is the next pick of an eth_getBlockByNumber above req's
-// Latest after a miss (spec §6.4 band): the routed upstreams the leg has
-// not tried whose evidence reaches the block (mayHold), fastest first
-// (byRoundTrip). The first attempt's order can put such a holder behind (a
-// syncing archive, a stale hash vote). With none, the leg's first miss
-// (retry) takes its one retry on the routed upstreams no leg asked yet
-// (Untried), fastest first: a node's head can lead its report, and an
-// instance with no push feed learns a block about 200 ms after another
-// announced it (on a 12 s chain, 5 of 25 such reads answered null). nil
-// with none, and the last answer is the request's.
-func (n *Network) bandHolders(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, block int64, retry bool) func() (common.Upstream, error) {
+// Latest after a miss (spec §6.4 band): only the routed upstreams the leg
+// has not tried whose evidence reaches the block (mayHold), fastest first
+// (byRoundTrip); nil with none, and the last answer is the request's. The
+// first attempt's order can put such a holder behind (a syncing archive,
+// a stale hash vote); an upstream with no evidence of the block is no
+// holder to ask.
+func (n *Network) bandHolders(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, block int64) func() (common.Upstream, error) {
 	credit := creditCap(n.requestHead(ctx, req))
-	var next, untried []common.Upstream
+	var next []common.Upstream
 	for _, u := range req.Upstreams() {
-		if _, seen := attempted[u.Id()]; seen {
-			continue
-		}
-		if n.mayHold(u, block, credit, nil) {
+		if _, seen := attempted[u.Id()]; !seen && n.mayHold(u, block, credit, nil) {
 			next = append(next, u)
-		} else if retry && req.Untried(u) {
-			untried = append(untried, u)
 		}
-	}
-	if len(next) == 0 {
-		next = untried
 	}
 	if len(next) == 0 {
 		return nil
