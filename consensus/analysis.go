@@ -603,19 +603,30 @@ func classifyAndHashResponse(r *execResult, ctx context.Context, config *config)
 			return
 		}
 
-		// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
-		// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
-		if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {
-			r.CachedResponseType = ResponseTypeConsensusError
+		// getBlock/getBlockTime permanent MissingData is a skipped slot (chain truth:
+		// no block), not upstream coverage. Rewrite to Empty (null) so internal and
+		// external votes can meet agreementThreshold without a MissingData waiver.
+		// Sweep still happens upstream of consensus via the SVM normalizer's
+		// swept-skip MissingData class; this only changes how consensus counts the vote.
+		if isPermanentSkipSlotAsEmpty(ctx, r.Err) {
+			r.Err = nil
+			r.Result = nullConsensusResult(r.Upstream)
+			// fall through to the successful-response path below
 		} else {
-			r.CachedResponseType = ResponseTypeInfrastructureError
+			// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
+			// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
+			if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {
+				r.CachedResponseType = ResponseTypeConsensusError
+			} else {
+				r.CachedResponseType = ResponseTypeInfrastructureError
+			}
+			r.CachedHash, _ = resultOrErrorToHash(r, ctx, config)
+			if r.CachedHash == "" {
+				r.CachedHash = "error:generic"
+			}
+			r.CachedResponseSize = 0
+			return
 		}
-		r.CachedHash, _ = resultOrErrorToHash(r, ctx, config)
-		if r.CachedHash == "" {
-			r.CachedHash = "error:generic"
-		}
-		r.CachedResponseSize = 0
-		return
 	}
 
 	// Successful response
@@ -642,6 +653,38 @@ func classifyAndHashResponse(r *execResult, ctx context.Context, config *config)
 		r.CachedResponseType = ResponseTypeInfrastructureError
 		r.CachedHash = "error:generic"
 	}
+}
+
+// isPermanentSkipSlotAsEmpty reports whether a MissingData error is a permanent
+// Solana skipped-slot answer on getBlock/getBlockTime. Those methods return
+// null for a skipped slot on the wire; classifying the vote as Empty lets
+// agreementThreshold count it like an explicit null without opting into
+// waiveAgreementOnMissingData (which remains for transient coverage gaps).
+func isPermanentSkipSlotAsEmpty(ctx context.Context, err error) bool {
+	if err == nil ||
+		!common.HasErrorCode(err, common.ErrCodeEndpointMissingData) ||
+		!common.IsPermanentlyMissingData(err) {
+		return false
+	}
+	req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
+	if !ok || req == nil {
+		return false
+	}
+	method, merr := req.Method()
+	if merr != nil {
+		return false
+	}
+	return method == "getBlock" || method == "getBlockTime"
+}
+
+// nullConsensusResult builds the Empty vote shape (JSON-RPC result null) used
+// when a permanent skip is rewritten for consensus grouping.
+func nullConsensusResult(ups common.Upstream) *common.NormalizedResponse {
+	nr := common.NewNormalizedResponse().WithJsonRpcResponse(common.MustNewJsonRpcResponse(1, nil, nil))
+	if ups != nil {
+		nr.SetUpstream(ups)
+	}
+	return nr
 }
 
 // resultOrErrorToHash computes a hash for a result, considering both success and error cases.

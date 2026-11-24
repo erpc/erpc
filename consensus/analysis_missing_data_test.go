@@ -52,6 +52,14 @@ func participant(t *testing.T, upstreamID string, code int, msg string) *execRes
 // arrival position, which is what the analyzer assigns.
 func decide(t *testing.T, parts ...*execResult) *slotResult {
 	t.Helper()
+	return decideWithMethod(t, "", parts...)
+}
+
+// decideWithMethod is decide with an optional JSON-RPC method on the request
+// context. Permanent skip→Empty rewriting only fires when method is getBlock
+// or getBlockTime; leave method empty to exercise the MissingData path.
+func decideWithMethod(t *testing.T, method string, parts ...*execResult) *slotResult {
+	t.Helper()
 	cfg := &config{
 		maxParticipants:    len(parts),
 		agreementThreshold: len(parts),
@@ -60,10 +68,16 @@ func decide(t *testing.T, parts ...*execResult) *slotResult {
 	for i, p := range parts {
 		p.Index = i
 	}
+	ctx := context.Background()
+	if method != "" {
+		req := common.NewNormalizedRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":[1]}`, method)))
+		ctx = context.WithValue(ctx, common.RequestContextKey, req)
+	}
 	lg := zerolog.Nop()
-	analysis := newConsensusAnalysis(&lg, context.Background(), cfg, parts)
+	analysis := newConsensusAnalysis(&lg, ctx, cfg, parts)
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(context.Background(), &lg, analysis)
+	winner := e.determineWinner(ctx, &lg, analysis)
 	require.NotNil(t, winner)
 	return winner
 }
@@ -189,6 +203,66 @@ func TestMissingData_ReturnedErrorIsOrderIndependent(t *testing.T) {
 	assert.Equal(t, first, second, "arrival order must not change the code the client sees")
 	assert.Equal(t, common.JsonRpcErrorNumber(-32007), first,
 		"the lowest upstream id (alchemy-svm) must supply the group's error")
+}
+
+// Permanent getBlock/getBlockTime skips are chain truth (no block), not a
+// coverage gap. Consensus must vote Empty (null) so mixConsensus agreement
+// thresholds can pass without waiveAgreementOnMissingData.
+func TestPermanentSkip_GetBlockVotesEmpty(t *testing.T) {
+	for _, method := range []string{"getBlock", "getBlockTime"} {
+		t.Run(method, func(t *testing.T) {
+			winner := decideWithMethod(t, method,
+				participant(t, "alchemy-svm", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
+				participant(t, "quicknode-svm", -32009, "Slot 500281501 was skipped, or missing in long-term storage"),
+			)
+			require.Nil(t, winner.Error, "skipped-slot agreement must not surface MissingData")
+			require.NotNil(t, winner.Result)
+			assert.True(t, winner.Result.IsResultEmptyish(context.Background()),
+				"permanent skip must win as Empty (null)")
+		})
+	}
+}
+
+// An explicit null and a permanent skip describe the same skipped slot and
+// must agree once the skip is rewritten to Empty.
+func TestPermanentSkip_AgreesWithExplicitNull(t *testing.T) {
+	jrpc, err := common.NewJsonRpcResponse(1, nil, nil)
+	require.NoError(t, err)
+	nullVote := &execResult{
+		Result:   common.NewNormalizedResponse().WithJsonRpcResponse(jrpc),
+		Upstream: &svmStubUpstream{id: "null-voter"},
+	}
+	winner := decideWithMethod(t, "getBlock",
+		participant(t, "skip-voter", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
+		nullVote,
+	)
+	require.Nil(t, winner.Error)
+	require.NotNil(t, winner.Result)
+	assert.True(t, winner.Result.IsResultEmptyish(context.Background()))
+}
+
+// Transient MissingData on getBlock stays a coverage claim — rewrite only
+// applies to permanent skips.
+func TestTransientMissingData_GetBlockStaysMissingData(t *testing.T) {
+	winner := decideWithMethod(t, "getBlock",
+		participant(t, "upstream-a", -32004, "Block not available for slot 500281501"),
+		participant(t, "upstream-b", -32001, "Block 500281501 cleaned up, does not exist on node. First available block: 500300000"),
+	)
+	require.NotNil(t, winner.Error)
+	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeEndpointMissingData),
+		"transient coverage gaps must still win as MissingData, got: %v", winner.Error)
+	assert.False(t, common.IsPermanentlyMissingData(winner.Error))
+}
+
+// Without a getBlock/getBlockTime method context the permanent family keeps
+// the MissingData vote (existing agreement tests rely on this).
+func TestPermanentSkip_WithoutMethodStaysMissingData(t *testing.T) {
+	winner := decide(t,
+		participant(t, "alchemy-svm", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
+		participant(t, "quicknode-svm", -32009, "Slot 500281501 was skipped, or missing in long-term storage"),
+	)
+	require.NotNil(t, winner.Error)
+	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeEndpointMissingData))
 }
 
 // evmStubUpstream is an EVM-typed upstream for Lotus null-round consensus tests.
