@@ -188,7 +188,7 @@ func TestSweepIdleCounterHandles_ConfiguredThresholdEvicts(t *testing.T) {
 func TestCounterHandle_SweepRaceNeverOrphansHandles(t *testing.T) {
 	vec := newTestCounterVec(t, "test_sweep_race_orphan_total")
 	labels := []string{"x", "1"}
-	key := counterKey{vec: vec, key: labelsKey(labels)}
+	key := counterKey{vec: vec, key: LabelsKey(labels)}
 
 	CounterHandle(vec, labels...).Inc() // seed the cache entry
 

@@ -449,10 +449,10 @@ type Tracker struct {
 
 	// Pre-bound MetricUpstreamRequestDuration observers. urdObsCache keeps
 	// the per-request lookup on the full label tuple (no allocation);
-	// urdSeriesCache holds one entry per projected series, which is what the
-	// idle sweep evicts. urdCreateMu serializes the miss path against that
-	// eviction.
-	urdObsCache    sync.Map // map[urdoKey]*urdSeries
+	// urdSeriesCache holds one entry per projected series. The idle sweep
+	// drops idle tuples and deletes idle series, each on its own stamp.
+	// urdCreateMu serializes the miss path against series eviction.
+	urdObsCache    sync.Map // map[urdoKey]*urdTuple
 	urdSeriesCache sync.Map // map[string]*urdSeries, keyed by projected labels
 	urdCreateMu    sync.Mutex
 
@@ -483,15 +483,23 @@ type urdoKey struct {
 // urdSeries is one MetricUpstreamRequestDuration series with an idle stamp,
 // so the sweep can release it from the registry (append-only otherwise).
 // Under a label customization several urdoKeys project onto one series
-// (Edge drops `user`), so the stamp lives here: the series is deleted only
-// once every tuple writing it has gone quiet. A stamp per tuple let a quiet
-// user's eviction delete the series a busy user kept writing into.
+// (Edge drops `user`), so the series is deleted only once every tuple
+// writing it has gone quiet. A stamp per tuple alone let a quiet user's
+// eviction delete the series a busy user kept writing into.
 type urdSeries struct {
 	obs prometheus.Observer
 	// vals is a full-schema tuple that projects onto this series.
 	vals             []string
 	lastAccessedAtMs atomic.Int64
 	evicted          atomic.Bool
+}
+
+// urdTuple is one urdoKey's cache entry. Its own stamp lets the sweep drop
+// quiet tuples while their series stays hot, so caller-controlled values
+// in a dropped label cannot grow the cache without bound.
+type urdTuple struct {
+	series           *urdSeries
+	lastAccessedAtMs atomic.Int64
 }
 
 func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method, composite string, finality common.DataFinalityState, userId string) prometheus.Observer {
@@ -507,16 +515,17 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 	}
 	nowMs := time.Now().UnixMilli()
 	if v, ok := t.urdObsCache.Load(key); ok {
-		s := v.(*urdSeries)
-		if !s.evicted.Load() {
-			s.lastAccessedAtMs.Store(nowMs)
-			return s.obs
+		tu := v.(*urdTuple)
+		if !tu.series.evicted.Load() {
+			tu.lastAccessedAtMs.Store(nowMs)
+			tu.series.lastAccessedAtMs.Store(nowMs)
+			return tu.series.obs
 		}
 	}
 	t.urdCreateMu.Lock()
 	defer t.urdCreateMu.Unlock()
 	vals := []string{key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user}
-	seriesKey := strings.Join(telemetry.MetricUpstreamRequestDuration.ActiveLabelValues(vals), "\x1f")
+	seriesKey := telemetry.LabelsKey(telemetry.MetricUpstreamRequestDuration.ActiveLabelValues(vals))
 	var s *urdSeries
 	if v, ok := t.urdSeriesCache.Load(seriesKey); ok {
 		s = v.(*urdSeries)
@@ -525,7 +534,9 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 		t.urdSeriesCache.Store(seriesKey, s)
 	}
 	s.lastAccessedAtMs.Store(nowMs)
-	t.urdObsCache.Store(key, s)
+	tu := &urdTuple{series: s}
+	tu.lastAccessedAtMs.Store(nowMs)
+	t.urdObsCache.Store(key, tu)
 	return s.obs
 }
 
@@ -796,11 +807,11 @@ func (t *Tracker) sweepIdle() {
 	t.sweepIdleObservers(cutoffMs)
 }
 
-// sweepIdleObservers releases idle upstream-duration series: the registry
-// series and every cached tuple that writes it. Eviction holds urdCreateMu
-// so a racing miss either refreshes the stamp first or binds a fresh series
-// after; a hit that loaded the series just before eviction may lose that one
-// observation, which is bounded and restart-equivalent.
+// sweepIdleObservers drops idle tuples from urdObsCache and releases idle
+// upstream-duration series from the registry. Series eviction holds
+// urdCreateMu so a racing miss either refreshes the stamp first or binds a
+// fresh series after; a hit that loaded the series just before eviction
+// may lose that one observation, which is bounded and restart-equivalent.
 func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 	t.urdSeriesCache.Range(func(key, value any) bool {
 		s := value.(*urdSeries)
@@ -817,7 +828,8 @@ func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 		return true
 	})
 	t.urdObsCache.Range(func(key, value any) bool {
-		if value.(*urdSeries).evicted.Load() {
+		tu := value.(*urdTuple)
+		if tu.series.evicted.Load() || tu.lastAccessedAtMs.Load() < cutoffMs {
 			t.urdObsCache.CompareAndDelete(key, value)
 		}
 		return true

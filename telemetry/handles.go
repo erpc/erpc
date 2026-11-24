@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"encoding/binary"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,19 +63,22 @@ var (
 	observerHandleCache sync.Map // map[observerKey]prometheus.Observer
 )
 
-func labelsKey(labels []string) string {
+// LabelsKey encodes a label tuple as a map key. Each value is prefixed with
+// its length, so two different tuples never share a key whatever bytes the
+// values hold; a plain separator join let a method name merge two series.
+func LabelsKey(labels []string) string {
 	if len(labels) == 0 {
 		return ""
 	}
-	// Use a small, zero-alloc builder for common small label sets.
-	// Separator '\x1f' (unit separator) minimizes collision with label values.
+	n := 0
+	for _, s := range labels {
+		n += binary.MaxVarintLen64 + len(s)
+	}
 	var b strings.Builder
-	// Pre-size: assume avg 12 chars per label
-	b.Grow(len(labels) * 12)
-	for i, s := range labels {
-		if i > 0 {
-			b.WriteByte('\x1f')
-		}
+	b.Grow(n)
+	var lenBuf [binary.MaxVarintLen64]byte
+	for _, s := range labels {
+		b.Write(lenBuf[:binary.PutUvarint(lenBuf[:], uint64(len(s)))])
 		b.WriteString(s)
 	}
 	return b.String()
@@ -110,7 +114,7 @@ func counterHandle(cv CounterIncrementable, labels []string) *cachedCounterHandl
 	if lc, ok := cv.(*LabeledCounter); ok {
 		keyLabels = lc.ActiveLabelValues(labels)
 	}
-	k := counterKey{vec: cv, key: labelsKey(keyLabels)}
+	k := counterKey{vec: cv, key: LabelsKey(keyLabels)}
 	nowMs := time.Now().UnixMilli()
 	if v, ok := counterHandleCache.Load(k); ok {
 		h := v.(*cachedCounterHandle)
@@ -268,7 +272,7 @@ func sweepIdleCounterHandlesBefore(cutoffMs int64) int {
 
 // GaugeHandle returns a cached child gauge for the given labels.
 func GaugeHandle(gv *prometheus.GaugeVec, labels ...string) prometheus.Gauge {
-	k := gaugeKey{vec: gv, key: labelsKey(labels)}
+	k := gaugeKey{vec: gv, key: LabelsKey(labels)}
 	if v, ok := gaugeHandleCache.Load(k); ok {
 		return v.(prometheus.Gauge)
 	}
@@ -288,7 +292,7 @@ func ObserverHandle(hv HistogramObservable, labels ...string) prometheus.Observe
 	if lh, ok := hv.(*LabeledHistogram); ok {
 		keyLabels = lh.ActiveLabelValues(labels)
 	}
-	k := observerKey{vec: hv, key: labelsKey(keyLabels)}
+	k := observerKey{vec: hv, key: LabelsKey(keyLabels)}
 	if v, ok := observerHandleCache.Load(k); ok {
 		return v.(prometheus.Observer)
 	}

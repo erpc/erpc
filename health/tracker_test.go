@@ -1768,23 +1768,26 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 			tracker.RecordUpstreamDuration(ups, "eth_call", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, user)
 			recorded++
 		}
-		collected := func() uint64 {
+		// collected returns the sample count and series count of ups.
+		collected := func() (uint64, int) {
 			ch := make(chan prometheus.Metric, 64)
 			go func() {
 				telemetry.MetricUpstreamRequestDuration.Collect(ch)
 				close(ch)
 			}()
 			var n uint64
+			series := 0
 			for m := range ch {
 				var d dto.Metric
 				require.NoError(t, m.Write(&d))
 				for _, lp := range d.GetLabel() {
 					if lp.GetName() == "upstream" && lp.GetValue() == ups.Id() {
 						n += d.GetHistogram().GetSampleCount()
+						series++
 					}
 				}
 			}
-			return n
+			return n, series
 		}
 
 		record("quiet-user")
@@ -1793,8 +1796,23 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 			record("busy-user")
 			time.Sleep(20 * time.Millisecond)
 		}
-		assert.Equal(t, recorded, collected(),
+		samples, _ := collected()
+		assert.Equal(t, recorded, samples,
 			"every observation must reach the collected series after the quiet tuple is swept")
+		users := []string{}
+		tracker.urdObsCache.Range(func(k, _ any) bool {
+			users = append(users, k.(urdoKey).user)
+			return true
+		})
+		assert.Equal(t, []string{"busy-user"}, users,
+			"the quiet tuple must leave the cache even though its series stays hot")
+
+		// Label values are caller-controlled: a method name holding a
+		// separator byte must not merge into another tuple's series.
+		tracker.RecordUpstreamDuration(ups, "eth_call\x1fnone", time.Millisecond, true, "x", common.DataFinalityStateUnknown, "busy-user")
+		tracker.RecordUpstreamDuration(ups, "eth_call", time.Millisecond, true, "none\x1fx", common.DataFinalityStateUnknown, "busy-user")
+		_, series := collected()
+		assert.Equal(t, 3, series, "two distinct label sets must stay two series")
 	})
 
 	t.Run("idle_sweep_preserves_cordoned_state", func(t *testing.T) {
