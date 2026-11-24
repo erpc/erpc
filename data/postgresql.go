@@ -638,7 +638,10 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	ctx, cancel := context.WithTimeout(ctx, p.getTimeout)
 	defer cancel()
 
-	if strings.HasSuffix(partitionKey, "*") || strings.HasSuffix(rangeKey, "*") {
+	// A trailing '*' in the partition key is a wildcard only on the reverse
+	// index. On the main index it is part of the key: SVM writes reads without
+	// minContextSlot under "svm:<cluster>:*", and other connectors read it as is.
+	if strings.HasSuffix(rangeKey, "*") || (index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*")) {
 		return p.getWithWildcard(ctx, pool, index, partitionKey, rangeKey)
 	}
 
@@ -1213,7 +1216,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 			LIMIT 1
 		`, p.table)
 		args = []interface{}{
-			strings.ReplaceAll(partitionKey, "*", "%"),
+			partitionKey,
 			postgresLikePattern(rangeKey),
 		}
 	}

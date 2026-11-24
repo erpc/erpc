@@ -139,6 +139,7 @@ func TestPostgreSQLConnector_WildcardGet(t *testing.T) {
 		{"evm:1:300", "eth_call:foo_bar", "underscore"},
 		{"evm:1:300", "eth_call:foo-bar", "dash"},
 		{"evm:2:999", "eth_getBlockByNumber:abc", "other-chain"},
+		{"svm:mainnet-beta:*", "getTransaction:sig1", "svm-no-slot"},
 	}
 	for _, r := range rows {
 		require.NoError(t, c.Set(ctx, r.pk, r.rk, []byte(r.v), nil))
@@ -160,6 +161,9 @@ func TestPostgreSQLConnector_WildcardGet(t *testing.T) {
 		{name: "underscore in range pattern is literal", index: ConnectorMainIndex, pk: "evm:1:300", rk: "eth_call:foo_b*", want: "underscore"},
 		{name: "dash pattern does not match underscore row", index: ConnectorMainIndex, pk: "evm:1:300", rk: "eth_call:foo-b*", want: "dash"},
 		{name: "main index only expired match is not-found", index: ConnectorMainIndex, pk: "evm:1:999", rk: "eth_getBlockByNumber:*", missing: true},
+		{name: "main index reads a literal '*' partition key", index: ConnectorMainIndex, pk: "svm:mainnet-beta:*", rk: "getTransaction:sig1", want: "svm-no-slot"},
+		{name: "main index range prefix under a literal '*' partition key", index: ConnectorMainIndex, pk: "svm:mainnet-beta:*", rk: "getTransaction:*", want: "svm-no-slot"},
+		{name: "main index does not expand '*' in the partition key", index: ConnectorMainIndex, pk: "evm:1:*", rk: "eth_getBlockByNumber:abc", missing: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
