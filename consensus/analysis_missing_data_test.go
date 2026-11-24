@@ -110,16 +110,15 @@ var missingDataFamilies = []struct {
 			{"-32014 BlockStatusNotAvailableYet", -32014, "Block status not yet available for slot 500281501"},
 		},
 	},
-	{
-		name:      "permanent",
-		permanent: true,
-		inputs: []missingDataInput{
-			{"-32007 SlotSkipped", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"},
-			{"-32009 LongTermStorageSlotSkipped", -32009, "Slot 500281501 was skipped, or missing in long-term storage"},
-			{"codeless -32000 long-term storage", -32000, "Slot 500281501 was skipped, or missing in long-term storage"},
-			{"codeless -32000 ledger jump", -32000, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"},
-		},
-	},
+}
+
+// slotSkippedInputs are agave skipped-slot answers: ExecutionException (not
+// MissingData), native wire codes, shared consensus hash svm:slot_skipped.
+var slotSkippedInputs = []missingDataInput{
+	{"-32007 SlotSkipped", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"},
+	{"-32009 LongTermStorageSlotSkipped", -32009, "Slot 500281501 was skipped, or missing in long-term storage"},
+	{"codeless -32000 long-term storage", -32000, "Slot 500281501 was skipped, or missing in long-term storage"},
+	{"codeless -32000 ledger jump", -32000, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"},
 }
 
 // Two honest providers describing the same absent data must agree, for every
@@ -150,22 +149,20 @@ func TestMissingData_SameVerdictDifferentCodes_Agree(t *testing.T) {
 	}
 }
 
-// Permanence is a real disagreement, not a naming difference: "skipped for
-// good" and "not indexed yet" disagree on whether asking again can help, so
-// they must dispute rather than hand the caller whichever arrived first.
-func TestMissingData_PermanentVsTransient_StillDispute(t *testing.T) {
+// Skipped-slot vs transient coverage are different claims: svm:slot_skipped
+// must dispute missingdata, not collapse into whichever arrived first.
+func TestSlotSkipped_VsTransientMissingData_StillDispute(t *testing.T) {
 	winner := decide(t,
 		participant(t, "upstream-a", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
 		participant(t, "upstream-b", -32004, "Block not available for slot 500281501"),
 	)
 	require.NotNil(t, winner.Error)
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusDispute),
-		"a permanent skip and a transient gap are different claims and must dispute")
+		"a skipped slot and a transient gap are different claims and must dispute")
 }
 
-// The client-facing number is untouched by this grouping: consensus compares a
-// verdict, but the caller still receives agave's own code, which @solana/kit
-// maps 1:1 to its SolanaError classes.
+// The client-facing number is untouched by grouping: consensus compares a
+// verdict, but the caller still receives agave's own code.
 func TestMissingData_WireCodesStayNative(t *testing.T) {
 	for _, fam := range missingDataFamilies {
 		for _, in := range fam.inputs {
@@ -178,10 +175,41 @@ func TestMissingData_WireCodesStayNative(t *testing.T) {
 	}
 }
 
-// A verdict group can hold members whose codes differ, so the error the caller
-// receives must not depend on which upstream answered first. It is the member
-// with the lowest upstream id, whatever order the analyzer drained them in.
-func TestMissingData_ReturnedErrorIsOrderIndependent(t *testing.T) {
+// -32007 / -32009 (and codeless equivalents) must classify as ExecutionException
+// — not MissingData — agree under consensus, and return a native Solana code.
+func TestSlotSkipped_AgreeAsExecutionExceptionWithNativeCodes(t *testing.T) {
+	parts := make([]*execResult, len(slotSkippedInputs))
+	for i, in := range slotSkippedInputs {
+		parts[i] = participant(t, "upstream-"+in.label, in.code, in.msg)
+		require.True(t, common.HasErrorCode(parts[i].Err, common.ErrCodeEndpointExecutionException),
+			"%s must classify as ExecutionException, got %v", in.label, parts[i].Err)
+		require.False(t, common.HasErrorCode(parts[i].Err, common.ErrCodeEndpointMissingData),
+			"%s must not be MissingData", in.label)
+		require.True(t, common.IsPermanentlyMissingData(parts[i].Err),
+			"%s must be permanent (no delayed re-sweep)", in.label)
+		assert.Equal(t, common.SeverityInfo, common.ClassifySeverity(parts[i].Err),
+			"%s must be severity info (expected chain outcome)", in.label)
+	}
+	for i, a := range slotSkippedInputs {
+		for j := i + 1; j < len(slotSkippedInputs); j++ {
+			b := slotSkippedInputs[j]
+			winner := decide(t, parts[i], parts[j])
+			require.NotNil(t, winner.Error, "%s vs %s", a.label, b.label)
+			assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusDispute),
+				"%s vs %s: skipped-slot answers must agree", a.label, b.label)
+			assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeEndpointExecutionException),
+				"%s vs %s: winner must stay ExecutionException, got %v", a.label, b.label, winner.Error)
+			var jre *common.ErrJsonRpcExceptionInternal
+			require.ErrorAs(t, winner.Error, &jre)
+			assert.Contains(t, []common.JsonRpcErrorNumber{-32007, -32009, -32000}, jre.NormalizedCode(),
+				"%s vs %s: client must see a native skip code, got %v", a.label, b.label, jre.NormalizedCode())
+		}
+	}
+}
+
+// A skip verdict group can hold -32007 and -32009; the code the caller sees
+// must not depend on arrival order (lowest upstream id wins).
+func TestSlotSkipped_ReturnedErrorIsOrderIndependent(t *testing.T) {
 	const slot = "Slot 500281501 was skipped, or missing"
 	codeOf := func(t *testing.T, parts ...*execResult) common.JsonRpcErrorNumber {
 		t.Helper()
@@ -205,44 +233,7 @@ func TestMissingData_ReturnedErrorIsOrderIndependent(t *testing.T) {
 		"the lowest upstream id (alchemy-svm) must supply the group's error")
 }
 
-// Permanent getBlock/getBlockTime skips are chain truth (no block), not a
-// coverage gap. Consensus must vote Empty (null) so mixConsensus agreement
-// thresholds can pass without waiveAgreementOnMissingData.
-func TestPermanentSkip_GetBlockVotesEmpty(t *testing.T) {
-	for _, method := range []string{"getBlock", "getBlockTime"} {
-		t.Run(method, func(t *testing.T) {
-			winner := decideWithMethod(t, method,
-				participant(t, "alchemy-svm", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
-				participant(t, "quicknode-svm", -32009, "Slot 500281501 was skipped, or missing in long-term storage"),
-			)
-			require.Nil(t, winner.Error, "skipped-slot agreement must not surface MissingData")
-			require.NotNil(t, winner.Result)
-			assert.True(t, winner.Result.IsResultEmptyish(context.Background()),
-				"permanent skip must win as Empty (null)")
-		})
-	}
-}
-
-// An explicit null and a permanent skip describe the same skipped slot and
-// must agree once the skip is rewritten to Empty.
-func TestPermanentSkip_AgreesWithExplicitNull(t *testing.T) {
-	jrpc, err := common.NewJsonRpcResponse(1, nil, nil)
-	require.NoError(t, err)
-	nullVote := &execResult{
-		Result:   common.NewNormalizedResponse().WithJsonRpcResponse(jrpc),
-		Upstream: &svmStubUpstream{id: "null-voter"},
-	}
-	winner := decideWithMethod(t, "getBlock",
-		participant(t, "skip-voter", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
-		nullVote,
-	)
-	require.Nil(t, winner.Error)
-	require.NotNil(t, winner.Result)
-	assert.True(t, winner.Result.IsResultEmptyish(context.Background()))
-}
-
-// Transient MissingData on getBlock stays a coverage claim — rewrite only
-// applies to permanent skips.
+// Transient MissingData on getBlock stays a coverage claim.
 func TestTransientMissingData_GetBlockStaysMissingData(t *testing.T) {
 	winner := decideWithMethod(t, "getBlock",
 		participant(t, "upstream-a", -32004, "Block not available for slot 500281501"),
@@ -252,17 +243,6 @@ func TestTransientMissingData_GetBlockStaysMissingData(t *testing.T) {
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeEndpointMissingData),
 		"transient coverage gaps must still win as MissingData, got: %v", winner.Error)
 	assert.False(t, common.IsPermanentlyMissingData(winner.Error))
-}
-
-// Without a getBlock/getBlockTime method context the permanent family keeps
-// the MissingData vote (existing agreement tests rely on this).
-func TestPermanentSkip_WithoutMethodStaysMissingData(t *testing.T) {
-	winner := decide(t,
-		participant(t, "alchemy-svm", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"),
-		participant(t, "quicknode-svm", -32009, "Slot 500281501 was skipped, or missing in long-term storage"),
-	)
-	require.NotNil(t, winner.Error)
-	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeEndpointMissingData))
 }
 
 // evmStubUpstream is an EVM-typed upstream for Lotus null-round consensus tests.

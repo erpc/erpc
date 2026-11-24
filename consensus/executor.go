@@ -1276,7 +1276,11 @@ func groupIsMissingDataAbstention(g *responseGroup) bool {
 		return false
 	}
 	for _, r := range g.Results {
-		if r == nil || r.Err == nil || !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) {
+		if r == nil || r.Err == nil {
+			return false
+		}
+		if !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) &&
+			!isSvmSlotSkippedError(r.Err) {
 			return false
 		}
 	}
@@ -1334,7 +1338,11 @@ func missingDataWaivedQuotas(analysis *consensusAnalysis, reqs []*common.Consens
 				if r.Err == nil {
 					continue
 				}
-				if !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) {
+				// Coverage abstention: MissingData, or SVM skip-shaped
+				// ExecutionException (-32007/-32009) whose archive-gap half is
+				// still per-provider — both release waiveAgreementOnMissingData.
+				if !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) &&
+					!isSvmSlotSkippedError(r.Err) {
 					continue
 				}
 				missing++

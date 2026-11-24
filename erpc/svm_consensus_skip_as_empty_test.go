@@ -17,17 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSvm_Consensus_PermanentSkip_AgreesAsEmpty drives a skipped-slot getBlock
-// through the real SVM handler + consensus with the mixConsensus shape used on
-// solana-mainnet staging: two type:internal + two type:external, each with
-// minAgreement:1, agreementThreshold:2, and NO waiveAgreementOnMissingData.
+// TestSvm_Consensus_PermanentSkip_AgreesAsNativeError drives a skipped-slot
+// getBlock through the real SVM handler + consensus with the mixConsensus shape
+// used on solana-mainnet staging: two type:internal + two type:external, each
+// with minAgreement:1, agreementThreshold:2, and NO waiveAgreementOnMissingData.
 //
-// Permanent skip errors (-32007/-32009) are chain truth ("this slot has no
-// block"), so consensus must rewrite them to Empty (null). All four votes then
-// agree as Empty and the round succeeds without a MissingData waiver — the
-// gap that previously produced ErrConsensusLowParticipants / composition
-// dispute when every honest provider reported a skip.
-func TestSvm_Consensus_PermanentSkip_AgreesAsEmpty(t *testing.T) {
+// -32007 / -32009 are ExecutionException (not MissingData, not Empty): they
+// agree as svm:slot_skipped and the client receives a native Solana code.
+func TestSvm_Consensus_PermanentSkip_AgreesAsNativeError(t *testing.T) {
 	const slot = 500281501
 
 	skips := map[string]string{
@@ -35,12 +32,11 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsEmpty(t *testing.T) {
 			`{"code":-32007,"message":"Slot %d was skipped, or missing due to ledger jump to recent snapshot"}`, slot),
 		"external-skip": fmt.Sprintf(
 			`{"code":-32009,"message":"Slot %d was skipped, or missing in long-term storage"}`, slot),
-		"external-null": "", // explicit JSON null result
 	}
 
 	cases := []struct {
 		name         string
-		internalBody string // error JSON object, or "" for null result
+		internalBody string
 		externalBody string
 	}{
 		{
@@ -49,9 +45,9 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsEmpty(t *testing.T) {
 			externalBody: skips["external-skip"],
 		},
 		{
-			name:         "internal skip + external null",
+			name:         "uniform -32007",
 			internalBody: skips["internal-skip"],
-			externalBody: skips["external-null"],
+			externalBody: skips["internal-skip"],
 		},
 	}
 
@@ -81,12 +77,7 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsEmpty(t *testing.T) {
 					body = tc.internalBody
 					tier = "type:internal"
 				}
-				var reply string
-				if body == "" {
-					reply = `{"jsonrpc":"2.0","id":1,"result":null}`
-				} else {
-					reply = `{"jsonrpc":"2.0","id":1,"error":` + body + `}`
-				}
+				reply := `{"jsonrpc":"2.0","id":1,"error":` + body + `}`
 
 				gock.New("http://" + host).
 					Post("").
@@ -119,8 +110,6 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsEmpty(t *testing.T) {
 						DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
 						LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
 						RequiredParticipants: []*common.ConsensusRequiredParticipant{
-							// Intentionally no WaiveAgreementOnMissingData — skip→Empty
-							// must satisfy minAgreement on its own.
 							{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1},
 							{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
 						},
@@ -138,13 +127,27 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsEmpty(t *testing.T) {
 			resp, err := svmProjectForward(ctx, net, req)
 
 			for id, c := range calls {
-				assert.Equal(t, int32(1), c.Load(), "%s must answer once", id)
+				assert.LessOrEqual(t, c.Load(), int32(1), "%s must not be re-asked", id)
 			}
-			require.NoError(t, err, "permanent skips must agree as Empty without a MissingData waiver")
-			jrr, jerr := resp.JsonRpcResponse()
-			require.NoError(t, jerr)
-			require.Nil(t, jrr.Error)
-			assert.True(t, jrr.IsResultEmptyish(ctx), "winner must be null Empty")
+			var answered int32
+			for _, c := range calls {
+				answered += c.Load()
+			}
+			assert.GreaterOrEqual(t, answered, int32(2), "agreementThreshold requires at least two skip votes")
+			// Consensus settles on the skip ExecutionException — surfaced as the
+			// response error (or forward err) with a native Solana code.
+			var jre *common.ErrJsonRpcExceptionInternal
+			if err != nil {
+				require.ErrorAs(t, err, &jre, "forward error must carry native skip code, got: %v", err)
+			} else {
+				require.NotNil(t, resp)
+				jrr, jerr := resp.JsonRpcResponse()
+				require.NoError(t, jerr)
+				require.NotNil(t, jrr.Error, "skip must reach the client as a JSON-RPC error, not null")
+				require.ErrorAs(t, jrr.Error, &jre)
+			}
+			assert.Contains(t, []common.JsonRpcErrorNumber{-32007, -32009}, jre.NormalizedCode(),
+				"client must see native -32007 or -32009, got %v", jre.NormalizedCode())
 			assert.Equal(t, 0.0, waived()-before,
 				"waiveAgreementOnMissingData must stay unused for permanent skips")
 		})
@@ -152,7 +155,7 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsEmpty(t *testing.T) {
 }
 
 // Transient pruned answers without waiveAgreementOnMissingData must still fail
-// closed under the same mixConsensus quotas — only permanent skips rewrite.
+// closed under the same mixConsensus quotas — only skips leave MissingData.
 func TestSvm_Consensus_TransientPruned_StillNeedsWaiver(t *testing.T) {
 	const slot = 100
 	util.ResetGock()

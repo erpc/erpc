@@ -29,7 +29,7 @@ func TestExtract_SweptSkip_EntryPointsAgreeOnBothAxes(t *testing.T) {
 	t.Parallel()
 
 	const (
-		wantClass     common.ErrorCode = common.ErrCodeEndpointMissingData
+		wantClass     common.ErrorCode = common.ErrCodeEndpointExecutionException
 		wantRetryable                  = true // sweep every upstream once...
 		wantPermanent                  = true // ...but never a time-delayed re-fetch
 	)
@@ -100,7 +100,7 @@ func TestExtract_LongTermStorageUnreachable_IsServerSideNotPermanentMissingData(
 	}
 }
 
-// No code path in the extractor may produce a MissingData verdict that is
+// No code path in the extractor may produce a coverage / skip verdict that is
 // terminal toward the network. This is the invariant that stops the deleted
 // authoritative-missing-data behaviour from being reintroduced under another
 // name: "this provider does not have it" is never evidence that the cluster does
@@ -109,33 +109,34 @@ func TestExtract_LongTermStorageUnreachable_IsServerSideNotPermanentMissingData(
 // good, while answering "not yet" only costs a retry.
 //
 // Driven over the whole mapped-code table, and deliberately reading the ACTUAL
-// verdict rather than the table's nonRetry column, so a future terminal
-// missing-data row cannot satisfy this test by declaring itself terminal.
+// verdict rather than the table's nonRetry column. Covers both remaining
+// MissingData rows and skipped-slot ExecutionExceptions (-32007/-32009).
 func TestExtract_NoMissingDataVerdictIsTerminal(t *testing.T) {
 	t.Parallel()
 
-	missingDataRows := 0
+	coverageRows := 0
 	sawLongTermStorageSkip := false
 	for _, tc := range mappedCodeCases() {
 		err := extract(t, tc.code, tc.msg, 200)
-		if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		isCoverage := common.HasErrorCode(err, common.ErrCodeEndpointMissingData) ||
+			(common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) &&
+				common.IsPermanentlyMissingData(err) &&
+				common.IsRetryableExecutionException(err))
+		if !isCoverage {
 			continue
 		}
-		missingDataRows++
+		coverageRows++
 		if tc.code == -32009 {
 			sawLongTermStorageSkip = true
 		}
 		if !common.IsRetryableTowardNetwork(err) {
-			t.Errorf("%s: MissingData verdict is terminal toward the network — one provider's gap must never answer for the whole cluster",
+			t.Errorf("%s: coverage/skip verdict is terminal toward the network — one provider's gap must never answer for the whole cluster",
 				tc.name)
 		}
 	}
 
-	// Guard against the invariant going vacuous: if the table ever stops
-	// producing MissingData verdicts, or loses the -32009 row this rule exists
-	// for, the loop above would pass while asserting nothing at all.
-	if missingDataRows == 0 || !sawLongTermStorageSkip {
-		t.Fatalf("table exercised %d MissingData rows (coded -32009 present: %v); expected the whole missing-data family",
-			missingDataRows, sawLongTermStorageSkip)
+	if coverageRows == 0 || !sawLongTermStorageSkip {
+		t.Fatalf("table exercised %d coverage/skip rows (coded -32009 present: %v); expected MissingData + swept-skip families",
+			coverageRows, sawLongTermStorageSkip)
 	}
 }

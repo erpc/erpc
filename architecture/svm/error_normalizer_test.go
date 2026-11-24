@@ -19,11 +19,14 @@ func TestExtract_MethodNotFound_ReturnsUnsupported(t *testing.T) {
 	}
 }
 
-func TestExtract_SlotSkipped_ReturnsMissingData(t *testing.T) {
+func TestExtract_SlotSkipped_ReturnsExecutionException(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32007, "Slot 123 was skipped", 200)
-	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-		t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	}
+	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatal("-32007 must not be MissingData")
 	}
 }
 
@@ -155,19 +158,17 @@ func mappedCodeCases() []mappedCodeCase {
 		// Missing-data family — retryable across upstreams (another node can have it).
 		{"-32001 block cleaned up", -32001, "Block cleaned up, does not exist on node", common.ErrCodeEndpointMissingData, false},
 		{"-32004 block not available", -32004, "Block not available", common.ErrCodeEndpointMissingData, false},
-		{"-32007 slot skipped", -32007, "Slot was skipped", common.ErrCodeEndpointMissingData, false},
 		{"-32008 no snapshot", -32008, "No snapshot available", common.ErrCodeEndpointMissingData, false},
 		{"-32010 key excluded from secondary index", -32010, "Key excluded from secondary index", common.ErrCodeEndpointMissingData, false},
 		{"-32011 transaction history not available", -32011, "Transaction history is not available from this node", common.ErrCodeEndpointMissingData, false},
 		{"-32014 block status not available", -32014, "Block status not available", common.ErrCodeEndpointMissingData, false},
 
-		// -32009 folds "skipped" (chain truth) with "missing in long-term storage"
-		// (per-provider archive policy: BigTable/Old Faithful presence, backfill
-		// depth, retention). The archive half means another provider can still
-		// serve the slot, so the verdict is SWEPT, not terminal — the same axis
-		// pair as -32007. Terminal let the first upstream returning -32009 end the
-		// sweep, reporting a slot another archive holds as permanently skipped.
-		{"-32009 long-term storage slot skipped", -32009, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, false},
+		// Skipped-slot family — ExecutionException (not MissingData): chain truth
+		// "no block", native wire codes, severity info, consensus hash
+		// svm:slot_skipped. Still swept (retryableTowardNetwork) for the
+		// ledger-jump / archive-gap halves.
+		{"-32007 slot skipped", -32007, "Slot was skipped", common.ErrCodeEndpointExecutionException, false},
+		{"-32009 long-term storage slot skipped", -32009, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointExecutionException, false},
 
 		// Node-health family — retryable (server-side); another node succeeds.
 		{"-32005 node unhealthy", -32005, "Node is behind by 42 slots", common.ErrCodeEndpointServerSideException, false},
@@ -254,8 +255,11 @@ func TestExtract_AllMappedCodes(t *testing.T) {
 func TestExtract_SlotSkipped_IsRetryableAndPreservesCode(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32007, "Slot 12345 was skipped", 200)
-	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-		t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	}
+	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatal("-32007 must not be MissingData (coverage); it is a skipped-slot ExecutionException")
 	}
 	if !common.IsRetryableTowardNetwork(err) {
 		t.Fatal("-32007 (ambiguous: ledger-jump half is node-local) must stay retryable toward network")
@@ -278,8 +282,11 @@ func TestExtract_SlotSkipped_IsRetryableAndPreservesCode(t *testing.T) {
 func TestExtract_LongTermStorage_IsSweptAndPreservesCode(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32009, "Slot 12345 was skipped, or missing in long-term storage", 200)
-	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-		t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	}
+	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatal("-32009 must not be MissingData (coverage); it is a skipped-slot ExecutionException")
 	}
 	if !common.IsRetryableTowardNetwork(err) {
 		t.Fatal("-32009 must sweep every upstream once: the long-term-storage half is per-provider archive policy, not chain truth")

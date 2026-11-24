@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -540,14 +541,18 @@ func isAgreedUponError(err error) bool {
 
 // errorToConsensusHash generates a comparable hash from an error.
 //
+// Solana skipped-slot answers (-32007 / -32009 and message equivalents) hash as
+// one "svm:slot_skipped" verdict: the number reports which storage tier answered,
+// not whether the slot has a block. They are ExecutionException (not MissingData)
+// so they agree under consensus, reach the client as native codes, and do not
+// trip waiveAgreementOnMissingData.
+//
 // Missing-data errors hash by verdict, not by number. A provider's JSON-RPC code
 // for "I do not have this" reports its own storage layout, not the chain: agave
-// answers a permanently absent slot with -32007 when check_blockstore_root
-// settles it locally and -32009 when check_bigtable_result had to ask long-term
-// storage, and answers a block it cannot serve with -32001 when its ledger was
-// pruned below the slot and -32004 when the slot is above its rooted tip. Two
-// honest upstreams therefore landed in different groups and disputed under
-// returnError, which is the one outcome neither of them claimed.
+// answers a block it cannot serve with -32001 when its ledger was pruned below
+// the slot and -32004 when the slot is above its rooted tip. Two honest
+// upstreams therefore landed in different groups and disputed under returnError,
+// which is the one outcome neither of them claimed.
 //
 // EVM is unaffected in practice: every EVM missing-data site already normalizes
 // to JsonRpcErrorMissingData, so those responses shared a group before this and
@@ -559,6 +564,10 @@ func errorToConsensusHash(err error) string {
 	hash := "error:generic"
 	var jre *common.ErrJsonRpcExceptionInternal
 	switch {
+	case isSvmSlotSkippedError(err):
+		// Chain truth ("no block"), not coverage. Do not append :permanent —
+		// every skip-shaped answer already carries that meaning.
+		return "svm:slot_skipped"
 	case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
 		hash = "missingdata"
 	case errors.As(err, &jre):
@@ -577,6 +586,39 @@ func errorToConsensusHash(err error) string {
 		hash += ":permanent"
 	}
 	return hash
+}
+
+// isSvmSlotSkippedError reports agave skipped-slot answers: coded -32007 /
+// -32009, or vendor-stripped -32000 bodies that keep the skip / ledger-jump /
+// long-term-storage messages. These are chain-truth "no block" votes, not
+// ErrEndpointMissingData coverage abstentions.
+func isSvmSlotSkippedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Prefer the ExecutionException class the SVM normalizer now emits; fall
+	// through to code/message matching so older MissingData-shaped skips still
+	// share the hash during rollout.
+	var jre *common.ErrJsonRpcExceptionInternal
+	if !errors.As(err, &jre) {
+		return false
+	}
+	switch int(jre.NormalizedCode()) {
+	case -32007, -32009:
+		return true
+	}
+	switch jre.OriginalCode() {
+	case -32007, -32009:
+		return true
+	}
+	low := strings.ToLower(jre.Message)
+	if strings.Contains(low, "missing in long-term storage") {
+		return true
+	}
+	if strings.Contains(low, "ledger jump") {
+		return true
+	}
+	return strings.Contains(low, "was skipped")
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.
@@ -603,30 +645,19 @@ func classifyAndHashResponse(r *execResult, ctx context.Context, config *config)
 			return
 		}
 
-		// getBlock/getBlockTime permanent MissingData is a skipped slot (chain truth:
-		// no block), not upstream coverage. Rewrite to Empty (null) so internal and
-		// external votes can meet agreementThreshold without a MissingData waiver.
-		// Sweep still happens upstream of consensus via the SVM normalizer's
-		// swept-skip MissingData class; this only changes how consensus counts the vote.
-		if isPermanentSkipSlotAsEmpty(ctx, r.Err) {
-			r.Err = nil
-			r.Result = nullConsensusResult(r.Upstream)
-			// fall through to the successful-response path below
+		// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
+		// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
+		if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {
+			r.CachedResponseType = ResponseTypeConsensusError
 		} else {
-			// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
-			// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
-			if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {
-				r.CachedResponseType = ResponseTypeConsensusError
-			} else {
-				r.CachedResponseType = ResponseTypeInfrastructureError
-			}
-			r.CachedHash, _ = resultOrErrorToHash(r, ctx, config)
-			if r.CachedHash == "" {
-				r.CachedHash = "error:generic"
-			}
-			r.CachedResponseSize = 0
-			return
+			r.CachedResponseType = ResponseTypeInfrastructureError
 		}
+		r.CachedHash, _ = resultOrErrorToHash(r, ctx, config)
+		if r.CachedHash == "" {
+			r.CachedHash = "error:generic"
+		}
+		r.CachedResponseSize = 0
+		return
 	}
 
 	// Successful response
@@ -653,38 +684,6 @@ func classifyAndHashResponse(r *execResult, ctx context.Context, config *config)
 		r.CachedResponseType = ResponseTypeInfrastructureError
 		r.CachedHash = "error:generic"
 	}
-}
-
-// isPermanentSkipSlotAsEmpty reports whether a MissingData error is a permanent
-// Solana skipped-slot answer on getBlock/getBlockTime. Those methods return
-// null for a skipped slot on the wire; classifying the vote as Empty lets
-// agreementThreshold count it like an explicit null without opting into
-// waiveAgreementOnMissingData (which remains for transient coverage gaps).
-func isPermanentSkipSlotAsEmpty(ctx context.Context, err error) bool {
-	if err == nil ||
-		!common.HasErrorCode(err, common.ErrCodeEndpointMissingData) ||
-		!common.IsPermanentlyMissingData(err) {
-		return false
-	}
-	req, ok := ctx.Value(common.RequestContextKey).(*common.NormalizedRequest)
-	if !ok || req == nil {
-		return false
-	}
-	method, merr := req.Method()
-	if merr != nil {
-		return false
-	}
-	return method == "getBlock" || method == "getBlockTime"
-}
-
-// nullConsensusResult builds the Empty vote shape (JSON-RPC result null) used
-// when a permanent skip is rewritten for consensus grouping.
-func nullConsensusResult(ups common.Upstream) *common.NormalizedResponse {
-	nr := common.NewNormalizedResponse().WithJsonRpcResponse(common.MustNewJsonRpcResponse(1, nil, nil))
-	if ups != nil {
-		nr.SetUpstream(ups)
-	}
-	return nr
 }
 
 // resultOrErrorToHash computes a hash for a result, considering both success and error cases.

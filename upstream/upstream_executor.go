@@ -248,6 +248,11 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 		return false
 	}
 	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		// SVM skipped-slot answers are ExecutionException + permanent: sweep
+		// other upstreams once, but never re-ask the same node.
+		if common.IsPermanentlyMissingData(err) {
+			return false
+		}
 		return common.IsRetryableExecutionException(err)
 	}
 	if req != nil {

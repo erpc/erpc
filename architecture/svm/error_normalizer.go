@@ -253,7 +253,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 	// must not run a time-delayed re-sweep (waiting cannot un-skip a slot). The
 	// raw -32007 reaches the caller either way.
 	case svmCodeSlotSkipped:
-		return newSweptSkipMissingData(code, msg, details, upstream)
+		return newSweptSkipSlotError(code, msg, details, upstream)
 
 	// -32009 is "skipped, OR missing in long-term storage" — and the "or" is
 	// load-bearing. Only the first half is chain truth. The second half is
@@ -277,10 +277,13 @@ func (e *JsonRpcErrorExtractor) Extract(
 	//
 	// So: swept like -32007 — retryable across upstreams for one pass, still
 	// permanent against a time-delayed re-fetch (waiting cannot un-skip a slot,
-	// and cannot backfill someone else's archive either). The raw -32009 still
-	// reaches the caller, so a client that wants to stop can.
+	// and cannot backfill someone else's archive either). Classified as
+	// ExecutionException (not MissingData): chain-truth skips must agree under
+	// consensus and reach the client as native -32007/-32009 with severity
+	// info; the archive-gap half still sweeps and can still waive via the
+	// skip-shaped abstention helper. The raw -32009 still reaches the caller.
 	case svmCodeLongTermStorageSlotSkipped:
-		return newSweptSkipMissingData(code, msg, details, upstream)
+		return newSweptSkipSlotError(code, msg, details, upstream)
 
 	// --- Node health issues (failover, but treat as server-side) --------------
 	//   -32005: node unhealthy / behind. Reaches the client as a native -32005
@@ -386,11 +389,11 @@ func (e *JsonRpcErrorExtractor) Extract(
 			// Codeless -32009 variant: some vendor proxies strip/rewrite the code
 			// but keep agave's message. Same swept treatment as the coded case —
 			// archive completeness is per-provider, so this must not be terminal.
-			return newSweptSkipMissingData(code, msg, details, upstream)
+			return newSweptSkipSlotError(code, msg, details, upstream)
 		case strings.Contains(low, "ledger jump"):
 			// Codeless -32007 variant ("missing due to ledger jump to recent
 			// snapshot") — this node lost the slot locally; others have it.
-			return newSweptSkipMissingData(code, msg, details, upstream)
+			return newSweptSkipSlotError(code, msg, details, upstream)
 		case strings.Contains(low, "preflight") ||
 			strings.Contains(low, "transaction simulation failed") ||
 			strings.Contains(low, "blockhash not found"):
@@ -449,15 +452,29 @@ func isRateLimitMessage(lowerMsg string) bool {
 	return false
 }
 
-// newSweptSkipMissingData builds a MissingData error for an answer that holds
-// for this upstream only and never changes by waiting: a slot the node reports
-// as skipped, lost to a ledger jump (-32007), absent from its long-term storage
-// (-32009), or a history cursor it does not know (-32020). It stays retryable
-// across upstreams (the default) — another provider may still hold the data
-// and the sweep tries them all — but is marked permanent: waiting changes
-// nothing, so no hedge leg or retry asks the same upstream again and the
-// network layer does not run a time-delayed re-sweep. The raw code reaches the
-// caller.
+// newSweptSkipSlotError builds the consensus-valid skip answer for agave
+// -32007 / -32009 (and codeless message equivalents). It is an
+// ExecutionException — severity info, native wire code, agrees under consensus
+// as svm:slot_skipped — not MissingData (coverage abstention / MD waiver).
+// Retryable toward the network for one cross-upstream sweep (ledger-jump /
+// archive-gap halves are per-node); permanent so the same upstream and the
+// time-delayed re-sweep do not ask again.
+func newSweptSkipSlotError(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
+	_ = upstream // attribution lives on the execResult; wire cause carries the code
+	err := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
+	)
+	if ee, ok := err.(*common.ErrEndpointExecutionException); ok {
+		ee.WithRetryableTowardNetwork(true)
+		ee.WithPermanentMissingData(true)
+	}
+	return err
+}
+
+// newSweptSkipMissingData builds a MissingData error for a history cursor this
+// upstream does not know (-32020 on getSignaturesForAddress). Coverage-shaped:
+// another provider may still hold the signature range. Permanent against a
+// time-delayed re-fetch; retryable across upstreams for one sweep.
 func newSweptSkipMissingData(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
 	err := common.NewErrEndpointMissingData(
 		common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNumber(code), msg, nil, details),
