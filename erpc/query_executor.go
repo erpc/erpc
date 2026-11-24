@@ -26,13 +26,20 @@ import (
 // EvmQueryExecutor answers the MIP-16 eth_query* methods for one network, for
 // both transports: gRPC QueryService streams and JSON-RPC eth_query* calls
 // (one page per call). It resolves the block range once, checks the
-// availability window, then tries the native QueryService upstreams in policy
-// order and falls back to the query shim, which builds pages from standard
-// JSON-RPC sub-requests sent through Network.Forward.
+// availability window, then tries the native upstreams in policy order and
+// falls back to the query shim, which builds pages from standard JSON-RPC
+// sub-requests sent through Network.Forward. Native upstreams are gRPC
+// QueryService upstreams and, for JSON-RPC calls, JSON-RPC upstreams that
+// serve the method themselves (evm.nativeQueryMethods).
 type EvmQueryExecutor struct {
 	network         *Network
 	logger          *zerolog.Logger
 	parentRequestId interface{}
+	// jsonReq is the client's JSON-RPC eth_query* request, set by
+	// forwardQuery; jsonResp is the evm.nativeQueryMethods upstream's answer.
+	// Both are nil on the gRPC transport.
+	jsonReq  *common.NormalizedRequest
+	jsonResp *common.NormalizedResponse
 	// projectShimPages clears unselected fields on shim pages for gRPC
 	// clients; the JSON renderer reads only the selected fields anyway.
 	projectShimPages bool
@@ -109,7 +116,7 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 	natives := qe.nativeUpstreams(ctx, method)
 	budget, shimEnabled := qe.shimBudget(ctx, method)
 	if len(natives) == 0 && !shimEnabled {
-		return queryMethodNotServed("no upstream serves %s: none has a native QueryService and none enables evm.queryShim for it", method)
+		return queryMethodNotServed("no upstream serves %s: none has a native QueryService, none lists it in evm.nativeQueryMethods or enables evm.queryShim for it", method)
 	}
 
 	plan, err := qe.newPlan(ctx, method, req, budget)
@@ -122,9 +129,14 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 
 	var nativeErr error
 	for _, ups := range natives {
-		err := qe.pipeThrough(ctx, ups, req, onPage)
+		path, err := "native", error(nil)
+		if servesNativeQuery(ups) {
+			err = qe.pipeThrough(ctx, ups, req, onPage)
+		} else {
+			path, err = "json-rpc", qe.forwardJsonRpc(ctx, ups)
+		}
 		if err == nil {
-			trace.SpanFromContext(ctx).SetAttributes(attribute.String("query.path", "native"), attribute.String("query.upstream", ups.Id()))
+			trace.SpanFromContext(ctx).SetAttributes(attribute.String("query.path", path), attribute.String("query.upstream", ups.Id()))
 			return nil
 		}
 		var streamErr *StreamError
@@ -149,10 +161,29 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 }
 
 // nativeUpstreams returns, in selection-policy order (registration order
-// before the policy engine has run), the upstreams that answer
-// bds.evm.QueryService themselves and accept method per their allow/ignore
-// config.
+// before the policy engine has run), the upstreams that answer method
+// themselves and accept it per their allow/ignore config: those serving
+// bds.evm.QueryService, and on a JSON-RPC call those whose
+// evm.nativeQueryMethods lists it.
 func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) []common.Upstream {
+	var out []common.Upstream
+	for _, u := range qe.orderedUpstreams(ctx, method) {
+		if !servesNativeQuery(u) && !qe.servesJsonRpcQuery(u, method) {
+			continue
+		}
+		// Fail closed on matcher errors — same as servesAll and
+		// GetFallbackEscapeUpstreams. Treating err != nil as eligible
+		// would bypass IgnoreMethods whenever a pattern fails to compile.
+		if ok, err := u.ShouldHandleMethod(method); err == nil && ok {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// orderedUpstreams returns the network's upstreams in selection-policy order
+// for method, or in registration order before the policy engine has run.
+func (qe *EvmQueryExecutor) orderedUpstreams(ctx context.Context, method string) []common.Upstream {
 	var ups []common.Upstream
 	if qe.network.policyEngine != nil {
 		// A query range spans finalized and unfinalized blocks, so it routes
@@ -164,19 +195,35 @@ func (qe *EvmQueryExecutor) nativeUpstreams(ctx context.Context, method string) 
 			ups = append(ups, u)
 		}
 	}
-	var out []common.Upstream
-	for _, u := range ups {
-		if !servesNativeQuery(u) {
-			continue
-		}
-		// Fail closed on matcher errors — same as servesAll and
-		// GetFallbackEscapeUpstreams. Treating err != nil as eligible
-		// would bypass IgnoreMethods whenever a pattern fails to compile.
-		if ok, err := u.ShouldHandleMethod(method); err == nil && ok {
-			out = append(out, u)
-		}
+	return ups
+}
+
+// servesJsonRpcQuery reports whether u answers the JSON-RPC eth_query* call
+// itself (evm.nativeQueryMethods). Only JSON-RPC calls can be sent to it
+// unchanged.
+func (qe *EvmQueryExecutor) servesJsonRpcQuery(u common.Upstream, method string) bool {
+	if qe.jsonReq == nil {
+		return false
 	}
-	return out
+	cfg := u.Config()
+	return cfg != nil && cfg.Evm.ServesNativeQuery(method)
+}
+
+// forwardJsonRpc sends the client's JSON-RPC eth_query* request unchanged to
+// ups and keeps its answer as the call's response.
+func (qe *EvmQueryExecutor) forwardJsonRpc(ctx context.Context, ups common.Upstream) error {
+	resp, err := ups.Forward(ctx, qe.jsonReq, false, false)
+	if err != nil {
+		if resp != nil {
+			resp.Release()
+		}
+		return err
+	}
+	if resp == nil {
+		return fmt.Errorf("upstream %s returned no response", ups.Id())
+	}
+	qe.jsonResp = resp
+	return nil
 }
 
 // shimBudget reports whether any upstream enables the query shim for method,
@@ -606,6 +653,7 @@ func (n *Network) forwardQuery(ctx context.Context, req *common.NormalizedReques
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Logger()
 	executor := NewEvmQueryExecutor(n, &lg)
 	executor.parentRequestId = req.ID()
+	executor.jsonReq = req
 	var page proto.Message
 	err = executor.Execute(ctx, queryReq, func(p proto.Message) error {
 		page = p
@@ -614,6 +662,10 @@ func (n *Network) forwardQuery(ctx context.Context, req *common.NormalizedReques
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, queryJsonRpcError(err)
+	}
+	if executor.jsonResp != nil {
+		// An evm.nativeQueryMethods upstream answered: its response goes back as is.
+		return executor.jsonResp, nil
 	}
 	if page == nil {
 		return nil, queryJsonRpcError(fmt.Errorf("%s produced no page", method))

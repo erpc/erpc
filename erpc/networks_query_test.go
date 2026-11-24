@@ -204,6 +204,16 @@ func mockQueryChain(blockDelay time.Duration) {
 // ignoreMethods, selected in the order given.
 func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.EvmQueryShimConfig, ignoreMethods []string, ids ...string) *Network {
 	t.Helper()
+	return setupQueryTestNetworkWith(t, ctx, func(cfg *common.UpstreamConfig) {
+		cfg.IgnoreMethods = ignoreMethods
+		cfg.Evm.QueryShim = queryShim
+	}, ids...)
+}
+
+// setupQueryTestNetworkWith is setupQueryTestNetwork with each upstream's
+// config set by configure.
+func setupQueryTestNetworkWith(t *testing.T, ctx context.Context, configure func(cfg *common.UpstreamConfig), ids ...string) *Network {
+	t.Helper()
 	// The network lives as long as t, not the caller's ctx (stopAtEnd).
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -218,12 +228,12 @@ func setupQueryTestNetwork(t *testing.T, ctx context.Context, queryShim *common.
 	ups := make([]*common.UpstreamConfig, len(ids))
 	for i, id := range ids {
 		ups[i] = &common.UpstreamConfig{
-			Id:            id,
-			Type:          common.UpstreamTypeEvm,
-			Endpoint:      "http://" + id + ".localhost",
-			IgnoreMethods: ignoreMethods,
-			Evm:           &common.EvmUpstreamConfig{ChainId: 123, QueryShim: queryShim},
+			Id:       id,
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://" + id + ".localhost",
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
 		}
+		configure(ups[i])
 	}
 
 	vr := thirdparty.NewVendorsRegistry()
