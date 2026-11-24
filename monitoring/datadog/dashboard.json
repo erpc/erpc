@@ -3355,7 +3355,7 @@
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (vendor, finality) (\n  erpc_network_successful_request_total{\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    client_name=~\"${client_name:regex}\",\n    cluster_key=~\"${cluster_key:regex}\",\n    vendor=~\"${vendor:regex}\", vendor!=\"n/a\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
+              "expr": "sum by (vendor, finality) (\n  erpc_network_successful_request_total{\n    network=~\"${network:regex}\",\n    project=~\"${project:regex}\",\n    client_name=~\"${client_name:regex}\",\n    cluster_key=~\"${cluster_key:regex}\",\n    vendor=~\"${vendor:regex}\", vendor!~\"n/a|<(erpc|head|local|static|split|query|idempotent)>\",\n    category=~\"${category:regex}\",\n    finality=~\"${finality:regex}\"\n  }\n)",
               "format": "time_series",
               "instant": true,
               "interval": "1m",

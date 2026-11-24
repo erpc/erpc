@@ -257,8 +257,13 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 	}
 	// Missing-data errors: respect the EXPLICIT RetryEmpty=false
 	// directive (caller said "don't retry on empty/missing data").
+	// Permanent verdicts (skipped slot, null round, history floor) never
+	// change by asking the same upstream again, even when RetryEmpty is on.
 	// When the directive is unset, fall through to IsRetryableTowardsUpstream.
 	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		if common.IsPermanentlyMissingData(err) {
+			return false
+		}
 		if req != nil {
 			if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
 				return false

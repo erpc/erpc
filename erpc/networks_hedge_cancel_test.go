@@ -386,6 +386,82 @@ func TestHedgeConsensus_OneUpstreamMissingData_OthersSucceed_StillWorks(t *testi
 	assert.Contains(t, jrr.GetResultString(), "0xabc")
 }
 
+func TestHedgeConsensus_MissingDataSlotIdlePastCap_RoundEndsEarly(t *testing.T) {
+	// Production shape (BSC recent getLogs, 2-of-3): two vendors answer an
+	// empty page, the third has no data yet. Its slot waits idle for its
+	// hedge timer, and the round used to wait the whole empty cap for it.
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	isLogs := func(r *http.Request) bool {
+		return strings.Contains(util.SafeReadBody(r), "eth_getLogs")
+	}
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(isLogs).
+		Persist().
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error":   map[string]interface{}{"code": -32000, "message": "header not found"},
+		})
+	for _, host := range []string{"rpc2", "rpc3"} {
+		gock.New(fmt.Sprintf("http://%s.localhost", host)).
+			Post("").
+			Filter(isLogs).
+			Persist().
+			Reply(200).
+			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": []interface{}{}})
+	}
+
+	const emptyCap = 600 * time.Millisecond
+	forward := func(t *testing.T, hedgeDelay time.Duration) time.Duration {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
+			3,
+			&common.HedgePolicyConfig{
+				Delay:    common.NewStaticDuration(hedgeDelay),
+				MaxCount: 1,
+			},
+			&common.ConsensusPolicyConfig{
+				MaxParticipants:         3,
+				AgreementThreshold:      2,
+				DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+				LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+				PreferNonEmpty:          &common.TRUE,
+				MaxWaitOnResult:         common.NewStaticDuration(emptyCap),
+				MaxWaitOnEmpty:          common.NewStaticDuration(emptyCap),
+			},
+			&common.RetryPolicyConfig{MaxAttempts: 1},
+		)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x11118880","toBlock":"0x11118880"}]}`))
+		start := time.Now()
+		resp, err := network.Forward(ctx, req)
+		elapsed := time.Since(start)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		jrr, jrrErr := resp.JsonRpcResponse()
+		require.NoError(t, jrrErr)
+		assert.Equal(t, "[]", jrr.GetResultString())
+		t.Logf("hedge delay %s: round took %s", hedgeDelay, elapsed)
+		return elapsed
+	}
+
+	t.Run("HedgeAfterCap_EndsBeforeCap", func(t *testing.T) {
+		elapsed := forward(t, 5*time.Second)
+		assert.Less(t, elapsed, emptyCap/2, "the slot cannot answer before the cap, so the round must not wait for it")
+	})
+	t.Run("HedgeBeforeCap_WaitsForHedge", func(t *testing.T) {
+		const hedgeDelay = 150 * time.Millisecond
+		elapsed := forward(t, hedgeDelay)
+		assert.GreaterOrEqual(t, elapsed, hedgeDelay, "the slot's hedge can still answer before the cap, so the round must wait for it")
+		assert.Less(t, elapsed, emptyCap)
+	})
+}
+
 func TestHedgeConsensus_EmptyOldBlockIsKeptAsSlotVote(t *testing.T) {
 	// Live smokebox shape: two internals return JSON-RPC null for a pruned
 	// block; two archives agree on it. Hedge keep() used to reject that null

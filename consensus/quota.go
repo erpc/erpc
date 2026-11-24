@@ -140,6 +140,27 @@ func anyMissingDataWaiverOptIn(reqs []*common.ConsensusRequiredParticipant) bool
 	return false
 }
 
+// missingDataAbstainers is the set of ids of ups that sit in a quota opting
+// into the MissingData waiver: a MissingData vote from one of them can be
+// released, so it may abstain instead of voting incomplete data. Nil when
+// none do.
+func missingDataAbstainers(reqs []*common.ConsensusRequiredParticipant, ups []common.Upstream) map[string]struct{} {
+	var out map[string]struct{}
+	for _, u := range ups {
+		for _, r := range reqs {
+			if r == nil || !r.WaiveAgreementOnMissingData || r.MinAgreement <= 0 || !upstreamMatchesTag(u, r.Tag) {
+				continue
+			}
+			if out == nil {
+				out = make(map[string]struct{})
+			}
+			out[u.Id()] = struct{}{}
+			break
+		}
+	}
+	return out
+}
+
 // resultsSatisfyAgreementQuotas reports whether the result set satisfies
 // every minAgreement entry: for each entry, at least minAgreement DISTINCT
 // upstreams must match the entry's tag. Distinctness is enforced here (not

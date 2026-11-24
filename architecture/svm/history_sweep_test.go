@@ -280,33 +280,56 @@ func TestPostForward_HistorySweep_ContinuesOnlyTowardDeeperFloor(t *testing.T) {
 	}
 }
 
-// The history sweep is for serial sweep continuation only. Under consensus, identical
-// valid short pages must stay 200s so participants can agree; MissingData would
-// collapse to an agreed error with no last-valid-response fallback.
-func TestPostForward_HistorySweep_SkippedUnderConsensusSlot(t *testing.T) {
+// Under consensus the sweep's pool is the round, and only an upstream whose
+// quota can waive MissingData abstains: a short page or null status turns
+// into MissingData only toward a deeper participant the request holds. A
+// deeper upstream outside the round, or a quota without the waiver, leaves
+// the vote as data, or the round agrees on MissingData or holds the quota.
+func TestPostForward_HistorySweep_ConsensusSlotScopedToRound(t *testing.T) {
 	t.Parallel()
 	ctx := common.WithConsensusSlot(context.Background())
 	h := &SvmArchitectureHandler{}
 	net := &fakeNetwork{cfg: &common.NetworkConfig{Architecture: common.ArchitectureSvm}}
 	pruned := upstreamWithFloor("pruned", 300000, 200000, true)
-	pool := []common.Upstream{pruned, upstreamWithFloor("archive", 300000, 0, true)}
+	archive := upstreamWithFloor("archive", 300000, 0, true)
+	const withNull = `{"context":{"slot":9},"value":[null]}`
 
-	t.Run("getSignaturesForAddress short page is served", func(t *testing.T) {
-		t.Parallel()
-		req := reqOf(t, "getSignaturesForAddress", `["addr",{"limit":5}]`)
-		req.SetUpstreams(pool)
-		rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, sigPage(2)), nil, false)
-		require.NoError(t, err)
-		require.NotNil(t, rs)
-	})
-
-	t.Run("getSignatureStatuses null with history search is served", func(t *testing.T) {
-		t.Parallel()
-		const withNull = `{"context":{"slot":9},"value":[null]}`
-		req := reqOf(t, "getSignatureStatuses", `[["a"],{"searchTransactionHistory":true}]`)
-		req.SetUpstreams(pool)
-		rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, withNull), nil, false)
-		require.NoError(t, err)
-		require.NotNil(t, rs)
-	})
+	methods := []struct {
+		method, params, body string
+	}{
+		{"getSignaturesForAddress", `["addr",{"limit":5}]`, sigPage(2)},
+		{"getSignatureStatuses", `[["a"],{"searchTransactionHistory":true}]`, withNull},
+	}
+	rounds := []struct {
+		name                      string
+		abstainer, archiveInRound bool
+		wantMissing               bool
+	}{
+		{"waiver quota, deeper participant in the round", true, true, true},
+		{"waiver quota, deeper upstream outside the round", true, false, false},
+		{"no waiver quota, deeper participant in the round", false, true, false},
+	}
+	for _, m := range methods {
+		for _, rc := range rounds {
+			t.Run(m.method+": "+rc.name, func(t *testing.T) {
+				t.Parallel()
+				req := reqOf(t, m.method, m.params)
+				req.SetUpstreams([]common.Upstream{archive, pruned})
+				if rc.abstainer {
+					req.ExecState().SetMissingDataAbstainers(map[string]struct{}{"pruned": {}})
+				}
+				if rc.archiveInRound {
+					require.True(t, req.ReserveUpstream(archive))
+				}
+				require.True(t, req.ReserveUpstream(pruned))
+				rs, err := h.HandleUpstreamPostForward(ctx, net, pruned, req, resultResp(t, req, m.body), nil, false)
+				if rc.wantMissing {
+					require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointMissingData), "got %v", err)
+					return
+				}
+				require.NoError(t, err)
+				require.NotNil(t, rs)
+			})
+		}
+	}
 }

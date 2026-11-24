@@ -169,9 +169,10 @@ func (e *executor) Run(
 	if st := originalReq.ExecState(); st != nil {
 		keep := false
 		if anyEmptyOutsideRetentionOptIn(e.config.requiredParticipants) {
-			keep = e.emptyWaiverHasBlock(ctx, originalReq)
+			keep = e.emptyWaiverHasBlock(ctx, originalReq, upstreamsHistoryEvidence(originalReq.Upstreams()))
 		}
 		st.SetKeepEmptyConsensusSlot(keep)
+		st.SetMissingDataAbstainers(missingDataAbstainers(e.config.requiredParticipants, originalReq.Upstreams()))
 	}
 
 	labels := e.extractMetricsLabels(ctx, originalReq)
@@ -267,6 +268,7 @@ func (e *executor) executeConsensus(
 		st.ConsensusSlots.Add(int32(maxToSpawn))
 	}
 	responseChan := make(chan *execResult, maxToSpawn)
+	pace := newRoundPace(maxToSpawn)
 	// Per-slot cancellable child contexts let us cancel losers explicitly.
 	// Each slot inherits the shared cancellableCtx (which is cancelled
 	// when the analyzer signals a winner / fire-and-forget exits / etc.)
@@ -279,8 +281,9 @@ func (e *executor) executeConsensus(
 		// consensus fan-out (Reason = consensus_slot) in the attempt log,
 		// the X-ERPC-Upstreams trace, and erpc_upstream_selection_total.
 		slotCtx = common.WithConsensusSlot(slotCtx)
+		slotCtx = common.WithSlotPace(slotCtx, pace.slots[i])
 		slotCtx, attemptCancels[i] = context.WithCancel(slotCtx)
-		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan)
+		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan, pace)
 	}
 
 	// outcomeCh is buffered so the analyzer can signal the caller and
@@ -300,7 +303,7 @@ func (e *executor) executeConsensus(
 	go e.runAnalyzer(
 		ctx, lg, originalReq, labels,
 		responseChan, attemptCancels, maxToSpawn, cancelRemaining,
-		outcomeCh, analyzerDone, collectionSpan,
+		outcomeCh, analyzerDone, collectionSpan, pace,
 	)
 
 	// Caller's select: prefer winner when available; bail on ctx cancel.
@@ -404,6 +407,7 @@ func (e *executor) runAnalyzer(
 	outcomeCh chan<- consensusOutcome,
 	analyzerDone chan<- struct{},
 	collectionSpan trace.Span,
+	pace *roundPace,
 ) {
 	defer inflightAnalyzers.done()
 
@@ -544,24 +548,45 @@ func (e *executor) runAnalyzer(
 		}
 	}
 
+	cancelAttempts := func() {
+		cancelRemaining()
+		for ai := range attemptCancels {
+			if attemptCancels[ai] != nil {
+				attemptCancels[ai]()
+			}
+		}
+	}
+	// idleCapped marks a round the wait cap ended before it fired: every
+	// slot still out was idle past the cap, so none could answer in time.
+	idleCapped := false
+	endIfIdle := func(received int) bool {
+		if shortCircuited || !pace.idleThrough(waitDeadline, received) {
+			return false
+		}
+		waitCapped = true
+		idleCapped = true
+		if !e.config.fireAndForget {
+			cancelAttempts()
+		}
+		return true
+	}
+
 	// Collect responses. Every participant is guaranteed to write exactly
 	// once to responseChan (see executeParticipant: all exit paths + panic
 	// recovery write; channel is buffered to maxToSpawn so writes never block).
-	for i := 0; i < maxToSpawn; i++ {
+	for received := 0; received < maxToSpawn; {
 		var resp *execResult
 		select {
 		case resp = <-responseChan:
+			received++
 		case <-timerC():
 			// Wait cap fired — resolve with what we have.
 			waitCapped = true
 			if !e.config.fireAndForget {
-				cancelRemaining()
-				for ai := range attemptCancels {
-					if attemptCancels[ai] != nil {
-						attemptCancels[ai]()
-					}
-				}
+				cancelAttempts()
 			}
+		case <-pace.wake:
+			endIfIdle(received)
 		}
 		if waitCapped {
 			break
@@ -601,16 +626,15 @@ func (e *executor) runAnalyzer(
 			if e.config.fireAndForget {
 				lg.Debug().
 					Str("reason", reason).
-					Int("remaining", maxToSpawn-i-1).
+					Int("remaining", maxToSpawn-received).
 					Msg("fire-and-forget mode: remaining requests complete in background")
 			} else {
-				cancelRemaining()
-				for ai := range attemptCancels {
-					if attemptCancels[ai] != nil {
-						attemptCancels[ai]()
-					}
-				}
+				cancelAttempts()
 			}
+		}
+		// A slot may have gone idle before this response armed the cap.
+		if endIfIdle(received) {
+			break
 		}
 	}
 	if waitTimer != nil {
@@ -645,6 +669,7 @@ func (e *executor) runAnalyzer(
 	collectionSpan.SetAttributes(
 		attribute.Bool("short_circuited", shortCircuited),
 		attribute.Bool("wait_capped", waitCapped),
+		attribute.Bool("idle_capped", idleCapped),
 		attribute.Int("responses.collected", len(responses)),
 	)
 
@@ -678,15 +703,19 @@ func (e *executor) runAnalyzer(
 			Inc()
 	}
 	if waitCapped {
-		// Trigger label distinguishes which cap fired: maxWaitOnResult
-		// (at least one non-empty in the bag) vs maxWaitOnEmpty (only
-		// empty/error responses so far).
+		// Trigger label distinguishes why the round stopped waiting:
+		// maxWaitOnResult (at least one non-empty in the bag), maxWaitOnEmpty
+		// (only empty/error responses so far), or idle (every slot still out
+		// was idle past the cap, so the round ended before the cap fired).
 		trigger := "empty"
 		for _, r := range responses {
 			if r != nil && r.Err == nil && r.Result != nil && !r.Result.IsResultEmptyish(ctx) {
 				trigger = "result"
 				break
 			}
+		}
+		if idleCapped {
+			trigger = "idle"
 		}
 		telemetry.MetricConsensusWaitCapped.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, trigger, labels.finalityStr, labels.userId, labels.agentName).
@@ -800,6 +829,52 @@ func isNoAttemptCause(cause error) bool {
 	return isNoAttemptError(cause)
 }
 
+// roundPace tracks the slots of one consensus round still out, so the round
+// stops waiting once none of them can answer before its wait cap.
+type roundPace struct {
+	slots []*common.SlotPace
+	// delivered[i] is set before slot i writes its result to the round.
+	delivered []atomic.Bool
+	// wake signals that some slot went idle.
+	wake chan struct{}
+}
+
+func newRoundPace(n int) *roundPace {
+	p := &roundPace{
+		slots:     make([]*common.SlotPace, n),
+		delivered: make([]atomic.Bool, n),
+		wake:      make(chan struct{}, 1),
+	}
+	for i := range p.slots {
+		p.slots[i] = common.NewSlotPace(p.wake)
+	}
+	return p
+}
+
+// idleThrough reports whether no slot still out can answer before deadline:
+// at least one slot is out, every slot that delivered was received, and every
+// other slot is idle until deadline or later. Ending the round then returns
+// what the wait cap returns at deadline, only sooner. If the request timeout
+// falls before deadline, the cap never fires: the round returns what it holds
+// instead of a timeout error, since no slot could answer before either. A zero
+// deadline means no cap is armed: the round waits for every slot.
+func (p *roundPace) idleThrough(deadline time.Time, received int) bool {
+	if deadline.IsZero() {
+		return false
+	}
+	delivered := 0
+	for i, s := range p.slots {
+		if p.delivered[i].Load() {
+			delivered++
+			continue
+		}
+		if !s.IdleThrough(deadline) {
+			return false
+		}
+	}
+	return delivered == received && delivered < len(p.slots)
+}
+
 // executeParticipant runs a single upstream request within a goroutine.
 func (e *executor) executeParticipant(
 	ctx context.Context,
@@ -809,6 +884,7 @@ func (e *executor) executeParticipant(
 	req *common.NormalizedRequest,
 	index int,
 	responseChan chan<- *execResult,
+	pace *roundPace,
 ) {
 	// Panic recovery
 	defer func() {
@@ -819,6 +895,7 @@ func (e *executor) executeParticipant(
 				Str("stack", string(debug.Stack())).
 				Msg("Panic in consensus participant")
 			telemetry.MetricConsensusPanics.WithLabelValues(labels.projectId, labels.networkId, labels.category, labels.finalityStr, labels.userId, labels.agentName).Inc()
+			pace.delivered[index].Store(true)
 			responseChan <- &execResult{Err: errPanicInConsensus}
 		}
 	}()
@@ -828,6 +905,7 @@ func (e *executor) executeParticipant(
 		telemetry.MetricConsensusCancellations.
 			WithLabelValues(labels.projectId, labels.networkId, labels.category, "before_execution", labels.finalityStr, labels.userId, labels.agentName).
 			Inc()
+		pace.delivered[index].Store(true)
 		responseChan <- nil
 		return
 	}
@@ -845,6 +923,7 @@ func (e *executor) executeParticipant(
 	}
 
 	if respObj == nil && respErr == nil {
+		pace.delivered[index].Store(true)
 		responseChan <- nil
 		return
 	}
@@ -866,6 +945,7 @@ func (e *executor) executeParticipant(
 		}
 	}
 
+	pace.delivered[index].Store(true)
 	responseChan <- &execResult{
 		Result:   respObj,
 		Err:      respErr,
@@ -1326,27 +1406,24 @@ func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis
 	return reasons
 }
 
-// chainHead returns the observed EVM "latest" block for the round, or 0 when
-// unknown. The request's Head.Latest is used only when servedTip.quorum is
-// "majority" — that value is majority-corroborated across the request's
-// voters, including ones that did not participate in this round. Default
-// quorum (2) can still be a single voter's report on small pools, so one
-// inflator can raise it; trusting that for this proof would reopen the
-// fabrication hole the poller fallback closes. When majority quorum is off,
-// or the Head is still unknown, fall back to the MIN poller latest among
-// this round's own EVM participants (at least two distinct upstreams with a
-// positive latest, at least one outside the winning group). A zero head from
-// both sources means the empty-outside-retention waiver cannot prove a block
-// is outside range, so it holds the quota — fail closed.
+// chainHead returns the observed "latest" block for the round, or 0 when
+// unknown. The chain's corroborated head comes first: a value a quorum of the
+// network's voters backs, including ones that did not participate in this
+// round (EVM: only under servedTip.quorum "majority", since the default
+// quorum (2) can still be one voter's report on a small pool). When it is
+// unknown, fall back to the MIN latest among this round's own participants
+// (at least two distinct upstreams with a positive latest, at least one
+// outside the winning group). A zero head from both sources means the
+// empty-outside-retention waiver cannot prove a block is outside range, so it
+// holds the quota — fail closed.
 func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis, winner *responseGroup) int64 {
-	if analysis == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil {
 		return 0
 	}
 	if req := analysis.originalRequest; req != nil {
-		if net := req.Network(); net != nil && majorityServedLatestEnabled(net) {
-			if head := common.EvmHeadOf(net, ctx, req).Latest; head > 0 {
-				return head
-			}
+		if head := ev.CorroboratedHead(ctx, req); head > 0 {
+			return head
 		}
 	}
 	var agreeing []*execResult
@@ -1354,19 +1431,6 @@ func (e *executor) chainHead(ctx context.Context, analysis *consensusAnalysis, w
 		agreeing = e.agreeingResults(analysis, winner)
 	}
 	return participantLatestBlock(analysis, agreeing)
-}
-
-// majorityServedLatestEnabled reports whether this network's served tip uses
-// quorum "majority". Nil config / default quorum returns false.
-func majorityServedLatestEnabled(net common.Network) bool {
-	if net == nil {
-		return false
-	}
-	cfg := net.Config()
-	if cfg == nil || cfg.Evm == nil || cfg.Evm.ServedTip == nil {
-		return false
-	}
-	return cfg.Evm.ServedTip.Quorum == common.ServedTipQuorumMajority
 }
 
 // logEmptyWaiverUnproven emits the fail-closed diagnostic when the
@@ -1449,7 +1513,8 @@ func (e *executor) logEmptyWaiverUnproven(ctx context.Context, lg *zerolog.Logge
 // (across any empty-outside-retention opted-in quota) expose a finite
 // availability lower bound, and the total number of such matching empties.
 func countFiniteAvailLowerBounds(analysis *consensusAnalysis, reqs []*common.ConsensusRequiredParticipant) (finite int, matchingEmpties int) {
-	if analysis == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil {
 		return 0, 0
 	}
 	seen := make(map[string]struct{})
@@ -1474,12 +1539,7 @@ func countFiniteAvailLowerBounds(analysis *consensusAnalysis, reqs []*common.Con
 				}
 				seen[id] = struct{}{}
 				matchingEmpties++
-				eu, ok := r.Upstream.(common.EvmUpstream)
-				if !ok {
-					continue
-				}
-				lower, _ := eu.EvmBlockAvailabilityBounds()
-				if lower != math.MinInt64 {
+				if ev.UpstreamLowerBound(r.Upstream) != math.MinInt64 {
 					finite++
 				}
 			}
@@ -1498,16 +1558,17 @@ const (
 	waiverUnprovenReasonRoundIncomplete      = "round_incomplete"
 )
 
-// participantLatestBlock is the chain-head fallback when the network served
-// tip is 0. It requires at least two distinct EVM participants to have reported
-// a positive latest, at least one of them outside the winning group, then takes
-// the MIN. Neither a single inflator nor the winning group alone can raise the
-// head the winner's own block is judged against. Returns 0 (fail closed)
-// otherwise, e.g. when the only non-winners are pruned internals without a
-// poller; operators then need servedTip quorum "majority" or a finite
-// blockAvailability lower bound on those internals.
+// participantLatestBlock is the chain-head fallback when the network's
+// corroborated head is 0. It requires at least two distinct participants to
+// have reported a positive latest, at least one of them outside the winning
+// group, then takes the MIN. Neither a single inflator nor the winning group
+// alone can raise the head the winner's own block is judged against. Returns
+// 0 (fail closed) otherwise, e.g. when the only non-winners are pruned
+// internals without a poller; operators then need servedTip quorum
+// "majority" or a finite blockAvailability lower bound on those internals.
 func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult) int64 {
-	if analysis == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil {
 		return 0
 	}
 	winners := make(map[string]struct{}, len(agreeing))
@@ -1533,11 +1594,7 @@ func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult)
 				continue
 			}
 			seen[id] = struct{}{}
-			eu, ok := r.Upstream.(common.EvmUpstream)
-			if !ok {
-				continue
-			}
-			b := eu.EvmEffectiveLatestBlock()
+			b := ev.UpstreamLatestBlock(r.Upstream)
 			if b <= 0 {
 				continue
 			}
@@ -1562,10 +1619,11 @@ func participantLatestBlock(analysis *consensusAnalysis, agreeing []*execResult)
 // request names no concrete block (a hash lookup, a tag, an omitted range
 // bound); waiverBlock then needs a non-winner to confirm the answer's block.
 func requestBlock(ctx context.Context, analysis *consensusAnalysis) *big.Int {
-	if analysis == nil || analysis.originalRequest == nil {
+	ev := analysis.historyEvidence()
+	if ev == nil || analysis.originalRequest == nil {
 		return nil
 	}
-	bn, ok := common.EvmRequestedBlockNumber(ctx, analysis.originalRequest)
+	bn, ok := ev.RequestedBlock(ctx, analysis.originalRequest)
 	if !ok {
 		return nil
 	}
@@ -1618,7 +1676,7 @@ func emptyOutsideRetentionWaivedQuotas(analysis *consensusAnalysis, reqs []*comm
 		// back to chain-head depth when that preferred evidence is unavailable.
 		// A finite bound that places the requested block inside the served range
 		// is positive contradictory evidence — never override it with head depth.
-		proves, contradicts := availabilityBoundProofState(empties, reqBlock)
+		proves, contradicts := availabilityBoundProofState(analysis.historyEvidence(), empties, reqBlock)
 		if proves || (!contradicts && chainHeadProvesOutsideRetention(reqBlock, head, req.RetentionBlocks)) {
 			if waived == nil {
 				waived = make(map[*common.ConsensusRequiredParticipant]struct{}, len(reqs))
@@ -1682,8 +1740,8 @@ func anyEmptyOutsideRetentionAbstention(analysis *consensusAnalysis, reqs []*com
 //   - contradicts: at least one finite lower has reqBlock >= lower (in range)
 //
 // When neither (bounds unavailable), the caller may fall back to chain-head depth.
-func availabilityBoundProofState(matching []*execResult, reqBlock *big.Int) (proves, contradicts bool) {
-	if reqBlock == nil || len(matching) == 0 {
+func availabilityBoundProofState(ev common.HistoryEvidence, matching []*execResult, reqBlock *big.Int) (proves, contradicts bool) {
+	if ev == nil || reqBlock == nil || len(matching) == 0 {
 		return false, false
 	}
 	allFiniteProve := true
@@ -1692,11 +1750,7 @@ func availabilityBoundProofState(matching []*execResult, reqBlock *big.Int) (pro
 		if r == nil || r.Upstream == nil {
 			return false, false
 		}
-		eu, ok := r.Upstream.(common.EvmUpstream)
-		if !ok {
-			return false, false
-		}
-		lower, _ := eu.EvmBlockAvailabilityBounds()
+		lower := ev.UpstreamLowerBound(r.Upstream)
 		if lower == math.MinInt64 {
 			allFiniteProve = false
 			continue

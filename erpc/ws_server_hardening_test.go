@@ -521,7 +521,8 @@ func TestWebSocket_ClientBatchCap(t *testing.T) {
 }
 
 // A WebSocket connection is bound to one network, so a path that doesn't
-// name one is refused at the handshake.
+// name one, or names one the project can't serve, is refused at the
+// handshake; the latter with the status and error a POST gets.
 func TestWebSocket_UpgradeRequiresNetwork(t *testing.T) {
 	setupGock()
 	t.Cleanup(util.ResetGock)
@@ -533,6 +534,28 @@ func TestWebSocket_UpgradeRequiresNetwork(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	errorOf := func(resp *http.Response) map[string]interface{} {
+		t.Helper()
+		defer resp.Body.Close()
+		var body map[string]interface{}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		errObj, ok := body["error"].(map[string]interface{})
+		require.True(t, ok, "body must carry a JSON-RPC error: %v", body)
+		return errObj
+	}
+
+	post, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/999", addr), "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, post.StatusCode)
+	postErr := errorOf(post)
+
+	_, resp, err = websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/999", addr), nil)
+	require.Error(t, err, "an upgrade for an unknown network must be refused")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, postErr, errorOf(resp))
 }
 
 // A request that panics must still get a reply with its own id: WebSocket
@@ -624,6 +647,7 @@ func TestWebSocket_ResponseReleasedWhenWriteNeverStarts(t *testing.T) {
 func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
+	upstreamURL, _ := svmUpstream(t)
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
@@ -636,7 +660,7 @@ func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
 			Upstreams: []*common.UpstreamConfig{{
 				Id:       "svm-ws-test",
 				Type:     common.UpstreamTypeSvm,
-				Endpoint: "http://svm-ws-rpc1.localhost",
+				Endpoint: upstreamURL,
 				Svm:      &common.SvmUpstreamConfig{Cluster: "mainnet-beta"},
 			}},
 			Auth: &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{{
@@ -657,8 +681,8 @@ func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Close()
 
-	// Both run concurrently: one spends the budget (and may wait on the
-	// unreachable upstream), the other is rejected at auth straight away.
+	// Both run concurrently: one spends the budget, the other is rejected
+	// at auth straight away.
 	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}`)))
 	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"getSlot","params":[]}`)))
 	var limited map[string]interface{}
@@ -677,15 +701,11 @@ func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
 	assert.EqualValues(t, -32000, errObj["code"])
 }
 
-// web3.js and @solana/kit send {"jsonrpc":"2.0","method":"ping"} every 5 s on
-// a subscription socket. Agave has no ping method: it drops that frame unrun
-// and unanswered, and answers a ping with an id -32601 "Method not found".
-// eRPC does the same without asking an upstream, and meters nothing for the
-// dropped frame, so a socket's keepalive never bills.
-func TestWebSocket_SvmPingAnsweredLocally(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-
+// svmUpstream serves an SVM mainnet-beta network: getSlot and getGenesisHash
+// answer, other methods get one vendor's answer to ping (the error object as
+// a result). It counts the pings it receives.
+func svmUpstream(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
 	var pings atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -696,7 +716,6 @@ func TestWebSocket_SvmPingAnsweredLocally(t *testing.T) {
 		if len(req.ID) == 0 {
 			req.ID = json.RawMessage("null")
 		}
-		// One vendor's answer to ping: the error object as a result.
 		result := `{"code":-32601,"message":"Method not found"}`
 		switch req.Method {
 		case "ping":
@@ -709,8 +728,20 @@ func TestWebSocket_SvmPingAnsweredLocally(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
 	}))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close)
+	return upstream.URL, &pings
+}
 
+// web3.js and @solana/kit send {"jsonrpc":"2.0","method":"ping"} every 5 s on
+// a subscription socket. Agave has no ping method: it drops that frame unrun
+// and unanswered, and answers a ping with an id -32601 "Method not found".
+// eRPC does the same without asking an upstream, and meters nothing for the
+// dropped frame, so a socket's keepalive never bills.
+func TestWebSocket_SvmPingAnsweredLocally(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+
+	upstreamURL, pings := svmUpstream(t)
 	cfg := &common.Config{
 		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true), CostHeaders: util.BoolPtr(true)},
 		Projects: []*common.ProjectConfig{{
@@ -722,7 +753,7 @@ func TestWebSocket_SvmPingAnsweredLocally(t *testing.T) {
 			Upstreams: []*common.UpstreamConfig{{
 				Id:       "svm-ws-ping",
 				Type:     common.UpstreamTypeSvm,
-				Endpoint: upstream.URL,
+				Endpoint: upstreamURL,
 				Svm:      &common.SvmUpstreamConfig{Cluster: "mainnet-beta"},
 			}},
 		}},

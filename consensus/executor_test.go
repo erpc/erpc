@@ -176,6 +176,7 @@ func TestExecuteParticipant_PostExecutionCancel_PreservesResult(t *testing.T) {
 		newTestRequest(),
 		0,
 		responseCh,
+		newRoundPace(1),
 	)
 
 	select {

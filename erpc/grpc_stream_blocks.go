@@ -72,10 +72,12 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 		return status.Error(codes.Unimplemented, "StreamBlocks needs an evm network")
 	}
 
-	// The tap ends with its client or its network, whichever ends first.
+	// The tap ends with its client, its network or the server's streams,
+	// whichever ends first.
 	tapCtx, stop := context.WithCancel(nw.appCtx)
 	defer stop()
 	defer context.AfterFunc(ctx, stop)()
+	defer context.AfterFunc(gs.streams, stop)()
 	sender := newStreamSender(stream)
 	defer sender.stop()
 	tracker := nw.chainTracker
@@ -116,6 +118,8 @@ func (gs *GrpcServer) StreamBlocks(req *bdsevm.StreamBlocksRequest, stream bdsev
 	switch {
 	case ctx.Err() != nil:
 		return status.FromContextError(ctx.Err()).Err()
+	case gs.streams.Err() != nil:
+		return status.Error(codes.Unavailable, "server shutting down")
 	case tapCtx.Err() != nil:
 		return status.Error(codes.Unavailable, "network is stopping")
 	case errors.Is(err, indexer.ErrOutOfRange):

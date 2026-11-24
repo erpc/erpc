@@ -2,6 +2,8 @@ package consensus
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -187,4 +189,164 @@ func TestMissingData_ReturnedErrorIsOrderIndependent(t *testing.T) {
 	assert.Equal(t, first, second, "arrival order must not change the code the client sees")
 	assert.Equal(t, common.JsonRpcErrorNumber(-32007), first,
 		"the lowest upstream id (alchemy-svm) must supply the group's error")
+}
+
+// evmStubUpstream is an EVM-typed upstream for Lotus null-round consensus tests.
+type evmStubUpstream struct {
+	common.Upstream
+	id string
+}
+
+func (u *evmStubUpstream) Id() string { return u.id }
+func (u *evmStubUpstream) Config() *common.UpstreamConfig {
+	return &common.UpstreamConfig{Id: u.id, Type: common.UpstreamTypeEvm}
+}
+
+func lotusNullParticipant(t *testing.T, upstreamID string, epoch uint64) *execResult {
+	t.Helper()
+	up := &evmStubUpstream{id: upstreamID}
+	msg := fmt.Sprintf("requested epoch was a null round (%d)", epoch)
+	md := common.NewErrEndpointMissingData(
+		common.NewErrJsonRpcExceptionInternal(12, 12, msg, nil, map[string]interface{}{"data": float64(epoch)}),
+		up,
+	)
+	md.(*common.ErrEndpointMissingData).WithPermanentMissingData(true)
+	return &execResult{Err: md, Upstream: up}
+}
+
+func evmBlockParticipant(t *testing.T, upstreamID string, blockJSON string) *execResult {
+	t.Helper()
+	jrr, err := common.NewJsonRpcResponseFromBytes([]byte(`1`), []byte(blockJSON), nil)
+	require.NoError(t, err)
+	up := &evmStubUpstream{id: upstreamID}
+	nr := common.NewNormalizedResponse().WithJsonRpcResponse(jrr).SetUpstream(up)
+	return &execResult{Result: nr, Upstream: up}
+}
+
+func TestFilecoinNullRound_Consensus(t *testing.T) {
+	const epoch = 6568208
+	const blockJSON = `{"number":"0x643970","hash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+
+	t.Run("two null rounds agree, short-circuit, and preserve native code 12", func(t *testing.T) {
+		cfg := &config{
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			disputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+		}
+		parts := []*execResult{
+			lotusNullParticipant(t, "lotus-a", epoch),
+			lotusNullParticipant(t, "lotus-b", epoch),
+		}
+		for i, p := range parts {
+			p.Index = i
+		}
+		lg := zerolog.Nop()
+		analysis := newConsensusAnalysis(&lg, context.Background(), cfg, parts)
+		e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
+		winner := e.determineWinner(context.Background(), &lg, analysis)
+
+		require.NotNil(t, winner.Error)
+		assert.Equal(t, 2, analysis.validParticipants, "null rounds must count as valid consensus participants")
+		assert.True(t, common.IsPermanentlyMissingData(winner.Error))
+		var jre *common.ErrJsonRpcExceptionInternal
+		require.ErrorAs(t, winner.Error, &jre)
+		assert.Equal(t, common.JsonRpcErrorNumber(12), jre.NormalizedCode())
+		assert.Equal(t, fmt.Sprintf("requested epoch was a null round (%d)", epoch), jre.Message)
+
+		reason, ok := e.shouldShortCircuit(winner, analysis)
+		assert.True(t, ok, "agreed null round meeting threshold must short-circuit")
+		assert.Equal(t, "consensus_error_threshold", reason)
+	})
+
+	t.Run("null round and infra 500 do not merge into false agreement", func(t *testing.T) {
+		cfg := &config{
+			maxParticipants:         2,
+			agreementThreshold:      2,
+			disputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+		}
+		infra := &execResult{
+			Err:      common.NewErrEndpointServerSideException(errors.New("500 internal error"), nil, 500),
+			Upstream: &evmStubUpstream{id: "lotus-b"},
+			Index:    1,
+		}
+		nullPart := lotusNullParticipant(t, "lotus-a", epoch)
+		nullPart.Index = 0
+
+		lg := zerolog.Nop()
+		analysis := newConsensusAnalysis(&lg, context.Background(), cfg, []*execResult{nullPart, infra})
+		e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
+		winner := e.determineWinner(context.Background(), &lg, analysis)
+
+		require.NotNil(t, winner.Error)
+		assert.Equal(t, 1, analysis.validParticipants, "only the null round is a valid participant; 500 stays infra")
+		assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
+			"1 null round + 1 HTTP 500 must be low participants, not false agreement: got %v", winner.Error)
+	})
+
+	t.Run("null round disputes with transient missing data", func(t *testing.T) {
+		upB := &evmStubUpstream{id: "lotus-b"}
+		transientErr := common.NewErrEndpointMissingData(
+			common.NewErrJsonRpcExceptionInternal(-32000, common.JsonRpcErrorMissingData, "header not found", nil, nil),
+			upB,
+		)
+		require.True(t, common.HasErrorCode(transientErr, common.ErrCodeEndpointMissingData))
+		require.False(t, common.IsPermanentlyMissingData(transientErr))
+
+		winner := decide(t,
+			lotusNullParticipant(t, "lotus-a", epoch),
+			&execResult{Err: transientErr, Upstream: upB},
+		)
+		require.NotNil(t, winner.Error)
+		assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusDispute),
+			"permanent null round and transient missing data must dispute")
+	})
+
+	t.Run("minority fork null round loses to two agreeing blocks", func(t *testing.T) {
+		cfg := &config{
+			maxParticipants:    3,
+			agreementThreshold: 2,
+			disputeBehavior:    common.ConsensusDisputeBehaviorReturnError,
+		}
+		parts := []*execResult{
+			lotusNullParticipant(t, "lotus-fork", epoch),
+			evmBlockParticipant(t, "lotus-a", blockJSON),
+			evmBlockParticipant(t, "lotus-b", blockJSON),
+		}
+		for i, p := range parts {
+			p.Index = i
+		}
+		lg := zerolog.Nop()
+		analysis := newConsensusAnalysis(&lg, context.Background(), cfg, parts)
+		e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
+		winner := e.determineWinner(context.Background(), &lg, analysis)
+
+		require.NoError(t, winner.Error)
+		require.NotNil(t, winner.Result)
+	})
+
+	t.Run("acceptMostCommon with preferNonEmpty prefers a real block over null rounds", func(t *testing.T) {
+		cfg := &config{
+			maxParticipants:         3,
+			agreementThreshold:      2,
+			disputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+			lowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			preferNonEmpty:          true,
+		}
+		parts := []*execResult{
+			lotusNullParticipant(t, "lotus-a", epoch),
+			lotusNullParticipant(t, "lotus-b", epoch),
+			evmBlockParticipant(t, "lotus-c", blockJSON),
+		}
+		for i, p := range parts {
+			p.Index = i
+		}
+		lg := zerolog.Nop()
+		analysis := newConsensusAnalysis(&lg, context.Background(), cfg, parts)
+		e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
+		winner := e.determineWinner(context.Background(), &lg, analysis)
+
+		require.NoError(t, winner.Error)
+		require.NotNil(t, winner.Result)
+	})
 }

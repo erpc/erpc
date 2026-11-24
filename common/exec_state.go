@@ -151,6 +151,12 @@ type ExecState struct {
 	// that opt-in — waiver-free configs keep prior empty-reject recovery.
 	keepEmptyConsensusSlot atomic.Bool
 
+	// missingDataAbstainers holds the ids of the upstreams whose consensus
+	// quota opts into waiveAgreementOnMissingData. The SVM history sweep
+	// reads it so a consensus slot turns an incomplete answer into a
+	// MissingData abstention only where the waiver can release it.
+	missingDataAbstainers atomic.Pointer[map[string]struct{}]
+
 	StartedAt time.Time
 
 	// upstreamAttempts records every (upstream, attempt) tuple in the
@@ -334,6 +340,34 @@ func (s *ExecState) KeepEmptyConsensusSlot() bool {
 		return false
 	}
 	return s.keepEmptyConsensusSlot.Load()
+}
+
+// SetMissingDataAbstainers records the ids of the upstreams whose consensus
+// quota opts into waiveAgreementOnMissingData this round. Nil clears it.
+func (s *ExecState) SetMissingDataAbstainers(ids map[string]struct{}) {
+	if s == nil {
+		return
+	}
+	if ids == nil {
+		s.missingDataAbstainers.Store(nil)
+		return
+	}
+	s.missingDataAbstainers.Store(&ids)
+}
+
+// MissingDataAbstainer reports whether upstreamId's consensus quota can waive
+// its MissingData vote this round, so an incomplete answer may abstain as
+// MissingData instead of voting as data.
+func (s *ExecState) MissingDataAbstainer(upstreamId string) bool {
+	if s == nil {
+		return false
+	}
+	ids := s.missingDataAbstainers.Load()
+	if ids == nil {
+		return false
+	}
+	_, ok := (*ids)[upstreamId]
+	return ok
 }
 
 // ExecStateSnapshot is a plain-int view of ExecState for log/span

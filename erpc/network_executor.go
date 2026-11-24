@@ -258,31 +258,36 @@ func (e *networkExecutor) Run(
 	// Consensus branch: each slot is retry(hedge(tryOneUpstream)).
 	if e.runsConsensus(req) {
 		slotInner := func(slotCtx context.Context, slotReq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream, true)
+			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream, true, common.SlotPaceOf(slotCtx))
 		}
 		return e.consensus.Run(ctx, req, slotInner)
 	}
 
 	// Non-consensus branch: retry(hedge(runUpstreamSweep)).
-	return e.runRetryHedge(ctx, req, runUpstreamSweep, false)
+	return e.runRetryHedge(ctx, req, runUpstreamSweep, false, nil)
 }
 
+// runRetryHedge runs retry(hedge(inner)). pace, when set, learns each wait
+// with no attempt in flight, so a consensus round can stop waiting for a
+// slot that cannot answer before its wait cap.
 func (e *networkExecutor) runRetryHedge(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 	consensusSlot bool,
+	pace *common.SlotPace,
 ) (*common.NormalizedResponse, error) {
 	hedgeWrapped := func(ctx context.Context) (*common.NormalizedResponse, error) {
-		return e.runHedge(ctx, req, inner, consensusSlot)
+		return e.runHedge(ctx, req, inner, consensusSlot, pace)
 	}
-	return e.runRetry(ctx, req, hedgeWrapped)
+	return e.runRetry(ctx, req, hedgeWrapped, pace)
 }
 
 func (e *networkExecutor) runRetry(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	hedged func(ctx context.Context) (*common.NormalizedResponse, error),
+	pace *common.SlotPace,
 ) (*common.NormalizedResponse, error) {
 	maxAttempts := 1
 	if e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.MaxAttempts > 0 {
@@ -406,7 +411,10 @@ func (e *networkExecutor) runRetry(
 					req.Finality(ctx).String(),
 				).Observe(d.Seconds())
 			}
-			if serr := failsafe.SleepCtx(ctx, d); serr != nil {
+			pace.IdleUntil(time.Now().Add(d))
+			serr := failsafe.SleepCtx(ctx, d)
+			pace.Busy()
+			if serr != nil {
 				// SleepCtx returns ctx.Err(). Get the cause for typed wrapping.
 				if cause := context.Cause(ctx); cause != nil {
 					return bestResp, cause
@@ -681,6 +689,7 @@ func (e *networkExecutor) runHedge(
 	req *common.NormalizedRequest,
 	inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 	consensusSlot bool,
+	pace *common.SlotPace,
 ) (*common.NormalizedResponse, error) {
 	if e.cfg == nil || e.cfg.Hedge == nil || e.cfg.Hedge.MaxCount <= 0 {
 		return inner(ctx, req)
@@ -797,6 +806,7 @@ func (e *networkExecutor) runHedge(
 	}
 	hooks := failsafe.HedgeHooks{
 		OnFire: func(fireIdx int, d time.Duration) {
+			pace.Busy()
 			if st := req.ExecState(); st != nil {
 				// Each hedge fire is an extra inner invocation at the
 				// network scope: counts as both an attempt and a hedge.
@@ -805,6 +815,7 @@ func (e *networkExecutor) runHedge(
 				st.NetworkHedges.Add(1)
 			}
 		},
+		OnIdle: pace.IdleUntil,
 	}
 	return failsafe.RunHedged[*common.NormalizedResponse](
 		ctx, e.cfg.Hedge.MaxCount, delayFn, wrapInner, keep, release, hooks,

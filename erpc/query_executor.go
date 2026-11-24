@@ -622,5 +622,5 @@ func (n *Network) forwardQuery(ctx context.Context, req *common.NormalizedReques
 	if err != nil {
 		return nil, err
 	}
-	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr), nil
+	return common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr).SetSource(common.SourceQuery), nil
 }
