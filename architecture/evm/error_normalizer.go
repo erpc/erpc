@@ -82,6 +82,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		var err *common.ErrJsonRpcExceptionExternal
 		if jr != nil && jr.Error != nil {
 			err = jr.Error
+			if se := simulateLimitError(err, details); se != nil {
+				return se
+			}
 			if ver := getVendorSpecificErrorIfAny(r, nr, jr, details); ver != nil {
 				return ver
 			}
@@ -205,38 +208,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.EvmAddressesTooLarge,
 			)
-		}
-
-		//----------------------------------------------------------------
-		// eth_simulateV1 limits, matched by their execution-apis codes because
-		// the wording differs per client. reth's "Block gas limit exceeded by
-		// the block's transactions" contains "limit exceeded", which the
-		// capacity checks below read as a rate limit (HTTP 429); geth's "block
-		// gas limit reached: remaining: N, required: M" fell to the retried
-		// server-side default. The spec codes are passed through unchanged.
-		//
-		// -38015: a call asks more gas than the simulated block allows (the
-		// base block's gas limit unless blockOverrides.gasLimit raises it).
-		// Every upstream computes the same limit: not retried.
-		//
-		// -38026: a limit the node operator sets (its RPC gas cap or block
-		// count). Another upstream may allow more, so the call fails over, but
-		// the refusing upstream is not asked again.
-		//----------------------------------------------------------------
-
-		if code == -38015 {
-			return common.NewErrEndpointExecutionException(
-				common.NewErrJsonRpcExceptionInternal(int(code), code, err.Message, nil, details),
-			)
-		}
-		if code == -38026 {
-			execErr := common.NewErrEndpointExecutionException(
-				common.NewErrJsonRpcExceptionInternal(int(code), code, err.Message, nil, details),
-			)
-			if re, ok := execErr.(common.RetryableError); ok {
-				return re.WithRetryableTowardNetwork(true)
-			}
-			return execErr
 		}
 
 		//----------------------------------------------------------------
@@ -1114,6 +1085,40 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 	// No error detected.
 	return nil
+}
+
+// simulateLimitError reads the eth_simulateV1 limits by their execution-apis
+// codes, before any vendor's or generic wording check: the wording differs per
+// client, and reth's "Block gas limit exceeded by the block's transactions"
+// contains "limit exceeded", which vendor and capacity checks read as a rate
+// limit (HTTP 429). geth's "block gas limit reached: remaining: N, required: M"
+// fell to the retried server-side default. The spec codes pass through
+// unchanged.
+//
+// -38015: a call asks more gas than the simulated block allows (the base
+// block's gas limit unless blockOverrides.gasLimit raises it). Every upstream
+// computes the same limit: not retried.
+//
+// -38026: a limit the node operator sets (its RPC gas cap or block count).
+// Another upstream may allow more, so the call fails over, but the refusing
+// upstream is not asked again.
+func simulateLimitError(err *common.ErrJsonRpcExceptionExternal, details map[string]interface{}) error {
+	code := common.JsonRpcErrorNumber(err.Code)
+	if code != -38015 && code != -38026 {
+		return nil
+	}
+	if err.Data != nil && err.Data != "" {
+		details["data"] = err.Data
+	}
+	execErr := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(int(code), code, err.Message, nil, details),
+	)
+	if code == -38026 {
+		if re, ok := execErr.(common.RetryableError); ok {
+			return re.WithRetryableTowardNetwork(true)
+		}
+	}
+	return execErr
 }
 
 func ExtractGrpcError(st *status.Status, upstream common.Upstream) error {

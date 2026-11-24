@@ -27,10 +27,26 @@ func countCallsTo(host, method string, calls *atomic.Int32) func(*http.Request) 
 	}
 }
 
-func newRefusalTestNetwork(t *testing.T, ctx context.Context) *Network {
-	return setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-		MaxAttempts: 6,
-		Delay:       common.Duration(10 * time.Millisecond),
+// Two upstreams of the given vendor ("" for none), as a refusal is read by
+// the vendor's error handler before the generic one.
+func newRefusalTestNetwork(t *testing.T, ctx context.Context, vendor string) *Network {
+	var ups []*common.UpstreamConfig
+	for _, id := range []string{"rpc1", "rpc2"} {
+		ups = append(ups, &common.UpstreamConfig{
+			Type:       common.UpstreamTypeEvm,
+			Id:         id,
+			Endpoint:   "http://" + id + ".localhost",
+			VendorName: vendor,
+			Evm:        &common.EvmUpstreamConfig{ChainId: 123},
+		})
+	}
+	return setupSendRawTxNetwork(t, ctx, ups, &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 6,
+			Delay:       common.Duration(10 * time.Millisecond),
+		}}},
 	})
 }
 
@@ -79,7 +95,7 @@ func TestNetwork_ProviderGasCap(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			resp, err := newRefusalTestNetwork(t, ctx).Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
+			resp, err := newRefusalTestNetwork(t, ctx, "").Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
 			require.NoError(t, err)
 			jrr, err := resp.JsonRpcResponse()
 			require.NoError(t, err)
@@ -104,7 +120,7 @@ func TestNetwork_ProviderGasCap(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			_, err := newRefusalTestNetwork(t, ctx).Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
+			_, err := newRefusalTestNetwork(t, ctx, "").Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.refusal["message"], "the caller must see the node's reason")
 			assert.Equal(t, http.StatusOK, determineResponseStatusCode(err), "a node's refusal, not a rate limit")
@@ -118,11 +134,12 @@ func TestNetwork_ProviderGasCap(t *testing.T) {
 // retried: the caller gets the node's reason after one attempt, with HTTP 200
 // as a node sends it. -38015 means a call asks more gas than the simulated
 // block allows; reth and geth word it differently, and reth's wording ("limit
-// exceeded") once read as a rate limit.
+// exceeded") once read as a rate limit, in the generic and Conduit handlers.
 func TestNetwork_SimulateV1_SharedRefusalsAreNotRetried(t *testing.T) {
 	const oneCall = `{"jsonrpc":"2.0","id":1,"method":"eth_simulateV1","params":[{"blockStateCalls":[{"calls":[{"to":"0x0000000000000000000000000000000000000001","gas":"0x11e1a300"}]}]},"latest"]}`
 	cases := []struct {
 		name    string
+		vendor  string
 		request string
 		refusal map[string]interface{}
 	}{
@@ -133,6 +150,12 @@ func TestNetwork_SimulateV1_SharedRefusalsAreNotRetried(t *testing.T) {
 		},
 		{
 			name:    "BlockGasLimitReth",
+			request: oneCall,
+			refusal: map[string]interface{}{"code": -38015, "message": "Block gas limit exceeded by the block's transactions"},
+		},
+		{
+			name:    "BlockGasLimitRethOnConduit",
+			vendor:  "conduit",
 			request: oneCall,
 			refusal: map[string]interface{}{"code": -38015, "message": "Block gas limit exceeded by the block's transactions"},
 		},
@@ -160,7 +183,7 @@ func TestNetwork_SimulateV1_SharedRefusalsAreNotRetried(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			_, err := newRefusalTestNetwork(t, ctx).Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
+			_, err := newRefusalTestNetwork(t, ctx, tc.vendor).Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.refusal["message"], "the caller must see the node's reason")
 			assert.Equal(t, http.StatusOK, determineResponseStatusCode(err), "a node's refusal, not a rate limit")
