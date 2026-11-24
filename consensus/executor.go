@@ -1280,7 +1280,7 @@ func groupIsMissingDataAbstention(g *responseGroup) bool {
 			return false
 		}
 		if !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) &&
-			!isSvmSlotSkippedError(r.Err) {
+			!common.IsPermanentSkipExecutionException(r.Err) {
 			return false
 		}
 	}
@@ -1338,11 +1338,12 @@ func missingDataWaivedQuotas(analysis *consensusAnalysis, reqs []*common.Consens
 				if r.Err == nil {
 					continue
 				}
-				// Coverage abstention: MissingData, or SVM skip-shaped
-				// ExecutionException (-32007/-32009) whose archive-gap half is
-				// still per-provider — both release waiveAgreementOnMissingData.
+				// Coverage abstention: MissingData, or permanent-skip
+				// ExecutionException (IsPermanentSkipExecutionException; SVM
+				// normalizer maps coded skips here) — both release
+				// waiveAgreementOnMissingData.
 				if !common.HasErrorCode(r.Err, common.ErrCodeEndpointMissingData) &&
-					!isSvmSlotSkippedError(r.Err) {
+					!common.IsPermanentSkipExecutionException(r.Err) {
 					continue
 				}
 				missing++

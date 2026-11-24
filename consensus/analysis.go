@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
@@ -541,12 +540,12 @@ func isAgreedUponError(err error) bool {
 
 // errorToConsensusHash generates a comparable hash from an error.
 //
-// Solana skipped-slot answers (coded -32007 / -32009) hash as one
-// "svm:slot_skipped" verdict: the number reports which storage tier answered,
-// not whether the slot has a block. They are ExecutionException (not MissingData)
-// so they agree under consensus, reach the client as native codes, and do not
-// trip waiveAgreementOnMissingData. Codeless -32000 archive-gap wording stays
-// MissingData and hashes as missingdata:permanent.
+// Permanent-skip ExecutionExceptions (IsPermanentSkipExecutionException) hash
+// as one "svm:slot_skipped" verdict — chain truth ("no block"), not coverage.
+// Architecture normalizers (e.g. SVM -32007/-32009) set that flag; consensus
+// does not re-parse wire codes. They agree under consensus, reach the client
+// as native codes, and count as MD-waiver abstention when opted in. Codeless
+// archive-gap MissingData stays missingdata:permanent.
 //
 // Missing-data errors hash by verdict, not by number. A provider's JSON-RPC code
 // for "I do not have this" reports its own storage layout, not the chain: agave
@@ -565,7 +564,7 @@ func errorToConsensusHash(err error) string {
 	hash := "error:generic"
 	var jre *common.ErrJsonRpcExceptionInternal
 	switch {
-	case isSvmSlotSkippedError(err):
+	case common.IsPermanentSkipExecutionException(err):
 		// Chain truth ("no block"), not coverage. Do not append :permanent —
 		// every skip-shaped answer already carries that meaning.
 		return "svm:slot_skipped"
@@ -587,38 +586,6 @@ func errorToConsensusHash(err error) string {
 		hash += ":permanent"
 	}
 	return hash
-}
-
-// isSvmSlotSkippedError reports agave skipped-slot answers: coded -32007 /
-// -32009 (ExecutionException from the SVM normalizer), or a non-MissingData
-// body whose message says the slot "was skipped". These are chain-truth
-// "no block" votes.
-//
-// ErrEndpointMissingData is never a skip vote — even when the message still
-// carries agave's ambiguous OR wording ("was skipped, or missing in long-term
-// storage" / "ledger jump"). Codeless -32000 archive-gap heuristics classify
-// as MissingData; hashing those as svm:slot_skipped would collapse coverage
-// into chain truth.
-func isSvmSlotSkippedError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-		return false
-	}
-	var jre *common.ErrJsonRpcExceptionInternal
-	if !errors.As(err, &jre) {
-		return false
-	}
-	switch int(jre.NormalizedCode()) {
-	case -32007, -32009:
-		return true
-	}
-	switch jre.OriginalCode() {
-	case -32007, -32009:
-		return true
-	}
-	return strings.Contains(strings.ToLower(jre.Message), "was skipped")
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.
