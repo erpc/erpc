@@ -24,6 +24,11 @@ import (
 // is detected within a customer's typical retry budget.
 const connectorDownProbeInterval = 1 * time.Second
 
+// DatabaseApiKeyRangeKey is the range key of every API key record: the
+// partition key is the API key and the value names its user, so one key is
+// one record and every connector reads it by exact key.
+const DatabaseApiKeyRangeKey = "*"
+
 type DatabaseStrategy struct {
 	logger    *zerolog.Logger
 	cfg       *common.DatabaseStrategyConfig
@@ -164,7 +169,7 @@ func (s *DatabaseStrategy) Authenticate(ctx context.Context, req *common.Normali
 		skipCache bool
 	}
 	v, sfErr, _ := s.sf.Do(apiKey, func() (interface{}, error) {
-		rangeKey := "*"
+		rangeKey := DatabaseApiKeyRangeKey
 		lookupCtx := ctx
 		if s.cfg != nil && s.cfg.MaxWait.Duration() > 0 {
 			var cancel context.CancelFunc
