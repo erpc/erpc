@@ -633,6 +633,13 @@ func resultToJsonRpcResponse(result *common.NormalizedResponse, ctx context.Cont
 // classifyAndHashResponse computes and caches the response type, hash, and size for a result.
 func classifyAndHashResponse(r *execResult, ctx context.Context, config *config) {
 	if r.Err != nil {
+		// Unanimous permanent skip ExecutionExceptions wrapped as Exhausted
+		// (network retry/hedge after every provider said skip) must still vote
+		// as svm:slot_skipped. Only unwrap when EVERY cause is itself a
+		// permanent skip — never via HasErrorCode on a mixed/foreign map.
+		if skip, ok := common.UnwrapUnanimousPermanentSkipExecution(r.Err); ok {
+			r.Err = skip
+		}
 		// ErrUpstreamsExhausted means no upstream was reachable — always infrastructure.
 		// Its Cause wraps the shared ErrorsByUpstream map which may contain errors from
 		// other consensus participants (e.g. execution reverts). Without this guard,

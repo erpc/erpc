@@ -2804,6 +2804,56 @@ func IsPermanentlyMissingData(err error) bool {
 	return false
 }
 
+// IsPermanentSkipExecutionException reports a permanent skip-shaped
+// ExecutionException (SVM -32007/-32009 via WithPermanentMissingData): chain
+// truth for this upstream, still retryable toward other upstreams for one
+// sweep, but must not burn a consensus seat into ErrUpstreamsExhausted via
+// network retry/hedge.
+func IsPermanentSkipExecutionException(err error) bool {
+	return HasErrorCode(err, ErrCodeEndpointExecutionException) && IsPermanentlyMissingData(err)
+}
+
+// UnwrapUnanimousPermanentSkipExecution returns the first permanent skip
+// ExecutionException when err is (or wraps) an ErrUpstreamsExhausted whose
+// every recorded cause is itself a permanent skip ExecutionException.
+//
+// Exhausted's cause map can hold foreign consensus participants' errors, so
+// we never promote via HasErrorCode walk on a mixed Exhausted — only when
+// every cause agrees on permanent skip. That preserves the Exhausted→infra
+// guard for mixed/foreign maps while letting unanimous skip seats vote as
+// svm:slot_skipped instead of error:exhausted.
+func UnwrapUnanimousPermanentSkipExecution(err error) (error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	// Peel one FailsafeRetryExceeded so retry-exhausted(Exhausted(skips…))
+	// still unwraps.
+	var fre *ErrFailsafeRetryExceeded
+	if errors.As(err, &fre) {
+		if cause := fre.GetCause(); cause != nil {
+			err = cause
+		}
+	}
+	var ue *ErrUpstreamsExhausted
+	if !errors.As(err, &ue) {
+		return nil, false
+	}
+	causes := ue.Errors()
+	if len(causes) == 0 {
+		return nil, false
+	}
+	var first error
+	for _, c := range causes {
+		if !IsPermanentSkipExecutionException(c) {
+			return nil, false
+		}
+		if first == nil {
+			first = c
+		}
+	}
+	return first, true
+}
+
 // IsHistorySweepContinuation reports MissingData emitted to continue a serial
 // sweep after an incomplete 200 — not a wrong-empty disagreement with the winner.
 func IsHistorySweepContinuation(err error) bool {

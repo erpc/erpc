@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
@@ -101,6 +102,9 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsNativeError(t *testing.T) {
 			defer cancel()
 			preferNonEmpty := true
 			net := setupTestSvmNetworkWithConfig(t, ctx, func(nc *common.NetworkConfig) {
+				// Match stg solana-mainnet: consensus + retry/hedge. Permanent
+				// skips must still agree as native codes — not burn seats into
+				// Exhausted via network retry (Live LP regression after #336).
 				nc.Failsafe = []*common.FailsafeConfig{{
 					MatchMethod: "*",
 					Consensus: &common.ConsensusPolicyConfig{
@@ -113,6 +117,11 @@ func TestSvm_Consensus_PermanentSkip_AgreesAsNativeError(t *testing.T) {
 							{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1},
 							{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
 						},
+					},
+					Retry: &common.RetryPolicyConfig{MaxAttempts: 2},
+					Hedge: &common.HedgePolicyConfig{
+						MaxCount: 1,
+						Delay:    common.NewStaticDuration(50 * time.Millisecond),
 					},
 				}}
 			}, ups)

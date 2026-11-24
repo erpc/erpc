@@ -363,6 +363,11 @@ func (e *networkExecutor) runRetry(
 					common.HasErrorCode(surfaceErr, common.ErrCodeEndpointExecutionException) {
 					return nil, surfaceErr
 				}
+				// Unanimous permanent skips must not reach consensus as
+				// FailsafeRetryExceeded(Exhausted) → error:exhausted.
+				if skip, ok := common.UnwrapUnanimousPermanentSkipExecution(surfaceErr); ok {
+					return nil, skip
+				}
 				return nil, common.NewErrFailsafeRetryExceeded(common.ScopeNetwork, surfaceErr, &startTime)
 			}
 			return resp, err
@@ -501,6 +506,14 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 			return ""
 		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			// Permanent skip (SVM -32007/-32009): chain truth for this upstream.
+			// Network-retrying the seat burns into Exhausted and drops the
+			// consensus vote (error:exhausted). Cross-provider sweep continues
+			// via other consensus participants and runUpstreamSweep's in-loop
+			// continue — not via burning this seat's retry budget.
+			if common.IsPermanentSkipExecutionException(err) {
+				return ""
+			}
 			if common.IsRetryableExecutionException(err) {
 				return "execution_exception_retryable"
 			}
@@ -773,6 +786,13 @@ func (e *networkExecutor) runHedge(
 				if uxe.Upstreams() == nil || len(uxe.Upstreams()) == 0 {
 					return false
 				}
+			}
+			// Permanent skip ExecutionException is a countable consensus vote —
+			// keep it and cancel sibling hedges instead of racing into Exhausted
+			// (retryableTowardNetwork alone would keep the race open).
+			if common.IsPermanentSkipExecutionException(err) {
+				kept = true
+				return true
 			}
 			// Underlying-retryable wrapped errors (e.g. ErrUpstreamsExhausted
 			// wrapping a 5xx) should continue racing for a healthier sibling.

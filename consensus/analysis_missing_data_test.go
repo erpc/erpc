@@ -174,6 +174,29 @@ func TestMissingData_WireCodesStayNative(t *testing.T) {
 	}
 }
 
+// Exhausted wrapping only permanent skip ExecutionExceptions must classify as
+// svm:slot_skipped (ConsensusError), not error:exhausted — the live stg
+// regression after skip reclassification.
+func TestSlotSkipped_ExhaustedUnanimousSkipsVoteAsSlotSkipped(t *testing.T) {
+	s07 := participant(t, "a", -32007, "Slot 1 was skipped, or missing due to ledger jump to recent snapshot")
+	s09 := participant(t, "b", -32009, "Slot 1 was skipped, or missing in long-term storage")
+	exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(s07.Err, s09.Err))
+	parts := []*execResult{
+		{Err: exhausted, Upstream: &svmStubUpstream{id: "seat-a"}},
+		{Err: common.NewErrUpstreamsExhaustedWithCause(errors.Join(s09.Err, s07.Err)), Upstream: &svmStubUpstream{id: "seat-b"}},
+	}
+	winner := decide(t, parts...)
+	require.NotNil(t, winner.Error)
+	assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
+		"unanimous skip Exhausted seats must not LowParticipants")
+	assert.False(t, common.HasErrorCode(winner.Error, common.ErrCodeUpstreamsExhausted),
+		"winner must unwrap past Exhausted")
+	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeEndpointExecutionException))
+	var jre *common.ErrJsonRpcExceptionInternal
+	require.ErrorAs(t, winner.Error, &jre)
+	assert.Contains(t, []common.JsonRpcErrorNumber{-32007, -32009}, jre.NormalizedCode())
+}
+
 // -32007 / -32009 (and codeless equivalents) must classify as ExecutionException
 // — not MissingData — agree under consensus, and return a native Solana code.
 func TestSlotSkipped_AgreeAsExecutionExceptionWithNativeCodes(t *testing.T) {

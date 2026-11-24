@@ -194,6 +194,32 @@ func TestNetworkExecutor_ShouldRetry_SinglePermanentIsTerminal(t *testing.T) {
 		"a single transient MissingData must still retry (wait-and-retry may surface it)")
 }
 
+// Permanent skip ExecutionException (SVM -32007/-32009) is retryableTowardNetwork
+// for a cross-upstream sweep, but must NOT network-retry the consensus seat —
+// that burns into Exhausted and drops the svm:slot_skipped vote.
+func TestNetworkExecutor_ShouldRetry_PermanentSkipExecutionIsTerminal(t *testing.T) {
+	cfg := &common.NetworkFailsafeConfig{
+		Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
+	}
+	e := &networkExecutor{cfg: cfg, method: "*"}
+
+	skip := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(-32007, -32007, "Slot 1 was skipped", nil, nil),
+	)
+	skip.(*common.ErrEndpointExecutionException).WithRetryableTowardNetwork(true)
+	skip.(*common.ErrEndpointExecutionException).WithPermanentMissingData(true)
+
+	assert.Equal(t, "", e.shouldRetryWithReason(nil, nil, skip, 0),
+		"permanent skip EE must not network-retry the seat")
+
+	// Non-permanent retryable EE (e.g. nonce-too-high) still retries.
+	retryable := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(-32002, -32002, "Transaction simulation failed", nil, nil),
+	)
+	retryable.(*common.ErrEndpointExecutionException).WithRetryableTowardNetwork(true)
+	assert.Equal(t, "execution_exception_retryable", e.shouldRetryWithReason(nil, nil, retryable, 0))
+}
+
 // Pruned nodes skip the block (ErrUpstreamRequestSkipped wrapping
 // ErrUpstreamBlockUnavailable) while the archive fails with a retryable 503.
 // Waiting a block cannot make the skips serveable, so the retry must neither

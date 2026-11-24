@@ -3674,6 +3674,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			s.Hedges,
 			len(upsList),
 		)
+		// Unanimous permanent skips must reach consensus as ExecutionException
+		// (svm:slot_skipped), not as infra Exhausted.
+		if skip, ok := common.UnwrapUnanimousPermanentSkipExecution(exhaustedErr); ok {
+			common.SetTraceSpanError(execSpan, skip)
+			return nil, skip
+		}
 		common.SetTraceSpanError(execSpan, exhaustedErr)
 		return nil, exhaustedErr
 	}
