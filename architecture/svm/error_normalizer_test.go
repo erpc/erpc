@@ -205,8 +205,8 @@ func mappedCodeCases() []mappedCodeCase {
 		// client-side (invalid tx state) with retryableTowardNetwork:false.
 		{"-32000 blockhash not found → execution", -32000, "Blockhash not found in recent list", common.ErrCodeEndpointClientSideException, true},
 		{"-32000 invalid signature → client-side", -32000, "Invalid signature on tx", common.ErrCodeEndpointClientSideException, true},
-		{"-32000 long-term storage → swept skip", -32000, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointExecutionException, false},
-		{"-32000 ledger jump → swept skip", -32000, "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot", common.ErrCodeEndpointExecutionException, false},
+		{"-32000 long-term storage → swept MD", -32000, "Slot 12345 was skipped, or missing in long-term storage", common.ErrCodeEndpointMissingData, false},
+		{"-32000 ledger jump → swept MD", -32000, "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot", common.ErrCodeEndpointMissingData, false},
 		{"-32000 generic → server-side", -32000, "something unexpected happened", common.ErrCodeEndpointServerSideException, false},
 
 		// Unknown codes still funnel to server-side so the network can failover —
@@ -336,20 +336,20 @@ func TestExtract_SlotSkipped_IsPermanentButRetryable(t *testing.T) {
 	}
 }
 
-// Codeless -32000 variant carrying agave's ledger-jump message: same treatment
-// as -32007 (ExecutionException, permanent, but sweeps every upstream once).
-// Pins the strings.Contains(low, "ledger jump") branch → newSweptSkipSlotError.
+// Codeless -32000 variant carrying agave's ledger-jump message: coverage /
+// node-local gap → MissingData (not svm:slot_skipped). Permanent + network-
+// retryable for one sweep. Pins the "ledger jump" branch → newSweptSkipMissingData.
 func TestExtract_LedgerJump_IsPermanentButRetryable(t *testing.T) {
 	t.Parallel()
 	err := extract(t, -32000, "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot", 200)
-	if !common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-		t.Fatalf("expected ErrEndpointExecutionException, got %T: %v", err, err)
+	if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		t.Fatalf("expected ErrEndpointMissingData, got %T: %v", err, err)
 	}
-	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-		t.Fatal("codeless ledger-jump must not be MissingData")
+	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		t.Fatal("codeless ledger-jump must not be ExecutionException skip")
 	}
 	if !common.IsPermanentlyMissingData(err) {
-		t.Fatal("codeless ledger-jump -32000 must be permanent (same class as -32007)")
+		t.Fatal("codeless ledger-jump -32000 must be permanent")
 	}
 	if !common.IsRetryableTowardNetwork(err) {
 		t.Fatal("codeless ledger-jump -32000 must stay retryable toward network")

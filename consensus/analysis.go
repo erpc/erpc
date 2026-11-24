@@ -541,11 +541,12 @@ func isAgreedUponError(err error) bool {
 
 // errorToConsensusHash generates a comparable hash from an error.
 //
-// Solana skipped-slot answers (-32007 / -32009 and message equivalents) hash as
-// one "svm:slot_skipped" verdict: the number reports which storage tier answered,
+// Solana skipped-slot answers (coded -32007 / -32009) hash as one
+// "svm:slot_skipped" verdict: the number reports which storage tier answered,
 // not whether the slot has a block. They are ExecutionException (not MissingData)
 // so they agree under consensus, reach the client as native codes, and do not
-// trip waiveAgreementOnMissingData.
+// trip waiveAgreementOnMissingData. Codeless -32000 archive-gap wording stays
+// MissingData and hashes as missingdata:permanent.
 //
 // Missing-data errors hash by verdict, not by number. A provider's JSON-RPC code
 // for "I do not have this" reports its own storage layout, not the chain: agave
@@ -589,16 +590,22 @@ func errorToConsensusHash(err error) string {
 }
 
 // isSvmSlotSkippedError reports agave skipped-slot answers: coded -32007 /
-// -32009, or vendor-stripped -32000 bodies that keep the skip / ledger-jump /
-// long-term-storage messages. These are chain-truth "no block" votes, not
-// ErrEndpointMissingData coverage abstentions.
+// -32009 (ExecutionException from the SVM normalizer), or a non-MissingData
+// body whose message says the slot "was skipped". These are chain-truth
+// "no block" votes.
+//
+// ErrEndpointMissingData is never a skip vote — even when the message still
+// carries agave's ambiguous OR wording ("was skipped, or missing in long-term
+// storage" / "ledger jump"). Codeless -32000 archive-gap heuristics classify
+// as MissingData; hashing those as svm:slot_skipped would collapse coverage
+// into chain truth.
 func isSvmSlotSkippedError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Prefer the ExecutionException class the SVM normalizer now emits; fall
-	// through to code/message matching so older MissingData-shaped skips still
-	// share the hash during rollout.
+	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		return false
+	}
 	var jre *common.ErrJsonRpcExceptionInternal
 	if !errors.As(err, &jre) {
 		return false
@@ -611,14 +618,7 @@ func isSvmSlotSkippedError(err error) bool {
 	case -32007, -32009:
 		return true
 	}
-	low := strings.ToLower(jre.Message)
-	if strings.Contains(low, "missing in long-term storage") {
-		return true
-	}
-	if strings.Contains(low, "ledger jump") {
-		return true
-	}
-	return strings.Contains(low, "was skipped")
+	return strings.Contains(strings.ToLower(jre.Message), "was skipped")
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.

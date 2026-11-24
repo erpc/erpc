@@ -6,25 +6,11 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-// Every entry point that lands on newSweptSkipMissingData must reach the SAME
-// verdict on BOTH axes, and the two axes are orthogonal:
+// Coded -32007 / -32009 land on newSweptSkipSlotError and must agree on BOTH
+// axes (ExecutionException, permanent, network-retryable for one sweep).
 //
-//	retryableTowardNetwork = true  → sweep every upstream once. "Skipped" is
-//	  chain truth, but the sibling half folded into each of these messages is
-//	  node-local (a post-snapshot ledger jump) or per-provider (how far an
-//	  operator backfilled BigTable / Old Faithful), so another upstream may
-//	  still hold the slot.
-//	permanentMissingData   = true  → but no time-delayed re-fetch afterwards.
-//	  Waiting cannot un-skip a slot, and cannot backfill someone else's archive.
-//
-// -32009 used to be terminal, which let one provider's archive gap answer for
-// the whole cluster: erpc/networks.go breaks out of the sweep on a non-retryable
-// verdict, so the FIRST upstream returning -32009 ended it and a slot another
-// provider's archive holds was reported to the caller as permanently skipped.
-//
-// The expectation is declared ONCE, above the loop, because the agreement
-// between these rows is itself the contract — -32007 and -32009 must not drift
-// apart on either axis, and a row that diverges reddens this test by name.
+// Codeless -32000 archive-gap wording is a different class — MissingData —
+// covered by TestExtract_SweptArchiveGap_CodelessMissingData.
 func TestExtract_SweptSkip_EntryPointsAgreeOnBothAxes(t *testing.T) {
 	t.Parallel()
 
@@ -39,16 +25,8 @@ func TestExtract_SweptSkip_EntryPointsAgreeOnBothAxes(t *testing.T) {
 		code int
 		msg  string
 	}{
-		// Coded: agave sends the number itself.
 		{"-32007 coded slot skipped", -32007, "Slot 12345 was skipped"},
 		{"-32009 coded long-term storage", -32009, "Slot 12345 was skipped, or missing in long-term storage"},
-
-		// Codeless: some vendor proxies collapse the number into agave's generic
-		// -32000 bucket while forwarding the message verbatim, so the
-		// message-text branches must land on the identical verdict — otherwise
-		// the same physical condition routes differently per provider.
-		{"-32000 codeless long-term storage", -32000, "Slot 12345 was skipped, or missing in long-term storage"},
-		{"-32000 codeless ledger jump", -32000, "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,11 +43,44 @@ func TestExtract_SweptSkip_EntryPointsAgreeOnBothAxes(t *testing.T) {
 				t.Fatalf("permanentMissingData = %v, want %v: waiting cannot un-skip a slot or backfill an archive, so no time-delayed re-fetch",
 					got, wantPermanent)
 			}
-			// The raw code still reaches the caller, so a client that wants to
-			// stop on -32009 can. eRPC's routing verdict lives in the class
-			// above, never in the number the client dispatches on.
 			if got := wireCodeOf(t, err); got != common.JsonRpcErrorNumber(tc.code) {
 				t.Fatalf("wire code = %v, want native %d", got, tc.code)
+			}
+		})
+	}
+}
+
+// Codeless -32000 bodies that keep agave's archive-gap wording classify as
+// swept MissingData (coverage), not ExecutionException skip. Same permanent +
+// network-retryable axes as coded skips, different consensus hash family.
+func TestExtract_SweptArchiveGap_CodelessMissingData(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		msg  string
+	}{
+		{"-32000 codeless long-term storage", "Slot 12345 was skipped, or missing in long-term storage"},
+		{"-32000 codeless ledger jump", "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := extract(t, -32000, tc.msg, 200)
+			if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+				t.Fatalf("got %T (%v), want ErrEndpointMissingData", err, err)
+			}
+			if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+				t.Fatal("codeless archive-gap must not be ExecutionException skip")
+			}
+			if !common.IsRetryableTowardNetwork(err) {
+				t.Fatal("codeless archive-gap must sweep every upstream once")
+			}
+			if !common.IsPermanentlyMissingData(err) {
+				t.Fatal("codeless archive-gap must be permanent (no time-delayed re-fetch)")
+			}
+			if got := wireCodeOf(t, err); got != -32000 {
+				t.Fatalf("wire code = %v, want native -32000", got)
 			}
 		})
 	}

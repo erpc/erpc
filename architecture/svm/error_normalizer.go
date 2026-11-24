@@ -386,14 +386,16 @@ func (e *JsonRpcErrorExtractor) Extract(
 				common.NewErrJsonRpcExceptionInternal(code, wireCode(svmCodeServerError), msg, nil, details),
 			)
 		case strings.Contains(low, "missing in long-term storage"):
-			// Codeless -32009 variant: some vendor proxies strip/rewrite the code
-			// but keep agave's message. Same swept treatment as the coded case —
-			// archive completeness is per-provider, so this must not be terminal.
-			return newSweptSkipSlotError(code, msg, details, upstream)
+			// Codeless archive-gap wording: some vendor proxies strip/rewrite the
+			// code but keep agave's message. Coverage / per-provider archive
+			// completeness — MissingData, not chain-truth skip (coded -32009
+			// still goes through newSweptSkipSlotError).
+			return newSweptSkipMissingData(code, msg, details, upstream)
 		case strings.Contains(low, "ledger jump"):
-			// Codeless -32007 variant ("missing due to ledger jump to recent
-			// snapshot") — this node lost the slot locally; others have it.
-			return newSweptSkipSlotError(code, msg, details, upstream)
+			// Codeless node-local gap ("missing due to ledger jump to recent
+			// snapshot") — this node lost the slot locally; others may have it.
+			// MissingData coverage abstention, not svm:slot_skipped.
+			return newSweptSkipMissingData(code, msg, details, upstream)
 		case strings.Contains(low, "preflight") ||
 			strings.Contains(low, "transaction simulation failed") ||
 			strings.Contains(low, "blockhash not found"):
@@ -452,13 +454,14 @@ func isRateLimitMessage(lowerMsg string) bool {
 	return false
 }
 
-// newSweptSkipSlotError builds the consensus-valid skip answer for agave
-// -32007 / -32009 (and codeless message equivalents). It is an
-// ExecutionException — severity info, native wire code, agrees under consensus
-// as svm:slot_skipped — not MissingData (coverage abstention / MD waiver).
-// Retryable toward the network for one cross-upstream sweep (ledger-jump /
-// archive-gap halves are per-node); permanent so the same upstream and the
-// time-delayed re-sweep do not ask again.
+// newSweptSkipSlotError builds the consensus-valid skip answer for coded agave
+// -32007 / -32009. It is an ExecutionException — severity info, native wire
+// code, agrees under consensus as svm:slot_skipped — not MissingData (coverage
+// abstention / MD waiver). Retryable toward the network for one cross-upstream
+// sweep (the ledger-jump / archive-gap halves folded into those codes are
+// per-node); permanent so the same upstream and the time-delayed re-sweep do
+// not ask again. Codeless -32000 archive-gap wording uses
+// newSweptSkipMissingData instead.
 func newSweptSkipSlotError(code int, msg string, details map[string]interface{}, upstream common.Upstream) error {
 	_ = upstream // attribution lives on the execResult; wire cause carries the code
 	err := common.NewErrEndpointExecutionException(

@@ -109,15 +109,23 @@ var missingDataFamilies = []struct {
 			{"-32014 BlockStatusNotAvailableYet", -32014, "Block status not yet available for slot 500281501"},
 		},
 	},
+	{
+		// Codeless -32000 archive-gap wording: coverage abstention, not
+		// svm:slot_skipped. Must agree with each other as permanent MD.
+		name:      "permanent-archive-gap",
+		permanent: true,
+		inputs: []missingDataInput{
+			{"codeless -32000 long-term storage", -32000, "Slot 500281501 was skipped, or missing in long-term storage"},
+			{"codeless -32000 ledger jump", -32000, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"},
+		},
+	},
 }
 
-// slotSkippedInputs are agave skipped-slot answers: ExecutionException (not
-// MissingData), native wire codes, shared consensus hash svm:slot_skipped.
+// slotSkippedInputs are coded agave skipped-slot answers: ExecutionException
+// (not MissingData), native wire codes, shared consensus hash svm:slot_skipped.
 var slotSkippedInputs = []missingDataInput{
 	{"-32007 SlotSkipped", -32007, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"},
 	{"-32009 LongTermStorageSlotSkipped", -32009, "Slot 500281501 was skipped, or missing in long-term storage"},
-	{"codeless -32000 long-term storage", -32000, "Slot 500281501 was skipped, or missing in long-term storage"},
-	{"codeless -32000 ledger jump", -32000, "Slot 500281501 was skipped, or missing due to ledger jump to recent snapshot"},
 }
 
 // Two honest providers describing the same absent data must agree, for every
@@ -197,8 +205,9 @@ func TestSlotSkipped_ExhaustedUnanimousSkipsVoteAsSlotSkipped(t *testing.T) {
 	assert.Contains(t, []common.JsonRpcErrorNumber{-32007, -32009}, jre.NormalizedCode())
 }
 
-// -32007 / -32009 (and codeless equivalents) must classify as ExecutionException
-// — not MissingData — agree under consensus, and return a native Solana code.
+// Coded -32007 / -32009 must classify as ExecutionException — not MissingData —
+// agree under consensus, and return a native Solana code. Codeless -32000
+// archive-gap wording is permanent MD (see missingDataFamilies).
 func TestSlotSkipped_AgreeAsExecutionExceptionWithNativeCodes(t *testing.T) {
 	parts := make([]*execResult, len(slotSkippedInputs))
 	for i, in := range slotSkippedInputs {
@@ -223,7 +232,7 @@ func TestSlotSkipped_AgreeAsExecutionExceptionWithNativeCodes(t *testing.T) {
 				"%s vs %s: winner must stay ExecutionException, got %v", a.label, b.label, winner.Error)
 			var jre *common.ErrJsonRpcExceptionInternal
 			require.ErrorAs(t, winner.Error, &jre)
-			assert.Contains(t, []common.JsonRpcErrorNumber{-32007, -32009, -32000}, jre.NormalizedCode(),
+			assert.Contains(t, []common.JsonRpcErrorNumber{-32007, -32009}, jre.NormalizedCode(),
 				"%s vs %s: client must see a native skip code, got %v", a.label, b.label, jre.NormalizedCode())
 		}
 	}
