@@ -220,6 +220,55 @@ func TestNetworkExecutor_ShouldRetry_PermanentSkipExecutionIsTerminal(t *testing
 	assert.Equal(t, "execution_exception_retryable", e.shouldRetryWithReason(nil, nil, retryable, 0))
 }
 
+func permSkipEE(code common.JsonRpcErrorNumber, msg string) error {
+	skip := common.NewErrEndpointExecutionException(
+		common.NewErrJsonRpcExceptionInternal(int(code), code, msg, nil, nil),
+	)
+	skip.(*common.ErrEndpointExecutionException).WithRetryableTowardNetwork(true)
+	skip.(*common.ErrEndpointExecutionException).WithPermanentMissingData(true)
+	return skip
+}
+
+// Exhausted of only permanent-skip EEs must not network-retry via
+// IsRetryableExecutionException DeepSearch into the join.
+func TestNetworkExecutor_ShouldRetry_ExhaustedAllPermanentSkipEEIsTerminal(t *testing.T) {
+	cfg := &common.NetworkFailsafeConfig{
+		Retry: &common.RetryPolicyConfig{MaxAttempts: 6},
+	}
+	e := &networkExecutor{cfg: cfg, method: "*"}
+
+	exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(
+		permSkipEE(-32007, "Slot 1 was skipped"),
+		permSkipEE(-32009, "Slot 1 was skipped, or missing in long-term storage"),
+	))
+	assert.Equal(t, "", e.shouldRetryWithReason(nil, nil, exhausted, 0),
+		"unanimous permanent-skip Exhausted must not DeepSearch into EE retry")
+}
+
+// Mixed permanent-skip EE + transient MissingData must honor RetryEmpty=false
+// instead of scheduling execution_exception_retryable via DeepSearch.
+func TestNetworkExecutor_ShouldRetry_ExhaustedSkipEEPlusMissingRespectsRetryEmpty(t *testing.T) {
+	cfg := &common.NetworkFailsafeConfig{
+		Retry: &common.RetryPolicyConfig{MaxAttempts: 6, EmptyResultMaxAttempts: 5},
+	}
+	e := &networkExecutor{cfg: cfg, method: "*"}
+
+	transient := common.NewErrEndpointMissingData(errors.New("-32004 not indexed yet"), nil)
+	exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(
+		permSkipEE(-32009, "skipped or missing in long-term storage"),
+		transient,
+	))
+
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[]}`))
+	req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
+	assert.Equal(t, "", e.shouldRetryWithReason(req, nil, exhausted, 0),
+		"RetryEmpty=false must stop mixed skip-EE + MissingData Exhausted")
+
+	reqAllow := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[]}`))
+	assert.Equal(t, "missing_data", e.shouldRetryWithReason(reqAllow, nil, exhausted, 0),
+		"nil/allow RetryEmpty keeps wait-retry when a transient MissingData sibling remains")
+}
+
 // Pruned nodes skip the block (ErrUpstreamRequestSkipped wrapping
 // ErrUpstreamBlockUnavailable) while the archive fails with a retryable 503.
 // Waiting a block cannot make the skips serveable, so the retry must neither

@@ -505,7 +505,87 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 		if req != nil && req.AllUpstreamsFailedPermanently() {
 			return ""
 		}
-		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		// Exhausted before ExecutionException: HasCode(EE) is true when any
+		// joined cause is EE, and IsRetryableExecutionException DeepSearches
+		// into the join — that skipped RetryEmpty / all-missing handling and
+		// could network-retry unanimous permanent-skip seats.
+		if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
+			if _, ok := common.UnwrapUnanimousPermanentSkipExecution(err); ok {
+				return ""
+			}
+			causes := ue.Errors()
+			allMissing := len(causes) > 0
+			hasPermSkip := false
+			hasMissing := false
+			for _, c := range causes {
+				if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) {
+					allMissing = false
+				} else {
+					hasMissing = true
+				}
+				if common.IsPermanentSkipExecutionException(c) {
+					hasPermSkip = true
+				}
+			}
+			// Mixed permanent-skip EE + MissingData: respect RetryEmpty before
+			// any EE DeepSearch would schedule execution_exception_retryable.
+			if hasPermSkip && hasMissing {
+				if req != nil {
+					if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+						return ""
+					}
+				}
+				permanent := true
+				for _, c := range causes {
+					if common.IsPermanentSkipExecutionException(c) {
+						continue
+					}
+					if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) ||
+						!common.IsPermanentlyMissingData(c) {
+						permanent = false
+						break
+					}
+				}
+				if permanent {
+					return ""
+				}
+				if e.dataUnavailableCapReached(attempt) {
+					return ""
+				}
+				return "missing_data"
+			}
+			// When ALL causes are missing-data (every provider returns -32004
+			// because the block isn't indexed yet), retry with delay so the
+			// block has time to be indexed.
+			if allMissing {
+				if req != nil {
+					if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
+						return ""
+					}
+				}
+				// A time-delayed re-sweep only helps data that will *appear*
+				// later (a not-yet-indexed block as the tip advances). When
+				// every provider reports the slot permanently skipped/absent,
+				// waiting cannot change the verdict — surface it now.
+				permanent := true
+				for _, c := range causes {
+					if !common.IsPermanentlyMissingData(c) {
+						permanent = false
+						break
+					}
+				}
+				if permanent {
+					return ""
+				}
+				if e.dataUnavailableCapReached(attempt) {
+					return ""
+				}
+				return "missing_data"
+			}
+			// Other Exhausted mixes (skip+5xx, pruned+archive, …) fall through
+			// to block-unavailable / IsRetryableTowardNetwork — never the EE
+			// DeepSearch path above.
+		} else if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			// Permanent skip (SVM -32007/-32009): chain truth for this upstream.
 			// Network-retrying the seat burns into Exhausted and drops the
 			// consensus vote (error:exhausted). Cross-provider sweep continues
@@ -527,52 +607,6 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 				return ""
 			}
 			return "block_unavailable"
-		}
-		if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
-			// ErrUpstreamsExhausted must be checked before ErrCodeEndpointMissingData:
-			// HasErrorCode walks the cause chain and returns true for exhausted errors
-			// where all upstreams returned missing-data, so it would match the block
-			// below and hit the RetryEmpty gate — which should not apply here.
-			// When ALL causes are missing-data (every provider returns -32004 because
-			// the block isn't indexed yet), retry with delay so the block has time to
-			// be indexed.
-			if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
-				causes := ue.Errors()
-				allMissing := len(causes) > 0
-				for _, c := range causes {
-					if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) {
-						allMissing = false
-						break
-					}
-				}
-				if allMissing {
-					if req != nil {
-						if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
-							return ""
-						}
-					}
-					// A time-delayed re-sweep only helps data that will *appear*
-					// later (a not-yet-indexed block as the tip advances). When
-					// every provider reports the slot permanently skipped/absent
-					// (SVM -32007/-32009), the cross-provider sweep already ran and
-					// waiting cannot change the verdict — surface it now instead of
-					// burning another retry round.
-					permanent := true
-					for _, c := range causes {
-						if !common.IsPermanentlyMissingData(c) {
-							permanent = false
-							break
-						}
-					}
-					if permanent {
-						return ""
-					}
-					if e.dataUnavailableCapReached(attempt) {
-						return ""
-					}
-					return "missing_data"
-				}
-			}
 		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			// MissingData = "the upstream doesn't have this data".
