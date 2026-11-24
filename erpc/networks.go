@@ -4142,7 +4142,7 @@ func (n *Network) upstreamHeads(eu common.EvmUpstream) (latest int64, finalized 
 // handleBlockSkip records telemetry when a block availability check causes an upstream to be skipped,
 // and triggers an async state poller refresh for retryable cases so subsequent retries see fresh block numbers.
 // The skip counts in upstream_request_skipped_total, never upstream_request_errors_total: no request was
-// sent, so error-rate alerts and per-upstream error gates must not see it.
+// sent, so upstream error-rate metrics and alerts must not see it.
 func (n *Network) handleBlockSkip(
 	ctx context.Context,
 	span trace.Span,
