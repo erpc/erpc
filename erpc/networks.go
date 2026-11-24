@@ -4141,6 +4141,8 @@ func (n *Network) upstreamHeads(eu common.EvmUpstream) (latest int64, finalized 
 
 // handleBlockSkip records telemetry when a block availability check causes an upstream to be skipped,
 // and triggers an async state poller refresh for retryable cases so subsequent retries see fresh block numbers.
+// The skip counts in upstream_request_skipped_total, never upstream_request_errors_total: no request was
+// sent, so error-rate alerts and per-upstream error gates must not see it.
 func (n *Network) handleBlockSkip(
 	ctx context.Context,
 	span trace.Span,
@@ -4158,11 +4160,9 @@ func (n *Network) handleBlockSkip(
 		attribute.Bool("skip_retryable", isRetryable),
 	)
 	finality := req.Finality(ctx)
-	telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
+	telemetry.CounterHandle(telemetry.MetricUpstreamSkippedTotal,
 		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
-		common.ErrorFingerprint(skipErr), string(common.SeverityInfo),
-		req.CompositeType(), finality.String(),
-		req.UserId(), req.AgentName()).Inc()
+		finality.String(), req.UserId(), req.AgentName()).Inc()
 	errToStore := skipErr
 	if !isRetryable {
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
