@@ -3848,6 +3848,25 @@ func escapePartitionSegment(s string) string {
 	return b.String()
 }
 
+// IsPartitionSegment reports whether s is one partition-key segment as
+// escapePartitionSegment writes it: no bare ':' and no dangling '\'. Connectors
+// that expand the trailing '*' of a CachePartitionKey match it against one
+// segment, so "evm:1:*" reads ref "5" but not suffix "systx" plus ref "5".
+func IsPartitionSegment(s string) bool {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ':':
+			return false
+		case '\\':
+			i++
+			if i == len(s) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (c *NetworkConfig) NetworkId() string {
 	if c.Architecture == "" {
 		return ""
