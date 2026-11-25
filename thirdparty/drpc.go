@@ -170,7 +170,7 @@ var defaultDrpcNetworkNames = map[int64]string{
 }
 
 // drpcNetworksURL is a var (not const) so tests can point it at a mock server.
-var drpcNetworksURL = "https://lb.drpc.org/networks"
+var drpcNetworksURL = "https://lb.drpc.live/networks"
 
 const DefaultDrpcRecheckInterval = 24 * time.Hour
 
@@ -322,7 +322,7 @@ func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 			return nil, fmt.Errorf("unsupported network chain ID for DRPC: %d", chainID)
 		}
 
-		drpcURL := fmt.Sprintf("https://lb.drpc.org/ogrpc?network=%s&dkey=%s", netName, apiKey)
+		drpcURL := fmt.Sprintf("https://lb.drpc.live/ogrpc?network=%s&dkey=%s", netName, apiKey)
 		parsedURL, err := url.Parse(drpcURL)
 		if err != nil {
 			return nil, err
@@ -387,7 +387,7 @@ func (v *DrpcVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 		return true
 	}
 
-	return strings.Contains(ups.Endpoint, ".drpc.org")
+	return strings.Contains(ups.Endpoint, ".drpc.live") || strings.Contains(ups.Endpoint, ".drpc.org")
 }
 
 func (v *DrpcVendor) fetchDrpcNetworks(ctx context.Context, logger *zerolog.Logger, chainsURL string) (map[int64]string, error) {
