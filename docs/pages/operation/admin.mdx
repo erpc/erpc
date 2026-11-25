@@ -273,7 +273,7 @@ Lists all loaded projects, their networks (with aliases if configured), and per-
 
 **Params**: `[{"projectId": string, "connectorId": string, "limit"?: number, "paginationToken"?: string}]`
 
-`limit` defaults to `50` and must be a positive integer; `0`, negative, fractional or non-number values return HTTP 400. `paginationToken` is the opaque `nextToken` from a previous response. Not supported on the `memory` driver. Source: [`erpc/admin.go:L195-L291`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L195-L291)
+`limit` defaults to `50` and must be an integer from `1` to `2^53`; any other value, including a non-number, returns HTTP 400. `paginationToken` is the opaque `nextToken` from a previous response. Not supported on the `memory` driver. Source: [`erpc/admin.go:L195-L291`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L195-L291)
 
 **Response**:
 ```json

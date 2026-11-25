@@ -226,10 +226,10 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 
 	limit := 50 // default
 	if limitVal, exists := params["limit"]; exists && limitVal != nil {
-		// A page of 0 rows hands back a token to the same offset, so a pager never ends.
+		// 0 rows a page never ends a pager; above 2^53 a JSON number is no exact integer and can overflow int.
 		limitFloat, ok := limitVal.(float64)
-		if !ok || limitFloat < 1 || limitFloat != math.Trunc(limitFloat) {
-			return nil, common.NewErrInvalidRequest(fmt.Errorf("limit must be a positive integer"))
+		if !ok || limitFloat < 1 || limitFloat > 1<<53 || limitFloat != math.Trunc(limitFloat) {
+			return nil, common.NewErrInvalidRequest(fmt.Errorf("limit must be an integer from 1 to 2^53"))
 		}
 		limit = int(limitFloat)
 	}
