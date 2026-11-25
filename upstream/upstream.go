@@ -306,8 +306,6 @@ func NewUpstream(
 		supportedMethods:     sync.Map{},
 		networkLabel:         atomic.Value{},
 	}
-	pup.networkLabel.Store("n/a")
-
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
@@ -426,11 +424,10 @@ func (u *Upstream) NetworkLabel() string {
 	if u == nil {
 		return "n/a"
 	}
-	lbl, ok := u.networkLabel.Load().(string)
-	if !ok {
-		return u.NetworkId()
+	if lbl, ok := u.networkLabel.Load().(string); ok {
+		return lbl
 	}
-	return lbl
+	return u.NetworkId()
 }
 
 func (u *Upstream) VendorName() string {
@@ -554,13 +551,10 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 		u.networkId.Store(nid)
 	}
 
-	// Prefer alias as label when provided; otherwise default to networkId if label is empty or "n/a"
+	// Alias, when set, names the network in metrics; otherwise NetworkLabel
+	// falls back to the network id stored above.
 	if cfg.Alias != "" {
 		u.networkLabel.Store(cfg.Alias)
-	} else {
-		if lbl, ok := u.networkLabel.Load().(string); !ok || lbl == "" || lbl == "n/a" {
-			u.networkLabel.Store(nid)
-		}
 	}
 }
 
@@ -773,10 +767,13 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 					CreditUnits: creditUnits,
 				})
 				// Prometheus: one outcome counter increment per attempt.
+				// Network label comes from the upstream, not the request:
+				// internal calls (state polls) carry no request network and
+				// would land under "n/a".
 				finality := nrq.Finality(ctx)
 				telemetry.MetricUpstreamAttemptOutcomeTotal.WithLabelValues(
 					u.ProjectId,
-					nrq.NetworkLabel(),
+					u.NetworkLabel(),
 					cfg.Id,
 					method,
 					string(outcome),
@@ -786,7 +783,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				).Inc()
 				telemetry.MetricUpstreamSelectionTotal.WithLabelValues(
 					u.ProjectId,
-					nrq.NetworkLabel(),
+					u.NetworkLabel(),
 					cfg.Id,
 					method,
 					string(reason),
@@ -802,7 +799,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				if vendorName := u.VendorName(); creditUnits > 0 && vendorName != "" {
 					telemetry.MetricUpstreamCreditUnitsTotal.WithLabelValues(
 						u.ProjectId,
-						nrq.NetworkLabel(),
+						u.NetworkLabel(),
 						cfg.Id,
 						vendorName,
 						method,
@@ -1065,7 +1062,7 @@ func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, b
 				finality := nrq.Finality(ctx)
 				telemetry.MetricNetworkTimeoutFiredTotal.WithLabelValues(
 					u.ProjectId,
-					nrq.NetworkLabel(),
+					u.NetworkLabel(),
 					method,
 					finality.String(),
 					string(common.ScopeUpstream),
