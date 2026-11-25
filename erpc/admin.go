@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -225,9 +226,12 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 
 	limit := 50 // default
 	if limitVal, exists := params["limit"]; exists && limitVal != nil {
-		if limitFloat, ok := limitVal.(float64); ok {
-			limit = int(limitFloat)
+		// A page of 0 rows hands back a token to the same offset, so a pager never ends.
+		limitFloat, ok := limitVal.(float64)
+		if !ok || limitFloat < 1 || limitFloat != math.Trunc(limitFloat) {
+			return nil, common.NewErrInvalidRequest(fmt.Errorf("limit must be a positive integer"))
 		}
+		limit = int(limitFloat)
 	}
 
 	paginationToken := ""
