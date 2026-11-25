@@ -744,7 +744,7 @@ func (e *networkExecutor) runHedge(
 				finality.String(),
 			).Inc()
 		}()
-		// An eth_getBlockByNumber above Latest that the refusal rule
+		// A block or receipts read above Latest that the refusal rule
 		// spent has its answer, its null or missing data included (spec
 		// §6.4 band): no sibling hedge is waited for. Kept waiting, it
 		// answered a hedge delay late (optimism: 500 ms).

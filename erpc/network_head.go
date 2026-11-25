@@ -1062,7 +1062,7 @@ func (n *Network) bandOrder(req *common.NormalizedRequest, ups []common.Upstream
 	return ups
 }
 
-// bandHolders is the next pick of an eth_getBlockByNumber above req's
+// bandHolders is the next pick of a block or receipts read above req's
 // Latest after a miss (spec §6.4 band): only the routed upstreams the leg
 // has not tried whose evidence reaches the block (mayHold), fastest first
 // (byRoundTrip); nil with none, and the last answer is the request's. The
@@ -1100,15 +1100,16 @@ const aboveLatestFloor = 200 * time.Millisecond
 // errAboveLatestBound ends an attempt that passed aboveLatestBound.
 var errAboveLatestBound = errors.New("attempt above Latest passed its bound")
 
-// aboveLatestBound is how long u may take to answer req, an
-// eth_getBlockByNumber above req's Latest (spec §6.4 band): twice its
-// median round trip for that method, at least aboveLatestFloor; 0 for any
-// other request. Some vendors hold such a read until the block exists, for
-// seconds; past its usual answer the attempt is a miss. The median, not a
-// high quantile: the held reads themselves fill a vendor's tail. No bound
-// when u's own head is past the block: the block exists there, and its
-// read is a history read, slower than a tip read (cut at 200 ms, four
-// holders' 400 ms answers ended null in the chain feed's slow reorg walk).
+// aboveLatestBound is how long u may take to answer req, a numbered block
+// or receipts read above req's Latest (evm.AnswersAtOnce, spec §6.4 band):
+// twice u's median round trip for req's method, at least aboveLatestFloor;
+// 0 for any other request. Some vendors hold such a read until the block
+// exists, for seconds; past its usual answer the attempt is a miss. The
+// median, not a high quantile: the held reads themselves fill a vendor's
+// tail. No bound when u's own head is past the block: the block exists
+// there, and its read is a history read, slower than a tip read (cut at
+// 200 ms, four holders' 400 ms answers ended null in the chain feed's slow
+// reorg walk).
 func (n *Network) aboveLatestBound(req *common.NormalizedRequest, u common.Upstream) time.Duration {
 	v := req.HeadRefusal()
 	if v == nil || v.Latest <= 0 || v.Block <= v.Latest || !evm.AnswersAtOnce(req) {
@@ -1122,7 +1123,8 @@ func (n *Network) aboveLatestBound(req *common.NormalizedRequest, u common.Upstr
 	if n.metricsTracker == nil {
 		return aboveLatestFloor
 	}
-	p50 := n.metricsTracker.GetUpstreamMethodMetrics(u, headFamilyMethod, common.DataFinalityStateAll).ResponseQuantiles.GetQuantile(0.5)
+	method, _ := req.Method()
+	p50 := n.metricsTracker.GetUpstreamMethodMetrics(u, method, common.DataFinalityStateAll).ResponseQuantiles.GetQuantile(0.5)
 	return max(aboveLatestFloor, 2*p50)
 }
 

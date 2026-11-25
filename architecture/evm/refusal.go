@@ -47,16 +47,20 @@ func HeadRefusalOf(ctx context.Context, rq *common.NormalizedRequest) *common.He
 	return rq.TakeHeadRefusal(DecideHeadRefusal(ctx, nw, common.EvmHeadOf(nw, ctx, rq), sel, bn, !AnswersAtOnce(rq)))
 }
 
-// AnswersAtOnce reports whether rq is a numbered eth_getBlockByNumber,
+// AnswersAtOnce reports whether rq reads a numbered block's own body, the
+// block (eth_getBlockByNumber) or its receipts (eth_getBlockReceipts),
 // which never waits for a block above Latest (spec §6.4): not for the
 // ceiling (near future), not for a band miss's holder after its sweep; a
 // thin block, which Latest announced, still waits. It answers what the
-// upstreams answer, as every node and the old image do: held toward W for
-// a block nobody served yet, tip reads on 2 s chains took 1.2-1.4 s at p99
-// on 3614c258, and 36 s on a 12 s chain timed clients out.
+// upstreams answer, as every node and the old image do: a node lacking the
+// block answers null, which a chain follower reads as "not yet" and asks
+// again. Held toward W for a block nobody served yet, tip reads on 2 s
+// chains took 1.2-1.4 s at p99 on 3614c258, 36 s on a 12 s chain timed
+// clients out, and indexers that hear heads by WebSocket first waited
+// 0.3-0.7 s for each tip block's receipts.
 func AnswersAtOnce(rq *common.NormalizedRequest) bool {
 	method, _ := rq.Method()
-	return strings.EqualFold(method, "eth_getBlockByNumber")
+	return strings.EqualFold(method, "eth_getBlockByNumber") || strings.EqualFold(method, "eth_getBlockReceipts")
 }
 
 // NullUntilMined reports whether rq is an eth_getTransactionReceipt, whose
@@ -70,8 +74,8 @@ func NullUntilMined(rq *common.NormalizedRequest) bool {
 }
 
 // ShortCircuitsFuture reports whether a future block on rq gets null with
-// no dispatch: a numbered eth_getBlockByNumber (AnswersAtOnce) on a network
-// with shortCircuitFutureBlocks (spec §6.4, #1238).
+// no dispatch: a numbered eth_getBlockByNumber on a network with
+// shortCircuitFutureBlocks (spec §6.4, #1238).
 func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 	nw := rq.Network()
 	if nw == nil {
@@ -80,7 +84,8 @@ func ShortCircuitsFuture(rq *common.NormalizedRequest) bool {
 	if cfg := nw.Config(); cfg == nil || !cfg.Evm.ShortCircuitFutureBlocksEnabled() {
 		return false
 	}
-	return AnswersAtOnce(rq)
+	method, _ := rq.Method()
+	return strings.EqualFold(method, "eth_getBlockByNumber")
 }
 
 // RefusalMiss reports whether result, method's answer for a block above

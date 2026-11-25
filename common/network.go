@@ -237,7 +237,7 @@ func (r *HeadRefusal) Retried() bool {
 
 // Refuse records that the request's null is its answer: decided with no
 // dispatch (a future block under shortCircuitFutureBlocks), or a numbered
-// eth_getBlockByNumber above Latest that no upstream served (spec §6.4).
+// block or receipts read above Latest that no upstream served (spec §6.4).
 func (r *HeadRefusal) Refuse() {
 	r.missed.Store(true)
 	r.answered.Store(true)
