@@ -1542,26 +1542,30 @@ func (t *ChainTracker) countFire(f *clockFire, a common.HeadAnswer, outcome stri
 
 // LatestRead marks a read of the lane's latest (spec §6.8 demand): for
 // readDemand after it the block clock runs. The first read after that is
-// the idle edge, which fetches heads at once; every tag read of that edge
-// waits for the view to reach the fetched head, at most W or until ctx
-// ends, so none serves a Head older than it; with no pins yet nothing
-// waits, and tags pass through (§7). A head number (number) never waits:
-// it answers from the view at once, as the old image answered from its
-// pollers, and the edge's fetch moves the view for the next read (§7).
-func (t *ChainTracker) LatestRead(ctx context.Context, number bool) {
+// the idle edge, which fetches heads at once; every read of that edge, a
+// head number's too, waits for the view to reach the fetched head, at most
+// W or until ctx ends, so none serves a Head older than it: an idle lane's
+// view stops where its last demand left it, older than the voters' polls.
+// With no pins yet nothing waits, and tags pass through (§7). The edge is
+// published before the read's mark, so a read that finds the mark fresh
+// finds the edge too and waits with the read that opened it.
+func (t *ChainTracker) LatestRead(ctx context.Context) {
 	now := time.Now()
-	prev := t.latestReadAt.Swap(now.UnixNano())
+	prev := t.latestReadAt.Load()
 	edge := t.edge.Load()
+	opened := false
 	if edge == nil && (prev == 0 || now.Sub(time.Unix(0, prev)) >= t.readDemand()) {
 		if pace, ok := t.demand(); !ok || pace > 0 {
 			ch := make(chan struct{})
-			if t.edge.CompareAndSwap(nil, &ch) {
-				t.mb.put(trackerMsg{kind: msgTick})
-			}
+			opened = t.edge.CompareAndSwap(nil, &ch)
 			edge = t.edge.Load()
 		}
 	}
-	if number || edge == nil || t.state.Load().viewHead() == nil {
+	t.latestReadAt.Store(now.UnixNano())
+	if opened {
+		t.mb.put(trackerMsg{kind: msgTick})
+	}
+	if edge == nil || t.state.Load().viewHead() == nil {
 		return
 	}
 	w := time.NewTimer(t.W())

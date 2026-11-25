@@ -48,9 +48,9 @@ func (n *Network) EvmHead(ctx context.Context, req *common.NormalizedRequest) co
 // tag starts the lane's finalized refresh and takes it at once (spec §6.4
 // Finality). A read of latest
 // (evm.ReadsLatest) is the block clock's demand (§6.8); the first after W
-// without demand waits for the view to reach the idle edge's fetch,
-// before the cache: a cache hit is pinned to that Head too. A head number
-// never waits. A network-wide client request's
+// without demand, a head number's too, waits for the view to reach the
+// idle edge's fetch, before the cache: a cache hit is pinned to that Head
+// too. A network-wide client request's
 // Head is anchored to the cache's head (anchorHead); an internal one
 // (UpstreamPolicies other than Configured: tracker fetches, their cache
 // seeds, probes) takes the tracker's own Head, so it neither starts the
@@ -67,9 +67,9 @@ func (n *Network) requestHead(ctx context.Context, req *common.NormalizedRequest
 	s := n.requestScope(ctx, req)
 	if evm.NamesFinalizedTag(ctx, req) {
 		n.refreshFinalized(ctx, s.sel)
-	} else if reads, number := evm.ReadsLatest(ctx, n, req); reads {
+	} else if evm.ReadsLatest(ctx, n, req) {
 		if t := n.laneTracker(s.sel); t != nil {
-			t.LatestRead(ctx, number)
+			t.LatestRead(ctx)
 		}
 	}
 	h := n.headFor(s)
