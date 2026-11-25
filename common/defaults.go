@@ -1774,11 +1774,10 @@ func (n *NetworkDefaults) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for svm: %w", err)
 		}
 	}
-	if n.DirectiveDefaults != nil {
-		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
-			return fmt.Errorf("failed to set defaults for directive defaults: %w", err)
-		}
-	}
+	// DirectiveDefaults is not defaulted here. A nil field in this block
+	// means "the operator did not say", and the legacy evm.integrity
+	// migration in NetworkConfig.SetDefaults reads exactly that. Each network
+	// copies this block and defaults its own copy after the migration.
 
 	return nil
 }
