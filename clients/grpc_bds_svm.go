@@ -317,6 +317,10 @@ type svmSignatureInfo struct {
 // so no root known means no answer. At finalized, Agave pages from its root
 // and resolves cursors among rooted slots only, so rows above the root are
 // dropped and a cursor above it is not served.
+//
+// The request names no slot, so a lagging reader would serve a page missing
+// the newest signatures. minContextSlot is raised to at least the root, and
+// the reader refuses a head below it.
 func (c *GenericGrpcBdsClient) handleSvmGetSignaturesForAddress(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	params, err := svmParams(jrReq)
 	if err != nil {
@@ -407,6 +411,9 @@ func (c *GenericGrpcBdsClient) handleSvmGetSignaturesForAddress(ctx context.Cont
 			cursorsRooted = make(chan error, 1)
 			go func(ctx context.Context) { cursorsRooted <- svmCursorsRooted(ctx, conn, cursors, root) }(ctx)
 		}
+	}
+	if grpcReq.MinContextSlot == nil || *grpcReq.MinContextSlot < root {
+		grpcReq.MinContextSlot = &root
 	}
 
 	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.SvmGetSignaturesForAddress",

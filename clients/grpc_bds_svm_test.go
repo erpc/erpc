@@ -951,13 +951,16 @@ func benchmarkSvmGetBlock(b *testing.B, encoding string) {
 }
 
 // gsfaServer is a real svm.RPCQueryService on an in-process gRPC listener. It
-// answers GetSignaturesForAddress with rows (or err), and GetSignatureStatuses
-// with a status per cursor from cursorSlots (absent = not found).
+// answers GetSignaturesForAddress with rows (or err), refusing OUT_OF_RANGE
+// when head is set and below the request's minContextSlot, and
+// GetSignatureStatuses with a status per cursor from cursorSlots (absent = not
+// found).
 type gsfaServer struct {
 	svm.UnimplementedRPCQueryServiceServer
 	rows        []*svm.SignatureInfo
 	err         error
 	cursorSlots map[string]uint64
+	head        uint64
 	got         *svm.GetSignaturesForAddressRequest
 	gsfaCalls   int
 	statusCalls int
@@ -968,6 +971,9 @@ func (s *gsfaServer) GetSignaturesForAddress(_ context.Context, in *svm.GetSigna
 	s.got = in
 	if s.err != nil {
 		return nil, s.err
+	}
+	if s.head != 0 && in.MinContextSlot != nil && *in.MinContextSlot > s.head {
+		return nil, status.Errorf(codes.OutOfRange, "head %d below minContextSlot %d", s.head, *in.MinContextSlot)
 	}
 	return &svm.GetSignaturesForAddressResponse{Signatures: s.rows}, nil
 }
@@ -1056,9 +1062,43 @@ func TestSvmGetSignaturesForAddressRender(t *testing.T) {
 	assert.Equal(t, uint32(3), s.got.Limit)
 	assert.Equal(t, svm.Commitment_COMMITMENT_CONFIRMED, s.got.Commitment)
 	require.NotNil(t, s.got.MinContextSlot)
-	assert.Equal(t, uint64(90), *s.got.MinContextSlot)
+	assert.Equal(t, uint64(100), *s.got.MinContextSlot, "a client minContextSlot below the root is raised to it")
 	assert.Nil(t, s.got.Before)
 	assert.Nil(t, s.got.Until)
+}
+
+// TestSvmGetSignaturesForAddressFreshness: the request names no slot, so the
+// handler asks the reader for a context at least at the root. A reader whose
+// head lags the root refuses, and the request falls through; a client
+// minContextSlot above the root at confirmed reaches the reader unchanged.
+func TestSvmGetSignaturesForAddressFreshness(t *testing.T) {
+	addr := svm.Base58Encode(svmTestKey(7))
+	tests := []struct {
+		name    string
+		head    uint64
+		params  string
+		wantMin uint64
+		served  bool
+	}{
+		{"reader head below root falls through", 95, fmt.Sprintf(`[%q,{"commitment":"confirmed"}]`, addr), 100, false},
+		{"finalized reader head below root falls through", 95, fmt.Sprintf(`[%q]`, addr), 100, false},
+		{"client minContextSlot above root at confirmed is kept", 120, fmt.Sprintf(`[%q,{"commitment":"confirmed","minContextSlot":110}]`, addr), 110, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &gsfaServer{rows: []*svm.SignatureInfo{gsfaRow(1, 90, 0)}, head: tc.head}
+			_, err := callSvmGsfa(t, s, 100, tc.params)
+			require.NotNil(t, s.got)
+			require.NotNil(t, s.got.MinContextSlot)
+			assert.Equal(t, tc.wantMin, *s.got.MinContextSlot)
+			if tc.served {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported), "must fall through, got %v", err)
+		})
+	}
 }
 
 // TestSvmGetSignaturesForAddressFinalized: Agave pages a finalized request
