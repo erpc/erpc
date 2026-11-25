@@ -17,7 +17,6 @@ import (
 	_ "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/blockchain-data-standards/manifesto/svm"
-	"github.com/blockchain-data-standards/manifesto/svm/parse"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -1252,27 +1251,16 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		)
 	}
 
-	var result map[string]interface{}
-	if wantParsed {
-		// Attach Agave's parsed instruction forms in-process. Instructions no
-		// parser covers (compute-budget, user programs) are left unattached
-		// and render as partiallyDecoded — exactly what a real node emits for
-		// them, so an unknown program degrades rather than corrupts.
-		parse.AttachToBlock(grpcResp.Block)
-		result = svm.BlockToJsonRpcParsed(grpcResp.Block, grpcResp.Signatures)
-	} else {
-		result = svm.BlockToJsonRpc(grpcResp.Block, grpcResp.Signatures)
-	}
-	// Agave's history leaves these null on old slots where the reader holds
-	// a value; render what Agave renders.
+	// Render straight from the proto. Under jsonParsed this runs Agave's
+	// instruction parsers in-process; instructions no parser covers
+	// (compute-budget, user programs) render as partiallyDecoded — exactly
+	// what a real node emits for them, so an unknown program degrades rather
+	// than corrupts. Agave's history leaves blockTime / blockHeight null on
+	// old slots where the reader holds a value; render what Agave renders.
 	history := svmHistoryOf(req)
-	if !history.RecordsBlockTime(slot) {
-		result["blockTime"] = nil
-	}
-	if !history.RecordsBlockHeight(slot) {
-		result["blockHeight"] = nil
-	}
-	return svmResult(req, jrReq, result)
+	resultBytes := svmBlockJson(grpcResp.Block, grpcResp.Signatures, wantParsed,
+		!history.RecordsBlockTime(slot), !history.RecordsBlockHeight(slot))
+	return svmRawResult(req, jrReq, resultBytes)
 }
 
 // svmParseSlot accepts the slot as the JSON number it is on the wire. Solana
