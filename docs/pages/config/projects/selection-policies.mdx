@@ -800,7 +800,7 @@ reserve upstreams to also keep shadow-probe traffic off them while benched:
 | `erpc_selection_sticky_hold_total` | Counter | `project, network, method, upstream` | Ticks where `stickyPrimary` held the primary against a challenger. |
 | `erpc_selection_probe_requests_total` | Counter | `network, upstream, method` | Shadow-probe request fired to excluded upstream. |
 | `erpc_selection_probe_errors_total` | Counter | `network, upstream, method, reason` | Probe errored; `reason` ∈ `{timeout, throttled, auth, skipped, error}`. |
-| `erpc_selection_probe_skipped_total` | Counter | `network, reason` | Probe skipped; `reason` ∈ `{write_method, opt_out, sampled_out, max_concurrent, no_method}`. |
+| `erpc_selection_probe_skipped_total` | Counter | `network, reason` | Probe skipped; `reason` ∈ `{write_method, opt_out, method_ignored, method_check_error, sampled_out, max_concurrent, no_method}`. |
 | `erpc_selection_probe_dropped_total` | Counter | `network, reason` | Probe publish dropped (feed channel full); request path never blocks. |
 
 **`erpc_selection_position` value semantics** (assigned at [`internal/policy/slot.go:L477`](https://github.com/erpc/erpc/blob/main/internal/policy/slot.go#L477)):
