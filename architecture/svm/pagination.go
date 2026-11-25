@@ -151,7 +151,7 @@ func normalizeScanResult(result []byte, sent string) []byte {
 
 // scanPageList names the field that holds a page's accounts, or "" when the
 // object is not a page. It is "accounts", or "value" when that is an array:
-// Alchemy's getTokenAccountsByOwnerV2 without withContext answers
+// some providers answer getTokenAccountsByOwnerV2 without withContext as
 // {"value":[...],"paginationKey":...}.
 func scanPageList(page map[string]sonic.NoCopyRawMessage) string {
 	if _, ok := page["accounts"]; ok {

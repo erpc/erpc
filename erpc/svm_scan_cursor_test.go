@@ -206,7 +206,7 @@ func scanVendorPage(t *testing.T, keys [][]byte, startsAfterKey bool, reqBody st
 	}
 	result := map[string]interface{}{"accounts": accounts, "count": len(accounts), "paginationKey": next}
 	if req.Method == "getTokenAccountsByOwnerV2" {
-		// Alchemy without withContext: the accounts sit in "value", beside paginationKey.
+		// Without withContext, this dialect puts the accounts in "value", beside paginationKey.
 		result = map[string]interface{}{"value": accounts, "paginationKey": next}
 	}
 	body, err := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, "result": result})
