@@ -35,6 +35,8 @@ func TestCovDefaults_BuildProviderSettings_Vendors(t *testing.T) {
 		{"satelink://k1", VendorSettings{"apiKey": "k1"}},
 		{"blockdaemon://k1", VendorSettings{"apiKey": "k1"}},
 		{"willow://k1", VendorSettings{"apiKey": "k1"}},
+		{"thyme://k1", VendorSettings{"apiKey": "k1"}},
+		{"thyme://public", VendorSettings{"apiKey": "public"}},
 		{"erpc://erpc.example/main/evm", VendorSettings{"endpoint": "https://erpc.example/main/evm"}},
 		{"erpc://erpc.example/main?secret=s3", VendorSettings{"endpoint": "https://erpc.example/main", "secret": "s3"}},
 		{"erpc://erpc.example/main?other=1", VendorSettings{"endpoint": "https://erpc.example/main"}},
