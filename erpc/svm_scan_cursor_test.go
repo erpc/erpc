@@ -184,9 +184,10 @@ func TestSvm_V2Scan_OneCursorAcrossVendors(t *testing.T) {
 	}), "%s: each account once, in key order", tabo)
 	assert.Positive(t, freshCalls.Load(), "the fresher vendor is still asked first")
 
-	// The after-key vendor answers at slot 1001, past its last poll (990) and
-	// the fresher vendor's (1000). Its answer is its newest slot, so the next
-	// page, which needs 1001, goes to it and not to the fresher vendor.
+	// The after-key vendor answers at slot 1010, past its last poll (990) and
+	// more than one poll past the fresher vendor's (1000). Its answer is its
+	// newest slot, so the next page, which needs 1010, goes to it and not to
+	// the fresher vendor.
 	asked := freshCalls.Load()
 	assert.Equal(t, want, scan(gpa, true, gpaParams), "%s withContext: each account once, in key order", gpa)
 	assert.Equal(t, asked+1, freshCalls.Load(), "only the first page, which needs no slot, asks the fresher vendor")
@@ -241,7 +242,7 @@ func scanVendorPage(t *testing.T, keys [][]byte, startsAfterKey bool, reqBody st
 	var result interface{} = map[string]interface{}{"accounts": accounts, "count": len(accounts), "paginationKey": next}
 	switch {
 	case cfg.WithContext:
-		result = map[string]interface{}{"context": map[string]interface{}{"slot": 1001, "apiVersion": "4.4.0"}, "value": result}
+		result = map[string]interface{}{"context": map[string]interface{}{"slot": 1010, "apiVersion": "4.4.0"}, "value": result}
 	case req.Method == "getTokenAccountsByOwnerV2":
 		// Without withContext, this dialect puts the accounts in "value", beside paginationKey.
 		result = map[string]interface{}{"value": accounts, "paginationKey": next}

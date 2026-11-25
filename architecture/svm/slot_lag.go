@@ -113,14 +113,17 @@ func ReferenceFinalizedSlot(upstreams []common.Upstream, maxLag int64) int64 {
 }
 
 // OrderByMinContextSlot moves the upstreams whose tracked slot (at the
-// request's commitment) is behind minContextSlot to the end of the list,
-// closest first, and reports how many it moved. It never drops one: the
-// tracked slot is a poll that trails the node by up to one poll interval, so an
-// upstream it calls behind has often reached the slot, and the upstreams ahead
-// may not serve the method at all. Unknown state (no poller, zero slot,
-// non-SVM) counts as at or ahead. An upstream that really trails answers
+// request's commitment) is more than tipStalenessMargin behind minContextSlot
+// to the end of the list, closest first, and reports how many it moved. It
+// never drops one: the tracked slot is a poll that trails the node by up to
+// one poll interval, so an upstream it calls behind has often reached the
+// slot, and the upstreams ahead may not serve the method at all. Within the
+// margin the poll cannot tell the upstreams apart, so their order stays: a
+// client that asks for the newest slot would otherwise be routed by which
+// poll ran last, not by the upstream's score. Unknown state (no poller, zero
+// slot, non-SVM) counts as at or ahead. An upstream that really trails answers
 // -32016, which fails over to the next one like any server error.
-func OrderByMinContextSlot(upstreams []common.Upstream, minContextSlot int64, finalized bool) ([]common.Upstream, int) {
+func OrderByMinContextSlot(n common.Network, upstreams []common.Upstream, minContextSlot int64, finalized bool) ([]common.Upstream, int) {
 	if minContextSlot <= 0 {
 		return upstreams, 0
 	}
@@ -128,11 +131,12 @@ func OrderByMinContextSlot(upstreams []common.Upstream, minContextSlot int64, fi
 		upstream common.Upstream
 		slot     int64
 	}
+	margin := tipStalenessMargin(n)
 	var behind []trailing
 	var ahead []common.Upstream
 	for i, u := range upstreams {
 		slot, known := trackedSlot(u, finalized)
-		if !known || slot >= minContextSlot {
+		if !known || minContextSlot-slot <= margin {
 			if behind != nil {
 				ahead = append(ahead, u)
 			}

@@ -2944,17 +2944,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 		}
 		// (2) minContextSlot ordering — an upstream whose tracked slot (at the
-		// request's commitment) is behind the caller's minContextSlot goes
-		// last, never out: the tracked slot trails the node by up to a poll,
-		// and the upstreams ahead may not serve the method. Applies to any SVM
-		// request carrying the param, with or without consensus.
+		// request's commitment) is more than a poll behind the caller's
+		// minContextSlot goes last, never out: the tracked slot trails the node
+		// by up to a poll, and the upstreams ahead may not serve the method.
+		// Applies to any SVM request carrying the param, with or without
+		// consensus.
 		if mcs := svm.MinContextSlotOf(ctx, req); mcs > 0 {
 			// Same commitment-vs-finality distinction as (1): pick the slot
 			// counter the upstream will actually evaluate minContextSlot
 			// against.
 			finalized := svm.IsFinalizedCommitment(ctx, n, req)
 			var moved int
-			upsList, moved = svm.OrderByMinContextSlot(upsList, mcs, finalized)
+			upsList, moved = svm.OrderByMinContextSlot(n, upsList, mcs, finalized)
 			if moved > 0 {
 				lg.Debug().
 					Int("behind", moved).

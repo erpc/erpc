@@ -240,15 +240,16 @@ func TestOrderByMinContextSlot(t *testing.T) {
 			upstreamAt("near", 990),
 			upstreamAt("mid", 700),
 		}, mcs: 1000, want: []string{"near", "mid", "far"}, moved: 3},
-		{name: "one ahead does not shrink the pool to itself", ups: []common.Upstream{
-			upstreamAt("just-behind", 999),
+		// No debounce configured: tipStalenessMargin is 2 slots.
+		{name: "within the poll margin keeps the order, past it goes last", ups: []common.Upstream{
+			upstreamAt("at-margin", 998),
 			upstreamAt("exactly-at", 1000),
-			upstreamAt("behind", 996),
-		}, mcs: 1000, want: []string{"exactly-at", "just-behind", "behind"}, moved: 2},
+			upstreamAt("past-margin", 997),
+		}, mcs: 1000, want: []string{"at-margin", "exactly-at", "past-margin"}, moved: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ordered, moved := OrderByMinContextSlot(tc.ups, tc.mcs, tc.finalized)
+			ordered, moved := OrderByMinContextSlot(&fakeNetwork{}, tc.ups, tc.mcs, tc.finalized)
 			if got := idsOf(ordered); !reflect.DeepEqual(got, tc.want) || moved != tc.moved {
 				t.Fatalf("OrderByMinContextSlot = %v moved %d, want %v moved %d", got, moved, tc.want, tc.moved)
 			}
