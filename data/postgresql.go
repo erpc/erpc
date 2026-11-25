@@ -1406,11 +1406,11 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	defer rows.Close()
 
 	results := make([]KeyValuePair, 0, limit)
-	count := 0
-
+	hasMore := false
 	for rows.Next() {
-		if count >= limit {
-			break // We got the extra record, so there are more results
+		if len(results) == limit {
+			hasMore = true // the extra row: another page follows
+			break
 		}
 
 		var partitionKey, rangeKey string
@@ -1426,7 +1426,6 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 			RangeKey:     rangeKey,
 			Value:        value,
 		})
-		count++
 	}
 
 	if err := rows.Err(); err != nil {
@@ -1435,24 +1434,14 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 		return nil, "", err
 	}
 
-	// Prepare next token
 	nextToken := ""
-	if count == limit {
-		// Check if there's a next page by seeing if we got more than limit records
-		hasMore := false
-		for rows.Next() {
-			hasMore = true
-			break
+	if hasMore {
+		tokenData := map[string]int{"offset": offset + limit}
+		tokenBytes, err := json.Marshal(tokenData)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to create pagination token: %w", err)
 		}
-
-		if hasMore {
-			tokenData := map[string]int{"offset": offset + limit}
-			tokenBytes, err := json.Marshal(tokenData)
-			if err != nil {
-				return nil, "", fmt.Errorf("failed to create pagination token: %w", err)
-			}
-			nextToken = base64.StdEncoding.EncodeToString(tokenBytes)
-		}
+		nextToken = base64.StdEncoding.EncodeToString(tokenBytes)
 	}
 
 	return results, nextToken, nil

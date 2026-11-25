@@ -223,12 +223,19 @@ func TestPostgreSQLConnector_List(t *testing.T) {
 		assert.Equal(t, "pk3", items[0].PartitionKey)
 	})
 
-	t.Run("limit caps the page", func(t *testing.T) {
-		items, _, err := c.List(ctx, ConnectorMainIndex, 2, "")
+	t.Run("limit caps the page and the token reaches every row", func(t *testing.T) {
+		items, next, err := c.List(ctx, ConnectorMainIndex, 2, "")
 		require.NoError(t, err)
 		require.Len(t, items, 2)
 		assert.Equal(t, "pk1", items[0].PartitionKey)
 		assert.Equal(t, "pk2", items[1].PartitionKey)
+		require.NotEmpty(t, next, "a third live row follows, so the page must carry a token")
+
+		items, next, err = c.List(ctx, ConnectorMainIndex, 2, next)
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+		assert.Equal(t, "pk3", items[0].PartitionKey)
+		assert.Empty(t, next)
 	})
 
 	t.Run("token that is not base64 is rejected", func(t *testing.T) {
