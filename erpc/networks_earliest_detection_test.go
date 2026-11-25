@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -307,7 +309,10 @@ func TestEarliestDetection_InitialDetectionAlwaysRunsOnBootstrap(t *testing.T) {
 }
 
 // TestEarliestDetection_SchedulerHandlesPeriodicUpdates tests that the scheduler
-// handles periodic updates after initial detection.
+// keeps re-detecting the earliest block, and that a re-search on a node with
+// slow probes keeps the true floor. A search needs ~30 probes; at 20ms each it
+// outlasts sharedState.fallbackTimeout (200ms here), which once capped it, so
+// every probe after the cap read "not available" and the floor became the tip.
 func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
@@ -316,7 +321,8 @@ func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Track detection calls
+	const floor = 100
+	const updateRate = 1500 * time.Millisecond
 	var detectionCalls int32
 
 	upCfg := &common.UpstreamConfig{
@@ -330,32 +336,48 @@ func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 			BlockAvailability: &common.EvmBlockAvailabilityConfig{
 				Lower: &common.EvmAvailabilityBoundConfig{
 					EarliestBlockPlus: i64(0),
-					UpdateRate:        common.Duration(200 * time.Millisecond), // Fast update for testing
+					UpdateRate:        common.Duration(updateRate),
 				},
 			},
 		},
 	}
 
-	// Mock earliest detection - track calls
+	// blockParam returns the number a block request asks for; tags do not parse.
+	blockParam := func(r *http.Request) (int64, bool) {
+		var req struct {
+			Method string        `json:"method"`
+			Params []interface{} `json:"params"`
+		}
+		if json.Unmarshal([]byte(util.SafeReadBody(r)), &req) != nil || req.Method != "eth_getBlockByNumber" || len(req.Params) == 0 {
+			return 0, false
+		}
+		s, _ := req.Params[0].(string)
+		n, err := strconv.ParseInt(strings.TrimPrefix(s, "0x"), 16, 64)
+		return n, err == nil
+	}
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Persist().
 		Filter(func(r *http.Request) bool {
-			body := util.SafeReadBody(r)
-			if strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "0x0") {
+			n, ok := blockParam(r)
+			if ok {
 				atomic.AddInt32(&detectionCalls, 1)
-				return true
 			}
-			return false
+			return ok && n < floor
 		}).
 		Reply(200).
-		JSON(map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      1,
-			"result": map[string]interface{}{
-				"number": "0x0",
-			},
-		})
+		Delay(20 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil})
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			n, ok := blockParam(r)
+			return ok && n >= floor
+		}).
+		Reply(200).
+		Delay(20 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": map[string]interface{}{"number": "0xc8"}})
 
 	rlr, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
 	mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
@@ -366,9 +388,9 @@ func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 			Driver: common.DriverMemory,
 			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
 		},
-		LockMaxWait:     common.Duration(200 * time.Millisecond),
-		UpdateMaxWait:   common.Duration(200 * time.Millisecond),
-		FallbackTimeout: common.Duration(3 * time.Second),
+		LockMaxWait:     common.Duration(100 * time.Millisecond),
+		UpdateMaxWait:   common.Duration(100 * time.Millisecond),
+		FallbackTimeout: common.Duration(200 * time.Millisecond),
 		LockTtl:         common.Duration(4 * time.Second),
 	}
 	sharedStateCfg.SetDefaults("test")
@@ -383,16 +405,27 @@ func TestEarliestDetection_SchedulerHandlesPeriodicUpdates(t *testing.T) {
 	require.NoError(t, network.Bootstrap(ctx))
 	network.PinUpstreamOrderForTest()
 
-	// Get initial call count after bootstrap
-	time.Sleep(300 * time.Millisecond)
-	initialCalls := atomic.LoadInt32(&detectionCalls)
+	forward := func(block string) error {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + block + `",false]}`))
+		req.SetNetwork(network)
+		resp, err := network.Forward(ctx, req)
+		if resp != nil {
+			resp.Release()
+		}
+		return err
+	}
 
-	// Wait for scheduler to run a few times (updateRate = 200ms)
-	time.Sleep(600 * time.Millisecond)
+	require.Eventually(t, func() bool { return forward("0xc8") == nil }, 5*time.Second, 100*time.Millisecond,
+		"block 200 is above the floor (100) and must be served once a search completes")
+	callsAfterFirstSearch := atomic.LoadInt32(&detectionCalls)
 
-	// Should have more calls now due to scheduler
-	finalCalls := atomic.LoadInt32(&detectionCalls)
-	assert.Greater(t, finalCalls, initialCalls, "expected scheduler to trigger additional detection calls")
+	// Two more re-searches run; each must find the floor again, not the tip.
+	time.Sleep(2*updateRate + 500*time.Millisecond)
+	assert.Greater(t, atomic.LoadInt32(&detectionCalls), callsAfterFirstSearch, "expected scheduler to trigger additional detection calls")
+	assert.NoError(t, forward("0xc8"), "a re-search must keep the floor at 100, not raise it to the tip")
+	err := forward("0x32")
+	require.Error(t, err, "block 50 is below the floor")
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted))
 }
 
 // TestEarliestDetection_InvalidRangeTriggersFailOpen verifies that when earliest=0 is used
