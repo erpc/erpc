@@ -1074,15 +1074,23 @@ func removeFieldsByPaths(obj interface{}, paths []string) interface{} {
 		current := pathTree
 		for i, part := range parts {
 			if i == len(parts)-1 {
-				current[part] = true // Leaf node
-			} else {
-				if _, exists := current[part]; !exists {
-					current[part] = make(map[string]interface{})
-				}
-				if next, ok := current[part].(map[string]interface{}); ok {
-					current = next
-				}
+				// Leaf node. It replaces any subtree here: removing the whole
+				// field also removes everything under it.
+				current[part] = true
+				break
 			}
+			next, ok := current[part].(map[string]interface{})
+			if !ok {
+				if current[part] == true {
+					// An ancestor of this path is already removed whole, so the
+					// rest of the path adds nothing. Stop here. Walking on would
+					// write the remaining segments onto the wrong node.
+					break
+				}
+				next = make(map[string]interface{})
+				current[part] = next
+			}
+			current = next
 		}
 	}
 

@@ -264,3 +264,65 @@ func TestRemoveFieldsByPaths(t *testing.T) {
 		})
 	}
 }
+
+// When one ignore path is a prefix of another ("logs" and
+// "logs.*.blockTimestamp"), the broader path wins. Removing "logs" already
+// removes everything under it. The order of the paths must not change the
+// result, and a field that no path names must survive.
+func TestRemoveFieldsByPaths_BroaderPathSubsumesItsExtension(t *testing.T) {
+	t.Parallel()
+
+	newObj := func() map[string]interface{} {
+		return map[string]interface{}{
+			"logs": []interface{}{map[string]interface{}{"blockTimestamp": "0x64"}},
+			"receipt": map[string]interface{}{
+				"blockTimestamp": "0x64",
+				"status":         "0x1",
+			},
+		}
+	}
+
+	for _, paths := range [][]string{
+		{"logs", "logs.*.blockTimestamp"},
+		{"logs.*.blockTimestamp", "logs"},
+	} {
+		m, ok := removeFieldsByPaths(newObj(), paths).(map[string]interface{})
+		require.True(t, ok)
+
+		_, hasLogs := m["logs"]
+		require.False(t, hasLogs, "%v: the broader 'logs' path removes logs entirely", paths)
+
+		receipt, ok := m["receipt"].(map[string]interface{})
+		require.True(t, ok)
+		require.Equal(t, "0x64", receipt["blockTimestamp"],
+			"%v: no ignore path names receipt.blockTimestamp, so it must survive", paths)
+		require.Equal(t, "0x1", receipt["status"], "%v: unrelated members must survive", paths)
+	}
+}
+
+// The consensus-level form of the same rule. A list where one path is a prefix
+// of another gives one hash in either order. A difference in a field that no
+// path names still changes the hash.
+func TestCanonicalHashWithIgnoredFields_PrefixPathOrderDoesNotMatter(t *testing.T) {
+	t.Parallel()
+
+	body := func(receiptTs string) *JsonRpcResponse {
+		return &JsonRpcResponse{result: []byte(
+			`{"logs":[{"blockTimestamp":"0x64"}],` +
+				`"receipt":{"blockTimestamp":"` + receiptTs + `","status":"0x1"}}`)}
+	}
+
+	forward := []string{"logs", "logs.*.blockTimestamp"}
+	reverse := []string{"logs.*.blockTimestamp", "logs"}
+
+	hf, err := body("0x64").CanonicalHashWithIgnoredFields(forward)
+	require.NoError(t, err)
+	hr, err := body("0x64").CanonicalHashWithIgnoredFields(reverse)
+	require.NoError(t, err)
+	require.Equal(t, hf, hr, "the same two paths in either order must give the same hash")
+
+	hd, err := body("0x99").CanonicalHashWithIgnoredFields(forward)
+	require.NoError(t, err)
+	require.NotEqual(t, hf, hd,
+		"a field outside the ignore list must still count towards the hash")
+}
