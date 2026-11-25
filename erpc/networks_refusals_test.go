@@ -15,123 +15,179 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A node that refuses an eth_call for asking more gas than its own cap
-// ("user-specified gas exceeds provider limit") is not asked again, but the
-// call still fails over: the cap is per-provider configuration, so another
-// upstream may allow the same gas.
-func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
-	const gasCapError = "user-specified gas exceeds provider limit"
-	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x","gas":"0x8f0d1801"},"latest"]}`)
-
-	// gock runs every mock's filter on every request, so each filter checks its
-	// own host before it counts.
-	ethCallTo := func(host string, calls *atomic.Int32) func(*http.Request) bool {
-		return func(r *http.Request) bool {
-			if r.URL.Host != host || !strings.Contains(util.SafeReadBody(r), `"eth_call"`) {
-				return false
-			}
-			calls.Add(1)
-			return true
+// gock runs every mock's filter on every request, so each filter checks its
+// own host and method before it counts.
+func countCallsTo(host, method string, calls *atomic.Int32) func(*http.Request) bool {
+	return func(r *http.Request) bool {
+		if r.URL.Host != host || !strings.Contains(util.SafeReadBody(r), `"`+method+`"`) {
+			return false
 		}
+		calls.Add(1)
+		return true
 	}
-	gasCapReply := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"error":   map[string]interface{}{"code": -32000, "message": gasCapError},
-	}
-	newNetwork := func(t *testing.T, ctx context.Context) *Network {
-		return setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-			MaxAttempts: 6,
-			Delay:       common.Duration(10 * time.Millisecond),
+}
+
+// Two upstreams of the given vendor ("" for none), as a refusal is read by
+// the vendor's error handler before the generic one.
+func newRefusalTestNetwork(t *testing.T, ctx context.Context, vendor string) *Network {
+	var ups []*common.UpstreamConfig
+	for _, id := range []string{"rpc1", "rpc2"} {
+		ups = append(ups, &common.UpstreamConfig{
+			Type:       common.UpstreamTypeEvm,
+			Id:         id,
+			Endpoint:   "http://" + id + ".localhost",
+			VendorName: vendor,
+			Evm:        &common.EvmUpstreamConfig{ChainId: 123},
 		})
 	}
-
-	t.Run("FailsOverToAnUpstreamWithAHigherCap", func(t *testing.T) {
-		util.ResetGock()
-		t.Cleanup(util.ResetGock)
-		util.SetupMocksForEvmStatePoller()
-
-		var rpc1Calls, rpc2Calls atomic.Int32
-		gock.New("http://rpc1.localhost").Post("").Persist().
-			Filter(ethCallTo("rpc1.localhost", &rpc1Calls)).
-			Reply(200).JSON(gasCapReply)
-		gock.New("http://rpc2.localhost").Post("").Persist().
-			Filter(ethCallTo("rpc2.localhost", &rpc2Calls)).
-			Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x01"})
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		resp, err := newNetwork(t, ctx).Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		require.NoError(t, err)
-		jrr, err := resp.JsonRpcResponse()
-		require.NoError(t, err)
-		assert.Equal(t, `"0x01"`, string(jrr.GetResultBytes()))
-		assert.LessOrEqual(t, rpc1Calls.Load(), int32(1), "the refusing upstream must not be asked again")
-		assert.Equal(t, int32(1), rpc2Calls.Load())
-	})
-
-	t.Run("AsksEachUpstreamOnceWhenAllRefuse", func(t *testing.T) {
-		util.ResetGock()
-		t.Cleanup(util.ResetGock)
-		util.SetupMocksForEvmStatePoller()
-
-		var rpc1Calls, rpc2Calls atomic.Int32
-		gock.New("http://rpc1.localhost").Post("").Persist().
-			Filter(ethCallTo("rpc1.localhost", &rpc1Calls)).
-			Reply(200).JSON(gasCapReply)
-		gock.New("http://rpc2.localhost").Post("").Persist().
-			Filter(ethCallTo("rpc2.localhost", &rpc2Calls)).
-			Reply(200).JSON(gasCapReply)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		_, err := newNetwork(t, ctx).Forward(ctx, common.NewNormalizedRequest(requestBytes))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), gasCapError, "the caller must see the node's reason")
-		assert.Equal(t, int32(1), rpc1Calls.Load(), "rpc1 is asked once")
-		assert.Equal(t, int32(1), rpc2Calls.Load(), "rpc2 is asked once")
+	return setupSendRawTxNetwork(t, ctx, ups, &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		Failsafe: []*common.FailsafeConfig{{Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 6,
+			Delay:       common.Duration(10 * time.Millisecond),
+		}}},
 	})
 }
 
-// An eth_simulateV1 with no block to simulate is refused with "empty input"
-// by every node: the caller gets that reason after one attempt, not after the
-// failsafe has asked every upstream again and again.
-func TestNetwork_SimulateV1_EmptyInputIsNotRetried(t *testing.T) {
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
-	var calls atomic.Int32
-	for _, host := range []string{"rpc1.localhost", "rpc2.localhost"} {
-		host := host
-		gock.New("http://" + host).Post("").Persist().
-			Filter(func(r *http.Request) bool {
-				if r.URL.Host != host || !strings.Contains(util.SafeReadBody(r), `"eth_simulateV1"`) {
-					return false
-				}
-				calls.Add(1)
-				return true
-			}).
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"error":   map[string]interface{}{"code": -32000, "message": "empty input"},
-			})
+// A node that refuses a call for asking more gas than its own cap is not
+// asked again, but the call still fails over: the cap is per-provider
+// configuration, so another upstream may allow the same gas. Monad says
+// "user-specified gas exceeds provider limit" on eth_call; eth_simulateV1
+// gives the spec code -38026 ("client adjustable limit").
+func TestNetwork_ProviderGasCap(t *testing.T) {
+	cases := []struct {
+		name    string
+		method  string
+		request string
+		refusal map[string]interface{}
+	}{
+		{
+			name:    "EthCall",
+			method:  "eth_call",
+			request: `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x0000000000000000000000000000000000000001","data":"0x","gas":"0x8f0d1801"},"latest"]}`,
+			refusal: map[string]interface{}{"code": -32000, "message": "user-specified gas exceeds provider limit"},
+		},
+		{
+			name:    "SimulateV1",
+			method:  "eth_simulateV1",
+			request: `{"jsonrpc":"2.0","id":1,"method":"eth_simulateV1","params":[{"blockStateCalls":[{"calls":[{"to":"0x0000000000000000000000000000000000000001","gas":"0x3b9aca00"}]}]},"latest"]}`,
+			refusal: map[string]interface{}{"code": -38026, "message": "Client adjustable limit reached"},
+		},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	network := setupSendRawTxTestNetworkWithRetry(t, ctx, &common.RetryPolicyConfig{
-		MaxAttempts: 6,
-		Delay:       common.Duration(10 * time.Millisecond),
-	})
+	for _, tc := range cases {
+		refusalReply := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": tc.refusal}
 
-	_, err := network.Forward(ctx, common.NewNormalizedRequest([]byte(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_simulateV1","params":[{"blockStateCalls":[]},"latest"]}`)))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty input", "the caller must see the node's reason")
-	assert.Equal(t, int32(1), calls.Load(), "one attempt, then the call fails")
+		t.Run(tc.name+"/FailsOverToAnUpstreamWithAHigherCap", func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			util.SetupMocksForEvmStatePoller()
+
+			var rpc1Calls, rpc2Calls atomic.Int32
+			gock.New("http://rpc1.localhost").Post("").Persist().
+				Filter(countCallsTo("rpc1.localhost", tc.method, &rpc1Calls)).
+				Reply(200).JSON(refusalReply)
+			gock.New("http://rpc2.localhost").Post("").Persist().
+				Filter(countCallsTo("rpc2.localhost", tc.method, &rpc2Calls)).
+				Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x01"})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			resp, err := newRefusalTestNetwork(t, ctx, "").Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
+			require.NoError(t, err)
+			jrr, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			assert.Equal(t, `"0x01"`, string(jrr.GetResultBytes()))
+			assert.LessOrEqual(t, rpc1Calls.Load(), int32(1), "the refusing upstream must not be asked again")
+			assert.Equal(t, int32(1), rpc2Calls.Load())
+		})
+
+		t.Run(tc.name+"/AsksEachUpstreamOnceWhenAllRefuse", func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			util.SetupMocksForEvmStatePoller()
+
+			var rpc1Calls, rpc2Calls atomic.Int32
+			gock.New("http://rpc1.localhost").Post("").Persist().
+				Filter(countCallsTo("rpc1.localhost", tc.method, &rpc1Calls)).
+				Reply(200).JSON(refusalReply)
+			gock.New("http://rpc2.localhost").Post("").Persist().
+				Filter(countCallsTo("rpc2.localhost", tc.method, &rpc2Calls)).
+				Reply(200).JSON(refusalReply)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			_, err := newRefusalTestNetwork(t, ctx, "").Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.refusal["message"], "the caller must see the node's reason")
+			assert.Equal(t, http.StatusOK, determineResponseStatusCode(err), "a node's refusal, not a rate limit")
+			assert.Equal(t, int32(1), rpc1Calls.Load(), "rpc1 is asked once")
+			assert.Equal(t, int32(1), rpc2Calls.Load(), "rpc2 is asked once")
+		})
+	}
+}
+
+// An eth_simulateV1 refusal that every node gives for the same request is not
+// retried: the caller gets the node's reason after one attempt, with HTTP 200
+// as a node sends it. -38015 means a call asks more gas than the simulated
+// block allows; reth and geth word it differently, and reth's wording ("limit
+// exceeded") once read as a rate limit, in the generic and Conduit handlers.
+func TestNetwork_SimulateV1_SharedRefusalsAreNotRetried(t *testing.T) {
+	const oneCall = `{"jsonrpc":"2.0","id":1,"method":"eth_simulateV1","params":[{"blockStateCalls":[{"calls":[{"to":"0x0000000000000000000000000000000000000001","gas":"0x11e1a300"}]}]},"latest"]}`
+	cases := []struct {
+		name    string
+		vendor  string
+		request string
+		refusal map[string]interface{}
+	}{
+		{
+			name:    "EmptyInput",
+			request: `{"jsonrpc":"2.0","id":1,"method":"eth_simulateV1","params":[{"blockStateCalls":[]},"latest"]}`,
+			refusal: map[string]interface{}{"code": -32000, "message": "empty input"},
+		},
+		{
+			name:    "BlockGasLimitReth",
+			request: oneCall,
+			refusal: map[string]interface{}{"code": -38015, "message": "Block gas limit exceeded by the block's transactions"},
+		},
+		{
+			name:    "BlockGasLimitRethOnConduit",
+			vendor:  "conduit",
+			request: oneCall,
+			refusal: map[string]interface{}{"code": -38015, "message": "Block gas limit exceeded by the block's transactions"},
+		},
+		{
+			name:    "BlockGasLimitGeth",
+			request: oneCall,
+			refusal: map[string]interface{}{"code": -38015, "message": "block gas limit reached: remaining: 60000000, required: 300000000"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			util.SetupMocksForEvmStatePoller()
+
+			var calls atomic.Int32
+			for _, host := range []string{"rpc1.localhost", "rpc2.localhost"} {
+				gock.New("http://" + host).Post("").Persist().
+					Filter(countCallsTo(host, "eth_simulateV1", &calls)).
+					Reply(200).
+					JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": tc.refusal})
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			_, err := newRefusalTestNetwork(t, ctx, tc.vendor).Forward(ctx, common.NewNormalizedRequest([]byte(tc.request)))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.refusal["message"], "the caller must see the node's reason")
+			assert.Equal(t, http.StatusOK, determineResponseStatusCode(err), "a node's refusal, not a rate limit")
+			assert.Equal(t, int32(1), calls.Load(), "one attempt, then the call fails")
+		})
+	}
 }
