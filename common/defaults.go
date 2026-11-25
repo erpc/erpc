@@ -2361,6 +2361,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.CallGasCap == 0 {
 				n.Evm.CallGasCap = defaults.Evm.CallGasCap
 			}
+			if n.Evm.CallGasCapQuorum == 0 {
+				n.Evm.CallGasCapQuorum = defaults.Evm.CallGasCapQuorum
+			}
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}

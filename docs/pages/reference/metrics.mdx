@@ -506,7 +506,7 @@ One chain tracker per network follows the canonical chain from source headers an
 | `erpc_network_evm_get_logs_range_requested` | LabeledHistogram | project, network, category, user, finality | `eth_getLogs` requested block-range size (observed value = `toBlock − fromBlock`). Buckets: 1, 10, 100, 500, 1000, 5000, 10000, 30000. |
 | `erpc_network_evm_trace_filter_range_requested` | LabeledHistogram | project, network, method, user, finality | `trace_filter`/`arbtrace_filter` requested block-range size. Same buckets. |
 | `erpc_upstream_call_gas_cap` | gauge | project, vendor, network, upstream | Most gas the upstream lets one `eth_call` use, as measured. Measured by two `eth_call` probes, at most once an hour, only once an `eth_call` names its `gas`. Unset while unknown, and for a node that refuses gas above its cap (Monad): set `upstreams[*].evm.callGasCap` for it. |
-| `erpc_network_call_gas_cap` | gauge | project, network | Most gas one `eth_call` may use on the network (`evm.callGasCap`, else the lowest cap of its upstreams); a larger `gas` is lowered to it. Unset while no cap is known. |
+| `erpc_network_call_gas_cap` | gauge | project, network | Most gas one `eth_call` may use on the network (`evm.callGasCap`, else the highest cap `evm.callGasCapQuorum` of its upstreams give); a larger `gas` is lowered to it. Unset while no cap is known. |
 
 #### Area 12: gRPC BDS resilience
 

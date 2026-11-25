@@ -3132,11 +3132,17 @@ type EvmNetworkConfig struct {
 	TraceFilterSplitConcurrency int `yaml:"traceFilterSplitConcurrency,omitempty" json:"traceFilterSplitConcurrency"`
 	// CallGasCap is the most gas one eth_call may use on this network: eRPC
 	// lowers a larger gas to it, as a node lowers it to its own cap. 0
-	// (default) takes the lowest cap of the network's upstreams
-	// (upstreams[].evm.callGasCap, else measured); a value above it is a
-	// promise only the upstreams that give it keep, so it fails when they
-	// are down.
+	// (default) takes the highest cap that CallGasCapQuorum of the network's
+	// upstreams give (upstreams[].evm.callGasCap, else measured); routing
+	// sends a call to those first. A value above it is a promise fewer
+	// upstreams keep, so it fails sooner when they are down.
 	CallGasCap uint64 `yaml:"callGasCap,omitempty" json:"callGasCap"`
+	// CallGasCapQuorum is how many upstreams must give the default CallGasCap:
+	// an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset uses
+	// DefaultServedTipQuorum (2), so one node's large cap is never promised
+	// alone. With fewer upstreams than the quorum, the cap is the one all of
+	// them give.
+	CallGasCapQuorum ServedTipQuorum `yaml:"callGasCapQuorum,omitempty" json:"callGasCapQuorum,omitempty" tstype:"number | 'majority'"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.

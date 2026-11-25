@@ -11,9 +11,8 @@ import (
 )
 
 // lowerCallGas lowers the gas an eth_call names to the network's cap
-// (callGasCap), as a node lowers it to its own cap: under the default cap,
-// the lowest of the upstreams, the call runs alike on each of them. It runs
-// before the multiplexer and the cache, so both key the lowered call.
+// (callGasCap), as a node lowers it to its own cap. It runs before the
+// multiplexer and the cache, so both key the lowered call.
 func (n *Network) lowerCallGas(ctx context.Context, req *common.NormalizedRequest) {
 	if method, _ := req.Method(); method != "eth_call" {
 		return
@@ -30,11 +29,12 @@ func (n *Network) lowerCallGas(ctx context.Context, req *common.NormalizedReques
 }
 
 // callGasCap is the most gas one eth_call may use on the network:
-// evm.callGasCap when set, else the lowest cap of the upstreams that serve
-// eth_call (upstreamCallGasCap), among those the request's use-upstream
-// selector matches; 0 while none is known. A network that promised the
-// largest cap would break its promise whenever the upstreams that give it
-// are down. The cap of a request with no selector is the network's gauge.
+// evm.callGasCap when set, else the highest cap that evm.callGasCapQuorum
+// of the upstreams serving eth_call give (upstreamCallGasCap), among those
+// the request's use-upstream selector matches; 0 while none is known. The
+// largest cap alone would be a promise one node keeps, broken whenever it is
+// down; the lowest would let one small node refuse every big call. The cap
+// of a request with no selector is the network's gauge.
 func (n *Network) callGasCap(ctx context.Context) uint64 {
 	var c uint64
 	sel := ""
@@ -42,15 +42,25 @@ func (n *Network) callGasCap(ctx context.Context) uint64 {
 		c = n.cfg.Evm.CallGasCap
 	} else if n.upstreamsRegistry != nil {
 		sel = requestSelector(ctx)
+		var buf [16]uint64
+		caps := buf[:0]
 		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 			if sel != "" {
 				if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
 					continue
 				}
 			}
-			if uc := upstreamCallGasCap(u); uc > 0 && (c == 0 || uc < c) && servesMethod(u, "eth_call") {
-				c = uc
+			if uc := upstreamCallGasCap(u); uc > 0 && servesMethod(u, "eth_call") {
+				caps = append(caps, uc)
 			}
+		}
+		if len(caps) > 0 {
+			var q common.ServedTipQuorum
+			if n.cfg.Evm != nil {
+				q = n.cfg.Evm.CallGasCapQuorum
+			}
+			slices.Sort(caps)
+			c = caps[len(caps)-q.Of(len(caps))]
 		}
 	}
 	if sel == "" && n.callGasCapShown.Swap(c) != c {

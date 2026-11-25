@@ -185,11 +185,18 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 			return strings.Trim(string(jrr.GetResultBytes()), `"`)
 		}
 		// The low upstream's config fixes its cap at 40M, in place of the
-		// 50M measured, so the network's cap is 40M: 100M gas is lowered to
-		// it and runs where the policy orders it, as on any node.
+		// 50M measured. Two upstreams give 40M, the default quorum, so the
+		// network's cap is 40M: 100M gas is lowered to it and runs where the
+		// policy orders it, as on any node.
 		ups[0].Config().Evm.CallGasCap = 40_000_000
 		assert.Equal(t, answers[low], forward(`"gas":"0x5f5e100"`))
 		assert.Contains(t, lastCall[low].Load(), `"gas":"0x2625a00"`)
+
+		// A quorum of 1 takes the largest cap: 100M gas runs whole, on the
+		// one upstream that gives it.
+		network.cfg.Evm.CallGasCapQuorum = 1
+		assert.Equal(t, answers[high], forward(`"gas":"0x5f5e100"`))
+		assert.Contains(t, lastCall[high].Load(), `"gas":"0x5f5e100"`)
 
 		// A network cap above every upstream's promises what only some give.
 		network.cfg.Evm.CallGasCap = 3_000_000_000
@@ -200,7 +207,7 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 		// 2.4B gas: neither cap gives it, so the larger cap goes first. Its
 		// refusal ends its attempt, so the 40M cap runs the call.
 		assert.Equal(t, answers[low], forward(refusedGas))
-		assert.Equal(t, int32(2), calls[high].Load(), "the 600M upstream runs the 100M call and goes first for 2.4B")
+		assert.Equal(t, int32(3), calls[high].Load(), "the 600M upstream runs the 100M call twice and goes first for 2.4B")
 		assert.Equal(t, int32(3), calls[low].Load(), "the 40M upstream runs the lowered call, the 30M call and the refused 2.4B call")
 	})
 }
