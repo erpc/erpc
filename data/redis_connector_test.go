@@ -240,21 +240,11 @@ func TestRedisConnector_WatchAndPublishCounter(t *testing.T) {
 	require.NoError(t, err)
 	defer cleanup()
 
-	select {
-	case st := <-updates:
-		assert.Equal(t, stored, st, "subscriber receives the stored value first")
-	case <-time.After(5 * time.Second):
-		t.Fatal("no initial value")
-	}
+	awaitCounter(t, updates, stored, stored, "subscriber receives the stored value first")
 
 	pub := CounterInt64State{Value: 6, UpdatedAt: 200, UpdatedBy: "pub"}
 	require.NoError(t, c.PublishCounterInt64(ctx, key, pub))
-	select {
-	case st := <-updates:
-		assert.Equal(t, pub, st)
-	case <-time.After(5 * time.Second):
-		t.Fatal("published value not delivered")
-	}
+	awaitCounter(t, updates, pub, stored, "published value is delivered")
 
 	t.Run("unparsable and zero-timestamp messages are ignored", func(t *testing.T) {
 		malformed := rejectedTotal(rejectMalformed)
@@ -262,13 +252,8 @@ func TestRedisConnector_WatchAndPublishCounter(t *testing.T) {
 		require.NoError(t, c.client.Publish(ctx, "counter:"+key, `{"v":9,"t":0}`).Err())
 		valid := CounterInt64State{Value: 7, UpdatedAt: 300}
 		require.NoError(t, c.PublishCounterInt64(ctx, key, valid))
-		select {
-		case st := <-updates:
-			assert.Equal(t, valid, st, "only the valid message reaches the subscriber")
-			assert.GreaterOrEqual(t, rejectedTotal(rejectMalformed)-malformed, 2.0, "both bad messages are counted malformed")
-		case <-time.After(5 * time.Second):
-			t.Fatal("valid publish not delivered")
-		}
+		awaitCounter(t, updates, valid, stored, "only the valid message reaches the subscriber")
+		assert.GreaterOrEqual(t, rejectedTotal(rejectMalformed)-malformed, 2.0, "both bad messages are counted malformed")
 	})
 
 	t.Run("poll pushes the stored value to subscribers", func(t *testing.T) {
@@ -277,13 +262,29 @@ func TestRedisConnector_WatchAndPublishCounter(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, c.Set(ctx, key, "value", b, nil))
 		c.pubsubManager.pollAllKeys()
+		awaitCounter(t, updates, polled, stored, "poll delivers the stored value")
+	})
+}
+
+// awaitCounter waits for want, skipping re-deliveries of seed: Subscribe's
+// initial GET and the poll that start() fires both read the stored seed, and
+// either can land after a newer published value. The shared-state consumer
+// rejects such stale states (shared_state_variable.go), so the transport need not.
+func awaitCounter(t *testing.T, updates <-chan CounterInt64State, want, seed CounterInt64State, msg string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
 		select {
 		case st := <-updates:
-			assert.Equal(t, polled, st)
-		case <-time.After(5 * time.Second):
-			t.Fatal("poll did not deliver")
+			if st == seed && want != seed {
+				continue
+			}
+			assert.Equal(t, want, st, msg)
+			return
+		case <-deadline:
+			t.Fatalf("%s: not delivered", msg)
 		}
-	})
+	}
 }
 
 func TestRedisPubSubManager_GetCurrentValue(t *testing.T) {
