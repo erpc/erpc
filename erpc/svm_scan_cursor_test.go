@@ -105,16 +105,29 @@ func TestSvm_V2Scan_OneCursorAcrossVendors(t *testing.T) {
 	type account struct {
 		Pubkey string `json:"pubkey"`
 	}
-	scan := func(method string, params func(cfg map[string]interface{}) []interface{}) []string {
+	// scan walks every page. Without withContext the upstream order alternates
+	// and every page asks for slot 995. With it the order stays put and each
+	// page asks for the slot the previous page was read at.
+	scan := func(method string, withContext bool, params func(cfg map[string]interface{}) []interface{}) []string {
 		var got []string
 		var cursor *string
+		var slot int64
 		for page := range 2 * len(keys) {
-			if page%2 == 0 {
+			cfg := map[string]interface{}{"encoding": "base64", "limit": 2}
+			switch {
+			case withContext:
 				net.PinUpstreamOrderForTest("fresh", "after", "from")
-			} else {
+				cfg["withContext"] = true
+				if slot > 0 {
+					cfg["minContextSlot"] = slot
+				}
+			case page%2 == 0:
+				net.PinUpstreamOrderForTest("fresh", "after", "from")
+				cfg["minContextSlot"] = 995
+			default:
 				net.PinUpstreamOrderForTest("fresh", "from", "after")
+				cfg["minContextSlot"] = 995
 			}
-			cfg := map[string]interface{}{"encoding": "base64", "limit": 2, "minContextSlot": 995}
 			if cursor != nil {
 				cfg["paginationKey"] = *cursor
 			}
@@ -124,13 +137,25 @@ func TestSvm_V2Scan_OneCursorAcrossVendors(t *testing.T) {
 			require.NoError(t, err, "%s page %d", method, page)
 			jrr, err := resp.JsonRpcResponse(ctx)
 			require.NoError(t, err)
+			raw := jrr.GetResultBytes()
+			var envelope struct {
+				Context *struct {
+					Slot int64 `json:"slot"`
+				} `json:"context"`
+				Value json.RawMessage `json:"value"`
+			}
+			require.NoError(t, json.Unmarshal(raw, &envelope), "%s page %d: %s", method, page, raw)
+			if envelope.Context != nil {
+				slot = envelope.Context.Slot
+				raw = envelope.Value
+			}
 			var result struct {
 				Accounts      []account `json:"accounts"`
 				Value         []account `json:"value"`
 				Count         *int      `json:"count"`
 				PaginationKey *string   `json:"paginationKey"`
 			}
-			require.NoError(t, json.Unmarshal(jrr.GetResultBytes(), &result), "%s page %d: %s", method, page, jrr.GetResultBytes())
+			require.NoError(t, json.Unmarshal(raw, &result), "%s page %d: %s", method, page, raw)
 			accounts := append(result.Accounts, result.Value...)
 			if result.Count != nil {
 				assert.Equal(t, len(accounts), *result.Count, "%s page %d: count is the page's length", method, page)
@@ -147,16 +172,24 @@ func TestSvm_V2Scan_OneCursorAcrossVendors(t *testing.T) {
 	}
 
 	const tokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	assert.Equal(t, want, scan(gpa, func(cfg map[string]interface{}) []interface{} {
+	gpaParams := func(cfg map[string]interface{}) []interface{} {
 		return []interface{}{tokenProgram, cfg}
-	}), "%s: each account once, in key order", gpa)
+	}
+	assert.Equal(t, want, scan(gpa, false, gpaParams), "%s: each account once, in key order", gpa)
 	assert.Positive(t, served[after].Load(), "the after-key vendor served pages")
 	assert.Positive(t, served[from].Load(), "the from-key vendor served pages")
 
-	assert.Equal(t, want, scan(tabo, func(cfg map[string]interface{}) []interface{} {
+	assert.Equal(t, want, scan(tabo, false, func(cfg map[string]interface{}) []interface{} {
 		return []interface{}{"5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", map[string]interface{}{"programId": tokenProgram}, cfg}
 	}), "%s: each account once, in key order", tabo)
 	assert.Positive(t, freshCalls.Load(), "the fresher vendor is still asked first")
+
+	// The after-key vendor answers at slot 1001, past its last poll (990) and
+	// the fresher vendor's (1000). Its answer is its newest slot, so the next
+	// page, which needs 1001, goes to it and not to the fresher vendor.
+	asked := freshCalls.Load()
+	assert.Equal(t, want, scan(gpa, true, gpaParams), "%s withContext: each account once, in key order", gpa)
+	assert.Equal(t, asked+1, freshCalls.Load(), "only the first page, which needs no slot, asks the fresher vendor")
 }
 
 // scanVendorPage answers one V2 scan request with 2 accounts the way one vendor
@@ -174,6 +207,7 @@ func scanVendorPage(t *testing.T, keys [][]byte, startsAfterKey bool, reqBody st
 	}
 	var cfg struct {
 		PaginationKey *string `json:"paginationKey"`
+		WithContext   bool    `json:"withContext"`
 	}
 	require.NoError(t, json.Unmarshal(req.Params[cfgIdx], &cfg))
 	start := 0
@@ -204,8 +238,11 @@ func scanVendorPage(t *testing.T, keys [][]byte, startsAfterKey bool, reqBody st
 		}
 		next = scanB58Encode(last.FillBytes(make([]byte, 32)))
 	}
-	result := map[string]interface{}{"accounts": accounts, "count": len(accounts), "paginationKey": next}
-	if req.Method == "getTokenAccountsByOwnerV2" {
+	var result interface{} = map[string]interface{}{"accounts": accounts, "count": len(accounts), "paginationKey": next}
+	switch {
+	case cfg.WithContext:
+		result = map[string]interface{}{"context": map[string]interface{}{"slot": 1001, "apiVersion": "4.4.0"}, "value": result}
+	case req.Method == "getTokenAccountsByOwnerV2":
 		// Without withContext, this dialect puts the accounts in "value", beside paginationKey.
 		result = map[string]interface{}{"value": accounts, "paginationKey": next}
 	}

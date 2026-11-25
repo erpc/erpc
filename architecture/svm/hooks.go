@@ -1113,9 +1113,11 @@ func tipStalenessMargin(n common.Network) int64 {
 // we serve in exchange for nothing. Gating on the envelope methods keeps the
 // opportunistic harvest and drops the pointless walks.
 //
-// getProgramAccounts is included even though it only returns the envelope when
-// the caller passes withContext:true — its non-envelope form is a small array,
-// so the miss is cheap and the hit is worth having.
+// getProgramAccounts and the V2 scans are included even though they only
+// return the envelope when the caller passes withContext:true. A V2 miss costs
+// one pass over the page, as the cursor rewrite already does; the hit keeps an
+// upstream that just answered a page from ranking behind its own slot when the
+// next page asks for that slot as minContextSlot.
 var contextSlotMethods = map[string]struct{}{
 	"getAccountInfo":             {},
 	"getBalance":                 {},
@@ -1125,12 +1127,14 @@ var contextSlotMethods = map[string]struct{}{
 	"getLatestBlockhash":         {},
 	"getMultipleAccounts":        {},
 	"getProgramAccounts":         {},
+	"getProgramAccountsV2":       {},
 	"getSignatureStatuses":       {},
 	"getStakeMinimumDelegation":  {},
 	"getSupply":                  {},
 	"getTokenAccountBalance":     {},
 	"getTokenAccountsByDelegate": {},
 	"getTokenAccountsByOwner":    {},
+	"getTokenAccountsByOwnerV2":  {},
 	"getTokenLargestAccounts":    {},
 	"getTokenSupply":             {},
 	"isBlockhashValid":           {},
