@@ -789,20 +789,45 @@ func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string)
 
 	p.logger.Debug().Str("key", key).Int("watchers", len(listener.watchers)).Msg("starting watcher for key")
 
-	// Start fallback polling
+	// send delivers a state without blocking, and never after cleanup.
+	// cleanup closes done and updates under listener.mu, the same lock the
+	// LISTEN broadcast holds, so a sender that holds it and sees done open
+	// knows updates is open too.
+	done := make(chan struct{})
+	send := func(st CounterInt64State) {
+		listener.mu.Lock()
+		defer listener.mu.Unlock()
+		select {
+		case <-done:
+			return
+		default:
+		}
+		select {
+		case updates <- st:
+		default:
+		}
+	}
+
+	// Send initial value
+	if st, ok, err := p.getCurrentValue(ctx, key); err == nil && ok {
+		send(st)
+	}
+
+	// Start fallback polling. It stops on cleanup too, not only when ctx
+	// ends, so a stopped watch does not leave it running.
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				p.logger.Debug().Str("key", key).Msg("stopping watcher for key due to context termination")
 				return
+			case <-done:
+				return
 			case <-ticker.C:
 				if st, ok, err := p.getCurrentValue(ctx, key); err == nil && ok {
-					select {
-					case updates <- st:
-					default:
-					}
+					send(st)
 				} else {
 					p.logger.Warn().Err(err).Str("key", key).Msg("failed to proactively get current value from postgres")
 				}
@@ -810,26 +835,23 @@ func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string)
 		}
 	}()
 
-	// Send initial value
-	if st, ok, err := p.getCurrentValue(ctx, key); err == nil && ok {
-		updates <- st
-	}
-
+	var once sync.Once
 	cleanup := func() {
-		ticker.Stop()
+		once.Do(func() {
+			listener.mu.Lock()
+			defer listener.mu.Unlock()
 
-		listener.mu.Lock()
-		defer listener.mu.Unlock()
-
-		// Remove this watcher
-		for i, ch := range listener.watchers {
-			if ch == updates {
-				listener.watchers = append(listener.watchers[:i], listener.watchers[i+1:]...)
-				break
+			// Remove this watcher
+			for i, ch := range listener.watchers {
+				if ch == updates {
+					listener.watchers = append(listener.watchers[:i], listener.watchers[i+1:]...)
+					break
+				}
 			}
-		}
 
-		close(updates)
+			close(done)
+			close(updates)
+		})
 	}
 
 	return updates, cleanup, nil

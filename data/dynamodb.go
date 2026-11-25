@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -731,17 +732,39 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	}
 
 	updates := make(chan CounterInt64State, 1)
-
-	// Start polling goroutine
-	ticker := time.NewTicker(d.statePollInterval)
 	done := make(chan struct{})
 
+	// send delivers a state without blocking, and never after cleanup.
+	// cleanup closes done and updates under mu, so a sender that holds mu
+	// and sees done open knows updates is open too.
+	var mu sync.Mutex
+	send := func(st CounterInt64State) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		select {
+		case <-done:
+			return false
+		default:
+		}
+		select {
+		case updates <- st:
+			return true
+		default:
+			return false
+		}
+	}
+
+	// last is the newest state delivered: every change of it goes out,
+	// older timestamps too, and the counter decides (spec §14). A state
+	// not delivered (full buffer) goes out on the next poll.
+	var last CounterInt64State
+	if st, ok, err := d.getSimpleValue(ctx, key); err == nil && ok && send(st) {
+		last = st
+	}
+
+	ticker := time.NewTicker(d.statePollInterval)
 	go func() {
 		defer ticker.Stop()
-		// last is the newest state delivered: every change of it goes out,
-		// older timestamps too, and the counter decides (spec §14). A state
-		// not delivered (full buffer) goes out on the next poll.
-		var last CounterInt64State
 		for {
 			select {
 			case <-ctx.Done():
@@ -754,25 +777,21 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 					d.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
 					continue
 				}
-				if ok && st != last {
-					select {
-					case updates <- st:
-						last = st
-					default:
-					}
+				if ok && st != last && send(st) {
+					last = st
 				}
 			}
 		}
 	}()
 
-	// Get initial value
-	if st, ok, err := d.getSimpleValue(ctx, key); err == nil && ok {
-		updates <- st
-	}
-
+	var once sync.Once
 	cleanup := func() {
-		close(done)
-		close(updates)
+		once.Do(func() {
+			mu.Lock()
+			defer mu.Unlock()
+			close(done)
+			close(updates)
+		})
 	}
 
 	return updates, cleanup, nil
