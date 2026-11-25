@@ -79,7 +79,7 @@ projects:
         # pool's finalized slot by more than svm.maxFinalizedSlotLag (omit for
         # the default of 100 slots; set it to 0 to disable the filter and let
         # every upstream vote regardless of lag), and any request carrying
-        # minContextSlot skips upstreams known to be behind it.
+        # minContextSlot tries upstreams known to be behind it last.
 
       - architecture: svm
         svm:

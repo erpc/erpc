@@ -200,8 +200,8 @@ func GetFinality(ctx context.Context, network common.Network, req *common.Normal
 // against. Use this for routing/selection; use GetFinality for cacheability.
 //
 // The second difference is the unpinned case. Routing must follow the node:
-// FilterByMinContextSlot comparing an unpinned request against an upstream's
-// PROCESSED tip keeps upstreams whose finalized root is still behind
+// OrderByMinContextSlot comparing an unpinned request against an upstream's
+// PROCESSED tip puts first upstreams whose finalized root is still behind
 // minContextSlot, which is a guaranteed -32016. Caching stays stricter on
 // purpose — see the note on GetFinality's step 3 — because cache permanence is
 // a one-way door and nothing forces us through it.
