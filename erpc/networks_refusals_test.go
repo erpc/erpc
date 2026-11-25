@@ -21,7 +21,7 @@ import (
 // call still fails over: the cap is per-provider configuration, so another
 // upstream may allow the same gas. A node that lowers the gas to its cap
 // instead, as geth does, is asked after the upstreams whose measured cap
-// gives the gas.
+// gives the gas, by a retry or a hedge alike.
 func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 	const gasCapError = "user-specified gas exceeds provider limit"
 	const callTo = `"to":"0x0000000000000000000000000000000000000001"`
@@ -117,11 +117,15 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 			Failsafe: []*common.FailsafeConfig{{
 				Retry: &common.RetryPolicyConfig{MaxAttempts: 6, Delay: common.Duration(10 * time.Millisecond)},
+				Hedge: &common.HedgePolicyConfig{Delay: common.NewStaticDuration(50 * time.Millisecond), MaxCount: 1},
 			}},
 		})
 
 		// The upstream the policy orders first gets the low cap, so only the gas
-		// order sends a call past it.
+		// order sends a call past it. The high cap answers after the hedge
+		// fires, so only the hedge's wait keeps the low cap out of the race.
+		// Its provider refuses gas above 1B, as a proxy before a node may.
+		const refusedGas = `"gas":"0x8f0d1801"`
 		ups := network.upstreamsRegistry.GetNetworkUpstreams(ctx, network.networkId)
 		require.Len(t, ups, 2)
 		low, high := ups[0].Id(), ups[1].Id()
@@ -140,9 +144,23 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 					}).
 					Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": fmt.Sprintf("0x%064x", left)})
 			}
-			gock.New("http://" + host).Post("").Persist().
-				Filter(ethCallTo(host, calls[id])).
-				Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": answers[id]})
+			countCall := ethCallTo(host, calls[id])
+			if id == high {
+				gock.New("http://" + host).Post("").Persist().
+					Filter(func(r *http.Request) bool {
+						return strings.Contains(util.SafeReadBody(r), refusedGas) && countCall(r)
+					}).
+					Reply(200).Delay(200 * time.Millisecond).JSON(gasCapReply)
+			}
+			reply := gock.New("http://" + host).Post("").Persist().
+				Filter(func(r *http.Request) bool {
+					return !(id == high && strings.Contains(util.SafeReadBody(r), refusedGas)) && countCall(r)
+				}).
+				Reply(200)
+			if id == high {
+				reply.Delay(200 * time.Millisecond)
+			}
+			reply.JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": answers[id]})
 		}
 
 		// A read of the cap starts its probe.
@@ -162,9 +180,11 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 		assert.Equal(t, answers[low], forward(`"gas":"0x1c9c380"`))
 		// 100M gas: only the 600M cap gives it.
 		assert.Equal(t, answers[high], forward(`"gas":"0x5f5e100"`))
-		// 2.4B gas: neither cap gives it, so the larger cap goes first.
-		assert.Equal(t, answers[high], forward(`"gas":"0x8f0d1801"`))
-		assert.Equal(t, int32(1), calls[low].Load(), "the 50M upstream runs only the 30M call")
+		// 2.4B gas: neither cap gives it, so the larger cap goes first. Its
+		// refusal ends its attempt, so the 50M cap runs the call.
+		assert.Equal(t, answers[low], forward(refusedGas))
+		assert.Equal(t, int32(2), calls[high].Load(), "the 600M upstream runs the 100M call and goes first for 2.4B")
+		assert.Equal(t, int32(2), calls[low].Load(), "the 50M upstream runs the 30M call and the refused 2.4B call")
 	})
 }
 

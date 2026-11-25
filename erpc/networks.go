@@ -2632,6 +2632,21 @@ func (g gasFit) compare(a, b common.Upstream) int {
 	return 0
 }
 
+// waits reports whether u, short of the gas, waits for an upstream ahead of
+// it in gas order (compare) that req holds in flight: u's out-of-gas revert
+// would end a hedge race the other may still answer.
+func (g gasFit) waits(req *common.NormalizedRequest, u common.Upstream) bool {
+	if !g.short(u) {
+		return false
+	}
+	for _, v := range req.Upstreams() {
+		if v.Id() != u.Id() && g.compare(v, u) < 0 && req.Reserved(v) {
+			return true
+		}
+	}
+	return false
+}
+
 // gasShortLast moves the upstreams short of an eth_call's gas (gasFit) to
 // the end of ups; ups itself when none is.
 func gasShortLast(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream) []common.Upstream {
@@ -3259,6 +3274,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// The fallback escape below swaps in its own picker, leaving the
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
+		// gas orders this leg's picks of an eth_call that names its gas.
+		gas := callGasFit(execSpanCtx, effectiveReq)
 		// An empty result is a miss (rather than a legitimate answer, like a
 		// pending tx's null receipt) only for a concrete block whose empty
 		// answer the refusal rule does not call final.
@@ -3303,6 +3320,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// upstream is available for the next failsafe retry round.
 					effectiveReq.ConsumedUpstreams.Delete(u)
 					loopSpan.SetAttributes(attribute.Bool("duplicate_selection", true))
+					loopSpan.End()
+					break
+				}
+				// A node short of the gas waits for a fitter one in flight
+				// (gasFit.waits); a consensus slot keeps its participant.
+				if !oneUpstreamOnly && gas.waits(effectiveReq, u) {
+					effectiveReq.ConsumedUpstreams.Delete(u)
+					loopSpan.SetAttributes(attribute.Bool("gas_short_waits", true))
 					loopSpan.End()
 					break
 				}
