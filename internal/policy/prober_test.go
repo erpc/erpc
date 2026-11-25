@@ -19,6 +19,7 @@ import (
 type stubProbeUpstream struct {
 	id      string
 	routing *common.UpstreamRoutingConfig
+	rewrite map[string]string
 	calls   atomic.Int64
 	// blockUntil is fired before each Forward returns, so a test can
 	// hold a probe in-flight to assert the inflight counter is
@@ -31,7 +32,7 @@ func (s *stubProbeUpstream) VendorName() string   { return "v" + s.id }
 func (s *stubProbeUpstream) NetworkId() string    { return "evm:1" }
 func (s *stubProbeUpstream) NetworkLabel() string { return "evm:1" }
 func (s *stubProbeUpstream) Config() *common.UpstreamConfig {
-	return &common.UpstreamConfig{Id: s.id, Routing: s.routing}
+	return &common.UpstreamConfig{Id: s.id, Routing: s.routing, MethodRewrite: s.rewrite}
 }
 func (s *stubProbeUpstream) Logger() *zerolog.Logger { l := zerolog.Nop(); return &l }
 func (s *stubProbeUpstream) Vendor() common.Vendor   { return nil }

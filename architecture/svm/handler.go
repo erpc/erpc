@@ -99,7 +99,9 @@ func (h *SvmArchitectureHandler) HandleUpstreamPreForward(ctx context.Context, n
 }
 
 func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, network common.Network, upstream common.Upstream, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error, skipCacheRead bool) (*common.NormalizedResponse, error) {
-	method, mErr := req.Method()
+	// The method this upstream ran (methodRewrite target): a rename to a
+	// write keeps the write's no-failover guard.
+	method, mErr := common.UpstreamMethod(req, upstream)
 	if mErr != nil {
 		return resp, err
 	}

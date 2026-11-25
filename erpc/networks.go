@@ -4509,7 +4509,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 
 	// A non-retryable write (e.g. creating a filter) must reach an upstream
 	// once per call, so it is never shared with a concurrent identical call.
-	if method, _ := req.Method(); evm.IsNonRetryableWriteMethod(method) || svm.IsNonRetryableWriteMethod(method) {
+	if n.isNonRetryableWrite(req) {
 		return nil, nil, nil
 	}
 
@@ -4714,6 +4714,32 @@ func filterMethodEligible(ups []common.Upstream, method string) ([]common.Upstre
 		}
 	}
 	return eligible, dropped
+}
+
+// isNonRetryableWrite reports whether req is a write that must reach one
+// upstream once (evm/svm.IsNonRetryableWriteMethod): by the client's method,
+// or by the method any of this network's upstreams runs for it
+// (methodRewrite). The network-scope guards (hedge, multiplexing) run
+// before an upstream is chosen, so a rename to a write on any upstream
+// makes the request a write.
+func (n *Network) isNonRetryableWrite(req *common.NormalizedRequest) bool {
+	method, _ := req.Method()
+	if method == "" {
+		return false
+	}
+	isWrite := func(m string) bool { return evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m) }
+	if isWrite(method) {
+		return true
+	}
+	if n.upstreamsRegistry == nil {
+		return false
+	}
+	for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.networkId) {
+		if wire := u.Config().WireMethod(method); wire != method && isWrite(wire) {
+			return true
+		}
+	}
+	return false
 }
 
 // servesMethod reports whether u is expected to serve method ("" = any) per

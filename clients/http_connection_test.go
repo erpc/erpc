@@ -113,6 +113,10 @@ func (u *phonyUpstream) Id() string {
 	return "phony-upstream"
 }
 
+func (u *phonyUpstream) Config() *common.UpstreamConfig {
+	return nil
+}
+
 type noopErrorExtractor struct{}
 
 func (e *noopErrorExtractor) Extract(resp *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, upstream common.Upstream) error {

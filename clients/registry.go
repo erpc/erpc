@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -129,7 +130,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 							clientErr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, err)
 						}
 					}
-				} else if parsedUrl.Scheme == "grpc" || parsedUrl.Scheme == "grpc+bds" || parsedUrl.Scheme == "grpcs" {
+				} else if util.IsGrpcScheme(parsedUrl.Scheme) {
 					grpcPoolSize, grpcHealthCheckService := 0, ""
 					if cfg.Grpc != nil {
 						grpcPoolSize = cfg.Grpc.PoolSize
