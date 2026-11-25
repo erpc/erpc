@@ -723,6 +723,11 @@ func (e *networkExecutor) runHedge(
 		_ = idx // hedge tag could be carried via a typed context value
 		return inner(hctx, req)
 	}
+	// seatErr is a consensus seat's own answer: the first error an upstream
+	// returned in this race. A hedge leg that finds no upstream left tries
+	// none and returns the shared ErrUpstreamsExhausted, which consensus
+	// counts as infrastructure; it must not replace the seat's answer.
+	var seatErr error
 	keep := func(r *common.NormalizedResponse, err error) bool {
 		kept := false
 		defer func() {
@@ -755,6 +760,10 @@ func (e *networkExecutor) runHedge(
 			}
 		}
 		if err != nil {
+			if consensusSlot && seatErr == nil && r == nil &&
+				!common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+				seatErr = err
+			}
 			// No sibling can select an upstream any more: end the race now
 			// instead of waiting for the remaining hedge timers.
 			if req != nil && req.AllUpstreamsFailedPermanently() {
@@ -817,9 +826,14 @@ func (e *networkExecutor) runHedge(
 		},
 		OnIdle: pace.IdleUntil,
 	}
-	return failsafe.RunHedged[*common.NormalizedResponse](
+	resp, err := failsafe.RunHedged[*common.NormalizedResponse](
 		ctx, e.cfg.Hedge.MaxCount, delayFn, wrapInner, keep, release, hooks,
 	)
+	if resp == nil && seatErr != nil &&
+		common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+		return nil, seatErr
+	}
+	return resp, err
 }
 
 // settledNull reports whether req's empty result ends its hedge race: a
