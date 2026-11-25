@@ -1526,10 +1526,12 @@ func (n *Network) rangeHeld(method string, u common.Upstream, refusal *common.He
 }
 
 // holdsBlock reports whether u's evidence (reachedHead, uncredited)
-// reaches block.
+// reaches block. headLagToleranceBlocks is no evidence: it lets the gate
+// send u a block above its head, and a node whose log index lacks the block
+// answers eth_getLogs with an empty range (spec §19 P23-band-tol).
 func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 	head := n.reachedHead(u, 0)
-	return head > 0 && common.EvmHeadReaches(u, head, block)
+	return head > 0 && head >= block
 }
 
 // logsGate is the logs gate on u's empty eth_getLogs answer of req, one
