@@ -664,10 +664,12 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 		}
 		n += int64(nn)
 	} else if r.Error != nil {
-		// Marshal error on demand if errBytes not set
-		r.errBytes, err = SonicCfg.Marshal(r.Error)
-		if err != nil {
-			return n, err
+		// Marshal the error on demand into a local. WriteTo holds read locks
+		// only, and multiplexing gives one response to many clients that
+		// render it at the same time, so writing r.errBytes here is a race.
+		errBytes, merr := SonicCfg.Marshal(r.Error)
+		if merr != nil {
+			return n, merr
 		}
 
 		nn, err = w.Write([]byte(`,"error":`))
@@ -676,7 +678,7 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 		}
 		n += int64(nn)
 
-		nn, err = w.Write(r.errBytes)
+		nn, err = w.Write(errBytes)
 		if err != nil {
 			return n + int64(nn), err
 		}
