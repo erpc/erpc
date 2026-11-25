@@ -1,6 +1,7 @@
 package svm
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strconv"
@@ -123,8 +124,8 @@ func normalizeScanResult(result []byte, sent string) []byte {
 	if common.SonicCfg.Unmarshal(result, &outer) != nil {
 		return nil
 	}
-	if _, ok := outer["accounts"]; ok {
-		if !normalizeScanPage(outer, sent) {
+	if list := scanPageList(outer); list != "" {
+		if !normalizeScanPage(outer, list, sent) {
 			return nil
 		}
 		return encodeRawObject(outer)
@@ -137,7 +138,7 @@ func normalizeScanResult(result []byte, sent string) []byte {
 	if common.SonicCfg.Unmarshal(value, &page) != nil {
 		return nil
 	}
-	if _, ok := page["accounts"]; !ok || !normalizeScanPage(page, sent) {
+	if list := scanPageList(page); list == "" || !normalizeScanPage(page, list, sent) {
 		return nil
 	}
 	encoded := encodeRawObject(page)
@@ -148,20 +149,34 @@ func normalizeScanResult(result []byte, sent string) []byte {
 	return encodeRawObject(outer)
 }
 
+// scanPageList names the field that holds a page's accounts, or "" when the
+// object is not a page. It is "accounts", or "value" when that is an array:
+// Alchemy's getTokenAccountsByOwnerV2 without withContext answers
+// {"value":[...],"paginationKey":...}.
+func scanPageList(page map[string]sonic.NoCopyRawMessage) string {
+	if _, ok := page["accounts"]; ok {
+		return "accounts"
+	}
+	if v := bytes.TrimLeft(page["value"], " \t\r\n"); len(v) > 0 && v[0] == '[' {
+		return "value"
+	}
+	return ""
+}
+
 // normalizeScanPage applies the two response rules to one page in place and
 // reports whether it changed anything. A next key that is not the page's last
 // account stays: a provider that answers after the key then names the last
 // account its filter rejected, and a page that starts at that account rejects
 // it again.
-func normalizeScanPage(page map[string]sonic.NoCopyRawMessage, sent string) bool {
+func normalizeScanPage(page map[string]sonic.NoCopyRawMessage, list, sent string) bool {
 	var accounts []sonic.NoCopyRawMessage
-	if common.SonicCfg.Unmarshal(page["accounts"], &accounts) != nil {
+	if common.SonicCfg.Unmarshal(page[list], &accounts) != nil {
 		return false
 	}
 	changed := false
 	if sent != "" && len(accounts) > 0 && accountPubkey(accounts[0]) == sent {
 		accounts = accounts[1:]
-		page["accounts"] = encodeRawArray(accounts)
+		page[list] = encodeRawArray(accounts)
 		// count, where a provider sends it, is the page's length.
 		var count int64
 		if raw, ok := page["count"]; ok && common.SonicCfg.Unmarshal(raw, &count) == nil && count > 0 {

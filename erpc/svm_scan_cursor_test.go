@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -21,18 +20,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSvm_ProgramAccountScan_OneCursorAcrossVendors walks a getProgramAccountsV2
-// scan whose pages alternate between two vendors with opposite cursor meanings,
-// every page carrying a minContextSlot past both vendors' last poll. A third,
-// fresher vendor does not serve V2 scans. The client must get every account
-// once, in key order, and never the fresher vendor's "Method not found".
-func TestSvm_ProgramAccountScan_OneCursorAcrossVendors(t *testing.T) {
+// TestSvm_V2Scan_OneCursorAcrossVendors walks V2 scans whose pages alternate
+// between two vendors with opposite cursor meanings, every page carrying a
+// minContextSlot past both vendors' last poll. A third, fresher vendor does not
+// serve V2 scans. The client must get every account once, in key order, and
+// never the fresher vendor's "Method not found". Only the after-key vendor
+// serves getTokenAccountsByOwnerV2, and it puts the page's accounts in "value",
+// beside paginationKey.
+func TestSvm_V2Scan_OneCursorAcrossVendors(t *testing.T) {
 	util.ResetGock()
 	t.Cleanup(util.ResetGock)
 	const (
 		fresh = "svm-scan-fresh.localhost" // past minContextSlot, no V2 scans
 		after = "svm-scan-after.localhost" // page after the key, next key = last account
-		from  = "svm-scan-from.localhost"  // page from the key, next key = following account
+		from  = "svm-scan-from.localhost"  // page from the key, next key = last account + 1
+
+		gpa      = "getProgramAccountsV2"
+		tabo     = "getTokenAccountsByOwnerV2"
+		notFound = `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`
 	)
 	util.SetupMocksForSvmStatePoller(fresh, 1000, 990)
 	util.SetupMocksForSvmStatePoller(after, 990, 980)
@@ -49,23 +54,35 @@ func TestSvm_ProgramAccountScan_OneCursorAcrossVendors(t *testing.T) {
 		want = append(want, scanB58Encode(key))
 	}
 
+	asks := func(host string, methods ...string) func(*http.Request) bool {
+		return func(r *http.Request) bool {
+			body := util.SafeReadBody(r)
+			return r.URL.Host == host && slices.ContainsFunc(methods, func(m string) bool {
+				return strings.Contains(body, `"method":"`+m+`"`)
+			})
+		}
+	}
 	var freshCalls atomic.Int32
 	gock.New("http://" + fresh).Post("").Persist().
-		Filter(func(r *http.Request) bool {
-			return r.URL.Host == fresh && strings.Contains(util.SafeReadBody(r), `"method":"getProgramAccountsV2"`)
-		}).
+		Filter(asks(fresh, gpa, tabo)).
 		Reply(200).
 		Map(func(res *http.Response) *http.Response {
 			freshCalls.Add(1)
 			return res
 		}).
-		BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`)
+		BodyString(notFound)
+	gock.New("http://" + from).Post("").Persist().
+		Filter(asks(from, tabo)).
+		Reply(200).
+		BodyString(notFound)
 	served := map[string]*atomic.Int32{after: {}, from: {}}
 	for host, startsAfterKey := range map[string]bool{after: true, from: false} {
+		methods := []string{gpa}
+		if startsAfterKey {
+			methods = append(methods, tabo)
+		}
 		gock.New("http://" + host).Post("").Persist().
-			Filter(func(r *http.Request) bool {
-				return r.URL.Host == host && strings.Contains(util.SafeReadBody(r), `"method":"getProgramAccountsV2"`)
-			}).
+			Filter(asks(host, methods...)).
 			Reply(200).
 			Map(func(res *http.Response) *http.Response {
 				served[host].Add(1)
@@ -85,61 +102,80 @@ func TestSvm_ProgramAccountScan_OneCursorAcrossVendors(t *testing.T) {
 		svmUpstreamConfig("from", from),
 	})
 
-	var got []string
-	var cursor *string
-	for page := range 2 * len(keys) {
-		if page%2 == 0 {
-			net.PinUpstreamOrderForTest("fresh", "after", "from")
-		} else {
-			net.PinUpstreamOrderForTest("fresh", "from", "after")
+	type account struct {
+		Pubkey string `json:"pubkey"`
+	}
+	scan := func(method string, params func(cfg map[string]interface{}) []interface{}) []string {
+		var got []string
+		var cursor *string
+		for page := range 2 * len(keys) {
+			if page%2 == 0 {
+				net.PinUpstreamOrderForTest("fresh", "after", "from")
+			} else {
+				net.PinUpstreamOrderForTest("fresh", "from", "after")
+			}
+			cfg := map[string]interface{}{"encoding": "base64", "limit": 2, "minContextSlot": 995}
+			if cursor != nil {
+				cfg["paginationKey"] = *cursor
+			}
+			body, err := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": page + 1, "method": method, "params": params(cfg)})
+			require.NoError(t, err)
+			resp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(body))
+			require.NoError(t, err, "%s page %d", method, page)
+			jrr, err := resp.JsonRpcResponse(ctx)
+			require.NoError(t, err)
+			var result struct {
+				Accounts      []account `json:"accounts"`
+				Value         []account `json:"value"`
+				Count         *int      `json:"count"`
+				PaginationKey *string   `json:"paginationKey"`
+			}
+			require.NoError(t, json.Unmarshal(jrr.GetResultBytes(), &result), "%s page %d: %s", method, page, jrr.GetResultBytes())
+			accounts := append(result.Accounts, result.Value...)
+			if result.Count != nil {
+				assert.Equal(t, len(accounts), *result.Count, "%s page %d: count is the page's length", method, page)
+			}
+			for _, a := range accounts {
+				got = append(got, a.Pubkey)
+			}
+			if result.PaginationKey == nil {
+				break
+			}
+			cursor = result.PaginationKey
 		}
-		cfg := map[string]interface{}{"encoding": "base64", "limit": 2, "minContextSlot": 995}
-		if cursor != nil {
-			cfg["paginationKey"] = *cursor
-		}
-		params, err := json.Marshal([]interface{}{"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", cfg})
-		require.NoError(t, err)
-		req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"getProgramAccountsV2","params":%s}`, page+1, params)))
-		resp, err := svmProjectForward(ctx, net, req)
-		require.NoError(t, err, "page %d", page)
-		jrr, err := resp.JsonRpcResponse(ctx)
-		require.NoError(t, err)
-		var result struct {
-			Accounts []struct {
-				Pubkey string `json:"pubkey"`
-			} `json:"accounts"`
-			Count         int     `json:"count"`
-			PaginationKey *string `json:"paginationKey"`
-		}
-		require.NoError(t, json.Unmarshal(jrr.GetResultBytes(), &result), "page %d: %s", page, jrr.GetResultBytes())
-		assert.Equal(t, len(result.Accounts), result.Count, "page %d: count is the page's length", page)
-		for _, a := range result.Accounts {
-			got = append(got, a.Pubkey)
-		}
-		if result.PaginationKey == nil {
-			break
-		}
-		cursor = result.PaginationKey
+		return got
 	}
 
-	assert.Equal(t, want, got, "each account once, in key order")
-	assert.Positive(t, freshCalls.Load(), "the fresher vendor is still asked first")
+	const tokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	assert.Equal(t, want, scan(gpa, func(cfg map[string]interface{}) []interface{} {
+		return []interface{}{tokenProgram, cfg}
+	}), "%s: each account once, in key order", gpa)
 	assert.Positive(t, served[after].Load(), "the after-key vendor served pages")
 	assert.Positive(t, served[from].Load(), "the from-key vendor served pages")
+
+	assert.Equal(t, want, scan(tabo, func(cfg map[string]interface{}) []interface{} {
+		return []interface{}{"5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", map[string]interface{}{"programId": tokenProgram}, cfg}
+	}), "%s: each account once, in key order", tabo)
+	assert.Positive(t, freshCalls.Load(), "the fresher vendor is still asked first")
 }
 
-// scanVendorPage answers one getProgramAccountsV2 request with 2 accounts the
-// way one vendor dialect does.
+// scanVendorPage answers one V2 scan request with 2 accounts the way one vendor
+// dialect does.
 func scanVendorPage(t *testing.T, keys [][]byte, startsAfterKey bool, reqBody string) []byte {
 	var req struct {
 		ID     json.RawMessage   `json:"id"`
+		Method string            `json:"method"`
 		Params []json.RawMessage `json:"params"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(reqBody), &req))
+	cfgIdx := 1
+	if req.Method == "getTokenAccountsByOwnerV2" {
+		cfgIdx = 2
+	}
 	var cfg struct {
 		PaginationKey *string `json:"paginationKey"`
 	}
-	require.NoError(t, json.Unmarshal(req.Params[1], &cfg))
+	require.NoError(t, json.Unmarshal(req.Params[cfgIdx], &cfg))
 	start := 0
 	if cfg.PaginationKey != nil {
 		cursor := scanB58Decode32(*cfg.PaginationKey)
@@ -162,16 +198,18 @@ func scanVendorPage(t *testing.T, keys [][]byte, startsAfterKey bool, reqBody st
 	}
 	var next interface{}
 	if end < len(keys) {
-		if startsAfterKey {
-			next = scanB58Encode(keys[end-1])
-		} else {
-			next = scanB58Encode(keys[end])
+		last := new(big.Int).SetBytes(keys[end-1])
+		if !startsAfterKey {
+			last.Add(last, big.NewInt(1))
 		}
+		next = scanB58Encode(last.FillBytes(make([]byte, 32)))
 	}
-	body, err := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "id": req.ID,
-		"result": map[string]interface{}{"accounts": accounts, "count": len(accounts), "paginationKey": next},
-	})
+	result := map[string]interface{}{"accounts": accounts, "count": len(accounts), "paginationKey": next}
+	if req.Method == "getTokenAccountsByOwnerV2" {
+		// Alchemy without withContext: the accounts sit in "value", beside paginationKey.
+		result = map[string]interface{}{"value": accounts, "paginationKey": next}
+	}
+	body, err := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": req.ID, "result": result})
 	require.NoError(t, err)
 	return body
 }
