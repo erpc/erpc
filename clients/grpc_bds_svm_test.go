@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"testing"
 
 	"github.com/blockchain-data-standards/manifesto/svm"
@@ -13,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -944,5 +947,222 @@ func benchmarkSvmGetBlock(b *testing.B, encoding string) {
 		if err != nil || out == nil {
 			b.Fatalf("getBlock(%s) failed: %v", encoding, err)
 		}
+	}
+}
+
+// gsfaServer is a real svm.RPCQueryService on an in-process gRPC listener. It
+// answers GetSignaturesForAddress with rows (or err), and GetSignatureStatuses
+// with a status per cursor from cursorSlots (absent = not found).
+type gsfaServer struct {
+	svm.UnimplementedRPCQueryServiceServer
+	rows        []*svm.SignatureInfo
+	err         error
+	cursorSlots map[string]uint64
+	got         *svm.GetSignaturesForAddressRequest
+	gsfaCalls   int
+	statusCalls int
+}
+
+func (s *gsfaServer) GetSignaturesForAddress(_ context.Context, in *svm.GetSignaturesForAddressRequest) (*svm.GetSignaturesForAddressResponse, error) {
+	s.gsfaCalls++
+	s.got = in
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &svm.GetSignaturesForAddressResponse{Signatures: s.rows}, nil
+}
+
+func (s *gsfaServer) GetSignatureStatuses(_ context.Context, in *svm.GetSignatureStatusesRequest) (*svm.GetSignatureStatusesResponse, error) {
+	s.statusCalls++
+	out := &svm.GetSignatureStatusesResponse{}
+	for _, sig := range in.Signatures {
+		slot, found := s.cursorSlots[string(sig)]
+		out.Statuses = append(out.Statuses, &svm.SignatureStatus{Found: found, Slot: slot})
+	}
+	return out, nil
+}
+
+func gsfaSig(b byte) []byte {
+	sig := make([]byte, 64)
+	for i := range sig {
+		sig[i] = b
+	}
+	return sig
+}
+
+func gsfaRow(sig byte, slot uint64, idx uint32) *svm.SignatureInfo {
+	return &svm.SignatureInfo{Signature: gsfaSig(sig), Slot: slot, TransactionIndex: &idx}
+}
+
+// callSvmGsfa sends one getSignaturesForAddress through the handler to a real
+// gRPC server, with root as the network's finalized root (0 = unknown).
+func callSvmGsfa(t *testing.T, s *gsfaServer, root int64, paramsJSON string) ([]byte, error) {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := grpc.NewServer()
+	svm.RegisterRPCQueryServiceServer(srv, s)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	cc, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cc.Close() })
+
+	req := common.NewNormalizedRequest([]byte(
+		`{"jsonrpc":"2.0","id":1,"method":"getSignaturesForAddress","params":` + paramsJSON + `}`,
+	))
+	req.SetNetwork(fakeSvmRootNetwork{root: root, majority: root})
+	jrReq, err := req.JsonRpcRequest()
+	require.NoError(t, err)
+	out, err := (&GenericGrpcBdsClient{}).handleSvmGetSignaturesForAddress(
+		context.Background(), &bdsConn{svmClient: svm.NewRPCQueryServiceClient(cc)}, req, jrReq)
+	if err != nil {
+		return nil, err
+	}
+	jrr, err := out.JsonRpcResponse()
+	require.NoError(t, err)
+	return jrr.GetResultBytes(), nil
+}
+
+// TestSvmGetSignaturesForAddressRender: a served page renders byte for byte as
+// Agave does — sorted keys, raw err JSON, null memo/blockTime when absent,
+// confirmationStatus from the network root — and the request reaches the
+// reader field by field.
+func TestSvmGetSignaturesForAddressRender(t *testing.T) {
+	addr := svm.Base58Encode(svmTestKey(7))
+	errJSON := `{"InstructionError":[0,{"Custom":1}]}`
+	memo := "[5] hello"
+	blockTime := int64(1700000000)
+	newest := gsfaRow(3, 120, 4)
+	newest.Err, newest.Memo, newest.BlockTime = &errJSON, &memo, &blockTime
+	rooted := gsfaRow(2, 100, 1)
+	rooted.BlockTime = &blockTime
+	s := &gsfaServer{rows: []*svm.SignatureInfo{newest, rooted, gsfaRow(1, 100, 0)}}
+
+	params := fmt.Sprintf(`[%q,{"commitment":"confirmed","limit":3,"minContextSlot":90}]`, addr)
+	got, err := callSvmGsfa(t, s, 100, params)
+	require.NoError(t, err)
+
+	want := `[` +
+		`{"blockTime":1700000000,"confirmationStatus":"confirmed","err":{"InstructionError":[0,{"Custom":1}]},"memo":"[5] hello","signature":"` + svm.Base58Encode(gsfaSig(3)) + `","slot":120,"transactionIndex":4},` +
+		`{"blockTime":1700000000,"confirmationStatus":"finalized","err":null,"memo":null,"signature":"` + svm.Base58Encode(gsfaSig(2)) + `","slot":100,"transactionIndex":1},` +
+		`{"blockTime":null,"confirmationStatus":"finalized","err":null,"memo":null,"signature":"` + svm.Base58Encode(gsfaSig(1)) + `","slot":100,"transactionIndex":0}` +
+		`]`
+	assert.Equal(t, want, string(got))
+	t.Logf("served page: %s", got)
+
+	require.NotNil(t, s.got)
+	assert.Equal(t, svmTestKey(7), s.got.Address)
+	assert.Equal(t, uint32(3), s.got.Limit)
+	assert.Equal(t, svm.Commitment_COMMITMENT_CONFIRMED, s.got.Commitment)
+	require.NotNil(t, s.got.MinContextSlot)
+	assert.Equal(t, uint64(90), *s.got.MinContextSlot)
+	assert.Nil(t, s.got.Before)
+	assert.Nil(t, s.got.Until)
+}
+
+// TestSvmGetSignaturesForAddressFinalized: Agave pages a finalized request
+// from its root, so rows above the root are dropped. A short page stays
+// served (the reader stopped at `until`, nothing older is missing); a full
+// page that lost rows is missing the rows below it and falls through. A
+// cursor resolves among rooted slots only, so one above the root falls
+// through too.
+func TestSvmGetSignaturesForAddressFinalized(t *testing.T) {
+	addr := svm.Base58Encode(svmTestKey(7))
+	before, until := svm.Base58Encode(gsfaSig(9)), svm.Base58Encode(gsfaSig(8))
+	rows := func() []*svm.SignatureInfo {
+		return []*svm.SignatureInfo{gsfaRow(3, 120, 0), gsfaRow(2, 100, 0), gsfaRow(1, 90, 0)}
+	}
+	tests := []struct {
+		name        string
+		params      string
+		cursorSlots map[string]uint64
+		wantSlots   []uint64
+		wantStatus  int
+	}{
+		{"short page drops rows above root", fmt.Sprintf(`[%q]`, addr), nil, []uint64{100, 90}, 0},
+		{"explicit finalized, larger limit", fmt.Sprintf(`[%q,{"commitment":"finalized","limit":10}]`, addr), nil, []uint64{100, 90}, 0},
+		{"full page that lost rows falls through", fmt.Sprintf(`[%q,{"limit":3}]`, addr), nil, nil, 0},
+		{"rooted cursors are served", fmt.Sprintf(`[%q,{"before":%q,"until":%q}]`, addr, before, until),
+			map[string]uint64{string(gsfaSig(9)): 100, string(gsfaSig(8)): 80}, []uint64{100, 90}, 1},
+		{"before above root falls through", fmt.Sprintf(`[%q,{"before":%q}]`, addr, before),
+			map[string]uint64{string(gsfaSig(9)): 101}, nil, 1},
+		{"unknown until falls through", fmt.Sprintf(`[%q,{"until":%q}]`, addr, until), map[string]uint64{}, nil, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &gsfaServer{rows: rows(), cursorSlots: tc.cursorSlots}
+			got, err := callSvmGsfa(t, s, 100, tc.params)
+			assert.Equal(t, 1, s.gsfaCalls)
+			assert.Equal(t, tc.wantStatus, s.statusCalls)
+			assert.Equal(t, svm.Commitment_COMMITMENT_CONFIRMED, s.got.Commitment, "finalized asks the reader at confirmed")
+			if tc.wantSlots == nil {
+				require.Error(t, err)
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported), "must fall through, got %v", err)
+				return
+			}
+			require.NoError(t, err)
+			var page []struct {
+				Slot               uint64 `json:"slot"`
+				ConfirmationStatus string `json:"confirmationStatus"`
+			}
+			require.NoError(t, json.Unmarshal(got, &page))
+			require.Len(t, page, len(tc.wantSlots))
+			for i, row := range page {
+				assert.Equal(t, tc.wantSlots[i], row.Slot)
+				assert.Equal(t, "finalized", row.ConfirmationStatus)
+			}
+		})
+	}
+}
+
+// TestSvmGetSignaturesForAddressUnservable: every request or answer the
+// handler cannot prove Agave-exact falls through as unsupported, and a
+// request it refuses up front never reaches the reader.
+func TestSvmGetSignaturesForAddressUnservable(t *testing.T) {
+	addr := svm.Base58Encode(svmTestKey(7))
+	sig := svm.Base58Encode(gsfaSig(9))
+	noIndex := gsfaRow(1, 90, 0)
+	noIndex.TransactionIndex = nil
+	badErr := gsfaRow(1, 90, 0)
+	notJSON := "InstructionError"
+	badErr.Err = &notJSON
+	tests := []struct {
+		name     string
+		root     int64
+		params   string
+		rows     []*svm.SignatureInfo
+		grpcErr  error
+		wantCall bool
+	}{
+		{"processed", 100, fmt.Sprintf(`[%q,{"commitment":"processed"}]`, addr), nil, nil, false},
+		{"limit 0", 100, fmt.Sprintf(`[%q,{"limit":0}]`, addr), nil, nil, false},
+		{"limit above 1000", 100, fmt.Sprintf(`[%q,{"limit":1001}]`, addr), nil, nil, false},
+		{"fractional limit", 100, fmt.Sprintf(`[%q,{"limit":1.5}]`, addr), nil, nil, false},
+		{"string limit", 100, fmt.Sprintf(`[%q,{"limit":"10"}]`, addr), nil, nil, false},
+		{"unknown config key", 100, fmt.Sprintf(`[%q,{"encoding":"json"}]`, addr), nil, nil, false},
+		{"config not an object", 100, fmt.Sprintf(`[%q,"finalized"]`, addr), nil, nil, false},
+		{"too many params", 100, fmt.Sprintf(`[%q,{},1]`, addr), nil, nil, false},
+		{"bad base58 address", 100, `["0OIl"]`, nil, nil, false},
+		{"short address", 100, fmt.Sprintf(`[%q]`, svm.Base58Encode([]byte{1, 2, 3})), nil, nil, false},
+		{"bad before", 100, fmt.Sprintf(`[%q,{"before":%q}]`, addr, addr), nil, nil, false},
+		{"negative minContextSlot", 100, fmt.Sprintf(`[%q,{"minContextSlot":-1}]`, addr), nil, nil, false},
+		{"minContextSlot above root at finalized", 100, fmt.Sprintf(`[%q,{"minContextSlot":101}]`, addr), nil, nil, false},
+		{"no known root", 0, fmt.Sprintf(`[%q,{"commitment":"confirmed","until":%q}]`, addr, sig), nil, nil, false},
+		{"reader out of range", 100, fmt.Sprintf(`[%q]`, addr), nil, status.Error(codes.OutOfRange, "floor reached"), true},
+		{"reader unimplemented", 100, fmt.Sprintf(`[%q]`, addr), nil, status.Error(codes.Unimplemented, "address index off"), true},
+		{"row without transactionIndex", 100, fmt.Sprintf(`[%q]`, addr), []*svm.SignatureInfo{noIndex}, nil, true},
+		{"err not JSON", 100, fmt.Sprintf(`[%q]`, addr), []*svm.SignatureInfo{badErr}, nil, true},
+		{"rows not newest-first", 100, fmt.Sprintf(`[%q]`, addr), []*svm.SignatureInfo{gsfaRow(1, 80, 0), gsfaRow(2, 90, 0)}, nil, true},
+		{"more rows than limit", 100, fmt.Sprintf(`[%q,{"limit":1}]`, addr), []*svm.SignatureInfo{gsfaRow(2, 90, 1), gsfaRow(1, 90, 0)}, nil, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &gsfaServer{rows: tc.rows, err: tc.grpcErr}
+			_, err := callSvmGsfa(t, s, tc.root, tc.params)
+			require.Error(t, err)
+			assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnsupported), "must fall through, got %v", err)
+			assert.Equal(t, tc.wantCall, s.gsfaCalls == 1)
+		})
 	}
 }

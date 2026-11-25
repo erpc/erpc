@@ -435,6 +435,7 @@ var bdsHandlers = map[string]func(*GenericGrpcBdsClient, context.Context, *bdsCo
 	"getTransaction":            (*GenericGrpcBdsClient).handleSvmGetTransaction,
 	"getBlockTime":              (*GenericGrpcBdsClient).handleSvmGetBlockTime,
 	"getBlocksWithLimit":        (*GenericGrpcBdsClient).handleSvmGetBlocksWithLimit,
+	"getSignaturesForAddress":   (*GenericGrpcBdsClient).handleSvmGetSignaturesForAddress,
 }
 
 // GrpcBdsServes reports whether a BDS server serves method: a request
