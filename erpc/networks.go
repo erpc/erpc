@@ -58,8 +58,11 @@ type Network struct {
 	// with evm.servedTip.followCacheHead it lowers network-wide reads'
 	// Latest (anchorHead). servedLatest is the Latest those reads took
 	// last, its Clamp's floor.
-	cacheHead         *evm.CacheHead
-	servedLatest      atomic.Int64
+	cacheHead    *evm.CacheHead
+	servedLatest atomic.Int64
+	// callGasCapShown is the network eth_call gas cap the gauge shows
+	// (MetricNetworkCallGasCap), so callGasCap sets it only on a change.
+	callGasCapShown   atomic.Uint64
 	metricsTracker    *health.Tracker
 	upstreamsRegistry *upstream.UpstreamsRegistry
 	// policyEngine replaces the legacy `selectionPolicyEvaluator *PolicyEvaluator` field
@@ -2593,82 +2596,6 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	return gasShortLast(ctx, req, n.lateLast(upsList))
 }
 
-// gasFit is the gas an eth_call names, which orders upstreams by their
-// measured eth_call gas cap (EvmStatePoller.CallGasCap): a node lowers a
-// larger gas to its cap, and the out-of-gas revert that follows is an
-// answer, not retried. 0, for any other request, orders nothing.
-type gasFit uint64
-
-func callGasFit(ctx context.Context, req *common.NormalizedRequest) gasFit {
-	if method, _ := req.Method(); method != "eth_call" {
-		return 0
-	}
-	return gasFit(evm.CallGas(ctx, req))
-}
-
-// short reports whether u's measured cap is below the gas. An upstream
-// with no measured cap counts as giving it.
-func (g gasFit) short(u common.Upstream) bool {
-	if g == 0 {
-		return false
-	}
-	c := upstreamCallGasCap(u)
-	return c > 0 && c < uint64(g)
-}
-
-// compare puts upstreams that give the gas before those short of it, these
-// largest cap first; 0 between two that give it, so a stable sort keeps
-// their order.
-func (g gasFit) compare(a, b common.Upstream) int {
-	sa, sb := g.short(a), g.short(b)
-	switch {
-	case sa && sb:
-		return cmp.Compare(upstreamCallGasCap(b), upstreamCallGasCap(a))
-	case sa:
-		return 1
-	case sb:
-		return -1
-	}
-	return 0
-}
-
-// waits reports whether u, short of the gas, waits for an upstream ahead of
-// it in gas order (compare) that req holds in flight: u's out-of-gas revert
-// would end a hedge race the other may still answer.
-func (g gasFit) waits(req *common.NormalizedRequest, u common.Upstream) bool {
-	if !g.short(u) {
-		return false
-	}
-	for _, v := range req.Upstreams() {
-		if v.Id() != u.Id() && g.compare(v, u) < 0 && req.Reserved(v) {
-			return true
-		}
-	}
-	return false
-}
-
-// gasShortLast moves the upstreams short of an eth_call's gas (gasFit) to
-// the end of ups; ups itself when none is.
-func gasShortLast(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream) []common.Upstream {
-	g := callGasFit(ctx, req)
-	if !slices.ContainsFunc(ups, g.short) {
-		return ups
-	}
-	out := slices.Clone(ups)
-	slices.SortStableFunc(out, g.compare)
-	return out
-}
-
-// upstreamCallGasCap is u's measured eth_call gas cap, 0 while unknown.
-func upstreamCallGasCap(u common.Upstream) uint64 {
-	if eu, ok := u.(common.EvmUpstream); ok {
-		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
-			return sp.CallGasCap()
-		}
-	}
-	return 0
-}
-
 // readsHeadTag reports whether req's block tag reads the newest head
 // (latestHead): "latest" interpolated to it, or "pending", sent as is and
 // served from it. "finalized", "safe" and "earliest" read an older block,
@@ -2878,6 +2805,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if err := n.prepareRequest(ctx, req); err != nil {
 		common.SetTraceSpanError(forwardSpan, err)
 		return nil, err
+	}
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		n.lowerCallGas(ctx, req)
 	}
 	forwardSpan.SetAttributes(attribute.String("request.finality", req.Finality(ctx).String()))
 

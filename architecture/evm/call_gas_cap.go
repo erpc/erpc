@@ -160,3 +160,15 @@ func CallGas(ctx context.Context, req *common.NormalizedRequest) uint64 {
 	}
 	return gas
 }
+
+// SetCallGas sets the gas field of jrq's first param, the call object of an
+// eth_call that names its gas, to gas. It replaces the params slice and the
+// call object with copies (replaceParamAtPath): the client's may be shared.
+func SetCallGas(jrq *common.JsonRpcRequest, gas uint64) {
+	jrq.Lock()
+	defer jrq.Unlock()
+	if np, ok := replaceParamAtPath(jrq.Params, []interface{}{0, "gas"}, fmt.Sprintf("0x%x", gas)); ok {
+		jrq.Params = np
+		jrq.InvalidateCacheHash()
+	}
+}

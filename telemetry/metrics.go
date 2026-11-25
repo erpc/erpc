@@ -135,6 +135,12 @@ var (
 		Help:      "Dynamically computed block time per network in milliseconds.",
 	}, []string{"project", "network"})
 
+	MetricNetworkCallGasCap = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_call_gas_cap",
+		Help:      "Most gas one eth_call may use on the network: evm.callGasCap, else the lowest cap of its upstreams; eRPC lowers a larger gas to it.",
+	}, []string{"project", "network"})
+
 	MetricUpstreamWebsocketConnected = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "upstream_websocket_connected",

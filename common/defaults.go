@@ -1896,6 +1896,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.TraceFilterAutoSplittingRangeThreshold == 0 && defaults.Evm.TraceFilterAutoSplittingRangeThreshold != 0 {
 			u.Evm.TraceFilterAutoSplittingRangeThreshold = defaults.Evm.TraceFilterAutoSplittingRangeThreshold
 		}
+		if u.Evm.CallGasCap == 0 {
+			u.Evm.CallGasCap = defaults.Evm.CallGasCap
+		}
 	}
 	// Mirrors the evm branch above: upstreamDefaults.svm is a template, so an
 	// upstream that omits its own `svm` block inherits the whole thing (copied,
@@ -2130,6 +2133,9 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.TraceFilterAutoSplittingRangeThreshold == 0 && defaults != nil {
 		e.TraceFilterAutoSplittingRangeThreshold = defaults.TraceFilterAutoSplittingRangeThreshold
 	}
+	if e.CallGasCap == 0 && defaults != nil {
+		e.CallGasCap = defaults.CallGasCap
+	}
 	if e.SubscriptionSource == "" && defaults != nil {
 		e.SubscriptionSource = defaults.SubscriptionSource
 	}
@@ -2351,6 +2357,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
 				n.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
+			}
+			if n.Evm.CallGasCap == 0 {
+				n.Evm.CallGasCap = defaults.Evm.CallGasCap
 			}
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency

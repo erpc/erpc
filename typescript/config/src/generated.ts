@@ -1254,6 +1254,13 @@ export interface EvmUpstreamConfig {
    * per pack. Nil (default) sends every eth_call alone.
    */
   multicall3?: EvmMulticall3Config;
+  /**
+   * CallGasCap is the most gas this upstream lets one eth_call use, in place
+   * of the cap eRPC measures. Set it for a node that refuses gas above its
+   * cap, which the probe cannot measure, or to correct a measure. 0
+   * (default) measures it.
+   */
+  callGasCap?: number /* uint64 */;
 }
 /**
  * EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
@@ -2039,6 +2046,15 @@ export interface EvmNetworkConfig {
    * or arbtrace_filter request is split. Zero falls back to 10.
    */
   traceFilterSplitConcurrency?: number /* int */;
+  /**
+   * CallGasCap is the most gas one eth_call may use on this network: eRPC
+   * lowers a larger gas to it, as a node lowers it to its own cap. 0
+   * (default) takes the lowest cap of the network's upstreams
+   * (upstreams[].evm.callGasCap, else measured); a value above it is a
+   * promise only the upstreams that give it keep, so it fails when they
+   * are down.
+   */
+  callGasCap?: number /* uint64 */;
   /**
    * EnforceBlockAvailability controls whether the network should enforce per-upstream
    * block availability bounds (upper/lower) for methods by default. Method-level config may override.
@@ -3033,6 +3049,22 @@ export interface ExecStateSnapshot {
 }
 
 //////////
+// source: history_evidence.go
+
+/**
+ * HistoryEvidence is what an architecture tells the consensus history waivers
+ * (waiveAgreementOnEmptyOutsideRetention, waiveAgreementOnMissingData) about
+ * where data sits on its chain. A block is the chain's height unit: an EVM
+ * block number, an SVM slot. Every method fails closed: it answers 0, false or
+ * "" when it cannot tell, and the waiver then holds the quota.
+ */
+export type HistoryEvidence = any;
+
+//////////
+// source: history_evidence_evm.go
+
+
+//////////
 // source: network.go
 
 export type NetworkArchitecture = string;
@@ -3107,6 +3139,13 @@ export interface EvmHead {
    * head's anchor lowered it) or unknown.
    */
   latestat: any /* time.Time */;
+  /**
+   * Anchored is set when the read follows the cache's fresh head
+   * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+   * read of latest is served from the cache or by number, never sent to
+   * an upstream as the tag. Unset with no cache head, or a stale one.
+   */
+  anchored: boolean;
   /**
    * NextAt is the earliest time the lane's next block may come: LatestAt
    * plus the shorter of half a block and the shortest recent step of the

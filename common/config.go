@@ -1504,6 +1504,11 @@ type EvmUpstreamConfig struct {
 	// Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
 	// per pack. Nil (default) sends every eth_call alone.
 	Multicall3 *EvmMulticall3Config `yaml:"multicall3,omitempty" json:"multicall3"`
+	// CallGasCap is the most gas this upstream lets one eth_call use, in place
+	// of the cap eRPC measures. Set it for a node that refuses gas above its
+	// cap, which the probe cannot measure, or to correct a measure. 0
+	// (default) measures it.
+	CallGasCap uint64 `yaml:"callGasCap,omitempty" json:"callGasCap"`
 }
 
 // EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
@@ -3125,6 +3130,13 @@ type EvmNetworkConfig struct {
 	// TraceFilterSplitConcurrency caps in-flight sub-requests when a trace_filter
 	// or arbtrace_filter request is split. Zero falls back to 10.
 	TraceFilterSplitConcurrency int `yaml:"traceFilterSplitConcurrency,omitempty" json:"traceFilterSplitConcurrency"`
+	// CallGasCap is the most gas one eth_call may use on this network: eRPC
+	// lowers a larger gas to it, as a node lowers it to its own cap. 0
+	// (default) takes the lowest cap of the network's upstreams
+	// (upstreams[].evm.callGasCap, else measured); a value above it is a
+	// promise only the upstreams that give it keep, so it fails when they
+	// are down.
+	CallGasCap uint64 `yaml:"callGasCap,omitempty" json:"callGasCap"`
 	// EnforceBlockAvailability controls whether the network should enforce per-upstream
 	// block availability bounds (upper/lower) for methods by default. Method-level config may override.
 	// When nil or true, enforcement is enabled.
