@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,6 +18,9 @@ import (
 // state override.
 const callGasCapCode = "0x5a60005260206000f3"
 
+// errCallGasCapAnswer marks a probe the node answered without the code's word.
+var errCallGasCapAnswer = errors.New("gas cap probe answered")
+
 const (
 	// callGasCapProbeLow is far below the 50M cap geth ships with: its gas
 	// left shows what the call itself costs on the upstream's chain.
@@ -25,7 +29,10 @@ const (
 	callGasCapProbeHigh int64 = 1 << 40
 	// callGasCapProbeEvery is how long a measure stands: a provider changes
 	// its cap only by configuration.
-	callGasCapProbeEvery   = time.Hour
+	callGasCapProbeEvery = time.Hour
+	// callGasCapRetryAfter is how soon a failed probe runs again: a node
+	// that was down or rate limited may answer a minute later.
+	callGasCapRetryAfter   = time.Minute
 	callGasCapProbeTimeout = 30 * time.Second
 )
 
@@ -47,8 +54,8 @@ func (e *EvmStatePoller) CallGasCap() uint64 {
 // probeCallGasCap measures the cap with two runs of callGasCapCode. A node
 // lowers a larger gas to its cap without an error, so the high run's gas left
 // is the cap less the call's own cost, and the low run, under any cap, shows
-// that cost. A failed run keeps the last measure: a node that refuses gas
-// above its cap, as Monad does, stays unknown.
+// that cost. A failed run keeps the last measure (callGasCapProbeFailed): a
+// node that refuses gas above its cap, as Monad does, stays unknown.
 func (e *EvmStatePoller) probeCallGasCap() {
 	if ok, _ := e.upstream.ShouldHandleMethod("eth_call"); !ok {
 		return
@@ -57,12 +64,12 @@ func (e *EvmStatePoller) probeCallGasCap() {
 	defer cancel()
 	low, err := e.callGasLeft(ctx, callGasCapProbeLow)
 	if err != nil {
-		e.logger.Debug().Err(err).Msg("eth_call gas cap probe failed")
+		e.callGasCapProbeFailed(err)
 		return
 	}
 	high, err := e.callGasLeft(ctx, callGasCapProbeHigh)
 	if err != nil {
-		e.logger.Debug().Err(err).Msg("eth_call gas cap probe failed")
+		e.callGasCapProbeFailed(err)
 		return
 	}
 	gasCap := high
@@ -75,6 +82,23 @@ func (e *EvmStatePoller) probeCallGasCap() {
 	e.stateMu.RUnlock()
 	telemetry.MetricUpstreamCallGasCap.WithLabelValues(e.projectId, e.upstream.VendorName(), networkLabel, e.upstream.Id()).Set(float64(gasCap))
 	e.logger.Debug().Int64("callGasCap", gasCap).Msg("measured eth_call gas cap")
+}
+
+// callGasCapProbeFailed keeps the next probe an hour away when the node
+// answered, by refusing the gas or with a result other than the code's word:
+// a probe a minute later gets the same answer. After any other failure (a
+// timeout, a server error, a rate limit) it dates the probe back, so the next
+// read of the cap after callGasCapRetryAfter probes again.
+func (e *EvmStatePoller) callGasCapProbeFailed(err error) {
+	e.logger.Debug().Err(err).Msg("eth_call gas cap probe failed")
+	if errors.Is(err, errCallGasCapAnswer) || common.HasErrorCode(err,
+		common.ErrCodeEndpointExecutionException,
+		common.ErrCodeEndpointClientSideException,
+		common.ErrCodeEndpointUnsupported,
+	) {
+		return
+	}
+	e.callGasCapAt.Store(time.Now().Add(callGasCapRetryAfter - callGasCapProbeEvery).UnixNano())
 }
 
 // callGasLeft is the gas left at the start of callGasCapCode run by an
@@ -97,15 +121,15 @@ func (e *EvmStatePoller) callGasLeft(ctx context.Context, gas int64) (int64, err
 		return 0, fmt.Errorf("no json-rpc response: %w", err)
 	}
 	if jrr.Error != nil {
-		return 0, jrr.Error
+		return 0, fmt.Errorf("%w %w", errCallGasCapAnswer, jrr.Error)
 	}
 	word := strings.Trim(string(jrr.GetResultBytes()), `"`)
 	if len(word) != len("0x")+64 {
-		return 0, fmt.Errorf("gas cap probe answered %s", word)
+		return 0, fmt.Errorf("%w %s", errCallGasCapAnswer, word)
 	}
 	left, ok := parseHexQuantity(word)
 	if !ok || left <= 0 || left > gas {
-		return 0, fmt.Errorf("gas cap probe answered %s", word)
+		return 0, fmt.Errorf("%w %s", errCallGasCapAnswer, word)
 	}
 	return left, nil
 }

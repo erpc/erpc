@@ -146,8 +146,9 @@ type EvmStatePoller struct {
 	pushedAt atomic.Int64
 
 	// callGasCap is the upstream's measured eth_call gas cap, 0 while
-	// unknown; callGasCapAt is the unix nanoseconds its last probe started
-	// (CallGasCap).
+	// unknown; callGasCapAt is the unix nanoseconds its last probe started,
+	// dated back after one that failed without the node's answer, so a probe
+	// falls due an hour after it (CallGasCap).
 	callGasCap   atomic.Uint64
 	callGasCapAt atomic.Int64
 
