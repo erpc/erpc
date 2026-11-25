@@ -128,6 +128,9 @@ type ChainTracker struct {
 	receiptsReadAt atomic.Int64
 
 	// Owned by the tracker's goroutine.
+	// probeLogs is whether the outage's next probe asks for logs, once it
+	// alternates between receipts and logs (runProbe); false after a success.
+	probeLogs bool
 	// receiptsDown is when receipts sweeps, which ask every upstream, began
 	// failing in a row; zero after a receipts answer is held. A block
 	// leaves reorgWindow, and its job, sooner than LogsFallbackAfter on a
