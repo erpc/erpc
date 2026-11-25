@@ -354,9 +354,9 @@ func TestEffectiveCommitment(t *testing.T) {
 // one deliberate asymmetry between the two predicates.
 //
 // Routing follows the node: an unpinned getBlock is evaluated at the finalized
-// root, so FilterByMinContextSlot must compare the upstream's FinalizedSlot.
-// Comparing its processed tip instead keeps upstreams whose root still trails
-// minContextSlot — a guaranteed -32016 round-trip.
+// root, so OrderByMinContextSlot must compare the upstream's FinalizedSlot.
+// Comparing its processed tip instead ranks upstreams whose root still trails
+// minContextSlot as ahead — a guaranteed -32016 round-trip.
 //
 // Cacheability does NOT follow it. `finality: finalized` is the zero value an
 // unset-TTL policy matches, so a wrong promotion pins a value forever while a

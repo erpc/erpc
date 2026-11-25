@@ -290,7 +290,7 @@ func (e *JsonRpcErrorExtractor) Extract(
 	//   -32012: scan aborted by rooted-slot movement — transient, another node
 	//           (or a plain retry) succeeds.
 	//   -32016: node hasn't reached the request's minContextSlot; a fresher
-	//           upstream satisfies it (selection also pre-filters on this).
+	//           upstream satisfies it (selection tries trailing upstreams last).
 	//           Also reaches the client natively — clients back off on this one
 	//           rather than treating it as a hard failure.
 	//   -32019: this node's long-term storage backend is unreachable.

@@ -2943,25 +2943,25 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 			}
 		}
-		// (2) minContextSlot prefilter — an upstream whose tracked slot (at the
-		// request's commitment) is behind the caller's minContextSlot is a
-		// guaranteed -32016 round-trip; skip it before selection. Applies to any
-		// SVM request carrying the param, with or without consensus. Defensive
-		// fallback inside the filter keeps the pool non-empty so the -32016
-		// failover path still reports the truth when every upstream trails.
+		// (2) minContextSlot ordering — an upstream whose tracked slot (at the
+		// request's commitment) is more than a poll behind the caller's
+		// minContextSlot goes last, never out: the tracked slot trails the node
+		// by up to a poll, and the upstreams ahead may not serve the method.
+		// Applies to any SVM request carrying the param, with or without
+		// consensus.
 		if mcs := svm.MinContextSlotOf(ctx, req); mcs > 0 {
-			before := len(upsList)
 			// Same commitment-vs-finality distinction as (1): pick the slot
 			// counter the upstream will actually evaluate minContextSlot
 			// against.
 			finalized := svm.IsFinalizedCommitment(ctx, n, req)
-			upsList = svm.FilterByMinContextSlot(upsList, mcs, finalized)
-			if len(upsList) != before {
+			var moved int
+			upsList, moved = svm.OrderByMinContextSlot(n, upsList, mcs, finalized)
+			if moved > 0 {
 				lg.Debug().
-					Int("before", before).
-					Int("after", len(upsList)).
+					Int("behind", moved).
+					Int("upstreams", len(upsList)).
 					Int64("minContextSlot", mcs).
-					Msg("svm: filtered upstreams behind minContextSlot")
+					Msg("svm: upstreams behind minContextSlot ordered last")
 			}
 		}
 	}
