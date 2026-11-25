@@ -2508,7 +2508,12 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, ref string, policies co
 	if err != nil {
 		return polledBlock{}, err
 	}
-	if jrr == nil || jrr.Error != nil {
+	// Forward can end with no response and no error, so jrr can be nil.
+	// Report no block, as an empty result does; the callers count a failed poll.
+	if jrr == nil {
+		return polledBlock{}, nil
+	}
+	if jrr.Error != nil {
 		return polledBlock{}, jrr.Error
 	}
 
@@ -2555,7 +2560,15 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	if jrr == nil || jrr.Error != nil {
+	// Forward can end with no response and no error, so jrr can be nil.
+	// false would claim the node is synced, so report an error instead.
+	if jrr == nil {
+		return false, &common.BaseError{
+			Code:    "ErrEvmStatePoller",
+			Message: "upstream returned no response and no error for eth_syncing",
+		}
+	}
+	if jrr.Error != nil {
 		return false, jrr.Error
 	}
 
