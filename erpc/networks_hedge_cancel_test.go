@@ -462,6 +462,78 @@ func TestHedgeConsensus_MissingDataSlotIdlePastCap_RoundEndsEarly(t *testing.T) 
 	})
 }
 
+func TestHedgeConsensus_LoneEmptyAtCap_WaitsForSecondVote(t *testing.T) {
+	// Production shape (BSC recent getLogs, 2-of-3): one vendor has no data
+	// yet, one lags and answers an empty page, and the third holds the logs
+	// but answers after the empty cap. The cap used to serve the lone empty.
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	isLogs := func(r *http.Request) bool {
+		return strings.Contains(util.SafeReadBody(r), "eth_getLogs")
+	}
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Filter(isLogs).
+		Persist().
+		Reply(200).
+		JSON(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error":   map[string]interface{}{"code": -32000, "message": "header not found"},
+		})
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Filter(isLogs).
+		Persist().
+		Reply(200).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": []interface{}{}})
+	const logsDelay = 300 * time.Millisecond
+	gock.New("http://rpc3.localhost").
+		Post("").
+		Filter(isLogs).
+		Persist().
+		Reply(200).
+		Delay(logsDelay).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": []interface{}{
+			map[string]interface{}{"address": "0x55d398326f99059ff775485246999027b3197955", "blockNumber": "0x11118880", "logIndex": "0x0"},
+		}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const emptyCap = 50 * time.Millisecond
+	network := setupTestNetworkWithHedgeAndConsensus(t, ctx,
+		3,
+		&common.HedgePolicyConfig{
+			Delay:    common.NewStaticDuration(5 * time.Second),
+			MaxCount: 1,
+		},
+		&common.ConsensusPolicyConfig{
+			MaxParticipants:         3,
+			AgreementThreshold:      2,
+			DisputeBehavior:         common.ConsensusDisputeBehaviorAcceptMostCommonValidResult,
+			LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorAcceptMostCommonValidResult,
+			PreferNonEmpty:          &common.TRUE,
+			PreferLargerResponses:   &common.FALSE,
+			MaxWaitOnResult:         common.NewStaticDuration(emptyCap),
+			MaxWaitOnEmpty:          common.NewStaticDuration(emptyCap),
+		},
+		&common.RetryPolicyConfig{MaxAttempts: 1},
+	)
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x11118880","toBlock":"0x11118880"}]}`))
+	start := time.Now()
+	resp, err := network.Forward(ctx, req)
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	jrr, jrrErr := resp.JsonRpcResponse()
+	require.NoError(t, jrrErr)
+	assert.Contains(t, jrr.GetResultString(), "0x55d398326f99059ff775485246999027b3197955",
+		"one empty vote must not end the round while another upstream can still answer")
+	assert.GreaterOrEqual(t, elapsed, logsDelay)
+}
+
 func TestHedgeConsensus_EmptyOldBlockIsKeptAsSlotVote(t *testing.T) {
 	// Live smokebox shape: two internals return JSON-RPC null for a pruned
 	// block; two archives agree on it. Hedge keep() used to reject that null

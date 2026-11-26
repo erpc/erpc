@@ -556,6 +556,23 @@ func (e *executor) runAnalyzer(
 			}
 		}
 	}
+	// loneEmptyHeld marks a round whose wait cap passed while its only vote
+	// was one empty answer: the round waits on for a second vote, then
+	// seals at once (see holdsLoneEmpty).
+	loneEmptyHeld := false
+	// sealAtCap ends the round at its wait cap, unless the cap would serve
+	// one empty answer that no second upstream has checked.
+	sealAtCap := func() bool {
+		if e.holdsLoneEmpty(analysis) {
+			loneEmptyHeld = true
+			return false
+		}
+		waitCapped = true
+		if !e.config.fireAndForget {
+			cancelAttempts()
+		}
+		return true
+	}
 	// idleCapped marks a round the wait cap ended before it fired: every
 	// slot still out was idle past the cap, so none could answer in time.
 	idleCapped := false
@@ -563,11 +580,10 @@ func (e *executor) runAnalyzer(
 		if shortCircuited || !pace.idleThrough(waitDeadline, received) {
 			return false
 		}
-		waitCapped = true
-		idleCapped = true
-		if !e.config.fireAndForget {
-			cancelAttempts()
+		if !sealAtCap() {
+			return false
 		}
+		idleCapped = true
 		return true
 	}
 
@@ -581,10 +597,7 @@ func (e *executor) runAnalyzer(
 			received++
 		case <-timerC():
 			// Wait cap fired — resolve with what we have.
-			waitCapped = true
-			if !e.config.fireAndForget {
-				cancelAttempts()
-			}
+			sealAtCap()
 		case <-pace.wake:
 			endIfIdle(received)
 		}
@@ -632,6 +645,10 @@ func (e *executor) runAnalyzer(
 				cancelAttempts()
 			}
 		}
+		// The cap already passed on a lone empty: this vote checks it.
+		if loneEmptyHeld && !shortCircuited && sealAtCap() {
+			break
+		}
 		// A slot may have gone idle before this response armed the cap.
 		if endIfIdle(received) {
 			break
@@ -671,6 +688,7 @@ func (e *executor) runAnalyzer(
 		attribute.Bool("wait_capped", waitCapped),
 		attribute.Bool("idle_capped", idleCapped),
 		attribute.Int("responses.collected", len(responses)),
+		attribute.Bool("lone_empty_held", loneEmptyHeld),
 	)
 
 	vendorNames := []string{}
@@ -952,6 +970,24 @@ func (e *executor) executeParticipant(
 		Upstream: upstream,
 		Index:    index,
 	}
+}
+
+// holdsLoneEmpty reports whether a wait cap must not end a round yet: its
+// only vote is one empty answer and the policy needs more votes to agree.
+// A node that lags the chain answers a read at its head with empty data, so
+// a lone empty is the answer a second vote most often overturns. Slot and
+// request timeouts still bound the round, and a round whose every slot
+// answered resolves as before.
+func (e *executor) holdsLoneEmpty(analysis *consensusAnalysis) bool {
+	if analysis == nil || analysis.validParticipants != 1 || !analysis.isLowParticipants(e.config.agreementThreshold) {
+		return false
+	}
+	for _, g := range analysis.groups {
+		if g.ResponseType == ResponseTypeEmpty {
+			return true
+		}
+	}
+	return false
 }
 
 // shouldShortCircuit decides if remaining requests can be safely cancelled.

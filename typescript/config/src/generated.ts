@@ -1506,7 +1506,9 @@ export interface ConsensusPolicyConfig {
    * MaxWaitOnEmpty caps how long consensus waits for additional participants
    * AFTER the first response (of any kind — empty, error, or non-empty)
    * has arrived. Typically set larger than MaxWaitOnResult because an
-   * operator is more patient when no useful data is in hand yet.
+   * operator is more patient when no useful data is in hand yet. Neither
+   * cap ends a round whose only vote is one empty answer while
+   * AgreementThreshold needs more: the round waits for a second vote.
    * Same shape as MaxWaitOnResult; defaults applied when consensus is set.
    */
   maxWaitOnEmpty?: Duration | AdaptiveDuration;
