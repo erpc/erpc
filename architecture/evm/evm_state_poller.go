@@ -1441,6 +1441,25 @@ const (
 // it arrives as a push does.
 func (k HeaderKind) pushed() bool { return k == HeaderStreamed || k == HeaderCached }
 
+// label names k in metrics: the via of erpc_head_sight_delay_seconds.
+func (k HeaderKind) label() string {
+	switch k {
+	case HeaderPolled:
+		return "poll"
+	case HeaderStreamed:
+		return "push"
+	case HeaderForkPolled:
+		return "fork_poll"
+	case HeaderCached:
+		return "cache"
+	case HeaderReadFull:
+		return "read"
+	case HeaderHeld:
+		return "held"
+	}
+	return "unknown"
+}
+
 // PollIntake takes a bound poller's latest and finalized headers.
 type PollIntake interface {
 	// Polled takes the header a poll of latest, sent at sent, fetched;
