@@ -37,18 +37,19 @@ const (
 )
 
 // CallGasCap is the most gas the upstream lets one eth_call use, as its last
-// probe measured it; 0 while unknown. A read that finds no probe started in
-// the last callGasCapProbeEvery starts one in the background, so only an
-// upstream asked about, for an eth_call that names its gas, is probed.
-func (e *EvmStatePoller) CallGasCap() uint64 {
+// probe measured it; 0 while unknown. measuring is true until the first probe
+// ends. A read that finds no probe started in the last callGasCapProbeEvery
+// starts one in the background, so only an upstream asked about, for an
+// eth_call that names its gas, is probed.
+func (e *EvmStatePoller) CallGasCap() (uint64, bool) {
 	if e.IsObjectNull() {
-		return 0
+		return 0, false
 	}
 	now := time.Now().UnixNano()
 	if at := e.callGasCapAt.Load(); now-at >= int64(callGasCapProbeEvery) && e.callGasCapAt.CompareAndSwap(at, now) {
 		e.bg.Go(e.probeCallGasCap)
 	}
-	return e.callGasCap.Load()
+	return e.callGasCap.Load(), !e.callGasCapProbed.Load()
 }
 
 // probeCallGasCap measures the cap with two runs of callGasCapCode. A node
@@ -57,6 +58,7 @@ func (e *EvmStatePoller) CallGasCap() uint64 {
 // that cost. A failed run keeps the last measure (callGasCapProbeFailed): a
 // node that refuses gas above its cap, as Monad does, stays unknown.
 func (e *EvmStatePoller) probeCallGasCap() {
+	defer e.callGasCapProbed.Store(true)
 	if ok, _ := e.upstream.ShouldHandleMethod("eth_call"); !ok {
 		return
 	}
