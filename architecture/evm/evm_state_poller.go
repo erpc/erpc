@@ -148,9 +148,11 @@ type EvmStatePoller struct {
 	// callGasCap is the upstream's measured eth_call gas cap, 0 while
 	// unknown; callGasCapAt is the unix nanoseconds its last probe started,
 	// dated back after one that failed without the node's answer, so a probe
-	// falls due an hour after it (CallGasCap).
-	callGasCap   atomic.Uint64
-	callGasCapAt atomic.Int64
+	// falls due an hour after it (CallGasCap); callGasCapProbed is set once a
+	// probe has ended, so an unknown cap no longer means one being measured.
+	callGasCap       atomic.Uint64
+	callGasCapAt     atomic.Int64
+	callGasCapProbed atomic.Bool
 
 	// chainIdRecheck is the pending eth_chainId check of a chain-identity
 	// cordon, nil while none; chainIdRecheckUnwatch stops watching appCtx
