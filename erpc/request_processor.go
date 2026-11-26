@@ -15,9 +15,8 @@ import (
 )
 
 type RequestProcessor struct {
-	erpc        *ERPC
-	logger      *zerolog.Logger
-	blockStream *blockStreamManager
+	erpc   *ERPC
+	logger *zerolog.Logger
 }
 
 type RequestInput struct {
@@ -35,7 +34,7 @@ type RequestInput struct {
 }
 
 func NewRequestProcessor(erpc *ERPC, logger *zerolog.Logger) *RequestProcessor {
-	return &RequestProcessor{erpc: erpc, logger: logger, blockStream: newBlockStreamManager()}
+	return &RequestProcessor{erpc: erpc, logger: logger}
 }
 
 func (rp *RequestProcessor) ProcessUnary(
@@ -144,20 +143,22 @@ func (rp *RequestProcessor) ProcessQueryStream(
 	}
 
 	executor := NewEvmQueryExecutor(network, &lg)
-	executor.parentRequestId = nq.ID()
+	executor.parent = nq
+	executor.projectShimPages = true
 	err = executor.Execute(ctx, queryReq, onPage)
 
 	dur := time.Since(start)
 	if err != nil {
 		lg.Info().Err(err).Dur("durationMs", dur).Msgf("query stream completed with error")
 		common.SetTraceSpanError(span, err)
-	} else {
-		lg.Info().Dur("durationMs", dur).Msgf("query stream completed successfully")
+		return err
 	}
-
-	return err
+	lg.Info().Dur("durationMs", dur).Msgf("query stream completed successfully")
+	return nil
 }
 
+// queryMethodFromProto returns the eth_query* method of a QueryService
+// request, or "" for any other message.
 func queryMethodFromProto(req proto.Message) string {
 	switch req.(type) {
 	case *evm.QueryBlocksRequest:
@@ -171,6 +172,6 @@ func queryMethodFromProto(req proto.Message) string {
 	case *evm.QueryTransfersRequest:
 		return "eth_queryTransfers"
 	default:
-		return "unknown"
+		return ""
 	}
 }

@@ -3,13 +3,17 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
+	"github.com/rs/zerolog/log"
 )
 
 // API Key structure for management
@@ -56,6 +60,8 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		return e.handleCordonUpstream(ctx, nq, false)
 	case "erpc_listCordoned":
 		return e.handleListCordoned(ctx, nq)
+	case "erpc_purgeCache":
+		return e.handlePurgeCache(ctx, nq)
 
 	default:
 		return nil, common.NewErrEndpointUnsupported(
@@ -172,7 +178,7 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 		return nil, fmt.Errorf("failed to marshal user data: %w", err)
 	}
 
-	err = connector.Set(ctx, apiKey, userId, userDataBytes, nil)
+	err = connector.Set(ctx, apiKey, auth.DatabaseApiKeyRangeKey, userDataBytes, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store API key: %w", err)
 	}
@@ -236,7 +242,6 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	// List from main index to get all API keys (optimized: only 1 row per API key)
 	results, nextToken, err := connector.List(ctx, data.ConnectorMainIndex, limit, paginationToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list API keys: %w", err)
@@ -250,12 +255,12 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 			continue // Skip invalid records
 		}
 
-		// Create API key object
+		userId, _ := userData["userId"].(string)
 		apiKey := ApiKey{
 			Key:       item.PartitionKey,
-			UserId:    item.RangeKey, // Range key is now the userId directly
-			Enabled:   true,          // Default to enabled if not specified
-			CreatedAt: time.Now(),    // TODO: Add actual timestamps
+			UserId:    userId,
+			Enabled:   true,       // Default to enabled if not specified
+			CreatedAt: time.Now(), // TODO: Add actual timestamps
 			UpdatedAt: time.Now(),
 		}
 
@@ -331,7 +336,7 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*", nil)
+	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, auth.DatabaseApiKeyRangeKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current API key data: %w", err)
 	}
@@ -339,12 +344,6 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 	var currentData map[string]interface{}
 	if err := json.Unmarshal(currentBytes, &currentData); err != nil {
 		return nil, fmt.Errorf("failed to parse current data: %w", err)
-	}
-
-	// Get the userId from current data to know the range key
-	userId, ok := currentData["userId"].(string)
-	if !ok || userId == "" {
-		return nil, fmt.Errorf("missing or invalid userId in current data")
 	}
 
 	// Apply updates
@@ -356,13 +355,13 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		}
 	}
 
-	// Save updated data to the same location
+	// Save updated data to the same record
 	updatedBytes, err := json.Marshal(currentData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal updated data: %w", err)
 	}
 
-	if err := connector.Set(ctx, apiKey, userId, updatedBytes, nil); err != nil {
+	if err := connector.Set(ctx, apiKey, auth.DatabaseApiKeyRangeKey, updatedBytes, nil); err != nil {
 		return nil, fmt.Errorf("failed to update API key: %w", err)
 	}
 
@@ -416,24 +415,19 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	// Get current data to find the userId (range key) for deletion
-	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*", nil)
+	// The record is read to fail on an absent key and to report its user; a
+	// record that is not JSON is still deleted.
+	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, auth.DatabaseApiKeyRangeKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current API key data: %w", err)
 	}
-
-	var currentData map[string]interface{}
-	if err := json.Unmarshal(currentBytes, &currentData); err != nil {
-		return nil, fmt.Errorf("failed to parse current data: %w", err)
+	var current struct {
+		UserId string `json:"userId"`
 	}
+	_ = json.Unmarshal(currentBytes, &current)
+	userId := current.UserId
 
-	// Get the userId from current data to know the range key
-	userId, ok := currentData["userId"].(string)
-	if !ok || userId == "" {
-		return nil, fmt.Errorf("missing or invalid userId in current data")
-	}
-
-	err = connector.Delete(ctx, apiKey, userId)
+	err = connector.Delete(ctx, apiKey, auth.DatabaseApiKeyRangeKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete API key: %w", err)
 	}
@@ -676,9 +670,9 @@ func (e *ERPC) handleCordonUpstream(ctx context.Context, nq *common.NormalizedRe
 	}
 	switch {
 	case p.Method != "*" && cordon:
-		u.Cordon(p.Method, reason)
+		u.CordonClass(p.Method, reason, common.CordonClassOperator)
 	case p.Method != "*":
-		u.Uncordon(p.Method, reason)
+		u.UncordonClass(p.Method, reason, common.CordonClassOperator)
 	case cordon:
 		u.CordonAdmin(ctx, reason)
 	default:
@@ -690,6 +684,205 @@ func (e *ERPC) handleCordonUpstream(ctx context.Context, nq *common.NormalizedRe
 		"method":    p.Method,
 		"cordoned":  cordon,
 		"reason":    reason,
+	})
+}
+
+type purgeCacheParams struct {
+	ProjectID string `json:"projectId"`
+	NetworkID string `json:"networkId"`
+	Method    string `json:"method,omitempty"`
+	BlockRef  string `json:"blockRef,omitempty"`
+	DryRun    bool   `json:"dryRun,omitempty"`
+	Confirm   string `json:"confirm,omitempty"`
+}
+
+func parsePurgeCacheParams(nq *common.NormalizedRequest) (purgeCacheParams, error) {
+	var p purgeCacheParams
+	jrr, err := nq.JsonRpcRequest()
+	if err != nil {
+		return p, err
+	}
+	if len(jrr.Params) == 0 {
+		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: params is required"))
+	}
+	raw, err := json.Marshal(jrr.Params[0])
+	if err != nil {
+		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: invalid params: %w", err))
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: invalid params: %w", err))
+	}
+	if p.ProjectID == "" || p.NetworkID == "" {
+		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: projectId and networkId are required"))
+	}
+	if p.NetworkID == "*" && p.Confirm != "WIPE" {
+		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: networkId \"*\" requires confirm: \"WIPE\""))
+	}
+	// Reject Redis/glob metacharacters in optional filters so a scoped call
+	// cannot silently widen into a network-wide wipe.
+	if strings.ContainsAny(p.Method, "*?[") || strings.ContainsAny(p.BlockRef, "*?[") {
+		return p, common.NewErrInvalidRequest(fmt.Errorf("purgeCache admin: method and blockRef must not contain glob metacharacters (* ? [)"))
+	}
+	return p, nil
+}
+
+// handlePurgeCache deletes (or dry-runs) JSON-RPC cache entries for a
+// project/network scope via the optional CachePurger capability.
+func (e *ERPC) handlePurgeCache(ctx context.Context, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	p, err := parsePurgeCacheParams(nq)
+	if err != nil {
+		return nil, err
+	}
+	prj, err := e.GetProject(p.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+
+	type networkTarget struct {
+		id     string
+		suffix string
+		cache  common.CacheDAL
+	}
+	var targets []networkTarget
+
+	if p.NetworkID == "*" {
+		for _, n := range prj.GetNetworks() {
+			suffix := ""
+			if cfg := n.Config(); cfg != nil {
+				suffix = cfg.CacheKeySuffix
+			}
+			targets = append(targets, networkTarget{id: n.Id(), suffix: suffix, cache: n.cacheDal})
+		}
+	} else {
+		n, err := prj.GetNetwork(ctx, p.NetworkID)
+		if err != nil {
+			return nil, err
+		}
+		suffix := ""
+		if cfg := n.Config(); cfg != nil {
+			suffix = cfg.CacheKeySuffix
+		}
+		targets = append(targets, networkTarget{id: n.Id(), suffix: suffix, cache: n.cacheDal})
+	}
+
+	echoSuffix := ""
+	if len(targets) == 1 {
+		echoSuffix = targets[0].suffix
+	}
+
+	type connectorRow struct {
+		ConnectorId string `json:"connectorId"`
+		Driver      string `json:"driver"`
+		Matched     int64  `json:"matched"`
+		Deleted     int64  `json:"deleted"`
+		DurationMs  int64  `json:"durationMs"`
+		Error       string `json:"error,omitempty"`
+		Unsupported bool   `json:"unsupported,omitempty"`
+	}
+
+	// Aggregate by connector across networks (shared stores are fleet-wide).
+	agg := map[string]*connectorRow{}
+	var order []string
+	var totalDeleted int64
+	actor := nq.UserId()
+
+	for _, t := range targets {
+		if t.cache == nil || t.cache.IsObjectNull() {
+			continue
+		}
+		purger, ok := t.cache.(common.CachePurger)
+		if !ok {
+			row := &connectorRow{
+				ConnectorId: "cache",
+				Driver:      "unknown",
+				Error:       "cache does not implement CachePurger",
+				Unsupported: true,
+			}
+			key := row.ConnectorId + "/" + row.Driver
+			if _, exists := agg[key]; !exists {
+				agg[key] = row
+				order = append(order, key)
+			}
+			telemetry.MetricAdminCachePurgeTotal.WithLabelValues(p.ProjectID, t.id, row.ConnectorId, "unsupported").Inc()
+			continue
+		}
+
+		scope := common.CachePurgeScope{
+			NetworkId: t.id,
+			Suffix:    t.suffix,
+			Method:    p.Method,
+			BlockRef:  p.BlockRef,
+			DryRun:    p.DryRun,
+		}
+		results, err := purger.Purge(ctx, scope)
+		if err != nil {
+			return nil, fmt.Errorf("purgeCache admin: %w", err)
+		}
+		for _, r := range results {
+			key := r.ConnectorId + "/" + r.Driver
+			row, exists := agg[key]
+			if !exists {
+				row = &connectorRow{ConnectorId: r.ConnectorId, Driver: r.Driver}
+				agg[key] = row
+				order = append(order, key)
+			}
+			row.Matched += r.Matched
+			row.Deleted += r.Deleted
+			if r.DurationMs > row.DurationMs {
+				row.DurationMs = r.DurationMs
+			}
+			resultLabel := "ok"
+			if p.DryRun {
+				resultLabel = "dry_run"
+			}
+			if r.Err != nil {
+				if row.Error == "" {
+					row.Error = r.Err.Error()
+				}
+				if errors.Is(r.Err, data.ErrPatternDeleteUnsupported) {
+					row.Unsupported = true
+					resultLabel = "unsupported"
+				} else {
+					resultLabel = "error"
+				}
+			}
+			totalDeleted += r.Deleted
+
+			log.Info().
+				Str("component", "admin").
+				Str("projectId", p.ProjectID).
+				Str("networkId", t.id).
+				Str("method", p.Method).
+				Str("blockRef", p.BlockRef).
+				Bool("dryRun", p.DryRun).
+				Str("connectorId", r.ConnectorId).
+				Int64("matched", r.Matched).
+				Int64("deleted", r.Deleted).
+				Int64("durationMs", r.DurationMs).
+				Str("actor", actor).
+				Str("suffix", t.suffix).
+				Msg("erpc_purgeCache")
+
+			telemetry.MetricAdminCachePurgeTotal.WithLabelValues(p.ProjectID, t.id, r.ConnectorId, resultLabel).Inc()
+		}
+	}
+
+	connectors := make([]connectorRow, 0, len(order))
+	for _, key := range order {
+		connectors = append(connectors, *agg[key])
+	}
+
+	return makeSelectionResponse(nq, map[string]interface{}{
+		"projectId": p.ProjectID,
+		"scope": map[string]interface{}{
+			"networkId":      p.NetworkID,
+			"cacheKeySuffix": echoSuffix,
+			"method":         p.Method,
+			"blockRef":       p.BlockRef,
+		},
+		"dryRun":       p.DryRun,
+		"connectors":   connectors,
+		"totalDeleted": totalDeleted,
 	})
 }
 

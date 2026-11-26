@@ -496,22 +496,65 @@ func TestNetworkPreForward_InjectCommitment_InvalidatesCacheHash(t *testing.T) {
 	}
 }
 
+// Without a network default nothing is pinned, but an emptyConfigMethods
+// request with no config object still gets `{}` — agave's defaults — so a
+// provider that requires the object answers like agave, and `[slot]` keys the
+// cache like `[slot, {}]`. Every other shape stays as sent.
 func TestNetworkPreForward_InjectCommitment_NoopWithoutNetworkDefault(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{cfg: &common.NetworkConfig{
 		Architecture: common.ArchitectureSvm,
 		Svm:          &common.SvmNetworkConfig{}, // no commitment set
 	}}
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pubkey"]}`))
-
-	_, _, err := networkPreForward_injectCommitment(context.Background(), net, req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	inject := func(method, params string) *common.JsonRpcRequest {
+		t.Helper()
+		req := common.NewNormalizedRequest([]byte(
+			fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params)))
+		jrq, err := req.JsonRpcRequest(context.Background())
+		if err != nil {
+			t.Fatalf("JsonRpcRequest: %v", err)
+		}
+		if _, err := jrq.CacheHash(context.Background()); err != nil { // prime the memoized hash
+			t.Fatalf("CacheHash: %v", err)
+		}
+		if _, _, err := networkPreForward_injectCommitment(context.Background(), net, req); err != nil {
+			t.Fatalf("%s: unexpected error: %v", method, err)
+		}
+		return jrq
 	}
 
-	jrq, _ := req.JsonRpcRequest(context.Background())
-	if len(jrq.Params) != 1 {
-		t.Fatalf("no network default → no injection; got %d params", len(jrq.Params))
+	for _, tc := range []struct {
+		method, params, want string
+	}{
+		{"getAccountInfo", `["pubkey"]`, `["pubkey"]`},
+		{"getTransaction", `["sig"]`, `["sig",{}]`},
+		{"getBlock", `[123]`, `[123,{}]`},
+		{"getProgramAccounts", `["program"]`, `["program",{}]`},
+		{"getBlock", `[123,{"encoding":"json"}]`, `[123,{"encoding":"json"}]`},
+		{"getBlock", `[123,"base64"]`, `[123,"base64"]`},
+		{"getBlock", `[]`, `[]`},
+		// agave's config here is a bare CommitmentConfig: `{}` is -32602 "missing field `commitment`".
+		{"getTokenSupply", `["mint"]`, `["mint"]`},
+	} {
+		got, err := json.Marshal(inject(tc.method, tc.params).Params)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s %s: params = %s, want %s", tc.method, tc.params, got, tc.want)
+		}
+	}
+
+	bare, err := inject("getBlock", `[123]`).CacheHash(context.Background())
+	if err != nil {
+		t.Fatalf("CacheHash: %v", err)
+	}
+	withEmpty, err := inject("getBlock", `[123,{}]`).CacheHash(context.Background())
+	if err != nil {
+		t.Fatalf("CacheHash: %v", err)
+	}
+	if bare != withEmpty {
+		t.Errorf("getBlock [123] and [123,{}] must share one cache key, got %q vs %q", bare, withEmpty)
 	}
 }
 
@@ -572,6 +615,8 @@ func (s *svmUpstreamStub) SvmStatePoller() common.SvmStatePoller   { return s.po
 type recordingSvmPoller struct {
 	lastSuggested          int64
 	lastFinalizedSuggested int64
+	floor                  int64
+	floorKnown             bool
 }
 
 func (r *recordingSvmPoller) Bootstrap(context.Context) error   { return nil }
@@ -585,6 +630,10 @@ func (r *recordingSvmPoller) IsHealthy() bool                   { return true }
 func (r *recordingSvmPoller) SuggestLatestSlot(slot int64)      { r.lastSuggested = slot }
 func (r *recordingSvmPoller) SuggestFinalizedSlot(slot int64)   { r.lastFinalizedSuggested = slot }
 func (r *recordingSvmPoller) SetDebounceInterval(time.Duration) {}
+func (r *recordingSvmPoller) SetSkipProcessedSlotProbe(bool)    {}
+func (r *recordingSvmPoller) FirstAvailableSlot() (int64, bool) {
+	return r.floor, r.floorKnown
+}
 
 func TestUpstreamPostForward_TrackContextSlot_SuggestsFromResponse(t *testing.T) {
 	t.Parallel()
@@ -1033,7 +1082,7 @@ func TestNetworkPreForwardGetBlock_SlotBeyondStalenessMargin_ShortCircuits(t *te
 		if !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			t.Fatalf("%s: expected ErrEndpointMissingData, got %T: %v", method, err, err)
 		}
-		// Verify wire code is -32014 so Solana clients map it to BlockNotAvailableException.
+		// Verify wire code is -32004 so Solana clients map it to BlockNotAvailableException.
 		// Without ErrJsonRpcExceptionInternal in the chain, TranslateToJsonRpcException
 		// falls through to -32603 (ServerSideException) which Solana clients don't handle.
 		if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
@@ -1111,7 +1160,7 @@ func TestNetworkPreForwardGetBlock_FinalizedCommitment_BoundedByFinalizedTip(t *
 			t.Fatalf("%s: expected ErrEndpointMissingData, got %T: %v", method, err, err)
 		}
 		if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
-			t.Fatalf("%s: guard error must carry ErrJsonRpcExceptionInternal for the -32014 wire code, got %T: %v", method, err, err)
+			t.Fatalf("%s: guard error must carry ErrJsonRpcExceptionInternal for the -32004 wire code, got %T: %v", method, err, err)
 		}
 	}
 }
@@ -1334,12 +1383,12 @@ func TestNetworkPreForwardGetBlock_UnpinnedCommitment_BoundedByFinalizedTip(t *t
 				t.Fatalf("%s%s: expected ErrEndpointMissingData, got %T: %v", method, params, err, err)
 			}
 			if !common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
-				t.Fatalf("%s%s: guard error must carry ErrJsonRpcExceptionInternal for the -32014 wire code", method, params)
+				t.Fatalf("%s%s: guard error must carry ErrJsonRpcExceptionInternal for the -32004 wire code", method, params)
 			}
-			// The reported bound must be the finalized tip, not the indexed one:
-			// the message is what an operator debugs a -32014 from.
-			if msg := err.Error(); !strings.Contains(msg, "tip: 1000") {
-				t.Fatalf("%s%s: expected the finalized tip in the error message, got %q", method, params, msg)
+			// Slot 1030 is below the indexed tip 1060, so firing here proves
+			// the finalized tip bounds it. The message is agave's own.
+			if msg := err.Error(); !strings.Contains(msg, "Block not available for slot 1030") {
+				t.Fatalf("%s%s: expected agave's -32004 message, got %q", method, params, msg)
 			}
 		}
 		// At and just above the finalized tip (inside the margin) it still forwards.
@@ -1358,7 +1407,7 @@ func TestNetworkPreForwardGetBlock_UnpinnedCommitment_BoundedByFinalizedTip(t *t
 // the LEADING upstream's finalized root. With roots skewed 1000/1000/1100 the
 // majority tip is 1000, and bounding by it nulls out ~100 slots the third
 // upstream is already holding — turning a servable request into a
-// client-visible -32014.
+// client-visible -32004.
 func TestNetworkPreForwardGetBlock_FinalizedBoundIsPoolMaxNotMajority(t *testing.T) {
 	t.Parallel()
 	net := &fakeNetwork{
@@ -1374,14 +1423,13 @@ func TestNetworkPreForwardGetBlock_FinalizedBoundIsPoolMaxNotMajority(t *testing
 			t.Fatalf("slot %d is at or below the leading upstream's root 1100 (+margin 2): expected pass-through, got handled=%v err=%v", slot, handled, err)
 		}
 	}
-	// Beyond the leading root + margin the guard still fires, and reports the
-	// max as the bound.
+	// Beyond the leading root + margin the guard still fires.
 	handled, _, err := networkPreForward_getBlock(context.Background(), net, newReq("getBlock", `[1103]`))
 	if !handled || !common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 		t.Fatalf("slot 1103 beyond root 1100 + margin 2: expected short-circuit, got handled=%v err=%v", handled, err)
 	}
-	if msg := err.Error(); !strings.Contains(msg, "tip: 1100") {
-		t.Fatalf("expected the pool-max finalized tip in the error message, got %q", msg)
+	if msg := err.Error(); !strings.Contains(msg, "Block not available for slot 1103") {
+		t.Fatalf("expected agave's -32004 message, got %q", msg)
 	}
 }
 

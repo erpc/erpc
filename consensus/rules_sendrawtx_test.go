@@ -113,10 +113,10 @@ func TestSendRawTransaction_ConsensusRule(t *testing.T) {
 			},
 			groups: map[string]*responseGroup{
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        1,
-					ResponseType: ResponseTypeConsensusError, // Error, not non-empty
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               1,
+					ResponseType:        ResponseTypeConsensusError, // Error, not non-empty
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 1,
@@ -152,10 +152,10 @@ func TestSendRawTransaction_ConsensusRule(t *testing.T) {
 					},
 				},
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        2, // More errors than successes
-					ResponseType: ResponseTypeConsensusError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               2, // More errors than successes
+					ResponseType:        ResponseTypeConsensusError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 3,
@@ -260,10 +260,10 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 			},
 			groups: map[string]*responseGroup{
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        1,
-					ResponseType: ResponseTypeInfrastructureError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               1,
+					ResponseType:        ResponseTypeInfrastructureError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 1,
@@ -301,10 +301,10 @@ func TestSendRawTransaction_ShortCircuitRule(t *testing.T) {
 					LargestResult: resp,
 				},
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        1,
-					ResponseType: ResponseTypeConsensusError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               1,
+					ResponseType:        ResponseTypeConsensusError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 2,
@@ -363,10 +363,10 @@ func TestSendRawTransaction_RulePriority(t *testing.T) {
 					},
 				},
 				"error_hash": {
-					Hash:         "error_hash",
-					Count:        2, // Majority (meets threshold)
-					ResponseType: ResponseTypeConsensusError,
-					FirstError:   testError,
+					Hash:                "error_hash",
+					Count:               2, // Majority (meets threshold)
+					ResponseType:        ResponseTypeConsensusError,
+					RepresentativeError: testError,
 					Results: []*execResult{
 						{Err: testError},
 						{Err: testError},
@@ -450,10 +450,10 @@ func TestSendRawTransaction_Integration(t *testing.T) {
 					},
 				},
 				"infra_error": {
-					Hash:         "infra_error_hash",
-					Count:        2,
-					ResponseType: ResponseTypeInfrastructureError,
-					FirstError:   testError,
+					Hash:                "infra_error_hash",
+					Count:               2,
+					ResponseType:        ResponseTypeInfrastructureError,
+					RepresentativeError: testError,
 				},
 			},
 			totalParticipants: 3,

@@ -32,7 +32,9 @@ func (l Level) rank() int {
 //
 //   - intrinsic     — pure self-consistency; no upstream cost, always safe.
 //   - corroborated  — compare against ground truth the caller/feeder already
-//     supplied; no force-fetch.
+//     supplied; no force-fetch, except the logs gate's (GetLogsEmptyGate),
+//     which asks one other holder of a block before it serves an empty
+//     eth_getLogs answer for it.
 //   - authoritative — force-fetch the canonical block to corroborate against.
 //
 // Every registered check id must appear in exactly one row, and no row may name
@@ -55,6 +57,7 @@ var levelMembership = map[Level][]string{
 		"baseFeeDerivation", "timestampMonotonicity",
 		// Judged against the follower's header for the traced height.
 		"traceBlockGasReconciliation",
+		GetLogsEmptyGate,
 	},
 	LevelAuthoritative: {
 		"receiptVsBlock", "receiptsRootRecompute",

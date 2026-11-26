@@ -52,6 +52,14 @@ func NewUpstreamExecutor(cfg *common.UpstreamFailsafeConfig, logger *zerolog.Log
 			},
 		)
 	}
+	if len(cfg.MatchCommitment) > 0 {
+		return nil, common.NewErrFailsafeConfiguration(
+			errors.New("matchCommitment is only supported for network-level failsafe"),
+			map[string]interface{}{
+				"matchCommitment": cfg.MatchCommitment,
+			},
+		)
+	}
 
 	e := &upstreamExecutor{
 		cfg:        cfg,
@@ -104,9 +112,8 @@ func hedgeFromCtx(ctx context.Context) bool {
 	return false
 }
 
-// Run applies retry / hedge / breaker / timeout to `inner`. Internal
-// requests (req.IsInternal()) bypass retry, hedge, and breaker — only
-// the per-attempt timeout still applies.
+// Run applies retry / hedge / breaker / timeout to `inner`, as the request's
+// UpstreamPolicies allow.
 func (e *upstreamExecutor) Run(
 	ctx context.Context,
 	req *common.NormalizedRequest,
@@ -118,11 +125,14 @@ func (e *upstreamExecutor) Run(
 
 	startTime := time.Now()
 
-	// Internal requests bypass retry+hedge+breaker. The per-attempt
-	// timeout still wraps inner.
-	if req != nil && req.IsInternal() {
+	switch req.UpstreamPolicies() {
+	case common.UpstreamPoliciesTimeoutOnly, common.UpstreamPoliciesHeadAsk:
 		resp, err := e.callWithTimeout(ctx, req, inner, false)
 		return resp, e.wrapTimeout(err, startTime)
+	case common.UpstreamPoliciesTracker, common.UpstreamPoliciesTrackerFill:
+		// The network's tracker sweep skips upstreams whose breaker is open,
+		// before they spend a rate permit, and bounds each attempt itself.
+		return inner(ctx, false)
 	}
 
 	// Retry loop wraps hedge wrapper.
@@ -238,13 +248,7 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 		return false
 	}
 	if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-		// Check retryableTowardNetwork bool on the StandardError details.
-		if se, ok := err.(common.StandardError); ok {
-			if retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && retryable {
-				return true
-			}
-		}
-		return false
+		return common.IsRetryableExecutionException(err)
 	}
 	if req != nil {
 		if m, _ := req.Method(); m != "" && (evm.IsNonRetryableWriteMethod(m) || svm.IsNonRetryableWriteMethod(m)) {
@@ -253,8 +257,13 @@ func (e *upstreamExecutor) shouldRetry(req *common.NormalizedRequest, _ *common.
 	}
 	// Missing-data errors: respect the EXPLICIT RetryEmpty=false
 	// directive (caller said "don't retry on empty/missing data").
+	// Permanent verdicts (skipped slot, null round, history floor) never
+	// change by asking the same upstream again, even when RetryEmpty is on.
 	// When the directive is unset, fall through to IsRetryableTowardsUpstream.
 	if common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		if common.IsPermanentlyMissingData(err) {
+			return false
+		}
 		if req != nil {
 			if rds := req.Directives(); rds != nil && !rds.RetryEmpty {
 				return false
@@ -373,8 +382,8 @@ func (e *upstreamExecutor) callBreakerWithTimeout(
 }
 
 // upstreamBreakerEligible decides whether (req, isHedge) should contribute
-// to the breaker counters. Hedge attempts and internal probes are excluded.
-// Composite requests are also excluded.
+// to the breaker counters. Hedge attempts and composite requests are
+// excluded; requests that skip the breaker never reach it.
 func upstreamBreakerEligible(req *common.NormalizedRequest, isHedge bool) bool {
 	if isHedge {
 		return false
@@ -382,13 +391,7 @@ func upstreamBreakerEligible(req *common.NormalizedRequest, isHedge bool) bool {
 	if req == nil {
 		return true
 	}
-	if req.IsInternal() {
-		return false
-	}
-	if req.IsCompositeRequest() {
-		return false
-	}
-	return true
+	return !req.IsCompositeRequest()
 }
 
 // upstreamBreakerOutcome classifies a (resp, err) pair for the upstream

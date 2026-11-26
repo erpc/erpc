@@ -9,6 +9,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,6 +37,7 @@ func (n *integrityTestNetwork) Config() *common.NetworkConfig { return n.cfg }
 func (n *integrityTestNetwork) Id() string                    { return "evm:123" }
 func (n *integrityTestNetwork) ProjectId() string             { return "test-project" }
 func (n *integrityTestNetwork) Label() string                 { return "evm:123" }
+func (n *integrityTestNetwork) Logger() *zerolog.Logger       { l := zerolog.Nop(); return &l }
 
 // indexMagnitudeNetwork enables just the intrinsic logIndex magnitude check.
 func indexMagnitudeNetwork() common.Network {

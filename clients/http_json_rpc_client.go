@@ -187,8 +187,6 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 		return nil, err
 	case <-ctx.Done():
 		err := effectiveCause(ctx)
-		// TODO For both of these conditions failsafe library can introduce carrying
-		//      the "cause" so we know this cancellation is due to Hedge policy for example.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			err = common.NewErrEndpointRequestTimeout(time.Since(startedAt), err)
 		} else if errors.Is(err, context.Canceled) {
@@ -223,6 +221,16 @@ func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
 	}
 
 	return c.httpClient
+}
+
+// dropIdleAfterTimeout closes hc's idle connections once a request on it
+// timed out with no response: a black-holed keep-alive pool answers on
+// none of its sockets, so the next request opens a new connection rather
+// than spend another timeout on the next dead one (spec §19 U4).
+func dropIdleAfterTimeout(hc *http.Client, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
+		hc.CloseIdleConnections()
+	}
 }
 
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
@@ -390,7 +398,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		batchReq = append(batchReq, common.JsonRpcRequest{
 			JSONRPC: jrReq.JSONRPC,
 			Method:  jrReq.Method,
-			Params:  jrReq.Params,
+			Params:  common.WireParams(req.ctx, req.request, jrReq.Params),
 			ID:      jrReq.ID,
 		})
 	}
@@ -433,13 +441,13 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
 	// pick the client from the proxy pool registry (if configured) or fallback
-	resp, err := c.getHttpClient().Do(httpReq)
+	hc := c.getHttpClient()
+	resp, err := hc.Do(httpReq)
 	if err != nil {
 		if batchCause := effectiveCause(batchCtx); batchCause != nil {
 			err = batchCause
 		}
-		// TODO For both of these conditions failsafe library can introduce carrying
-		//      the "cause" so we know this cancellation is due to Hedge policy for example.
+		dropIdleAfterTimeout(hc, err)
 		// Each request's own ctx carries the policy-driven cause (e.g.
 		// ErrDynamicTimeoutExceeded), while the shared batch ctx only has the
 		// earliest-deadline plain DeadlineExceeded. Prefer the per-request cause
@@ -674,7 +682,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	)
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -702,7 +710,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
-		Params:  jrReq.Params,
+		Params:  common.WireParams(ctx, req, jrReq.Params),
 		ID:      jrReq.ID,
 	})
 	jrReq.RUnlock()
@@ -735,16 +743,16 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
-	resp, err := c.getHttpClient().Do(httpReq)
+	hc := c.getHttpClient()
+	resp, err := hc.Do(httpReq)
 	if err != nil {
 		cause := effectiveCause(ctx)
 		c.logger.Debug().Err(err).Object("request", req).AnErr("contextError", cause).Msg("transport failure while sending single request")
 		if cause != nil {
 			err = cause
 		}
+		dropIdleAfterTimeout(hc, err)
 		common.SetTraceSpanError(span, err)
-		// TODO For both of these conditions failsafe library can introduce carrying
-		//      the "cause" so we know this cancellation is due to Hedge policy for example.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, common.ErrDynamicTimeoutExceeded) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
 		} else if errors.Is(err, context.Canceled) {
@@ -761,7 +769,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			_ = resp.Body.Close() // Must close on error path
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
-		bodyReader = c.gzipPool.WrapGzipReader(gzReader)
+		// The wrapper closes resp.Body too; gzip.Reader.Close does not.
+		bodyReader = c.gzipPool.WrapGzipReader(gzReader, resp.Body)
 	}
 
 	nr := common.NewNormalizedResponse().
@@ -780,6 +789,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	var bodyReader io.Reader = bytes.NewReader(body)
 	var pooledRC io.ReadCloser
+	contentLength := int64(len(body))
 
 	// Check if gzip compression is enabled
 	if c.enableGzip {
@@ -809,6 +819,7 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 		prc := util.NewPooledBufferReadCloser(buf)
 		pooledRC = prc
 		bodyReader = prc
+		contentLength = int64(buf.Len())
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bodyReader)
@@ -818,6 +829,10 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 		}
 		return nil, err
 	}
+	// NewRequest infers the length only for *bytes.Reader and friends; without
+	// it the pooled gzip body goes out chunked, which costs more on the wire
+	// than gzip saves on small requests.
+	httpReq.ContentLength = contentLength
 
 	httpReq.Header.Set("Accept-Encoding", "gzip")
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -887,6 +902,13 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		}
 	}
 
+	return classifyJsonRpcError(r, nr, jr, err, c.errorExtractor, c.upstream)
+}
+
+// classifyJsonRpcError turns a parsed upstream response into a normalized
+// error (nil on success). Shared by the HTTP and WebSocket clients; WS
+// callers pass a synthetic 200 response since the frame has no HTTP status.
+func classifyJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse, err error, extractor common.JsonRpcErrorExtractor, ups common.Upstream) error {
 	if err != nil {
 		e := common.NewErrJsonRpcExceptionInternal(
 			0,
@@ -894,7 +916,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 			"could not parse json rpc response from upstream",
 			err,
 			map[string]interface{}{
-				"upstreamId": c.upstream.Id(),
+				"upstreamId": ups.Id(),
 				"statusCode": r.StatusCode,
 				"headers":    r.Header,
 			},
@@ -921,8 +943,10 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		}
 	}
 
-	if e := c.errorExtractor.Extract(r, nr, jr, c.upstream); e != nil {
-		return e
+	if extractor != nil {
+		if e := extractor.Extract(r, nr, jr, ups); e != nil {
+			return e
+		}
 	}
 
 	if jr == nil || jr.Error == nil {
@@ -935,7 +959,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		"unknown json-rpc error",
 		jr.Error,
 		map[string]interface{}{
-			"upstreamId": c.upstream.Id(),
+			"upstreamId": ups.Id(),
 			"statusCode": r.StatusCode,
 			"headers":    r.Header,
 		},

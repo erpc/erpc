@@ -41,6 +41,16 @@ Illustrative, not a tuned production config — map a dedicated domain to a sing
 }`}
 />
 
+## WebSocket
+
+You can also connect via WebSocket using the same URL path with a `ws://` or `wss://` scheme:
+
+```
+ws://localhost:4000/main/evm/1
+```
+
+WebSocket connections support all JSON-RPC methods, batch requests, and real-time subscriptions (`eth_subscribe`). Read more in the [WebSocket](/operation/websocket) page.
+
 ## Agent reference
 
 Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
@@ -273,7 +283,7 @@ Content-Type: application/json
 - Request gzip decompression is unconditional: `Content-Encoding: gzip` always triggers decompression regardless of the `server.enableGzip` setting (which controls response compression only). Corrupt gzip → 400 `ErrInvalidRequest` immediately. [<SourceLink file="erpc/http_server.go" lines="349-370" />]
 - `MaxHeaderBytes` is `1 MiB` on both IPv4 and IPv6 servers; requests with oversized headers are rejected at the Go net/http layer with HTTP 431 before any eRPC handler runs. Body size has no configured cap. [<SourceLink file="erpc/http_server.go" lines="186" />]
 - gRPC dispatch (`Content-Type: application/grpc` + HTTP/2) happens before URL parsing — only when `grpcSharesHttpV4` is enabled; IPv6 never gets gRPC sharing. [<SourceLink file="erpc/http_server.go" lines="162-175" />]
-- Cleartext HTTP/2 (h2c) is served on the non-TLS IPv4 listener regardless of whether gRPC sharing is enabled: the handler is wrapped with `h2c.NewHandler` whenever TLS is disabled, so HTTP/2 prior-knowledge clients work out of the box. With TLS, HTTP/2 is negotiated via ALPN instead. [<SourceLink file="erpc/http_server.go" lines="177-184" />]
+- Cleartext HTTP/2 (h2c) prior-knowledge connections are served on every non-TLS listener (IPv4 and IPv6) regardless of whether gRPC sharing is enabled: both servers set `http.Server.Protocols` to HTTP/1.1 + unencrypted HTTP/2. HTTP/1.1 `Upgrade: h2c` is not honored (the request is served over HTTP/1.1). With TLS, HTTP/2 is negotiated via ALPN instead. [<SourceLink file="erpc/http_server.go" lines="179-192" />]
 - The admin endpoint is exactly `POST /admin` or `OPTIONS /admin`; `GET /admin` is a healthcheck; `/admin/foo` fails with a URL parse error. [<SourceLink file="erpc/http_server.go" lines="836-838" />]
 
 ### Best practices
@@ -303,8 +313,11 @@ Content-Type: application/json
 14. **Unknown network may succeed on first call for provider-based projects.** Networks are lazily initialized. `ErrNetworkNotFound` (HTTP 404) is returned only when resolution definitively fails. Source: <SourceLink file="erpc/networks_registry.go" lines="221-232" />
 15. **`serveArchitecture: "evm"` with no `serveChain` lets callers omit `evm` from the path.** With a domain alias pre-selecting architecture, the URL becomes `POST /<project>/<chainId>` — no need to include `evm` in every call. Source: <SourceLink file="erpc/http_server.go" lines="963-983" />
 16. **gRPC sharing is IPv4-only.** The `Content-Type: application/grpc` + HTTP/2 dispatch happens before URL parsing only on IPv4. IPv6 never gets a shared gRPC handler. Source: <SourceLink file="erpc/http_server.go" lines="162-175" />
-17. **Cleartext HTTP/2 (h2c) is IPv4-only.** The non-TLS IPv4 handler is wrapped with `h2c.NewHandler` whenever TLS is disabled, independent of gRPC. The IPv6 listener is not wrapped, so h2c prior-knowledge requests on a non-TLS IPv6 listener are not supported. Source: <SourceLink file="erpc/http_server.go" lines="177-184" />
-18. **A request object that states `method` more than once is rejected.** JSON decoders do not agree on which occurrence wins, so erpc reads none of them and returns 400 `ErrCodeInvalidRequest` (JSON-RPC `-32700`, the same shape as any unparseable body) before auth, rate limiting, and routing. This covers a repeated key, an escaped spelling (`"\u006dethod"`), and a case variant (`"Method"`) that Go's case-insensitive field matching folds onto the same field. A `"method"` key nested inside `params` or any other member is untouched. Source: <SourceLink file="common/json_rpc.go" lines="1245-1266" />
+17. **Cleartext HTTP/2 (h2c) is prior-knowledge only.** Without TLS, both the IPv4 and IPv6 listeners accept HTTP/2 prior-knowledge connections natively, independent of gRPC. An HTTP/1.1 `Upgrade: h2c` request is answered over HTTP/1.1, so clients that rely on the upgrade dance stay on HTTP/1.1. Source: <SourceLink file="erpc/http_server.go" lines="179-192" />
+18. **A request object that states `method` more than once is rejected.** JSON decoders do not agree on which occurrence wins, so erpc reads none of them and returns 400 `ErrCodeInvalidRequest` (JSON-RPC `-32700`, the same shape as any unparseable body) before auth, rate limiting, and routing. This covers a repeated key, an escaped spelling (`"\u006dethod"`), and a case variant (`"Method"`) that Go's case-insensitive field matching folds onto the same field. A `"method"` key nested inside `params` or any other member is untouched. Source: <SourceLink file="common/json_rpc.go" lines="1253-1284" />
+19. **An `id` that is not a string, a number, or `null` is an Invalid Request.** JSON-RPC 2.0 §4 allows only those id types (or no `id` member: a notification). A `true`/`false`, object, or array `id` is answered with JSON-RPC `-32600` and `"id": null` before routing, so no upstream is asked and no retry or hedge runs. The rule is the same for every architecture and for HTTP, WebSocket, and gRPC, since all of them run `NormalizedRequest.Validate`. HTTP status follows `ErrInvalidRequest`: 400, or 200 on SVM networks. In a batch only the offending item gets the error; the other items are served. Every number form accepted before is still accepted. Source: <SourceLink file="common/json_rpc.go" lines="1482-1496" />, <SourceLink file="common/request.go" lines="1293-1309" />
+20. **A numeric `id` must be an integer in the int64 or u64 range.** An integer above the int64 maximum, up to `18446744073709551615`, is accepted: the upstream sees a random int64 id and the client gets its own id bytes back. A fraction, an exponent form, or an integer outside both ranges fails the parse (`-32700`, 400). Source: <SourceLink file="common/json_rpc.go" lines="1503-1525" />
+21. **On an SVM network a negative integer `id` is answered locally.** A Solana node reads an id as `null`, a u64, or a string, so it answers a negative id with `-32700` "Parse error" and `"id": null` whatever the method. eRPC gives that same reply (HTTP 200) in the project pre-forward hook, so no upstream is asked and no retry or hedge runs. A Solana node parses a batch as one value, so a batch with one such id gets that single reply (not an array) and none of its elements runs. An empty batch `[]` gets HTTP 200 with an empty body. EVM networks still forward negative ids and answer each batch element, and `[]` with `[]`, since EVM nodes do. Source: <SourceLink file="architecture/svm/hooks.go" lines="140-190" />
 
 ### Observability
 

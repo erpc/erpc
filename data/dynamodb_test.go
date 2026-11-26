@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 func init() {
@@ -30,7 +29,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		req := testcontainers.ContainerRequest{
 			Image:        "amazon/dynamodb-local",
 			ExposedPorts: []string{"8000/tcp"},
-			WaitingFor:   wait.ForListeningPort("8000/tcp"),
+			WaitingFor:   dynamoLocalReady(),
 		}
 		ddbC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 			ContainerRequest: req,
@@ -132,7 +131,7 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 	req := testcontainers.ContainerRequest{
 		Image:        "amazon/dynamodb-local",
 		ExposedPorts: []string{"8000/tcp"},
-		WaitingFor:   wait.ForListeningPort("8000/tcp"),
+		WaitingFor:   dynamoLocalReady(),
 	}
 	ddbC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
@@ -256,7 +255,7 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 	req := testcontainers.ContainerRequest{
 		Image:        "amazon/dynamodb-local",
 		ExposedPorts: []string{"8000/tcp"},
-		WaitingFor:   wait.ForListeningPort("8000/tcp"),
+		WaitingFor:   dynamoLocalReady(),
 	}
 	ddbC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,

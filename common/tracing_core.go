@@ -3,7 +3,10 @@ package common
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/zerologr"
 	"github.com/rs/zerolog"
@@ -36,8 +39,10 @@ const (
 )
 
 var (
-	IsTracingEnabled  bool
-	IsTracingDetailed bool
+	// isTracingEnabled and isTracingDetailed are read on every span start,
+	// from request and background goroutines alike, while tests toggle them.
+	isTracingEnabled  atomic.Bool
+	isTracingDetailed atomic.Bool
 
 	tracerProvider *sdktrace.TracerProvider
 	tracer         trace.Tracer
@@ -47,14 +52,26 @@ var (
 	forceTraceMatchers []*ForceTraceMatcher
 )
 
+// IsTracingEnabled reports whether tracing is on.
+func IsTracingEnabled() bool { return isTracingEnabled.Load() }
+
+// IsTracingDetailed reports whether detailed spans and attributes are on.
+func IsTracingDetailed() bool { return isTracingDetailed.Load() }
+
+// SetTracingEnabled turns tracing on or off.
+func SetTracingEnabled(on bool) { isTracingEnabled.Store(on) }
+
+// SetTracingDetailed turns detailed tracing on or off.
+func SetTracingDetailed(on bool) { isTracingDetailed.Store(on) }
+
 func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *TracingConfig) error {
 	var err error
 
 	initOnce.Do(func() {
 		if cfg == nil || !cfg.Enabled {
 			logger.Info().Msg("OpenTelemetry tracing is disabled")
-			IsTracingEnabled = false
-			IsTracingDetailed = false
+			SetTracingEnabled(false)
+			SetTracingDetailed(false)
 			return
 		}
 
@@ -127,8 +144,8 @@ func InitializeTracing(ctx context.Context, logger *zerolog.Logger, cfg *Tracing
 		}))
 
 		tracer = otel.Tracer(instrumentationName)
-		IsTracingEnabled = true
-		IsTracingDetailed = cfg.Detailed
+		SetTracingEnabled(true)
+		SetTracingDetailed(cfg.Detailed)
 
 		// Store force-trace matchers
 		forceTraceMatchers = cfg.ForceTraceMatchers
@@ -205,24 +222,55 @@ func createTracingGRPCExporter(ctx context.Context, cfg *TracingConfig) (*otlptr
 }
 
 func createTracingHTTPExporter(ctx context.Context, cfg *TracingConfig) (*otlptrace.Exporter, error) {
-	secureOption := otlptracehttp.WithInsecure()
-	if cfg.TLS != nil && cfg.TLS.Enabled {
+	tlsEnabled := cfg.TLS != nil && cfg.TLS.Enabled
+	opts, err := tracingHTTPEndpointOptions(cfg.Endpoint, tlsEnabled)
+	if err != nil {
+		return nil, err
+	}
+	if tlsEnabled {
 		tlsConfig, err := CreateTLSConfig(cfg.TLS)
 		if err != nil {
 			return nil, err
 		}
-		secureOption = otlptracehttp.WithTLSClientConfig(tlsConfig)
-	}
-
-	opts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(cfg.Endpoint),
-		secureOption,
+		opts = append(opts, otlptracehttp.WithTLSClientConfig(tlsConfig))
 	}
 	if len(cfg.Headers) > 0 {
 		opts = append(opts, otlptracehttp.WithHeaders(cfg.Headers))
 	}
 
 	return otlptracehttp.New(ctx, opts...)
+}
+
+// tracingHTTPEndpointOptions accepts "host:port" or a full URL. WithEndpoint
+// takes host:port only; a scheme in it makes every export URL unparsable.
+// A URL's scheme decides TLS; host:port falls back to tls.enabled. A URL
+// without a path keeps the exporter's default /v1/traces.
+func tracingHTTPEndpointOptions(endpoint string, tlsEnabled bool) ([]otlptracehttp.Option, error) {
+	if !strings.Contains(endpoint, "://") {
+		opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+		if !tlsEnabled {
+			opts = append(opts, otlptracehttp.WithInsecure())
+		}
+		return opts, nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid tracing endpoint %q: %w", endpoint, err)
+	}
+	if u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("invalid tracing endpoint %q: want http(s)://host:port[/path] or host:port", endpoint)
+	}
+	if u.Scheme == "http" && tlsEnabled {
+		return nil, fmt.Errorf("invalid tracing endpoint %q: tls.enabled needs an https:// endpoint", endpoint)
+	}
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(u.Host)}
+	if u.Scheme == "http" {
+		opts = append(opts, otlptracehttp.WithInsecure())
+	}
+	if u.Path != "" && u.Path != "/" {
+		opts = append(opts, otlptracehttp.WithURLPath(u.Path))
+	}
+	return opts, nil
 }
 
 func createTracingSampler(cfg *TracingConfig) sdktrace.Sampler {
@@ -333,7 +381,7 @@ func matchesForceTraceMatcher(matcher *ForceTraceMatcher, network, method string
 // Call this after URL path parsing to enable network-based force-tracing for child spans.
 // Returns the updated context with network stored (always stores if non-empty, matching happens later).
 func SetForceTraceNetwork(ctx context.Context, network string) context.Context {
-	if !IsTracingEnabled || network == "" {
+	if !IsTracingEnabled() || network == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, forceTraceNetworkKey, network)

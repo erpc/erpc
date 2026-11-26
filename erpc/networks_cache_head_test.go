@@ -1,0 +1,519 @@
+package erpc
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/test/chainsim"
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// cacheHeadBds is an in-process BDS reader of a simulated chain whose newest
+// block, and that block's age against the wall clock, the test moves. With
+// numbers it serves the chain's canonical blocks by number up to that head;
+// without, NotFound, as a reader that ingested none of them. A head the chain
+// does not hold (another chain's, say) carries no hash. It serves eth_getLogs
+// by range up to its head and refuses a range past it whole, as Prism does;
+// logRanges records every range asked.
+type cacheHeadBds struct {
+	evm.UnimplementedRPCQueryServiceServer
+	chain     *chainsim.Chain
+	numbers   bool
+	mu        sync.Mutex
+	head      uint64
+	age       time.Duration
+	logRanges [][2]uint64
+}
+
+// startCacheHeadBds serves a cacheHeadBds of chain until the test ends.
+func startCacheHeadBds(t *testing.T, chain *chainsim.Chain, numbers bool) (*cacheHeadBds, string) {
+	t.Helper()
+	s := &cacheHeadBds{chain: chain, numbers: numbers}
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := grpc.NewServer()
+	evm.RegisterRPCQueryServiceServer(srv, s)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	return s, "grpc://" + lis.Addr().String()
+}
+
+func (s *cacheHeadBds) set(head uint64, age time.Duration) {
+	s.mu.Lock()
+	s.head, s.age = head, age
+	s.mu.Unlock()
+}
+
+func (s *cacheHeadBds) ChainId(context.Context, *evm.ChainIdRequest) (*evm.ChainIdResponse, error) {
+	return &evm.ChainIdResponse{ChainId: uint64(s.chain.ID())}, nil
+}
+
+func (s *cacheHeadBds) GetBlockByNumber(_ context.Context, req *evm.GetBlockByNumberRequest) (*evm.GetBlockResponse, error) {
+	s.mu.Lock()
+	head, age := s.head, s.age
+	s.mu.Unlock()
+	num := head
+	switch tag := req.GetBlockNumber(); tag {
+	case "latest":
+	case "earliest", "finalized", "safe", "pending":
+		return &evm.GetBlockResponse{}, nil
+	default:
+		n, err := strconv.ParseUint(strings.TrimPrefix(tag, "0x"), 16, 64)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, tag)
+		}
+		if !s.numbers || n > head {
+			return nil, status.Error(codes.NotFound, "block not ingested")
+		}
+		num = n
+	}
+	h := &evm.BlockHeader{Number: num, Timestamp: uint64(time.Now().Add(-age).Unix())}
+	if b := s.chain.CanonAt(num); b != nil {
+		parent := b.ParentHash()
+		h.Hash, h.ParentHash = b.Hash.Bytes(), parent.Bytes()
+	} else if num != head {
+		return nil, status.Error(codes.NotFound, "block not ingested")
+	}
+	return &evm.GetBlockResponse{Block: h}, nil
+}
+
+// GetLogs answers an address filter from the chain's canonical logs.
+func (s *cacheHeadBds) GetLogs(_ context.Context, req *evm.GetLogsRequest) (*evm.GetLogsResponse, error) {
+	from, to := req.GetFromBlock(), req.GetToBlock()
+	s.mu.Lock()
+	head := s.head
+	s.logRanges = append(s.logRanges, [2]uint64{from, to})
+	s.mu.Unlock()
+	if to > head {
+		return nil, status.Errorf(codes.OutOfRange, "block range %d..%d exceeds chain tip (%d)", from, to, head)
+	}
+	resp := &evm.GetLogsResponse{}
+	for n := from; n <= to; n++ {
+		for _, l := range s.chain.CanonAt(n).Logs() {
+			if !slices.ContainsFunc(req.GetAddresses(), func(a []byte) bool { return bytes.Equal(a, l.Address.Bytes()) }) {
+				continue
+			}
+			topics := make([][]byte, len(l.Topics))
+			for i, t := range l.Topics {
+				topics[i] = t.Bytes()
+			}
+			resp.Logs = append(resp.Logs, &evm.Log{
+				Address: l.Address.Bytes(), Topics: topics, BlockNumber: l.BlockNumber, BlockHash: l.BlockHash.Bytes(),
+				TransactionHash: l.TxHash.Bytes(), TransactionIndex: uint32(l.TxIndex), LogIndex: uint32(l.LogIndex),
+			})
+		}
+	}
+	return resp, nil
+}
+
+func (s *cacheHeadBds) ranges() [][2]uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.logRanges)
+}
+
+// cacheHeadCache is a cache whose realtime eth_getBlockByNumber policy, with
+// ttl, reads from the BDS reader at addr under connector id; with numbers,
+// unfinalized and finalized blocks and logs are read from it too.
+func cacheHeadCache(id, addr string, ttl time.Duration, numbers bool) *common.CacheConfig {
+	policies := []*common.CachePolicyConfig{{
+		Network: "*", Method: "eth_getBlockByNumber", Finality: common.DataFinalityStateRealtime,
+		Connector: id, TTL: common.FixedDuration(ttl),
+	}}
+	if numbers {
+		for _, f := range []common.DataFinalityState{common.DataFinalityStateUnfinalized, common.DataFinalityStateFinalized} {
+			policies = append(policies, &common.CachePolicyConfig{
+				Network: "*", Method: "eth_getBlockByNumber|eth_getLogs", Finality: f,
+				Connector: id, TTL: common.FixedDuration(time.Minute),
+			})
+		}
+	}
+	return &common.CacheConfig{
+		Connectors: []*common.ConnectorConfig{{
+			Id: id, Driver: common.DriverGrpc,
+			Grpc: &common.GrpcConnectorConfig{Servers: []string{addr}},
+		}},
+		Policies: policies,
+	}
+}
+
+func cacheConnectorHead(id string) float64 {
+	return testutil.ToFloat64(telemetry.MetricCacheConnectorLatestBlockNumber.WithLabelValues(id, common.NetworkAlias("evm:123")))
+}
+
+// cacheHeadNode is one eRPC instance on a halted simulated chain, its two
+// vendors push and poll sources, its cache a cacheHeadBds.
+type cacheHeadNode struct {
+	t     *testing.T
+	chain *chainsim.Chain
+	bds   *cacheHeadBds
+	addr  string
+	nw    *Network
+}
+
+func newCacheHeadNode(t *testing.T, connector string, ttl time.Duration, follow bool, opts ...func(*common.Config)) *cacheHeadNode {
+	chain := chainsim.NewChain(chainsim.Config{ChainID: 123, BlockTime: time.Second, Seed: 7, History: 20, Halted: true})
+	t.Cleanup(chain.Close)
+	ws, err := chain.AddVendor("ws-a", "vendor-a", true)
+	require.NoError(t, err)
+	http1, err := chain.AddVendor("http-b", "vendor-b", false)
+	require.NoError(t, err)
+	bds, bdsAddr := startCacheHeadBds(t, chain, true)
+	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.Evm.ServedTip = &common.EvmServedTipConfig{FollowCacheHead: follow}
+	}, sourceUpstream(ws.ID, ws.URL(), ""), sourceUpstream(http1.ID, http1.URL(), common.SubscriptionSourceAlways))
+	cfg.Server.WaitBeforeShutdown = common.Duration(0).Ptr()
+	cfg.Database = &common.DatabaseConfig{EvmJsonRpcCache: cacheHeadCache(connector, bdsAddr, ttl, true)}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	n := &cacheHeadNode{t: t, chain: chain, bds: bds, addr: addr}
+	t.Cleanup(func() {
+		_ = srv.Shutdown(&zerolog.Logger{})
+		cancel()
+		if n.nw != nil {
+			n.nw.wait()
+		}
+	})
+	require.Eventually(t, func() bool {
+		nw, err := srv.erpc.GetNetwork(context.Background(), "test_ws", "evm:123")
+		if err != nil || nw == nil || nw.chainTracker == nil {
+			return false
+		}
+		n.nw = nw
+		return true
+	}, 15*time.Second, 20*time.Millisecond, "network initializes")
+	n.awaitView(chain.Tip().Number)
+	return n
+}
+
+// awaitView waits until the tracker's view stands at block number.
+func (n *cacheHeadNode) awaitView(number uint64) {
+	require.Eventually(n.t, func() bool {
+		h, ok := n.nw.chainTracker.View().Head()
+		return ok && h.Number == number
+	}, 15*time.Second, 20*time.Millisecond, "the view reaches %d", number)
+}
+
+func (n *cacheHeadNode) post(body string) (*http.Response, []byte) {
+	resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", n.addr), "application/json", bytes.NewReader([]byte(body)))
+	require.NoError(n.t, err)
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(n.t, err)
+	return resp, raw
+}
+
+func (n *cacheHeadNode) blockNumber() uint64 {
+	resp, raw := n.post(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+	require.Equal(n.t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+	var r struct {
+		Result string `json:"result"`
+	}
+	require.NoError(n.t, json.Unmarshal(raw, &r), "body: %s", raw)
+	v, err := strconv.ParseUint(strings.TrimPrefix(r.Result, "0x"), 16, 64)
+	require.NoError(n.t, err, "body: %s", raw)
+	return v
+}
+
+// latestBlock reads eth_getBlockByNumber("latest"): its number, its hash and
+// the X-ERPC-Cache header.
+func (n *cacheHeadNode) latestBlock() (uint64, string, string) {
+	resp, raw := n.post(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`)
+	require.Equal(n.t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+	var r struct {
+		Result struct {
+			Number string `json:"number"`
+			Hash   string `json:"hash"`
+		} `json:"result"`
+	}
+	require.NoError(n.t, json.Unmarshal(raw, &r), "body: %s", raw)
+	v, err := strconv.ParseUint(strings.TrimPrefix(r.Result.Number, "0x"), 16, 64)
+	require.NoError(n.t, err, "body: %s", raw)
+	return v, r.Result.Hash, resp.Header.Get("X-ERPC-Cache")
+}
+
+// tagReads counts the node's client reads of latest that reached an
+// upstream as the tag (spec §6.4 client read) and ended in one of outcomes.
+func (n *cacheHeadNode) tagReads(outcomes ...string) float64 {
+	var sum float64
+	for _, o := range outcomes {
+		sum += testutil.ToFloat64(telemetry.MetricChainTrackerLatestReadTotal.WithLabelValues(n.nw.projectId, n.nw.Label(), o))
+	}
+	return sum
+}
+
+// tagsRead reports whether a client read of latest sent now goes to the
+// upstreams as the tag once the cache misses: the Head it takes, its tag
+// interpolated, and Forward's decision (tagsLatestRead).
+func (n *cacheHeadNode) tagsRead() bool {
+	ctx := context.Background()
+	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
+	req.SetNetwork(n.nw)
+	n.nw.requestHead(ctx, req)
+	require.NoError(n.t, n.nw.prepareRequest(ctx, req))
+	return n.nw.tagsLatestRead(ctx, req, false)
+}
+
+// The Latest a network-wide read takes follows a fresh cache head down, and
+// the block it names is read from the cache; a stale head falls back to the
+// view; a fresh head far below the Latest served holds it there for one TTL,
+// then lets go; a head ahead never raises it (evm.servedTip.followCacheHead).
+// A read the anchor holds below the view is never sent to an upstream as
+// the tag, whose answer would pass that Latest.
+// Full HTTP server, the real chain tracker on a simulated chain's vendors,
+// the real grpc cache connector against an in-process BDS reader.
+func TestNetworkCacheHead_AnchorsReadHeadToFreshCacheHead(t *testing.T) {
+	const ttl = 3 * time.Second
+	n := newCacheHeadNode(t, "bds-anchor", ttl, true)
+	require.NotNil(t, n.nw.cacheHead, "a realtime grpc policy with a TTL makes the anchor")
+	tip := n.chain.Tip().Number
+
+	// 1. Cache two blocks behind the view, stamped now, before any read
+	// served the view's head: reads take the cache's head, and the block it
+	// names comes from the cache with its pinned hash.
+	n.bds.set(tip-2, 0)
+	// The cache head is polled only while the lane has a reader.
+	n.nw.chainTracker.MarkRead()
+	require.Eventually(t, func() bool { return cacheConnectorHead("bds-anchor") == float64(tip-2) }, 10*time.Second, 20*time.Millisecond,
+		"the anchor's poll observes the fresh head")
+	assert.Equal(t, tip-2, n.blockNumber(), "eth_blockNumber serves the fresh cache head")
+	number, hash, cache := n.latestBlock()
+	assert.Equal(t, tip-2, number)
+	assert.Equal(t, n.chain.CanonAt(tip-2).Hash.Hex(), hash, "the anchored block is the canonical one")
+	assert.Equal(t, "HIT", cache, "the anchored block is read from the cache")
+	view, _ := n.nw.chainTracker.View().Head()
+	assert.Equal(t, tip, view.Number, "the view stays at the tracker's head")
+
+	// 2. The cache head is 10s old, past the 3s TTL: reads take the view's
+	// head, read from the vendors.
+	n.bds.set(tip-2, 10*time.Second)
+	require.Eventually(t, func() bool { return n.blockNumber() == tip }, 10*time.Second, 50*time.Millisecond,
+		"a stale cache head does not anchor")
+	number, hash, cache = n.latestBlock()
+	assert.Equal(t, tip, number)
+	assert.Equal(t, n.chain.CanonAt(tip).Hash.Hex(), hash)
+	assert.NotEqual(t, "HIT", cache, "the cache lacks the view's head")
+
+	// 3. A fresh head far below the Latest served (another chain's, say):
+	// Latest neither drops nor follows the chain for one TTL, then lets go.
+	n.bds.set(tip-15, 0)
+	require.Eventually(t, func() bool { return cacheConnectorHead("bds-anchor") == float64(tip-15) }, 10*time.Second, 20*time.Millisecond,
+		"the anchor's poll observes the fresh head")
+	held := time.Now()
+	assert.Equal(t, tip, n.blockNumber(), "a fresh head below the served Latest does not drag it down")
+	n.chain.Append(chainsim.KindEmpty, func(map[string]json.RawMessage) {})
+	n.chain.Append(chainsim.KindEmpty, func(map[string]json.RawMessage) {})
+	n.awaitView(tip + 2)
+	if got := n.blockNumber(); time.Since(held) < ttl {
+		assert.Equal(t, tip, got, "Latest holds at the value served while the hold lasts")
+	}
+	sent := n.tagReads("served", "head", "failed")
+	if number, _, _ := n.latestBlock(); time.Since(held) < ttl {
+		assert.Equal(t, tip, number, "the held Latest's block, though the vendors' tag answers tip+2")
+		assert.Equal(t, sent, n.tagReads("served", "head", "failed"), "a read the anchor lowered is never sent as the tag")
+	}
+	require.Eventually(t, func() bool { return n.blockNumber() == tip+2 }, ttl+5*time.Second, 20*time.Millisecond,
+		"the hold lets go once the cache does not catch up within its TTL")
+	assert.GreaterOrEqual(t, time.Since(held), ttl, "the hold lasts one TTL")
+
+	// 4. A fresh cache head ahead of the view never raises Latest.
+	n.bds.set(tip+7, 0)
+	require.Eventually(t, func() bool { return cacheConnectorHead("bds-anchor") == float64(tip+7) }, 10*time.Second, 20*time.Millisecond,
+		"the anchor's poll observes the head ahead")
+	assert.Equal(t, tip+2, n.blockNumber())
+	number, hash, _ = n.latestBlock()
+	assert.Equal(t, tip+2, number)
+	assert.Equal(t, n.chain.CanonAt(tip+2).Hash.Hex(), hash)
+}
+
+// A read of latest goes to the vendors as the tag, each answer that
+// vendor's poll of latest, only where the cache cannot serve it: a network
+// without a head-aware cache, or whose cache head is past its TTL (a cache
+// far behind). A fresh cache head, level with the view or below it, serves
+// the read from the cache and sends no tag (evm.servedTip.followCacheHead).
+func TestNetworkCacheHead_TagsLatestReadOnlyWithoutFreshCacheHead(t *testing.T) {
+	const ttl = 3 * time.Second
+	for i, tc := range []struct {
+		name    string
+		noCache bool
+		behind  uint64        // the cache head's distance below the view's
+		age     time.Duration // the cache head's age
+		tag     bool
+		served  uint64 // the block served, below the view's
+	}{
+		{name: "no cache head", noCache: true, tag: true},
+		{name: "stale cache head", behind: 2, age: 10 * time.Second, tag: true},
+		{name: "fresh cache head level with the view"},
+		{name: "fresh cache head below the view", behind: 2, served: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts []func(*common.Config)
+			if tc.noCache {
+				opts = append(opts, func(cfg *common.Config) { cfg.Database = nil })
+			}
+			// Its own connector id per run: the head gauge outlives a node.
+			connector := fmt.Sprintf("bds-tag-%d-%d", i, time.Now().UnixNano())
+			n := newCacheHeadNode(t, connector, ttl, true, opts...)
+			// The view walks the blocks it sees come, so it pins the cache
+			// head's block below its own: an anchored Latest with a hash.
+			// A reader's demand runs the block clock that fetches them.
+			for range tc.behind {
+				n.chain.Append(chainsim.KindEmpty, func(map[string]json.RawMessage) {})
+			}
+			tip := n.chain.Tip().Number
+			require.Eventually(t, func() bool {
+				n.nw.chainTracker.MarkRead()
+				h, ok := n.nw.chainTracker.View().Head()
+				return ok && h.Number == tip
+			}, 15*time.Second, 20*time.Millisecond, "the view reaches %d", tip)
+			if tc.noCache {
+				require.Nil(t, n.nw.cacheHead, "no cache, no cache head")
+			} else {
+				n.bds.set(tip-tc.behind, tc.age)
+				n.nw.chainTracker.MarkRead()
+				require.Eventually(t, func() bool { return cacheConnectorHead(connector) == float64(tip-tc.behind) }, 10*time.Second, 20*time.Millisecond,
+					"the cache head's poll observes the head")
+			}
+			if tc.behind > 0 {
+				_, pinned := n.nw.chainTracker.View().PinAt(tip - tc.behind)
+				require.True(t, pinned, "the view pins the cache head's block")
+			}
+			assert.Equal(t, tc.tag, n.tagsRead(), "a read of latest that misses the cache goes as the tag")
+
+			sent := n.tagReads("served", "head", "failed")
+			number, hash, cache := n.latestBlock()
+			assert.Equal(t, tip-tc.served, number)
+			assert.Equal(t, n.chain.CanonAt(tip-tc.served).Hash.Hex(), hash)
+			if tc.tag {
+				assert.NotEqual(t, "HIT", cache, "the cache lacks the view's head")
+				assert.Greater(t, n.tagReads("served"), sent, "the read reaches a vendor as the tag, and its answer is served")
+			} else {
+				assert.Equal(t, "HIT", cache, "the fresh cache head's block is read from the cache")
+				assert.Equal(t, sent, n.tagReads("served", "head", "failed"), "no read is sent as the tag")
+			}
+		})
+	}
+}
+
+// Without evm.servedTip.followCacheHead the same cache anchors nothing: its
+// head is polled, for the block clock's sightings, but reads take the
+// view's head.
+func TestNetworkCacheHead_OffServesTheView(t *testing.T) {
+	n := newCacheHeadNode(t, "bds-off", 3*time.Second, false)
+	require.NotNil(t, n.nw.cacheHead, "a realtime grpc policy with a TTL makes the cache head")
+	tip := n.chain.Tip().Number
+	n.bds.set(tip-2, 0)
+	n.nw.chainTracker.MarkRead()
+	require.Eventually(t, func() bool { return cacheConnectorHead("bds-off") == float64(tip-2) }, 10*time.Second, 20*time.Millisecond,
+		"the cache head's poll observes the fresh head")
+	for range 10 {
+		require.Equal(t, tip, n.blockNumber())
+		time.Sleep(100 * time.Millisecond)
+	}
+	number, hash, _ := n.latestBlock()
+	assert.Equal(t, tip, number)
+	assert.Equal(t, n.chain.CanonAt(tip).Hash.Hex(), hash)
+}
+
+// A log search that runs past the cache's newest block misses the cache
+// whole: Prism refuses it. The cache then serves every block up to its head
+// in one read, and only the blocks above it go to the vendors, though they
+// split at 2 blocks. Below its head the cache is never read again in
+// vendor-sized pieces. Full HTTP server, the real grpc cache connector
+// against an in-process BDS reader, the simulated chain's vendors.
+func TestNetworkCacheHead_GetLogsPastCacheHeadReadsCacheWhole(t *testing.T) {
+	n := newCacheHeadNode(t, "bds-logs", 3*time.Second, false, func(cfg *common.Config) {
+		for _, u := range cfg.Projects[0].Upstreams {
+			u.Evm.GetLogsAutoSplittingRangeThreshold = 2
+		}
+	})
+	tip := n.chain.Tip().Number
+	from, head := tip-16, tip-4
+	n.bds.set(head, 0)
+	n.nw.chainTracker.MarkRead()
+	require.Eventually(t, func() bool { return cacheConnectorHead("bds-logs") == float64(head) }, 10*time.Second, 20*time.Millisecond,
+		"the cache head's poll observes the head")
+
+	filter := chainsim.Filters[0]
+	want := n.chain.CanonicalLogs(filter, from, tip)
+	require.NotEmpty(t, n.chain.CanonicalLogs(filter, from, head), "the cache's part holds logs")
+	require.NotEmpty(t, n.chain.CanonicalLogs(filter, head+1, tip), "the vendors' part holds logs")
+
+	resp, raw := n.post(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s"}]}`,
+		from, tip, filter.Address.Hex()))
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", raw)
+	var r struct {
+		Result []struct {
+			BlockHash string `json:"blockHash"`
+			LogIndex  string `json:"logIndex"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &r), "body: %s", raw)
+	require.Empty(t, r.Error, "body: %s", raw)
+	got := make(map[chainsim.LogKey]bool, len(r.Result))
+	for _, l := range r.Result {
+		idx, err := strconv.ParseUint(strings.TrimPrefix(l.LogIndex, "0x"), 16, 64)
+		require.NoError(t, err, "body: %s", raw)
+		got[chainsim.LogKey{BlockHash: gethcommon.HexToHash(l.BlockHash), LogIndex: int(idx)}] = true
+	}
+	require.Len(t, r.Result, len(want), "body: %s", raw)
+	for k := range want {
+		assert.True(t, got[k], "log %v is in the answer", k)
+	}
+
+	var below [][2]uint64
+	for _, rg := range n.bds.ranges() {
+		if rg[0] <= head {
+			below = append(below, rg)
+		}
+	}
+	assert.Equal(t, [][2]uint64{{from, tip}, {from, head}}, below,
+		"the cache is read for the whole range, refused, then once up to its head")
+}
+
+// A held read waits for a holder (awaitHolder), but none can come when
+// every upstream's hash vote left the pins below the block: the request
+// goes at once, as it did before the wait (spec §6.4 held, §6.1 reached N).
+func TestNetwork_AwaitHolder_NoHolderCanCome(t *testing.T) {
+	n := newCacheHeadNode(t, fmt.Sprintf("bds-await-%d", time.Now().UnixNano()), 3*time.Second, false)
+	tip := int64(n.chain.Tip().Number)
+	var ups []common.Upstream
+	forked := map[string]int64{}
+	for _, u := range n.nw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), n.nw.networkId) {
+		ups = append(ups, u)
+		forked[u.Id()] = tip - 1
+	}
+	require.Len(t, ups, 2)
+	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, tip)))
+	n.nw.EvmVotesForked(forked)
+	t.Cleanup(func() { n.nw.EvmVotesForked(nil) })
+
+	start := time.Now()
+	got := n.nw.awaitHolder(context.Background(), req, ups, tip, true)
+	assert.Less(t, time.Since(start), 200*time.Millisecond, "no holder can come, so the read does not wait")
+	assert.ElementsMatch(t, ups, got)
+}

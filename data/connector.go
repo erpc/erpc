@@ -2,9 +2,11 @@ package data
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
@@ -13,6 +15,40 @@ const (
 	ConnectorMainIndex    = "idx_main"
 	ConnectorReverseIndex = "idx_reverse"
 )
+
+type reverseIndexWildcardCtxKey struct{}
+
+// WithReverseIndexWildcard attaches the reverse-index lookup partition for a
+// cache Set/Delete. Callers that know networkId and cacheKeySuffix must pass
+// CachePartitionKey(networkId, suffix, "*") rather than inferring the
+// wildcard from the opaque concrete key (refs may themselves contain ':').
+func WithReverseIndexWildcard(ctx context.Context, wildcard string) context.Context {
+	if ctx == nil || wildcard == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, reverseIndexWildcardCtxKey{}, wildcard)
+}
+
+// WithReverseIndex is the Set/Delete helper: same wildcard as
+// CachePartitionKey(networkId, suffix, "*"). Delete without this ctx leaves
+// the reverse-index companion in place on Memory/Redis.
+func WithReverseIndex(ctx context.Context, networkId, suffix string) context.Context {
+	return WithReverseIndexWildcard(ctx, common.CachePartitionKey(networkId, suffix, "*"))
+}
+
+// reverseIndexWildcardKey returns the reverse-index wildcard partition.
+// It only uses an explicit value from WithReverseIndexWildcard — never the
+// last colon of partitionKey, which would split colon-containing block tags.
+func reverseIndexWildcardKey(ctx context.Context, _ string) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	w, ok := ctx.Value(reverseIndexWildcardCtxKey{}).(string)
+	if !ok || w == "" {
+		return "", false
+	}
+	return w, true
+}
 
 type DistributedLock interface {
 	Unlock(ctx context.Context) error
@@ -35,6 +71,45 @@ type CounterInt64State struct {
 	Value     int64  `json:"v"`
 	UpdatedAt int64  `json:"t"`
 	UpdatedBy string `json:"b,omitempty"`
+	// Rewind marks a head counter's hash-proven rollback write (spec §14):
+	// a lower value newer than the receiver's is taken whatever the drop,
+	// and counted against no upstream. Older readers ignore it.
+	Rewind bool `json:"r,omitempty"`
+}
+
+// Reasons of erpc_shared_counter_remote_rejected_total.
+const (
+	rejectNonPositive    = "non_positive"
+	rejectSmallRollback  = "small_rollback"
+	rejectHeldRollback   = "held_rollback"
+	rejectStaleTimestamp = "stale_timestamp"
+	rejectMalformed      = "malformed"
+)
+
+func countRejected(reason string) {
+	telemetry.CounterHandle(telemetry.MetricSharedCounterRemoteRejectedTotal, reason).Inc()
+}
+
+// malformedPayloads holds, per counter key, the malformed payload last
+// counted for it: polls and resubscribes read one stored record again and
+// again, and it is one rejected state.
+var malformedPayloads sync.Map
+
+// parseCounterState parses key's stored or published counter state. A
+// parse error or t<=0 is malformed: counted once per distinct payload in a
+// row, and read as missing (no v1 fallback, #956).
+func parseCounterState(key string, raw []byte) (CounterInt64State, bool) {
+	var st CounterInt64State
+	if err := common.SonicCfg.Unmarshal(raw, &st); err != nil || st.UpdatedAt <= 0 {
+		if prev, seen := malformedPayloads.Swap(key, string(raw)); !seen || prev.(string) != string(raw) {
+			countRejected(rejectMalformed)
+		}
+		return CounterInt64State{}, false
+	}
+	if _, seen := malformedPayloads.Load(key); seen {
+		malformedPayloads.Delete(key)
+	}
+	return st, true
 }
 
 type Connector interface {
@@ -50,14 +125,31 @@ type Connector interface {
 	PublishCounterInt64(ctx context.Context, key string, value CounterInt64State) error
 }
 
-// CacheHeadReporter is an optional capability implemented by read-through connectors that can report
-// the timestamp of the latest block they currently serve. It lets the realtime cache age guard be
-// enforced even for responses that carry no block timestamp of their own (eth_blockNumber,
-// eth_gasPrice, eth_getLogs). Connectors that serve locally-written data do not implement it.
+// CacheHeadReporter is an optional capability implemented by read-through connectors that know the
+// newest block they serve per network. The realtime cache age guard reads it for responses that
+// carry no block timestamp of their own (eth_blockNumber, eth_gasPrice, eth_getLogs); a network
+// takes each new head as the poll of the upstream at the same server when it is a voter, else as a
+// sighting of its block for the block clock; and a network with evm.servedTip.followCacheHead
+// serves its tags at it while that guard would admit it. Connectors that serve locally-written data
+// do not implement it.
 type CacheHeadReporter interface {
-	// CacheLatestBlockTimestamp returns the unix timestamp (seconds) of the latest block this
-	// connector can currently serve for networkId, and whether it is known.
-	CacheLatestBlockTimestamp(networkId string) (unixSeconds int64, ok bool)
+	// CacheLatestBlock returns the number and unix timestamp (seconds) of the newest block this
+	// connector last observed for networkId, and whether it is known.
+	CacheLatestBlock(networkId string) (number, unixSeconds int64, ok bool)
+	// RefreshLatestBlock fetches networkId's newest block now, records it, and returns the
+	// eth_getBlockByNumber("latest", false) result it fetched and when that request was sent. A
+	// failed fetch keeps the last observation and returns nil.
+	RefreshLatestBlock(ctx context.Context, networkId string) (block []byte, sent time.Time)
+	// CacheServer is the host:port this connector reads networkId from, "" while unknown.
+	CacheServer(networkId string) string
+}
+
+// ReadOnlyConnector is an optional capability implemented by connectors that only serve reads
+// (e.g. the gRPC connector in front of an external indexed-data service). Cache policies on such a
+// connector never match for set, so a policy left at the default appliesTo (both) does not turn
+// every cacheable response into a failed write, an error metric and a warning.
+type ReadOnlyConnector interface {
+	ReadOnly() bool
 }
 
 func NewConnector(

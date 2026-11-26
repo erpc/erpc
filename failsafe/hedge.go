@@ -2,6 +2,8 @@ package failsafe
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -60,9 +62,12 @@ func releaseHedgeTimer(t *time.Timer) {
 }
 
 // HedgeHooks lets the caller observe hedge events. OnFire fires when an
-// extra hedge attempt is spawned — useful for metric increments.
+// extra hedge attempt is spawned — useful for metric increments. OnIdle fires
+// when every attempt returned without a winner and the next hedge waits for
+// its timer; next is when that hedge fires.
 type HedgeHooks struct {
 	OnFire func(fireIdx int, delay time.Duration)
+	OnIdle func(next time.Time)
 }
 
 // hedgeResult is the value posted to the result channel by every
@@ -122,7 +127,16 @@ func RunHedged[R any](
 			hooks.OnFire(idx, 0)
 		}
 		go func() {
-			r, err := inner(siblingCtx)
+			// A panic here would kill the process: no caller frame can recover a
+			// goroutine. Surface it as this attempt's error instead.
+			r, err := func() (r R, err error) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						err = fmt.Errorf("hedge attempt panic: %v\n%s", rec, debug.Stack())
+					}
+				}()
+				return inner(siblingCtx)
+			}()
 			select {
 			case resultCh <- hedgeResult[R]{r: r, err: err}:
 			default:
@@ -151,6 +165,8 @@ func RunHedged[R any](
 	// from `hedgeTimerPool` — at high RPS this `time.NewTimer` was
 	// a per-request alloc visible in the heap profile.
 	var hedgeTimer *time.Timer
+	// hedgeAt is when hedgeTimer fires.
+	var hedgeAt time.Time
 	resetHedgeTimer := func() {
 		if hedgeTimer != nil {
 			releaseHedgeTimer(hedgeTimer)
@@ -167,6 +183,7 @@ func RunHedged[R any](
 		if d < 0 {
 			d = 0
 		}
+		hedgeAt = time.Now().Add(d)
 		hedgeTimer = borrowHedgeTimer(d)
 	}
 	resetHedgeTimer()
@@ -250,6 +267,9 @@ func RunHedged[R any](
 			// last non-kept result with its error.
 			if pending == 0 && (hedgeTimer == nil) {
 				return res.r, res.err
+			}
+			if pending == 0 && hooks.OnIdle != nil {
+				hooks.OnIdle(hedgeAt)
 			}
 		}
 	}

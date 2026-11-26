@@ -23,7 +23,7 @@ func TestCreateMisbehaviorExporterAppliesDefaultsWithoutSetDefaults(t *testing.T
 		// FilePattern deliberately unset — the integrity config path never
 		// calls SetDefaults.
 	}
-	exp := createMisbehaviorExporter(cfg, &log)
+	exp := createMisbehaviorExporter(cfg, &log, defaultPolicyName)
 	if exp == nil {
 		t.Fatal("exporter failed to initialize")
 	}

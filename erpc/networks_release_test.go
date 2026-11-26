@@ -33,7 +33,7 @@ func init() {
 // to acquire resp.Lock inside cacheDal.Set → resp.JsonRpcResponse().
 func TestNetworkForward_CacheSetDoesNotBlockForward(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	cacheCfg := &common.CacheConfig{
@@ -116,7 +116,7 @@ func TestNetworkForward_CacheSetDoesNotBlockForward(t *testing.T) {
 // critical for flows where consensus and the HTTP handler may both release.
 func TestNetworkForward_DoubleReleaseIsSafe(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,7 +168,7 @@ func TestNetworkForward_DoubleReleaseIsSafe(t *testing.T) {
 // on a response that the consensus executor had already released.
 func TestNetworkForward_ConsensusErrorPathClearsLVRWithoutDoubleFree(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -213,6 +213,7 @@ func TestNetworkForward_ConsensusErrorPathClearsLVRWithoutDoubleFree(t *testing.
 		nil, upsReg, mt,
 		nil,
 	)
+	stopAtEnd(t, ntw)
 	require.NoError(t, err)
 
 	upsReg.Bootstrap(ctx)
@@ -261,7 +262,7 @@ func TestNetworkForward_ConsensusErrorPathClearsLVRWithoutDoubleFree(t *testing.
 // Run with: go test -race -run TestNetworkForward_ConcurrentForwardAndReleaseWithCache
 func TestNetworkForward_ConcurrentForwardAndReleaseWithCache(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	cacheCfg := &common.CacheConfig{

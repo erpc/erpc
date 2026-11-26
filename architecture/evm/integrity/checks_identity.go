@@ -155,7 +155,7 @@ func init() {
 	// ChainView pin). Pin-anchored → the engine re-confirms a stale pin before
 	// the verdict (reorg-safe), mirroring receiptVsBlock's pin branch.
 	register(&Check{
-		ID: "txPinConsistency", Family: FamilyContinuity, Class: ReorgSensitive,
+		ID: "txPinConsistency", Family: FamilyContinuity, Class: ReorgSensitive, History: true,
 		Methods: []string{MethodGetTransactionByHash},
 		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
 			hist := historyFrom(ctx)

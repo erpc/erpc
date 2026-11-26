@@ -46,7 +46,17 @@ func init() {
 				return nil
 			}
 
-			recovered, err := gethtypes.Sender(gethtypes.LatestSignerForChainID(tx.ChainId()), &tx)
+			// A pre-EIP-155 legacy tx (v=27/28) carries no chain id: geth reports
+			// ChainId()=0, and its chain-id signers panic on a non-positive id.
+			signer := gethtypes.Signer(gethtypes.HomesteadSigner{})
+			if tx.Protected() {
+				chainID := tx.ChainId()
+				if chainID == nil || chainID.Sign() <= 0 {
+					return Skipped
+				}
+				signer = gethtypes.LatestSignerForChainID(chainID)
+			}
+			recovered, err := gethtypes.Sender(signer, &tx)
 			if err != nil {
 				return nil
 			}

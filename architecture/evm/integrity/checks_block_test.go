@@ -38,11 +38,11 @@ func TestCheck_TransactionsRootConsistency(t *testing.T) {
 
 	// Real-world scenario: a sidechain block with the empty trie root whose only
 	// "transaction" is a phantom system tx (from=0x0, gas=0x0) must PASS.
-	phantom := []byte(`{"transactionsRoot":"` + emptyTrieRoot + `","transactions":[{"from":"0x0000000000000000000000000000000000000000","gas":"0x0"}]}`)
+	phantom := []byte(`{"transactionsRoot":"` + EmptyTrieRoot + `","transactions":[{"from":"0x0000000000000000000000000000000000000000","gas":"0x0"}]}`)
 	assert.NoError(t, run(t, MethodGetBlockByNumber, phantom, cs))
 
 	// Empty trie root but a real transaction → inconsistent.
-	realEmpty := []byte(`{"transactionsRoot":"` + emptyTrieRoot + `","transactions":[{"from":"0xdead000000000000000000000000000000000001","gas":"0x5208"}]}`)
+	realEmpty := []byte(`{"transactionsRoot":"` + EmptyTrieRoot + `","transactions":[{"from":"0xdead000000000000000000000000000000000001","gas":"0x5208"}]}`)
 	err := run(t, MethodGetBlockByNumber, realEmpty, cs)
 	assertRejected(t, err)
 	assert.Contains(t, err.Error(), "non-phantom")

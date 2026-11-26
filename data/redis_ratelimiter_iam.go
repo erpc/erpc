@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	envoyratelimitredis "github.com/envoyproxy/ratelimit/src/redis"
 	"github.com/mediocregopher/radix/v3"
@@ -59,12 +58,11 @@ func NewIAMRateLimitClient(cfg *common.RedisConnectorConfig) (envoyratelimitredi
 		return radix.Dial(network, addr, opts...)
 	}
 
+	// No 5ms PoolPipelineWindow: PipeDo sends each check as one explicit
+	// radix.Pipeline, which radix's implicit pipeliner never holds back,
+	// matching NewClientImpl with window 0 (upstream/ratelimiter_registry.go).
 	pool, err := radix.NewPool("tcp", addr, cfg.ConnPoolSize,
 		radix.PoolConnFunc(df),
-		// Must match NewClientImpl defaults — remoteAdmissionCap() sizes the
-		// per-budget admission channel as connPoolSize*32, which depends on
-		// implicit pipelining at exactly this window and limit.
-		radix.PoolPipelineWindow(5*time.Millisecond, 32),
 		// Proactively recycle connections before ElastiCache's 12h server-side
 		// force-disconnect; each replacement dials with a fresh IAM token.
 		// ponytail: no jitter (radix lacks the knob); connections spread
@@ -110,18 +108,11 @@ func (c *iamRateLimitClient) PipeAppend(pipeline envoyratelimitredis.Pipeline, r
 	return append(pipeline, radix.FlatCmd(rcv, cmd, key, args...))
 }
 
-// PipeDo runs each command individually and returns on the first error,
-// matching clientImpl.PipeDo's implicit-pipelining path (driver_impl.go).
-// The envoy ratelimit library constructs one pipeline per DoLimit call
-// (a single INCRBY+EXPIRE pair for one key), so early-return on error
-// never abandons commands for a different key mid-pipeline.
+// PipeDo sends the whole pipeline in one round trip, matching clientImpl.PipeDo
+// without implicit pipelining (driver_impl.go). A Redis pipeline is not a
+// transaction: an error still fails the whole check, which onFailure decides.
 func (c *iamRateLimitClient) PipeDo(pipeline envoyratelimitredis.Pipeline) error {
-	for _, action := range pipeline {
-		if err := c.pool.Do(action); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.pool.Do(radix.Pipeline(pipeline...))
 }
 
 func (c *iamRateLimitClient) Close() error {
@@ -134,4 +125,4 @@ func (c *iamRateLimitClient) Close() error {
 // only called in envoyproxy/ratelimit's own benchmark tests.
 func (c *iamRateLimitClient) NumActiveConns() int { return 0 }
 
-func (c *iamRateLimitClient) ImplicitPipeliningEnabled() bool { return true }
+func (c *iamRateLimitClient) ImplicitPipeliningEnabled() bool { return false }

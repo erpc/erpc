@@ -1,0 +1,1041 @@
+package erpc
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math/big"
+	"net/http"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	bdsevm "github.com/blockchain-data-standards/manifesto/evm"
+	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/indexer"
+	"github.com/erpc/erpc/internal/policy"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/thirdparty"
+	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
+	gethcommon "github.com/ethereum/go-ethereum/common"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/rs/zerolog/log"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+)
+
+func init() {
+	util.ConfigureTestLogger()
+}
+
+// setupWsTipNetwork bootstraps a single-upstream EVM network backed by an
+// in-memory shared state registry.
+func setupWsTipNetwork(t *testing.T, ctx context.Context, id, endpoint string) (*Network, *upstream.Upstream) {
+	t.Helper()
+	util.SetupMocksForEvmStatePoller()
+	gock.New(endpoint).
+		Post("").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b"}`))
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(context.Background(), &common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	require.NoError(t, err)
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"},
+		},
+	})
+	require.NoError(t, err)
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx, &log.Logger, "test",
+		[]*common.UpstreamConfig{{
+			Type:     common.UpstreamTypeEvm,
+			Id:       id,
+			Endpoint: endpoint,
+			Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+		}}, ssr, rateLimitersRegistry, vr, pr, nil,
+		metricsTracker, nil,
+	)
+	network, err := NewNetwork(ctx, &log.Logger, "test", &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm:          &common.EvmNetworkConfig{ChainId: 123},
+	}, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	stopAtEnd(t, network)
+	require.NoError(t, err)
+
+	upstreamsRegistry.Bootstrap(ctx)
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, upstreamsRegistry.GetInitializer().WaitForTasks(ctx))
+	require.NoError(t, network.Bootstrap(ctx))
+	time.Sleep(250 * time.Millisecond)
+
+	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	require.Len(t, upsList, 1)
+	return network, upsList[0]
+}
+
+func tipHash(tag string, n uint64) string {
+	if v, ok := verifiedTips.Load(tipKey{tag, n}); ok {
+		return v.(verifyingHeader).hash
+	}
+	return fmt.Sprintf("0x%s%0*x", tag, 64-len(tag), n)
+}
+
+// tipHead is block n of the linear chain tagged tag: a fakeHeader carrying
+// tipHash, unverified while no header of the network verified, a mismatch
+// that serves only at q holders once one did (verifyTipAt).
+func tipHead(tag string, n uint64) json.RawMessage {
+	if v, ok := verifiedTips.Load(tipKey{tag, n}); ok {
+		return v.(verifyingHeader).raw
+	}
+	raw, err := json.Marshal(fakeHeader(n, tipHash(tag, n), tipHash(tag, n-1), 1_700_000_000+n))
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+// fakeHeader is a complete Ethereum header for block n that claims hash,
+// not the hash its fields derive, so the Ethereum format encodes it to
+// another hash (spec §6.5). Its roots are not the empty trie's: the block
+// has transactions.
+func fakeHeader(n uint64, hash, parent string, ts uint64) map[string]interface{} {
+	fields := ethereumHeaderFields(n, parent, ts)
+	fields["hash"] = hash
+	fields["transactionsRoot"] = "0x" + strings.Repeat("1", 64)
+	fields["receiptsRoot"] = "0x" + strings.Repeat("2", 64)
+	return fields
+}
+
+type tipKey struct {
+	tag string
+	n   uint64
+}
+
+// verifiedTips are the blocks of tipHead chains that are real headers.
+var verifiedTips sync.Map // tipKey -> verifyingHeader
+
+// verifyTipAt makes block n of chain tag, for t, a header a registered
+// format verifies, on the chain's own parent: the network that holds it
+// learns its headers verify (spec §6.5), so every other tipHead, which the
+// Ethereum format encodes to another hash, is a mismatch that serves only
+// at q holders.
+func verifyTipAt(t testing.TB, tag string, n uint64) {
+	t.Helper()
+	verifiedTips.Store(tipKey{tag, n}, newVerifyingHeader(t, n, tipHash(tag, n-1), 1_700_000_000+n))
+	t.Cleanup(func() { verifiedTips.Delete(tipKey{tag, n}) })
+}
+
+// verifyingHeader is a header whose hash the Ethereum format reproduces.
+type verifyingHeader struct {
+	hash   string
+	raw    json.RawMessage
+	fields map[string]interface{}
+}
+
+// newVerifyingHeader is block n on parent at time ts, with the miner and
+// gas fields mockChain blocks carry, so a vendor serves it as any block.
+func newVerifyingHeader(t testing.TB, n uint64, parent string, ts uint64) verifyingHeader {
+	t.Helper()
+	h := ethereumHeader(n, parent, ts)
+	raw, err := h.MarshalJSON()
+	require.NoError(t, err)
+	var fields map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &fields))
+	return verifyingHeader{hash: h.Hash().Hex(), raw: raw, fields: fields}
+}
+
+func ethereumHeader(n uint64, parent string, ts uint64) *gethtypes.Header {
+	return &gethtypes.Header{ParentHash: gethcommon.HexToHash(parent), UncleHash: gethtypes.EmptyUncleHash,
+		Coinbase: gethcommon.HexToAddress("0x0000000000000000000000000000000000000001"), TxHash: gethtypes.EmptyTxsHash,
+		ReceiptHash: gethtypes.EmptyReceiptsHash, Difficulty: big.NewInt(0), Number: new(big.Int).SetUint64(n),
+		GasLimit: 0x1c9c380, GasUsed: 0x5208, Time: ts, BaseFee: big.NewInt(7)}
+}
+
+// ethereumHeaderFields is ethereumHeader's JSON object.
+func ethereumHeaderFields(n uint64, parent string, ts uint64) map[string]interface{} {
+	raw, err := ethereumHeader(n, parent, ts).MarshalJSON()
+	if err != nil {
+		panic(err)
+	}
+	var fields map[string]interface{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		panic(err)
+	}
+	return fields
+}
+
+// polledHead is tipHead as a poll hands it to intake, past check 0.
+func polledHead(t testing.TB, tag string, n uint64) evm.SourceHeader {
+	t.Helper()
+	sh, err := evm.ParseSourceHeader(tipHead(tag, n))
+	require.NoError(t, err)
+	return sh
+}
+
+func eventuallyLatest(t *testing.T, ctx context.Context, network *Network, want int64, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return servedHead(network, ctx).Latest == want },
+		2*time.Second, 10*time.Millisecond, msg)
+}
+
+// pinned is the network-wide tracker's pinned head, which only counted
+// votes move; 0 while none.
+func pinned(network *Network) int64 {
+	if c, ok := network.chainTracker.Tip(); ok {
+		return int64(c.Number)
+	}
+	return 0
+}
+
+func eventuallyPinned(t *testing.T, network *Network, want int64, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool { return pinned(network) == want }, 2*time.Second, 10*time.Millisecond, msg)
+}
+
+// Each source header moves its upstream's poller at once; the network tip,
+// and every transport, move only to a block q sources have. Three wss
+// sources at 1005, 1001 and 1000 with q = 2: HTTP, ws newHeads and gRPC
+// StreamBlocks stop at 1001, and reach 1005 once a second source has it.
+func TestNetworkIntake_HeaderAdvancesNetworkTip(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+	ctx := context.Background()
+
+	ids := []string{"rpc-a", "rpc-b", "rpc-c"}
+	chains := make(map[string]*mockChain, len(ids))
+	vendors := make(map[string]*mockWsVendor, len(ids))
+	upCfgs := make([]*common.UpstreamConfig, 0, len(ids))
+	for _, id := range ids {
+		// Latest polls answer block 999, so only pushes move the heads.
+		chains[id] = newMockChain(999, false)
+		// Block 999 verifies, so later blocks, mismatches, need q holders.
+		chains[id].verifyAt(t, 999)
+		v, url := newMockWsVendor(t, chains[id], func(v *mockWsVendor) { v.staleRPC = true })
+		vendors[id] = v
+		upCfgs = append(upCfgs, sourceUpstream(id, url, ""))
+	}
+	cfg := sourcesConfig(func(nw *common.NetworkConfig) {
+		nw.SelectionPolicy = &common.SelectionPolicyConfig{EvalFunc: `(upstreams, ctx) => upstreams.filter(u => true)`}
+		nw.Evm.ServedTip = &common.EvmServedTipConfig{Quorum: 2}
+	}, upCfgs...)
+	erpcSrv, addr, cancel := startTestERPCServer(t, cfg)
+	defer func() { _ = erpcSrv.Shutdown(&log.Logger); cancel() }()
+	prj, err := erpcSrv.erpc.GetProject("test_ws")
+	require.NoError(t, err)
+	network, err := prj.GetNetwork(ctx, "evm:123")
+	require.NoError(t, err)
+	byId := make(map[string]*upstream.Upstream, len(ids))
+	for _, u := range network.upstreamsRegistry.GetNetworkUpstreams(ctx, network.networkId) {
+		byId[u.Id()] = u
+	}
+	require.Len(t, byId, len(ids))
+
+	call := func(method, params string) interface{} {
+		resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json",
+			strings.NewReader(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q,"params":%s}`, method, params)))
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+		var out map[string]interface{}
+		if json.NewDecoder(resp.Body).Decode(&out) != nil {
+			return nil
+		}
+		return out["result"]
+	}
+	blockNumber := func() string {
+		s, _ := call("eth_blockNumber", "[]").(string)
+		return s
+	}
+	latestBlock := func() string {
+		b, _ := call("eth_getBlockByNumber", `["latest",false]`).(map[string]interface{})
+		s, _ := b["number"].(string)
+		return s
+	}
+
+	tapLabels := func(transport string) []string {
+		return []string{"test_ws", "evm:123", transport, indexer.SubTypeNewHeads}
+	}
+	openTaps := func(transport string) float64 {
+		return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels(transport)...))
+	}
+	wsTaps, grpcTaps := openTaps("ws"), openTaps("grpc")
+
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	subscribeNewHeads(t, conn)
+	wsHeads := make(chan int64, 64)
+	go func() {
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var notif struct {
+				Params struct {
+					Result struct {
+						Number string `json:"number"`
+					} `json:"result"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(msg, &notif) != nil {
+				continue
+			}
+			if n, err := common.HexToInt64(notif.Params.Result.Number); err == nil {
+				wsHeads <- n
+			}
+		}
+	}()
+
+	grpcAddr, stopGrpc := serveGrpc(t, ctx, erpcSrv.erpc)
+	defer stopGrpc()
+	gconn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer gconn.Close()
+	streamCtx, stopStream := context.WithCancel(ctx)
+	defer stopStream()
+	stream, err := bdsevm.NewStreamServiceClient(gconn).StreamBlocks(streamMD(streamCtx), &bdsevm.StreamBlocksRequest{})
+	require.NoError(t, err)
+	grpcHeads, grpcEnded := make(chan int64, 64), make(chan error, 1)
+	go func() {
+		for {
+			resp, err := stream.Recv()
+			if err != nil {
+				grpcEnded <- err
+				return
+			}
+			grpcHeads <- int64(resp.GetHeader().GetNumber())
+		}
+	}()
+
+	require.Eventually(t, func() bool {
+		for _, v := range vendors {
+			if v.subscribes.Load() == 0 {
+				return false
+			}
+		}
+		return openTaps("ws") == wsTaps+1 && openTaps("grpc") == grpcTaps+1
+	}, 10*time.Second, 10*time.Millisecond, "every source subscribes newHeads and both client taps open")
+
+	// reach reads heads until want, none above it, then requires silence;
+	// ended fails it once the client's stream ended.
+	reach := func(heads <-chan int64, ended <-chan error, want int64, transport string) {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for {
+			select {
+			case n := <-heads:
+				require.LessOrEqual(t, n, want, "%s sent block %d above latest %d", transport, n, want)
+				if n < want {
+					continue
+				}
+				select {
+				case n := <-heads:
+					t.Fatalf("%s sent block %d after latest %d", transport, n, want)
+				case <-time.After(300 * time.Millisecond):
+				}
+				return
+			case err := <-ended:
+				t.Fatalf("%s ended before block %d: %v", transport, want, err)
+			case <-deadline:
+				t.Fatalf("%s never sent block %d", transport, want)
+			}
+		}
+	}
+	heads := func(want map[string]int64) {
+		t.Helper()
+		require.Eventually(t, func() bool {
+			for id, n := range want {
+				if byId[id].EvmStatePoller().LatestBlock() != n {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 10*time.Millisecond, "each source header moves its own poller: %v", want)
+	}
+
+	chains["rpc-c"].advance()
+	for range 2 {
+		chains["rpc-b"].advance()
+	}
+	for range 6 {
+		chains["rpc-a"].advance()
+	}
+	heads(map[string]int64{"rpc-a": 1005, "rpc-b": 1001, "rpc-c": 1000})
+	require.Eventually(t, func() bool {
+		tip, ok := network.chainTracker.Tip()
+		return ok && tip.Number == 1005
+	}, 10*time.Second, 10*time.Millisecond, "the tracker pins rpc-a's head")
+
+	assert.Equal(t, "0x3e9", blockNumber(), "one source alone must not raise eth_blockNumber")
+	assert.Equal(t, "0x3e9", latestBlock(), "one source alone must not raise eth_getBlockByNumber(latest)")
+	reach(wsHeads, nil, 1001, "ws newHeads")
+	reach(grpcHeads, grpcEnded, 1001, "gRPC StreamBlocks")
+
+	for range 4 {
+		chains["rpc-b"].advance()
+	}
+	heads(map[string]int64{"rpc-a": 1005, "rpc-b": 1005})
+	require.Eventually(t, func() bool { return blockNumber() == "0x3ed" },
+		10*time.Second, 10*time.Millisecond, "a second source at 1005 moves eth_blockNumber")
+	reach(wsHeads, nil, 1005, "ws newHeads")
+	reach(grpcHeads, grpcEnded, 1005, "gRPC StreamBlocks")
+}
+
+// An HTTP upstream that is no source, polled every 30s, can hold latest:
+// as the lower of two heads, or as the one member of a guarantee subset.
+// Taps stop at latest, so a waiting tap refreshes every voter below the
+// held block instead of holding the client until that upstream's next poll.
+func TestNetworkIntake_NonSourceVoterNeverHoldsTaps(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		wsSources []string
+		network   func(nw *common.NetworkConfig)
+	}{
+		{name: "lower of two heads", wsSources: []string{"a-ws"}},
+		{
+			// Routing order puts z-http last, so the ballot's first voters,
+			// all at the pushed head, are not the ones holding latest.
+			name:      "guarantee subset",
+			wsSources: []string{"a-ws", "b-ws", "c-ws"},
+			network: func(nw *common.NetworkConfig) {
+				nw.SelectionPolicy = &common.SelectionPolicyConfig{
+					EvalFunc: `(upstreams, ctx) => upstreams.filter(u => true).sort((a, b) => (a.id < b.id ? -1 : 1))`,
+				}
+				nw.Evm.ServedTip = &common.EvmServedTipConfig{GuaranteedFor: []string{"z-http"}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupGock()
+			t.Cleanup(util.ResetGock)
+
+			chain := newMockChain(1000, false)
+			// Block 1000 verifies, so later blocks, mismatches, need q
+			// holders: the HTTP upstream's own vote.
+			chain.verifyAt(t, 1000)
+			httpVendor, srv := newMockHttpVendor(t, chain)
+			ups := make([]*common.UpstreamConfig, 0, len(tc.wsSources)+1)
+			for _, id := range tc.wsSources {
+				_, wsURL := newMockWsVendor(t, chain, nil)
+				ups = append(ups, sourceUpstream(id, wsURL, ""))
+			}
+			httpUp := sourceUpstream("z-http", srv.URL, "")
+			httpUp.Evm.StatePollerInterval = common.Duration(30 * time.Second)
+			addr, cleanup := setupTestERPCServer(t, sourcesConfig(tc.network, append(ups, httpUp)...))
+			defer cleanup()
+			conn := dialWs(t, addr)
+			defer conn.Close()
+			subscribeNewHeads(t, conn)
+			tapLabels := []string{"test_ws", "evm:123", "ws", indexer.SubTypeNewHeads}
+			require.Eventually(t, func() bool { return testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues(tapLabels...)) == 1 },
+				5*time.Second, 10*time.Millisecond, "the client's tap opens")
+			require.Eventually(t, func() bool { return httpVendor.latestPolls.Load() > 0 }, 5*time.Second, 10*time.Millisecond,
+				"the HTTP upstream's poller reads its first head")
+
+			polled := httpVendor.latestPolls.Load()
+			for want := int64(1001); want <= 1005; want++ {
+				chain.advance()
+				n, _ := nextNewHead(t, conn, 3*time.Second)
+				for n < want && n <= 1000 {
+					// The head the tap found when it opened.
+					n, _ = nextNewHead(t, conn, 3*time.Second)
+				}
+				require.Equal(t, want, n, "each pushed head reaches the client well before the HTTP upstream's next 30s poll")
+			}
+			assert.Greater(t, httpVendor.latestPolls.Load(), polled, "the waiting tap refreshed the HTTP upstream's head")
+		})
+	}
+}
+
+// An unknown source lifts nothing, nor does one eligible source alone; a
+// quorum of eligible ones does.
+func TestNetworkIntake_EligibleSourceLiftsLatest(t *testing.T) {
+	t.Cleanup(util.ResetGock)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	verifyTipAt(t, "a", 1000)
+	network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
+	for _, u := range ups {
+		voteHead(t, network, u, 1000)
+	}
+	require.Equal(t, int64(1000), servedHead(network, ctx).Latest)
+
+	network.intake.Polled("unknown", polledHead(t, "a", 1020), nil, evm.HeaderStreamed, time.Now())
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, int64(1000), servedHead(network, ctx).Latest, "an unknown source must not lift latest")
+
+	network.intake.Polled("primary-1", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	eventuallyPinned(t, network, 1001, "an eligible source's head votes")
+	assert.Equal(t, int64(1000), servedHead(network, ctx).Latest, "one eligible source alone must not lift latest")
+	network.intake.Polled("primary-2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	eventuallyLatest(t, ctx, network, 1001, "a quorum of eligible sources lifts latest")
+}
+
+// An upstream the selection policy excludes never reaches clients: its own
+// poller sees its heads, but they never vote, so no tap receives them.
+func TestNetworkIntake_PolicyExcludedUpstreamNeverReachesClients(t *testing.T) {
+	t.Cleanup(util.ResetGock)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The default policy cordons the fallback tier while the primaries are healthy.
+	network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{primaryLatest: "0x3e8", fallbackLatest: "0x3e8"})
+	byId := map[string]*upstream.Upstream{}
+	for _, u := range ups {
+		byId[u.Id()] = u
+	}
+
+	// The client last applied block 1000, so its tap does not race the
+	// headers below for its start, as one from f.Head in its goroutine would.
+	start, err := evm.ParseHeader(tipHead("a", 1000))
+	require.NoError(t, err)
+	got := make(chan uint64, 16)
+	go func() {
+		_ = indexer.NewTaps(network.logger, "test", nil).RunChain(ctx, network.networkId, "test", indexer.SubTypeNewHeads, network.chainTracker, &start, indexer.ReadOpts{},
+			func(b indexer.Batch) (int, error) {
+				for _, blk := range b.Applied {
+					got <- blk.Number
+				}
+				return len(b.Applied), nil
+			})
+	}()
+
+	network.intake.Polled("fallback-1", polledHead(t, "b", 1010), nil, evm.HeaderStreamed, time.Now())
+	assert.Equal(t, int64(1010), byId["fallback-1"].EvmStatePoller().LatestBlock(), "its own poller still sees the head")
+	for _, id := range []string{"primary-1", "primary-2"} {
+		network.intake.Polled(id, polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+		network.intake.Polled(id, polledHead(t, "a", 1002), nil, evm.HeaderStreamed, time.Now())
+	}
+
+	for _, want := range []uint64{1001, 1002} {
+		select {
+		case n := <-got:
+			require.Equal(t, want, n)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("the client never received block %d", want)
+		}
+	}
+	select {
+	case n := <-got:
+		t.Fatalf("the client received block %d, which only the excluded upstream has", n)
+	case <-time.After(300 * time.Millisecond):
+	}
+	assert.Equal(t, int64(1002), servedHead(network, ctx).Latest)
+}
+
+// With failover on, a fallback's topics are held while an eligible primary
+// leads as a live source (§6.2, #836); its head still votes, as every
+// voter's does (no tier filter on votes), and its own poller sees every
+// head. A primary leads at once here; the 60s lead runs in
+// TestWebSocket_FallbackPollsUntilPrimaryLeads.
+func TestNetworkIntake_FallbackHeadsHeldWhilePrimariesStream(t *testing.T) {
+	prevLead := primaryLeadAfter.Load()
+	primaryLeadAfter.Store(0)
+	t.Cleanup(func() { primaryLeadAfter.Store(prevLead) })
+	setup := func(t *testing.T, ctx context.Context, noPolicy bool) (*Network, map[string]*upstream.Upstream) {
+		network, ups, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
+			primaryLatest:  "0x3e8", // 1000
+			fallbackLatest: "0x3e8",
+			enableFailover: true,
+			noPolicy:       noPolicy,
+		})
+		byId := make(map[string]*upstream.Upstream, len(ups))
+		for _, u := range ups {
+			byId[u.Id()] = u
+		}
+		return network, byId
+	}
+
+	t.Run("HeldWhileAPrimaryStreams", func(t *testing.T) {
+		t.Cleanup(util.ResetGock)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, ups := setup(t, ctx, true)
+
+		// The primary's head is pinned in a batch of its own: in one batch
+		// with the fallback's, the two tie with nothing pinned, and rule 4
+		// takes the higher root.
+		network.intake.Polled("primary-2", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+		eventuallyPinned(t, network, 1000, "the primary's head pins")
+		network.intake.Polled("fallback-1", polledHead(t, "b", 1010), nil, evm.HeaderStreamed, time.Now())
+		assert.Equal(t, int64(1010), ups["fallback-1"].EvmStatePoller().LatestBlock(),
+			"the fallback's poller still sees its head")
+		time.Sleep(100 * time.Millisecond)
+		assert.Equal(t, int64(1000), pinned(network), "a 1-vs-1 tie keeps the pins (rule 4)")
+		// The fixture runs no reconciler; its pass is admit.
+		network.intake.admit(time.Now(), network.chainTracker.W())
+		assert.True(t, network.intake.admits("primary-2"), "the primary's topics are admitted")
+		assert.False(t, network.intake.admits("fallback-1"), "the fallback's topics stay held while the primary streams")
+
+		network.intake.Polled("primary-2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+		// One vote serves only a hash that recomputes (spec §19 U8): the
+		// test headers' do not, so the primary's vote shows in the pins.
+		eventuallyPinned(t, network, 1001, "the primary's head votes")
+	})
+
+	t.Run("DeliveredWhenNoPrimaryStreams", func(t *testing.T) {
+		t.Cleanup(util.ResetGock)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, _ := setup(t, ctx, true)
+
+		network.intake.Polled("fallback-1", polledHead(t, "b", 1010), nil, evm.HeaderStreamed, time.Now())
+		eventuallyPinned(t, network, 1010, "with no primary source, the fallback votes")
+	})
+
+	t.Run("DeliveredWhenPolicyExcludesPrimaries", func(t *testing.T) {
+		t.Cleanup(util.ResetGock)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, ups := setup(t, ctx, false)
+
+		network.intake.Polled("primary-1", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+		network.intake.Polled("primary-2", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+		network.intake.Polled("fallback-1", polledHead(t, "b", 1010), nil, evm.HeaderStreamed, time.Now())
+		time.Sleep(100 * time.Millisecond)
+		require.Less(t, pinned(network), int64(1010))
+
+		ups["primary-1"].Cordon("*", "test")
+		ups["primary-2"].Cordon("*", "test")
+		policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+		network.intake.Polled("fallback-1", polledHead(t, "b", 1011), nil, evm.HeaderStreamed, time.Now())
+		eventuallyPinned(t, network, 1011, "excluded primaries no longer hold the fallback back")
+	})
+
+	t.Run("DeliveredWithFailoverOff", func(t *testing.T) {
+		t.Cleanup(util.ResetGock)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network, _, _ := setupFailoverFixture(t, ctx, failoverFixtureOpts{
+			primaryLatest:  "0x3e8",
+			fallbackLatest: "0x3e8",
+			noPolicy:       true,
+		})
+
+		network.intake.Polled("primary-1", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+		network.intake.Polled("fallback-1", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+		eventuallyPinned(t, network, 1001, "without failover every eligible source votes")
+	})
+}
+
+// A head far past the poller's (a major jump) is verified asynchronously
+// before the poller takes it. Until then it must not vote: a head from an
+// endpoint now answering for another chain must never reach clients. A
+// proven mismatch cordons the upstream, and while it is cordoned even its
+// small advances are withheld (spec §5); only the recheck's 2 matches lift
+// the cordon, after which its heads vote again.
+func TestNetworkIntake_WithholdsUnacceptedMajorJump(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	prevRecheck := evm.ChainIdCordonRecheck.Load()
+	evm.ChainIdCordonRecheck.Store(100 * time.Millisecond)
+	defer evm.ChainIdCordonRecheck.Store(prevRecheck)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, u := setupWsTipNetwork(t, ctx, "rpc2", "http://rpc2.localhost")
+	u.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
+	require.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+
+	// From here the endpoint answers for another chain until fixed is set.
+	// Both answers are mocked once: re-registering mocks while the recheck
+	// probes would race on gock's registry.
+	var fixed atomic.Bool
+	util.ResetGock()
+	gock.New("http://rpc2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return !fixed.Load() && strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
+		Reply(200).JSON([]byte(`{"result":"0x1"}`))
+	gock.New("http://rpc2.localhost").Post("").Persist().
+		Filter(func(r *http.Request) bool {
+			return fixed.Load() && strings.Contains(util.SafeReadBody(r), `eth_chainId`)
+		}).
+		Reply(200).JSON([]byte(`{"result":"0x7b"}`))
+
+	network.intake.Polled("rpc2", polledHead(t, "e", 5_000_000), nil, evm.HeaderStreamed, time.Now())
+	time.Sleep(300 * time.Millisecond) // let the async verification finish (and fail / cordon)
+	assert.Equal(t, int64(1000), u.EvmStatePoller().LatestBlock())
+	assert.Less(t, pinned(network), int64(5_000_000))
+
+	// Still cross-wired: small advances must not move the counter or vote.
+	network.intake.Polled("rpc2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	u.EvmStatePoller().SuggestLatestBlock(1001, time.Now())
+	require.Never(t, func() bool {
+		return u.EvmStatePoller().LatestBlock() != 1000 || pinned(network) > 1000
+	}, 300*time.Millisecond, 20*time.Millisecond, "a cordoned upstream's small advances are withheld")
+
+	// Endpoint fixed: the recheck lifts the cordon and its heads vote again.
+	fixed.Store(true)
+	require.Eventually(t, func() bool {
+		return !u.EvmStatePoller().(interface{ ChainIdCordoned() bool }).ChainIdCordoned()
+	}, 5*time.Second, 20*time.Millisecond, "2 matching rechecks lift the cordon")
+	network.intake.Polled("rpc2", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	network.intake.Polled("rpc2", polledHead(t, "a", 1002), nil, evm.HeaderStreamed, time.Now())
+	eventuallyPinned(t, network, 1002, "the next heads of the right chain vote after the lift")
+}
+
+// An indexer backfills blocks through the tracker while a source votes:
+// 2,046 client answers, as many as the mailbox lets queue ahead of a vote
+// (1,023 in the batch the tracker took, 1,023 queued), stand before the
+// vote. The tracker takes votes before answers, so the vote waits for the
+// rest of its batch at most (spec §3).
+func TestNetworkIntake_VoteBehindClientAnswersWaitsOneBatch(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, u := setupWsTipNetwork(t, ctx, "rpc5", "http://rpc5.localhost")
+	u.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
+	network.intake.Polled("rpc5", polledHead(t, "a", 1000), nil, evm.HeaderStreamed, time.Now())
+	eventuallyPinned(t, network, 1000, "the source pins 1000")
+	tracker := network.chainTracker
+
+	// The mailbox holds 1,024 headers; a stall marker or the vote takes
+	// one place.
+	const mailboxMessages = 1023
+	var (
+		stalls        = map[string]chan struct{}{"stall-1": make(chan struct{}), "stall-2": make(chan struct{})}
+		releases      = map[string]chan struct{}{"stall-1": make(chan struct{}), "stall-2": make(chan struct{})}
+		released      atomic.Bool
+		answers       int // only the tracker's goroutine writes it
+		answersBefore int
+		voteDelay     time.Duration
+		releasedAt    time.Time
+		voteSeen      = make(chan struct{})
+	)
+	hook := func(tr *evm.ChainTracker, upstreamId string, header *indexer.Cursor, sourceVote bool) {
+		if tr != tracker {
+			return
+		}
+		if stalled, ok := stalls[upstreamId]; ok {
+			close(stalled)
+			<-releases[upstreamId]
+			return
+		}
+		if !released.Load() {
+			return
+		}
+		switch {
+		case upstreamId == "client":
+			answers++
+		case sourceVote && upstreamId == "rpc5" && header != nil && header.Number == 1001 && voteDelay == 0:
+			voteDelay, answersBefore = time.Since(releasedAt), answers
+			close(voteSeen)
+		}
+	}
+	evm.TrackerMessageHook.Store(&hook)
+	t.Cleanup(func() { evm.TrackerMessageHook.Store(nil) })
+
+	answer := func(i int) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"number":"0x3e9","hash":"%s","parentHash":"%s","timestamp":"0x%x"}`,
+			tipHash("c", uint64(i)), tipHash("a", 1000), 1_700_001_001))
+	}
+	tracker.Observe("stall-1", tipHead("e", 1001), true)
+	<-stalls["stall-1"]
+	tracker.Observe("stall-2", tipHead("e", 1002), true)
+	for i := range mailboxMessages {
+		tracker.Observe("client", answer(i), false)
+	}
+	close(releases["stall-1"])
+	<-stalls["stall-2"]
+	for i := range mailboxMessages {
+		tracker.Observe("client", answer(mailboxMessages+i), false)
+	}
+	network.intake.Polled("rpc5", polledHead(t, "a", 1001), nil, evm.HeaderStreamed, time.Now())
+	releasedAt = time.Now()
+	released.Store(true)
+	close(releases["stall-2"])
+	select {
+	case <-voteSeen:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the tracker never handled the vote")
+	}
+	t.Logf("a vote behind %d client answers waited %s, handled after %d of them",
+		2*mailboxMessages, voteDelay, answersBefore)
+	assert.LessOrEqual(t, answersBefore, mailboxMessages, "the vote waits for the rest of its batch at most")
+	require.Eventually(t, func() bool { return pinned(network) == 1001 }, 2*time.Second, 10*time.Millisecond,
+		"the vote moves the pins, pinned %d", pinned(network))
+}
+
+// A head from a source the network does not know never votes and reaches
+// no client.
+func TestNetworkIntake_WithholdsUnverifiableSource(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, _ := setupWsTipNetwork(t, ctx, "rpc3", "http://rpc3.localhost")
+	before := pinned(network)
+
+	network.intake.Polled("not-in-this-network", polledHead(t, "a", 5_000_000), nil, evm.HeaderStreamed, time.Now())
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, before, pinned(network))
+}
+
+// sourcesNetwork starts an eRPC server for cfg and returns its network,
+// its upstreams by id and its address.
+func sourcesNetwork(t *testing.T, cfg *common.Config) (*Network, map[string]*upstream.Upstream, string) {
+	t.Helper()
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	t.Cleanup(func() { _ = srv.Shutdown(&log.Logger); cancel() })
+	prj, err := srv.erpc.GetProject("test_ws")
+	require.NoError(t, err)
+	network, err := prj.GetNetwork(context.Background(), "evm:123")
+	require.NoError(t, err)
+	byId := map[string]*upstream.Upstream{}
+	for _, u := range network.upstreamsRegistry.GetNetworkUpstreams(context.Background(), network.networkId) {
+		byId[u.Id()] = u
+	}
+	require.Len(t, byId, len(cfg.Projects[0].Upstreams))
+	return network, byId, addr
+}
+
+// pollerUpstream is an HTTP upstream that is no source, polled every 30s.
+func pollerUpstream(id, endpoint string) *common.UpstreamConfig {
+	u := sourceUpstream(id, endpoint, "")
+	u.Evm.StatePollerInterval = common.Duration(30 * time.Second)
+	return u
+}
+
+// A 1-block reorg leaves a healthy HTTP voter's last vote, polled up to 30s
+// ago, on the old branch. No tap reads this tracker, so it does not walk:
+// the new branch is a root of its own, and the voter's vote, below the
+// pins' first block, is no fork evidence (§6.3): no fork poll, never
+// demoted. Then a reorg to a shorter branch: the voter's next poll answer,
+// lower than its vote, moves it.
+func TestNetworkIntake_ReorgNeverDemotesHealthyPoller(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	chain := newMockChain(1000, false)
+	aVendor, aURL := newMockWsVendor(t, chain, nil)
+	bVendor, bURL := newMockWsVendor(t, chain, nil)
+	httpVendor, srv := newMockHttpVendor(t, chain)
+	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil,
+		sourceUpstream("a-ws", aURL, common.SubscriptionSourceAlways), sourceUpstream("b-ws", bURL, common.SubscriptionSourceAlways), pollerUpstream("z-http", srv.URL)))
+	require.Eventually(t, func() bool {
+		return httpVendor.latestPolls.Load() > 0 && aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "the poller reads its first head and both sources subscribe")
+	for range 3 {
+		chain.advance()
+	}
+	eventuallyPinned(t, network, 1003, "the sources' pushes pin 1003")
+	require.Eventually(t, func() bool {
+		v, ok := network.intake.hashVote(byId["z-http"])
+		if !ok || v.Number != 1003 {
+			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
+			return false
+		}
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "the poller's vote is 1003")
+
+	polled := httpVendor.latestPolls.Load()
+	chain.reorg(1)
+	eventuallyPinned(t, network, 1004, "the sources' pushes pin the new branch")
+	deadline := time.Now().Add(network.chainTracker.W() + 2*time.Second)
+	for time.Now().Before(deadline) {
+		require.False(t, network.isForkDemoted(byId["z-http"]), "a healthy poller whose last vote a reorg left behind is never demoted")
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.Equal(t, polled, httpVendor.latestPolls.Load(), "a vote below the pins' first block is no fork evidence: no fork poll")
+
+	for range 3 {
+		chain.advance()
+	}
+	eventuallyPinned(t, network, 1007, "the sources' pushes pin 1007")
+	require.Eventually(t, func() bool {
+		v, ok := network.intake.hashVote(byId["z-http"])
+		if !ok || v.Number != 1007 {
+			byId["z-http"].EvmStatePoller().AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
+			return false
+		}
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "the poller's vote is 1007, polled across 1005 and 1006")
+	chain.rewind(1005)
+	eventuallyPinned(t, network, 1005, "the sources' pushes pin the shorter branch")
+	deadline = time.Now().Add(network.chainTracker.W() + 2*time.Second)
+	for time.Now().Before(deadline) {
+		require.False(t, network.isForkDemoted(byId["z-http"]), "a healthy poller on the shorter branch is never demoted")
+		time.Sleep(20 * time.Millisecond)
+	}
+	v, _ := network.intake.hashVote(byId["z-http"])
+	assert.Equal(t, int64(1005), v.Number, "the fork poll's answer, lower than the vote, moves it")
+}
+
+// A push source's socket closes on a halted chain and comes back: its first
+// header after the reconnect is its current vote. That vote is fresh again,
+// so the source neither stays last in routing nor stops being a hash voter.
+func TestNetworkIntake_ReconnectOnHaltedChainRenewsVote(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	chain := newMockChain(1000, false)
+	aVendor, aURL := newMockWsVendor(t, chain, nil)
+	bVendor, bURL := newMockWsVendor(t, chain, nil)
+	network, byId, _ := sourcesNetwork(t, sourcesConfig(nil, sourceUpstream("a-ws", aURL, common.SubscriptionSourceAlways), sourceUpstream("b-ws", bURL, common.SubscriptionSourceAlways)))
+	require.Eventually(t, func() bool { return aVendor.subscribes.Load() > 0 && bVendor.subscribes.Load() > 0 },
+		5*time.Second, 10*time.Millisecond, "both sources subscribe")
+	chain.advance()
+	eventuallyPinned(t, network, 1001, "the sources' pushes pin 1001")
+	head, err := json.Marshal(chain.block(1001))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		v, ok := network.intake.hashVote(byId["a-ws"])
+		return ok && v.Number == 1001
+	}, 5*time.Second, 10*time.Millisecond, "a-ws votes 1001")
+
+	aVendor.dropConns()
+	require.Eventually(t, func() bool {
+		s := network.hashStale.Load()
+		return s != nil && slices.Contains(*s, "a-ws")
+	}, 5*time.Second, 10*time.Millisecond, "a closed socket goes last in routing")
+
+	pushIntake{network.intake}.Header("a-ws", head)
+	require.Eventually(t, func() bool {
+		v, _ := network.intake.hashVote(byId["a-ws"])
+		return !v.Expired && network.hashStale.Load() == nil
+	}, 2*time.Second, 10*time.Millisecond, "the reconnect's first header, the current vote, renews it on a halted chain")
+}
+
+// A polled voter is a hash voter until its node's failed polls of latest
+// span W, first to last, with no success since (spec §6.1):
+//  1. Two 429s W/2 apart, read W after the first, keep the vote; a third
+//     past W ends it; a success brings it back.
+//  2. A poll asked while a slow one is in flight joins it (spec §6.8 Ask):
+//     the node sees one poll, and both callers get its failure.
+//  3. Client traffic uses up the upstream's daily rate-limit budget: the
+//     Asks take no permit, so they reach the node and the vote holds.
+func TestNetworkIntake_PolledVoterEndsOnlyOnNodeFailuresSpanningW(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+	ctx := context.Background()
+
+	chain := newMockChain(1000, false)
+	vendor, srv := newMockHttpVendor(t, chain)
+	up := pollerUpstream("p-http", srv.URL)
+	up.RateLimitBudget = "p-budget"
+	up.RateLimitAutoTune = &common.RateLimitAutoTuneConfig{Enabled: util.BoolPtr(false)}
+	up.Failsafe = []*common.FailsafeConfig{{MatchMethod: "*"}}
+	up.JsonRpc = &common.JsonRpcUpstreamConfig{SupportsBatch: util.BoolPtr(false)}
+	cfg := sourcesConfig(nil, up)
+	cfg.RateLimiters.Budgets = []*common.RateLimitBudgetConfig{{Id: "p-budget",
+		Rules: []*common.RateLimitRuleConfig{{Method: "eth_getBlockByNumber", MaxCount: 100, Period: common.RateLimitPeriodDay}}}}
+	network, byId, addr := sourcesNetwork(t, cfg)
+	poller := byId["p-http"].EvmStatePoller()
+	hashVoter := func() bool {
+		return slices.Contains(network.EvmHashVoters("", network.chainTracker.W()).Hash, "p-http")
+	}
+	restored := func(msg string) {
+		require.Eventually(t, func() bool {
+			if !hashVoter() {
+				poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
+				return false
+			}
+			return true
+		}, 5*time.Second, 10*time.Millisecond, msg)
+	}
+	// pollFails polls once the poller's 100ms debounce has passed.
+	pollFails := func(msg string) {
+		time.Sleep(150 * time.Millisecond)
+		_, err := poller.PollLatestBlockNumber(ctx)
+		require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "%s: got %v", msg, err)
+	}
+	restored("the poller's head makes it a hash voter")
+
+	w := network.chainTracker.W()
+	polled := vendor.latestPolls.Load()
+	vendor.failLatest.Store(http.StatusTooManyRequests)
+	pollFails("the first 429")
+	first := time.Now()
+	time.Sleep(w / 2)
+	pollFails("the second 429")
+	time.Sleep(time.Until(first.Add(w + 300*time.Millisecond)))
+	require.Equal(t, polled+2, vendor.latestPolls.Load(), "only the test polls the node")
+	require.True(t, hashVoter(), "two 429s W/2 apart: the polls failed for less than W")
+	pollFails("the third 429")
+	require.False(t, hashVoter(), "failed polls spanning W end the vote")
+	vendor.failLatest.Store(0)
+	restored("a success ends the failures")
+	// Failed polls whose requests started before that success, reported
+	// now and W apart, do not count: they say nothing of the node since.
+	network.intake.PollFailed("p-http", first.Add(-w))
+	network.intake.PollFailed("p-http", first)
+	require.True(t, hashVoter(), "a failure whose request started before the last success does not count")
+
+	time.Sleep(150 * time.Millisecond)
+	polled = vendor.latestPolls.Load()
+	vendor.slowFail.Store(int64(time.Second))
+	poller.AskBackground(common.HeadNeedHash, 0, time.Time{}, common.AskRefusal)
+	require.Eventually(t, func() bool { return vendor.latestPolls.Load() > polled }, 2*time.Second, 5*time.Millisecond, "the slow poll reaches the node")
+	time.Sleep(200 * time.Millisecond)
+	_, err := poller.PollLatestBlockNumber(ctx)
+	require.True(t, common.HasErrorCode(err, common.ErrCodeEndpointServerSideException), "a poll asked during the slow one gets its failure: got %v", err)
+	require.Equal(t, polled+1, vendor.latestPolls.Load(), "a poll asked during the slow one joins it")
+	require.Equal(t, int32(1), vendor.slowFailed.Load(), "the node failed the slow poll")
+	restored("a success ends the failures")
+
+	flood, stopFlood := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer func() { stopFlood(); wg.Wait() }()
+	var answer atomic.Value
+	for range 4 {
+		wg.Go(func() {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`)
+			for flood.Err() == nil {
+				if resp, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/123", addr), "application/json", bytes.NewReader(body)); err == nil {
+					b, _ := io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					answer.Store(string(b))
+				}
+			}
+		})
+	}
+	clientRefused := func() bool {
+		s, _ := answer.Load().(string)
+		s = strings.ToLower(s)
+		return strings.Contains(s, "ratelimit") || strings.Contains(s, "rate limit")
+	}
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end) && !clientRefused(); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.True(t, clientRefused(), "client traffic uses up the upstream's budget: last client answer %.600v", answer.Load())
+	polled = vendor.latestPolls.Load()
+	for end := time.Now().Add(2 * network.chainTracker.W()); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
+		_, err := poller.PollLatestBlockNumber(ctx)
+		require.NoError(t, err, "an Ask takes no rate permit")
+	}
+	keptVote := hashVoter()
+	stopFlood()
+	wg.Wait()
+	require.Greater(t, vendor.latestPolls.Load(), polled, "client traffic uses up the budget: the Asks still reach the node")
+	require.True(t, keptVote, "the vote holds while clients use up the budget")
+}

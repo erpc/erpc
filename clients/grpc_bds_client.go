@@ -1,15 +1,16 @@
 package clients
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -29,11 +30,12 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 
 	// Import gzip to register the compressor - enables automatic gzip compression
 	// when clients send "grpc-accept-encoding: gzip" header
 	_ "google.golang.org/grpc/encoding/gzip"
+	// Registers the client health-check function that healthCheckConfig uses.
+	_ "google.golang.org/grpc/health"
 )
 
 type GrpcBdsClient interface {
@@ -41,6 +43,9 @@ type GrpcBdsClient interface {
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 	SetHeaders(h map[string]string)
 	QueryClient() evm.QueryServiceClient
+	// WithHeaders returns ctx carrying the upstream's grpc.headers as outgoing
+	// metadata, for calls made on QueryClient() outside SendRequest.
+	WithHeaders(ctx context.Context) context.Context
 }
 
 // Shutdown is deliberately NOT on GrpcBdsClient, for the same reason
@@ -102,7 +107,10 @@ func (c *GenericGrpcBdsClient) SetExpectedChainId(chainId uint64) {
 
 // NewGrpcBdsClient builds a BDS gRPC client backed by a round-robin connection
 // pool. poolSize sets the number of connections; <= 0 uses the built-in default
-// (bdsPoolSize).
+// (bdsPoolSize). A non-empty healthCheckService turns on gRPC client health
+// checking for that grpc.health.v1 service name: round_robin then skips any
+// resolved address not reporting SERVING. A server without grpc.health
+// answers UNIMPLEMENTED, which grpc-go treats as healthy.
 func NewGrpcBdsClient(
 	appCtx context.Context,
 	logger *zerolog.Logger,
@@ -110,6 +118,7 @@ func NewGrpcBdsClient(
 	upstream common.Upstream,
 	parsedUrl *url.URL,
 	poolSize int,
+	healthCheckService string,
 ) (GrpcBdsClient, error) {
 	upsId := "n/a"
 	if upstream != nil {
@@ -143,7 +152,7 @@ func NewGrpcBdsClient(
 		}
 	}
 
-	target, useTLS := pickTargetForBDS(parsedUrl)
+	target, methodPrefix, useTLS := pickTargetForBDS(parsedUrl)
 
 	// Determine whether to use TLS based on port or URL scheme.
 	var transportCredentials credentials.TransportCredentials
@@ -160,27 +169,9 @@ func NewGrpcBdsClient(
 		logger.Debug().Str("target", target).Msg("using insecure credentials for gRPC connection")
 	}
 
-	// gRPC service config: round_robin distributes RPCs across all resolved addresses
-	// (no-op for single-target hosts). Transparent retries handle transient failures
-	// (UNAVAILABLE from connection resets, TCP retransmits) without surfacing errors
-	// to callers. WaitForReady queues RPCs during brief reconnects instead of failing
-	// immediately with UNAVAILABLE.
-	serviceConfig := `{
-		"loadBalancingConfig": [{"round_robin":{}}],
-		"methodConfig": [{
-			"name": [{"service": ""}],
-			"waitForReady": true,
-			"retryPolicy": {
-				"maxAttempts": 2,
-				"initialBackoff": "1s",
-				"maxBackoff": "5s",
-				"backoffMultiplier": 2,
-				"retryableStatusCodes": ["UNAVAILABLE"]
-			}
-		}]
-	}`
+	serviceConfig := bdsServiceConfig(healthCheckService)
 
-	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load())
+	pool, err := newBdsPool(appCtx, logger, projectId, upsId, target, methodPrefix, transportCredentials, serviceConfig, poolSize, client.expectedChainId.Load(), metadata.New(client.headers))
 	if err != nil {
 		return nil, err
 	}
@@ -226,6 +217,34 @@ func (c *GenericGrpcBdsClient) signatureEncoding() evm.SignatureEncoding {
 	return evm.SignatureEncodingForChain(c.expectedChainId.Load())
 }
 
+// renderScratch holds buffers that results are written into. The response
+// keeps its result, so each is copied out at its exact size; the scratch
+// buffer, grown once to the usual result size, goes back to the pool.
+var renderScratch = sync.Pool{New: func() any { return new([]byte) }}
+
+// renderResult returns the JSON that write appends to an empty buffer.
+func renderResult(write func([]byte) []byte) []byte {
+	scratch := renderScratch.Get().(*[]byte)
+	b := write((*scratch)[:0])
+	out := bytes.Clone(b)
+	*scratch = b
+	renderScratch.Put(scratch)
+	return out
+}
+
+// renderBlock returns resp's block as the JSON-RPC result.
+func (c *GenericGrpcBdsClient) renderBlock(resp *evm.GetBlockResponse) ([]byte, error) {
+	var err error
+	result := renderResult(func(b []byte) []byte {
+		b, err = evm.AppendBlockJsonRpc(b, resp.Block, resp.Transactions, resp.FullTransactions, resp.Withdrawals, c.signatureEncoding())
+		return b
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	return result, nil
+}
+
 // grpcResponseMetadataInterceptor captures all response metadata (headers)
 // from gRPC calls and records them as span attributes on detailed traces.
 func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
@@ -237,7 +256,7 @@ func grpcResponseMetadataInterceptor() grpc.UnaryClientInterceptor {
 		invoker grpc.UnaryInvoker,
 		opts ...grpc.CallOption,
 	) error {
-		if !common.IsTracingDetailed {
+		if !common.IsTracingDetailed() {
 			return invoker(ctx, method, req, reply, cc, opts...)
 		}
 		span := trace.SpanFromContext(ctx)
@@ -293,7 +312,7 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, common.NewErrEndpointRequestCanceled(err)
 	}
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -313,10 +332,7 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 
 	span.SetAttributes(attribute.String("request.method", jrReq.Method))
 
-	if len(c.headers) > 0 {
-		md := metadata.New(c.headers)
-		ctx = metadata.NewOutgoingContext(ctx, md)
-	}
+	ctx = c.WithHeaders(ctx)
 
 	conn := c.pool.Pick()
 	if conn == nil || conn.rpcClient == nil {
@@ -325,39 +341,19 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
 	}
 
-	var resp *common.NormalizedResponse
-	switch jrReq.Method {
-	case "eth_getBlockByNumber":
-		resp, err = c.handleGetBlockByNumber(ctx, conn, req, jrReq)
-	case "eth_getBlockByHash":
-		resp, err = c.handleGetBlockByHash(ctx, conn, req, jrReq)
-	case "eth_getLogs":
-		resp, err = c.handleGetLogs(ctx, conn, req, jrReq)
-	case "eth_getTransactionByHash":
-		resp, err = c.handleGetTransactionByHash(ctx, conn, req, jrReq)
-	case "eth_getTransactionReceipt":
-		resp, err = c.handleGetTransactionReceipt(ctx, conn, req, jrReq)
-	case "eth_getBlockReceipts":
-		resp, err = c.handleGetBlockReceipts(ctx, conn, req, jrReq)
-	case "eth_chainId":
-		resp, err = c.handleChainId(ctx, conn, req, jrReq)
-	case "eth_queryBlocks":
-		resp, err = c.handleQueryBlocks(ctx, conn, req, jrReq)
-	case "eth_queryTransactions":
-		resp, err = c.handleQueryTransactions(ctx, conn, req, jrReq)
-	case "eth_queryLogs":
-		resp, err = c.handleQueryLogs(ctx, conn, req, jrReq)
-	case "eth_queryTraces":
-		resp, err = c.handleQueryTraces(ctx, conn, req, jrReq)
-	case "eth_queryTransfers":
-		resp, err = c.handleQueryTransfers(ctx, conn, req, jrReq)
-	case "getBlock":
-		resp, err = c.handleSvmGetBlock(ctx, conn, req, jrReq)
-	default:
+	handle, ok := bdsHandlers[jrReq.Method]
+	if !ok {
 		err := common.NewErrEndpointUnsupported(
 			fmt.Errorf("unsupported method for gRPC BDS client: %s", jrReq.Method),
 		)
 		common.SetTraceSpanError(span, err)
+		return nil, err
+	}
+	resp, err := handle(c, ctx, conn, req, jrReq)
+
+	// A request the handler cannot map is the upstream's refusal, not a
+	// transport failure: keep it unsupported so the network tries the next.
+	if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
 		return nil, err
 	}
 
@@ -420,6 +416,35 @@ func (c *GenericGrpcBdsClient) SendRequest(ctx context.Context, req *common.Norm
 	return resp, nil
 }
 
+// bdsHandlers maps each method a BDS server serves to its handler; every
+// other method is unsupported.
+var bdsHandlers = map[string]func(*GenericGrpcBdsClient, context.Context, *bdsConn, *common.NormalizedRequest, *common.JsonRpcRequest) (*common.NormalizedResponse, error){
+	"eth_getBlockByNumber":      (*GenericGrpcBdsClient).handleGetBlockByNumber,
+	"eth_getBlockByHash":        (*GenericGrpcBdsClient).handleGetBlockByHash,
+	"eth_getLogs":               (*GenericGrpcBdsClient).handleGetLogs,
+	"eth_getTransactionByHash":  (*GenericGrpcBdsClient).handleGetTransactionByHash,
+	"eth_getTransactionReceipt": (*GenericGrpcBdsClient).handleGetTransactionReceipt,
+	"eth_getBlockReceipts":      (*GenericGrpcBdsClient).handleGetBlockReceipts,
+	"debug_traceBlockByNumber":  (*GenericGrpcBdsClient).handleTraceBlock,
+	"debug_traceBlockByHash":    (*GenericGrpcBdsClient).handleTraceBlock,
+	"debug_traceTransaction":    (*GenericGrpcBdsClient).handleTraceTransaction,
+	"trace_block":               (*GenericGrpcBdsClient).handleParityTraceBlock,
+	"eth_getBalance":            (*GenericGrpcBdsClient).handleGetBalance,
+	"eth_chainId":               (*GenericGrpcBdsClient).handleChainId,
+	"getBlock":                  (*GenericGrpcBdsClient).handleSvmGetBlock,
+	"getTransaction":            (*GenericGrpcBdsClient).handleSvmGetTransaction,
+	"getBlockTime":              (*GenericGrpcBdsClient).handleSvmGetBlockTime,
+	"getBlocksWithLimit":        (*GenericGrpcBdsClient).handleSvmGetBlocksWithLimit,
+}
+
+// GrpcBdsServes reports whether a BDS server serves method: a request
+// method its handlers map, or an eth_query* method, which its QueryService
+// streams (QueryClient).
+func GrpcBdsServes(method string) bool {
+	_, ok := bdsHandlers[method]
+	return ok || len(method) >= len("eth_query") && strings.EqualFold(method[:len("eth_query")], "eth_query")
+}
+
 func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	var params []interface{}
 	jrReq.RLock()
@@ -480,26 +505,16 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 		grpcHashSpan.SetAttributes(attribute.Bool("response_has_block", grpcResp.Block != nil))
 		grpcHashSpan.End()
 
-		var result interface{}
-		if grpcResp.Block != nil {
-			result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-		}
-
 		jsonRpcResp := &common.JsonRpcResponse{}
 		err = jsonRpcResp.SetID(jrReq.ID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to set ID: %w", err)
 		}
-
-		if result != nil {
-			resultBytes, err := sonic.Marshal(result)
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal result: %w", err)
-			}
-			jsonRpcResp.SetResult(resultBytes)
-		} else {
-			jsonRpcResp.SetResult([]byte("null"))
+		result, err := c.renderBlock(grpcResp)
+		if err != nil {
+			return nil, err
 		}
+		jsonRpcResp.SetResult(result)
 
 		return common.NewNormalizedResponse().
 			WithRequest(req).
@@ -546,26 +561,16 @@ func (c *GenericGrpcBdsClient) handleGetBlockByNumber(ctx context.Context, conn 
 	}
 	grpcSpan.End()
 
-	var result interface{}
-	if hasBlock {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
+	result, err := c.renderBlock(grpcResp)
+	if err != nil {
+		return nil, err
 	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -621,26 +626,16 @@ func (c *GenericGrpcBdsClient) handleGetBlockByHash(ctx context.Context, conn *b
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	var result interface{}
-	if grpcResp.Block != nil {
-		result = evm.BlockToJsonRpc(grpcResp.Block, grpcResp.Transactions, grpcResp.FullTransactions, grpcResp.Withdrawals, c.signatureEncoding())
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
+	result, err := c.renderBlock(grpcResp)
+	if err != nil {
+		return nil, err
 	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -665,6 +660,24 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 
 	filterParams := params[0]
 
+	// EIP-234: a blockHash filter names one block and excludes fromBlock/toBlock.
+	// A BDS server answers it directly; a hash it does not hold (a block not
+	// indexed yet, or reorged away) is OUT_OF_RANGE, a miss like any other.
+	var blockHash []byte
+	if raw, present := filterParams["blockHash"]; present && raw != nil {
+		bhStr, ok := raw.(string)
+		if !ok || bhStr == "" {
+			return nil, fmt.Errorf("failed to parse blockHash: want a 32-byte hex string, got %v", raw)
+		}
+		if filterParams["fromBlock"] != nil || filterParams["toBlock"] != nil {
+			return nil, fmt.Errorf("eth_getLogs blockHash cannot be combined with fromBlock/toBlock")
+		}
+		blockHash, err = util.ParseBlockHashHexToBytes(bhStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse blockHash: %w", err)
+		}
+	}
+
 	var fromBlock, toBlock *uint64
 	if fromStr, ok := filterParams["fromBlock"].(string); ok {
 		if fromStr != "latest" && fromStr != "pending" && fromStr != "earliest" {
@@ -686,7 +699,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 		}
 	}
 
-	if fromBlock == nil || toBlock == nil {
+	if blockHash == nil && (fromBlock == nil || toBlock == nil) {
 		return nil, fmt.Errorf("special block numbers not yet supported via gRPC for eth_getLogs")
 	}
 
@@ -718,37 +731,35 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 	}
 
 	grpcReq := &evm.GetLogsRequest{
-		FromBlock: fromBlock,
-		ToBlock:   toBlock,
 		Addresses: addresses,
 		Topics:    topics,
 		ChainId:   c.chainIdParam(),
 	}
+	spanAttrs := []attribute.KeyValue{}
+	if blockHash != nil {
+		grpcReq.BlockHash = blockHash
+		spanAttrs = append(spanAttrs, attribute.String("block_hash", fmt.Sprintf("0x%x", blockHash)))
+	} else {
+		grpcReq.FromBlock, grpcReq.ToBlock = fromBlock, toBlock
+		spanAttrs = append(spanAttrs,
+			attribute.Int64("from_block", int64(*fromBlock)),
+			attribute.Int64("to_block", int64(*toBlock)),
+		)
+	}
 
 	c.logger.Debug().
-		Uint64("fromBlock", *fromBlock).
-		Uint64("toBlock", *toBlock).
+		Interface("filter", filterParams).
 		Int("addressCount", len(addresses)).
 		Int("topicCount", len(topics)).
 		Msg("calling gRPC GetLogs")
 
-	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs",
-		trace.WithAttributes(
-			attribute.Int64("from_block", int64(*fromBlock)),
-			attribute.Int64("to_block", int64(*toBlock)),
-		),
-	)
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.GetLogs", trace.WithAttributes(spanAttrs...))
 	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*evm.GetLogsResponse, error) {
 		return conn.rpcClient.GetLogs(ctx, grpcReq)
 	})
 	grpcSpan.End()
 	if err != nil {
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
-	}
-
-	var result []interface{}
-	for _, log := range grpcResp.Logs {
-		result = append(result, evm.LogToJsonRpc(log))
 	}
 
 	jsonRpcResp := &common.JsonRpcResponse{}
@@ -758,16 +769,7 @@ func (c *GenericGrpcBdsClient) handleGetLogs(ctx context.Context, conn *bdsConn,
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if len(result) == 0 {
-		jsonRpcResp.SetResult([]byte("[]"))
-	} else {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	}
+	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte { return evm.AppendLogsJsonRpc(b, grpcResp.Logs) }))
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -816,26 +818,14 @@ func (c *GenericGrpcBdsClient) handleGetTransactionByHash(ctx context.Context, c
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	var result interface{}
-	if grpcResp.Transaction != nil {
-		result = evm.TransactionToJsonRpc(grpcResp.Transaction, c.signatureEncoding())
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
-	}
+	jsonRpcResp.SetResult(renderResult(func(b []byte) []byte {
+		return evm.AppendTransactionJsonRpc(b, grpcResp.Transaction, c.signatureEncoding())
+	}))
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -884,26 +874,20 @@ func (c *GenericGrpcBdsClient) handleGetTransactionReceipt(ctx context.Context, 
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	var result interface{}
-	if grpcResp.Receipt != nil {
-		result = evm.ReceiptToJsonRpc(grpcResp.Receipt)
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if result != nil {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("null"))
+	var renderErr error
+	result := renderResult(func(b []byte) []byte {
+		b, renderErr = evm.AppendReceiptJsonRpc(b, grpcResp.Receipt)
+		return b
+	})
+	if renderErr != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", renderErr)
 	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -996,30 +980,20 @@ func (c *GenericGrpcBdsClient) handleGetBlockReceipts(ctx context.Context, conn 
 		return nil, fmt.Errorf("gRPC call failed: %w", err)
 	}
 
-	// Convert receipts to JSON-RPC format
-	var result []interface{}
-	if grpcResp.Receipts != nil {
-		result = make([]interface{}, len(grpcResp.Receipts))
-		for i, receipt := range grpcResp.Receipts {
-			result[i] = evm.ReceiptToJsonRpc(receipt)
-		}
-	}
-
 	jsonRpcResp := &common.JsonRpcResponse{}
 	err = jsonRpcResp.SetID(jrReq.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
 	}
-
-	if len(result) > 0 {
-		resultBytes, err := sonic.Marshal(result)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal result: %w", err)
-		}
-		jsonRpcResp.SetResult(resultBytes)
-	} else {
-		jsonRpcResp.SetResult([]byte("[]"))
+	var renderErr error
+	result := renderResult(func(b []byte) []byte {
+		b, renderErr = evm.AppendReceiptsJsonRpc(b, grpcResp.Receipts)
+		return b
+	})
+	if renderErr != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", renderErr)
 	}
+	jsonRpcResp.SetResult(result)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -1075,6 +1049,20 @@ func (c *GenericGrpcBdsClient) SetHeaders(h map[string]string) {
 	for k, v := range h {
 		c.headers[k] = v
 	}
+	// The pool's ChainId probes must carry the same headers as requests.
+	if c.pool != nil {
+		md := metadata.New(c.headers)
+		c.pool.md.Store(&md)
+	}
+}
+
+// WithHeaders returns ctx carrying the configured grpc.headers as outgoing
+// metadata; ctx unchanged when none are configured.
+func (c *GenericGrpcBdsClient) WithHeaders(ctx context.Context) context.Context {
+	if c == nil || len(c.headers) == 0 {
+		return ctx
+	}
+	return metadata.NewOutgoingContext(ctx, metadata.New(c.headers))
 }
 
 func (c *GenericGrpcBdsClient) QueryClient() evm.QueryServiceClient {
@@ -1133,286 +1121,6 @@ func buildTopicFilters(topicsParam interface{}) ([]*evm.TopicFilter, error) {
 		topics = append(topics, topicFilter)
 	}
 	return topics, nil
-}
-
-// jsonRpcParamsFor extracts params[0] from a JSON-RPC request as a raw JSON
-// object, suitable for passing to manifesto's Query*RequestFromJsonRpc helpers.
-func jsonRpcParamsFor(jrReq *common.JsonRpcRequest) (json.RawMessage, error) {
-	jrReq.RLock()
-	defer jrReq.RUnlock()
-	if len(jrReq.Params) == 0 {
-		return json.RawMessage("{}"), nil
-	}
-	raw, err := sonic.Marshal(jrReq.Params[0])
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal query params: %w", err)
-	}
-	return raw, nil
-}
-
-// buildQueryJsonRpcResponse finalizes a NormalizedResponse from a marshaled
-// JSON-RPC result payload for query methods.
-func (c *GenericGrpcBdsClient) buildQueryJsonRpcResponse(req *common.NormalizedRequest, jrReq *common.JsonRpcRequest, payload interface{}) (*common.NormalizedResponse, error) {
-	resultBytes, err := sonic.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal query result: %w", err)
-	}
-	jsonRpcResp := &common.JsonRpcResponse{}
-	jrReq.RLock()
-	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
-		jrReq.RUnlock()
-		return nil, fmt.Errorf("failed to set ID: %w", err)
-	}
-	jrReq.RUnlock()
-	jsonRpcResp.SetResult(resultBytes)
-	return common.NewNormalizedResponse().
-		WithRequest(req).
-		WithJsonRpcResponse(jsonRpcResp), nil
-}
-
-// recvQueryStream drains an upstream query stream and invokes onPage for each
-// received response. It returns once the stream is closed (EOF) or on error.
-func recvQueryStream[T proto.Message](recv func() (T, error), onPage func(T)) error {
-	for {
-		page, err := recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		onPage(page)
-	}
-}
-
-// queryPageRange is the structural interface every Query*Response type
-// satisfies — they all expose GetFromBlock/GetToBlock/GetCursorBlock
-// returning *evm.CursorBlock.
-type queryPageRange interface {
-	GetFromBlock() *evm.CursorBlock
-	GetToBlock() *evm.CursorBlock
-	GetCursorBlock() *evm.CursorBlock
-}
-
-// applyQueryRangeBounds propagates the From/To/CursorBlock fields from
-// a streaming page into the per-field aggregate slots. From/To use
-// "first wins" semantics (the upstream sets them on the opening page
-// and never changes them); CursorBlock uses "last wins" so each page
-// advances the cursor. Centralizing this avoids the 9-line repeat
-// across the five eth_query* handlers.
-func applyQueryRangeBounds(aggFrom, aggTo, aggCursor **evm.CursorBlock, page queryPageRange) {
-	if *aggFrom == nil {
-		if v := page.GetFromBlock(); v != nil {
-			*aggFrom = v
-		}
-	}
-	if *aggTo == nil {
-		if v := page.GetToBlock(); v != nil {
-			*aggTo = v
-		}
-	}
-	if v := page.GetCursorBlock(); v != nil {
-		*aggCursor = v
-	}
-}
-
-func (c *GenericGrpcBdsClient) handleQueryBlocks(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	rawParams, err := jsonRpcParamsFor(jrReq)
-	if err != nil {
-		return nil, err
-	}
-	grpcReq, err := evm.QueryBlocksRequestFromJsonRpc(rawParams)
-	if err != nil {
-		return nil, fmt.Errorf("invalid eth_queryBlocks params: %w", err)
-	}
-	if grpcReq.ChainId == nil {
-		grpcReq.ChainId = c.chainIdParam()
-	}
-
-	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryBlocks")
-	defer span.End()
-
-	// Bound the whole stream lifecycle: open AND recv loop. Stream-open
-	// itself can wedge under H2 flow-control deadlock, so wrapping only
-	// the recv loop (the previous shape) didn't actually cap worst-case
-	// latency. Using BoundedCallT also avoids a leaked-goroutine race
-	// on the aggregated buffer: the leaked inner goroutine never shares
-	// state with the outer caller — the result is communicated only via
-	// the helper's channel.
-	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryBlocksResponse, error) {
-		stream, err := conn.queryClient.QueryBlocks(ctx, grpcReq)
-		if err != nil {
-			return nil, err
-		}
-		agg := &evm.QueryBlocksResponse{}
-		if err := recvQueryStream(stream.Recv, func(page *evm.QueryBlocksResponse) {
-			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
-		}); err != nil {
-			return nil, err
-		}
-		return agg, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gRPC stream error: %w", err)
-	}
-
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryBlocksResponseToJsonRpc(aggregated))
-}
-
-func (c *GenericGrpcBdsClient) handleQueryTransactions(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	rawParams, err := jsonRpcParamsFor(jrReq)
-	if err != nil {
-		return nil, err
-	}
-	grpcReq, err := evm.QueryTransactionsRequestFromJsonRpc(rawParams)
-	if err != nil {
-		return nil, fmt.Errorf("invalid eth_queryTransactions params: %w", err)
-	}
-	if grpcReq.ChainId == nil {
-		grpcReq.ChainId = c.chainIdParam()
-	}
-
-	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransactions")
-	defer span.End()
-
-	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryTransactionsResponse, error) {
-		stream, err := conn.queryClient.QueryTransactions(ctx, grpcReq)
-		if err != nil {
-			return nil, err
-		}
-		agg := &evm.QueryTransactionsResponse{}
-		if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransactionsResponse) {
-			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
-			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
-		}); err != nil {
-			return nil, err
-		}
-		return agg, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gRPC stream error: %w", err)
-	}
-
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransactionsResponseToJsonRpc(aggregated, c.signatureEncoding()))
-}
-
-func (c *GenericGrpcBdsClient) handleQueryLogs(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	rawParams, err := jsonRpcParamsFor(jrReq)
-	if err != nil {
-		return nil, err
-	}
-	grpcReq, err := evm.QueryLogsRequestFromJsonRpc(rawParams)
-	if err != nil {
-		return nil, fmt.Errorf("invalid eth_queryLogs params: %w", err)
-	}
-	if grpcReq.ChainId == nil {
-		grpcReq.ChainId = c.chainIdParam()
-	}
-
-	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryLogs")
-	defer span.End()
-
-	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryLogsResponse, error) {
-		stream, err := conn.queryClient.QueryLogs(ctx, grpcReq)
-		if err != nil {
-			return nil, err
-		}
-		agg := &evm.QueryLogsResponse{}
-		if err := recvQueryStream(stream.Recv, func(page *evm.QueryLogsResponse) {
-			agg.Logs = append(agg.Logs, page.GetLogs()...)
-			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
-			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
-		}); err != nil {
-			return nil, err
-		}
-		return agg, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gRPC stream error: %w", err)
-	}
-
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryLogsResponseToJsonRpc(aggregated, c.signatureEncoding()))
-}
-
-func (c *GenericGrpcBdsClient) handleQueryTraces(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	rawParams, err := jsonRpcParamsFor(jrReq)
-	if err != nil {
-		return nil, err
-	}
-	grpcReq, err := evm.QueryTracesRequestFromJsonRpc(rawParams)
-	if err != nil {
-		return nil, fmt.Errorf("invalid eth_queryTraces params: %w", err)
-	}
-	if grpcReq.ChainId == nil {
-		grpcReq.ChainId = c.chainIdParam()
-	}
-
-	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTraces")
-	defer span.End()
-
-	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryTracesResponse, error) {
-		stream, err := conn.queryClient.QueryTraces(ctx, grpcReq)
-		if err != nil {
-			return nil, err
-		}
-		agg := &evm.QueryTracesResponse{}
-		if err := recvQueryStream(stream.Recv, func(page *evm.QueryTracesResponse) {
-			agg.Traces = append(agg.Traces, page.GetTraces()...)
-			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
-			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
-		}); err != nil {
-			return nil, err
-		}
-		return agg, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gRPC stream error: %w", err)
-	}
-
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTracesResponseToJsonRpc(aggregated, c.signatureEncoding()))
-}
-
-func (c *GenericGrpcBdsClient) handleQueryTransfers(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
-	rawParams, err := jsonRpcParamsFor(jrReq)
-	if err != nil {
-		return nil, err
-	}
-	grpcReq, err := evm.QueryTransfersRequestFromJsonRpc(rawParams)
-	if err != nil {
-		return nil, fmt.Errorf("invalid eth_queryTransfers params: %w", err)
-	}
-	if grpcReq.ChainId == nil {
-		grpcReq.ChainId = c.chainIdParam()
-	}
-
-	ctx, span := common.StartDetailSpan(ctx, "GrpcBdsClient.QueryTransfers")
-	defer span.End()
-
-	aggregated, err := callBoundedT(ctx, func(ctx context.Context) (*evm.QueryTransfersResponse, error) {
-		stream, err := conn.queryClient.QueryTransfers(ctx, grpcReq)
-		if err != nil {
-			return nil, err
-		}
-		agg := &evm.QueryTransfersResponse{}
-		if err := recvQueryStream(stream.Recv, func(page *evm.QueryTransfersResponse) {
-			agg.Transfers = append(agg.Transfers, page.GetTransfers()...)
-			agg.Transactions = append(agg.Transactions, page.GetTransactions()...)
-			agg.Blocks = append(agg.Blocks, page.GetBlocks()...)
-			applyQueryRangeBounds(&agg.FromBlock, &agg.ToBlock, &agg.CursorBlock, page)
-		}); err != nil {
-			return nil, err
-		}
-		return agg, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("gRPC stream error: %w", err)
-	}
-
-	return c.buildQueryJsonRpcResponse(req, jrReq, evm.QueryTransfersResponseToJsonRpc(aggregated, c.signatureEncoding()))
 }
 
 // svmGetBlockParams is the parsed second argument of Solana's `getBlock`.
@@ -1496,13 +1204,17 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		return nil, err
 	}
 
+	commitment, servable := svmReaderCommitment(ctx, req, svmCommitment(opts.Commitment), slot)
+	if !servable {
+		return nil, svmUnservable("slot %d is not finalized on this network", slot)
+	}
 	grpcReq := &svm.GetBlockRequest{
 		Slot:               slot,
 		TransactionDetails: details,
 		// Inverted: the proto's false is Agave's `rewards: true` default.
 		ExcludeRewards:                 opts.Rewards != nil && !*opts.Rewards,
 		MaxSupportedTransactionVersion: opts.MaxSupportedTransactionVersion,
-		Commitment:                     svmCommitment(opts.Commitment),
+		Commitment:                     commitment,
 		MinContextSlot:                 opts.MinContextSlot,
 		// GenesisHash is deliberately never set: the reader does not publish
 		// its own, and asserting one it cannot verify would be refused.
@@ -1521,7 +1233,7 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 		grpcSpan.SetAttributes(attribute.String("grpc_error", err.Error()))
 		common.SetTraceSpanError(grpcSpan, err)
 		grpcSpan.End()
-		return nil, svmMapGetBlockError(err)
+		return nil, svmMapError(err)
 	}
 	grpcSpan.SetAttributes(
 		attribute.String("slot_status", grpcResp.SlotStatus.String()),
@@ -1551,20 +1263,16 @@ func (c *GenericGrpcBdsClient) handleSvmGetBlock(ctx context.Context, conn *bdsC
 	} else {
 		result = svm.BlockToJsonRpc(grpcResp.Block, grpcResp.Signatures)
 	}
-
-	jsonRpcResp := &common.JsonRpcResponse{}
-	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
-		return nil, fmt.Errorf("failed to set ID: %w", err)
+	// Agave's history leaves these null on old slots where the reader holds
+	// a value; render what Agave renders.
+	history := svmHistoryOf(req)
+	if !history.RecordsBlockTime(slot) {
+		result["blockTime"] = nil
 	}
-	resultBytes, err := sonic.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	if !history.RecordsBlockHeight(slot) {
+		result["blockHeight"] = nil
 	}
-	jsonRpcResp.SetResult(resultBytes)
-
-	return common.NewNormalizedResponse().
-		WithRequest(req).
-		WithJsonRpcResponse(jsonRpcResp), nil
+	return svmResult(req, jrReq, result)
 }
 
 // svmParseSlot accepts the slot as the JSON number it is on the wire. Solana
@@ -1614,10 +1322,10 @@ func svmCommitment(s string) svm.Commitment {
 	return svm.Commitment_COMMITMENT_FINALIZED
 }
 
-// svmMapGetBlockError decides, per gRPC status, whether the miss is benign
+// svmMapError decides, per gRPC status, whether an SVM reader miss is benign
 // (fall through to a live upstream) or a genuine transport failure worth
 // scoring against the connector.
-func svmMapGetBlockError(err error) error {
+func svmMapError(err error) error {
 	st, ok := status.FromError(err)
 	if !ok {
 		return fmt.Errorf("gRPC call failed: %w", err)
@@ -1630,6 +1338,7 @@ func svmMapGetBlockError(err error) error {
 			fmt.Errorf("slot outside BDS coverage: %s", st.Message()),
 		)
 	case codes.Unimplemented:
+		// Includes signature lookups while `--serve-signature-lookups` is off.
 		return common.NewErrEndpointUnsupported(
 			fmt.Errorf("method not served by BDS: %s", st.Message()),
 		)
@@ -1643,4 +1352,33 @@ func svmMapGetBlockError(err error) error {
 	default:
 		return fmt.Errorf("gRPC call failed: %w", err)
 	}
+}
+
+// bdsServiceConfig is the pool's gRPC service config: round_robin across every
+// resolved address, transparent retries on UNAVAILABLE, and waitForReady so RPCs
+// queue through brief reconnects instead of failing. healthCheckService, when
+// set, adds client health checking so round_robin uses only SERVING addresses.
+func bdsServiceConfig(healthCheckService string) string {
+	cfg := map[string]any{
+		"loadBalancingConfig": []any{map[string]any{"round_robin": map[string]any{}}},
+		"methodConfig": []any{map[string]any{
+			"name":         []any{map[string]any{"service": ""}},
+			"waitForReady": true,
+			"retryPolicy": map[string]any{
+				"maxAttempts":          2,
+				"initialBackoff":       "1s",
+				"maxBackoff":           "5s",
+				"backoffMultiplier":    2,
+				"retryableStatusCodes": []any{"UNAVAILABLE"},
+			},
+		}},
+	}
+	if healthCheckService != "" {
+		cfg["healthCheckConfig"] = map[string]any{"serviceName": healthCheckService}
+	}
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		panic(fmt.Sprintf("bds service config does not marshal: %v", err))
+	}
+	return string(out)
 }

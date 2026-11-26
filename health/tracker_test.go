@@ -3,6 +3,8 @@ package health
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -491,6 +493,19 @@ func TestWildcardLagMirroredForPeerUpstreams(t *testing.T) {
 	// ups1 is at the tip — its wildcard lag must be 0.
 	ups1WildcardLag := tracker.GetUpstreamMethodMetrics(ups1, "*", common.DataFinalityStateAll).BlockHeadLag.Load()
 	require.EqualValues(t, 0, ups1WildcardLag)
+
+	// ups4 never served traffic and nothing read its metrics, so it is not in
+	// the request index. It reports the tip, then its poller stops while the
+	// chain goes on: its lag must follow the head all the same, or it reads
+	// "at tip" for good (HeadCredit and lag policies read this bucket).
+	ups4 := common.NewFakeUpstream("upstream4")
+	tracker.SetLatestBlockNumber(ups4, 1000, 0)
+	tracker.SetLatestBlockNumber(ups1, 1010, 0)
+	tracker.SetLatestBlockNumber(ups3, 1010, 0)
+	m, ok := tracker.upsMetrics.Load(upstreamKey{ups4, "*", common.DataFinalityStateAll})
+	require.True(t, ok)
+	require.EqualValues(t, 10, m.(*TrackedMetrics).BlockHeadLag.Load(),
+		"an unindexed reporter's lag must follow the network head after its poller stops")
 }
 
 func TestSetLatestBlockTimestampForNetwork(t *testing.T) {
@@ -814,10 +829,10 @@ func TestRecordUpstreamFailure_AllSkipCodesIgnored(t *testing.T) {
 		{"Unsupported", common.NewErrEndpointUnsupported(fmt.Errorf("not supported"))},
 		{"CapacityExceeded", common.NewErrEndpointCapacityExceeded(fmt.Errorf("429"))},
 		{"ClientSideException", common.NewErrEndpointClientSideException(fmt.Errorf("400"))},
+		{"RequestTooLarge", common.NewErrEndpointRequestTooLarge(fmt.Errorf("exceeds max results"), common.EvmBlockRangeTooLarge)},
 		{"RequestCanceled", common.NewErrEndpointRequestCanceled(fmt.Errorf("context canceled"))},
 		{"UpstreamHedgeCancelled", common.NewErrUpstreamHedgeCancelled("ups", fmt.Errorf("context canceled"))},
 		{"BlockUnavailable", common.NewErrUpstreamBlockUnavailable("ups", 1000, 999, 990)},
-
 	}
 
 	for _, tc := range cases {
@@ -1053,20 +1068,22 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, time.Duration(0), d, "single observation should return 0")
 	})
 
-	t.Run("BelowMinSamples_ReturnsZero", func(t *testing.T) {
+	t.Run("BeforeFirstSample_ReturnsZero", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		baseBlock := int64(1000)
 		baseTs := int64(1700000000)
 
-		for i := int64(0); i < 3; i++ {
+		// The first block may sit anywhere in its second: a sample spans the
+		// first two timestamp changes after it (spec §6.7).
+		for i := int64(0); i < 2; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, baseBlock+i, baseTs+i*6)
 		}
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Equal(t, time.Duration(0), d, "below minSamples should return 0")
+		assert.Equal(t, time.Duration(0), d, "before the first sample should return 0")
 
-		feedBlockDetection(tracker, networkId, netLabel, baseBlock+3, baseTs+18)
+		feedBlockDetection(tracker, networkId, netLabel, baseBlock+2, baseTs+12)
 		d = tracker.GetNetworkBlockTime(networkId)
-		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "at minSamples should return block time")
+		assert.InDelta(t, 6.0, d.Seconds(), 0.5, "the first sample seeds the block time")
 	})
 
 	t.Run("ConvergesToTrueBlockTime", func(t *testing.T) {
@@ -1098,6 +1115,51 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Greater(t, d, time.Duration(0), "fast chain should produce a block time")
 		assert.Less(t, d, 1*time.Second, "fast chain block time should be sub-second")
 		assert.InDelta(t, 0.25, d.Seconds(), 0.05, "should converge to ~250ms")
+	})
+
+	t.Run("FastChain_PolledHeads_ConvergeUnbiased", func(t *testing.T) {
+		// A steady 300 ms chain with integer-second timestamps, through the
+		// poll path: three upstreams each polled every 210 ms (the 0.7 bt
+		// cadence) plus up to 200 ms of jitter, answering with the head as of
+		// up to 200 ms before the poll. The network head is their
+		// corroborated head, so each sample spans 3 or more blocks across a
+		// truncated second at either end.
+		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
+		tracker.Bootstrap(context.Background())
+		start := time.Unix(1700000000, 0)
+		var clock time.Duration
+		tracker.SetClockForTest(func() time.Time { return start.Add(clock) })
+		ups := []common.Upstream{common.NewFakeUpstream("a"), common.NewFakeUpstream("b"), common.NewFakeUpstream("c")}
+		const bt, offset = 300 * time.Millisecond, 137 * time.Millisecond
+		rng := rand.New(rand.NewPCG(1, 2))
+		jitter := func() time.Duration { return time.Duration(rng.Int64N(int64(200 * time.Millisecond))) }
+		next := []time.Duration{time.Second, time.Second + 70*time.Millisecond, time.Second + 130*time.Millisecond}
+		var published []time.Duration
+		for clock < 10*time.Minute {
+			i := 0
+			for k := range next {
+				if next[k] < next[i] {
+					i = k
+				}
+			}
+			clock = next[i]
+			next[i] += 210*time.Millisecond + jitter()
+			n := int64((clock - jitter() - offset) / bt)
+			tracker.SetLatestBlockNumber(ups[i], 1000+n, start.Add(offset+time.Duration(n)*bt).Unix())
+			if clock > time.Minute {
+				published = append(published, tracker.GetNetworkBlockTime(ups[i].NetworkId()))
+			}
+		}
+		var sum time.Duration
+		for _, d := range published {
+			sum += d
+		}
+		mean := sum / time.Duration(len(published))
+		assert.InDelta(t, bt.Seconds(), mean.Seconds(), 0.003, "mean block time %v over %d reads", mean, len(published))
+		slices.Sort(published)
+		p1, p99 := published[len(published)/100], published[len(published)*99/100]
+		assert.InDelta(t, bt.Seconds(), p1.Seconds(), 0.005, "p1 %v", p1)
+		assert.InDelta(t, bt.Seconds(), p99.Seconds(), 0.005, "p99 %v", p99)
 	})
 
 	t.Run("RejectsAbsurdValues", func(t *testing.T) {
@@ -1179,21 +1241,20 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.InDelta(t, 2.0, d.Seconds(), 0.2, "large block gap should normalize to per-block time")
 	})
 
-	t.Run("ExactlyMinSamplesThreshold", func(t *testing.T) {
+	t.Run("FirstSampleSeedsEMA", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, "test-project", 5*time.Minute)
 		baseBlock := int64(1000)
 		baseTs := int64(1700000000)
 
-		for i := int64(0); i < 3; i++ {
+		for i := int64(0); i < 2; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, baseBlock+i, baseTs+i*3)
 		}
 		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId),
-			"at minSamples-1 should still return 0")
+			"one timestamp change is no sample yet")
 
-		feedBlockDetection(tracker, networkId, netLabel, baseBlock+3, baseTs+9)
+		feedBlockDetection(tracker, networkId, netLabel, baseBlock+2, baseTs+6)
 		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, d, time.Duration(0), "at exactly minSamples should return non-zero")
-		assert.InDelta(t, 3.0, d.Seconds(), 0.1, "should reflect 3s block time")
+		assert.InDelta(t, 3.0, d.Seconds(), 0.1, "the first sample is the block time")
 	})
 
 	t.Run("EMA_AdaptsToNewBlockTime", func(t *testing.T) {
@@ -1232,12 +1293,12 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId))
 
 		feedBlockDetection(tracker, networkId, netLabel, baseBlock+2, baseTs+24)
-		assert.Equal(t, time.Duration(0), tracker.GetNetworkBlockTime(networkId))
+		d := tracker.GetNetworkBlockTime(networkId)
+		assert.Greater(t, d, time.Duration(0), "observation 3: block time should be emitted")
+		assert.InDelta(t, 12.0, d.Seconds(), 0.5)
 
 		feedBlockDetection(tracker, networkId, netLabel, baseBlock+3, baseTs+36)
-		d := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, d, time.Duration(0), "observation 4: block time should be emitted")
-		assert.InDelta(t, 12.0, d.Seconds(), 0.5)
+		assert.InDelta(t, 12.0, tracker.GetNetworkBlockTime(networkId).Seconds(), 0.5)
 	})
 
 	t.Run("EdgeCase_NodeDowntime_BlockGapNormalization", func(t *testing.T) {
@@ -1282,10 +1343,8 @@ func TestGetNetworkBlockTime(t *testing.T) {
 		feedBlockDetection(tracker, networkId, netLabel, lastBlock+1, lastTs+haltDuration)
 
 		spiked := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, spiked.Seconds(), 30.0,
-			"chain halt with blockGap=1 causes a spike (expected, documented behavior)")
-		assert.Less(t, spiked.Seconds(), 120.0,
-			"spike should still be within sanity bounds")
+		assert.InDelta(t, 2.4, spiked.Seconds(), 0.01,
+			"the 600s span across the halt counts as 3× the 2s EMA: 0.1×6s + 0.9×2s")
 
 		resumeBlock := lastBlock + 1
 		resumeTs := lastTs + haltDuration
@@ -1320,7 +1379,7 @@ func TestGetNetworkBlockTime(t *testing.T) {
 
 		feedBlockDetection(tracker, networkId, netLabel, lastBlock+1, lastTs+halt)
 		spiked := tracker.GetNetworkBlockTime(networkId)
-		assert.Greater(t, spiked.Seconds(), 30.0, "first block after halt spikes EMA")
+		assert.InDelta(t, 14.4, spiked.Seconds(), 0.05, "the span across the halt counts as 3× the 12s EMA: 0.1×36s + 0.9×12s")
 
 		for i := int64(2); i <= 5; i++ {
 			feedBlockDetection(tracker, networkId, netLabel, lastBlock+i, lastTs+halt+(i-1))
@@ -1435,7 +1494,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		beforeCordonCount := promUtil.ToFloat64(cordonCounter)
 		beforeUncordonCount := promUtil.ToFloat64(uncordonCounter)
 
-		tracker.Cordon(ups, "*", "vendor maintenance")
+		tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
 		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
 			"cordon event counter increments on OFF→ON edge")
 
@@ -1448,7 +1507,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		require.NotZero(t, startedAt, "CordonedAtMs must be set on OFF→ON edge")
 
 		time.Sleep(5 * time.Millisecond)
-		tracker.Cordon(ups, "*", "vendor maintenance (extended)")
+		tracker.CordonClass(ups, "*", "vendor maintenance (extended)", common.CordonClassOperator)
 		require.Equal(t, startedAt, tm.CordonedAtMs.Load(),
 			"already-cordoned re-cordon must preserve original start timestamp")
 		assert.Equal(t, beforeCordonCount+1, promUtil.ToFloat64(cordonCounter),
@@ -1458,16 +1517,121 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		// non-zero value, then uncordon.
 		time.Sleep(20 * time.Millisecond)
 		histBefore := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
-		tracker.Uncordon(ups, "*", "vendor resolved")
+		tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
 		histAfter := promUtil.CollectAndCount(telemetry.MetricUpstreamCordonDurationSeconds)
 
 		assert.Equal(t, int64(0), tm.CordonedAtMs.Load(),
 			"CordonedAtMs reset to 0 on uncordon")
-		assert.False(t, tm.Cordoned.Load(), "Cordoned flag must be false after uncordon")
+		assert.False(t, tm.CordonMask.Load() != 0, "Cordoned flag must be false after uncordon")
 		assert.Equal(t, beforeUncordonCount+1, promUtil.ToFloat64(uncordonCounter),
 			"uncordon event counter increments on ON→OFF edge")
 		assert.GreaterOrEqual(t, histAfter, histBefore,
 			"cordon-duration histogram must have observed the duration on uncordon")
+	})
+
+	t.Run("uncordon_with_unrecognized_class_does_not_clear_operator_cordon", func(t *testing.T) {
+		// cordonBit() aliases an unknown class to the operator bit so a stray
+		// Cordon fails closed. Uncordon must NOT inherit that aliasing: clearing
+		// the operator bit for an unrecognized class would fail OPEN, lifting a
+		// real operator cordon. An unknown-class uncordon must be a no-op.
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("operator-cordoned")
+		tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
+		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
+		require.NotZero(t, tm.CordonMask.Load(), "operator cordon must be set")
+
+		tracker.UncordonClass(ups, "*", "spurious", common.CordonClass("some-future-class"))
+		assert.NotZero(t, tm.CordonMask.Load(),
+			"an unrecognized-class uncordon must leave the operator cordon intact")
+
+		// The real operator uncordon clears only the operator bit.
+		tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
+		assert.Zero(t, tm.CordonMask.Load(), "operator uncordon clears the operator cordon")
+	})
+
+	t.Run("cordon_with_unrecognized_class_advances_operator_generation", func(t *testing.T) {
+		// cordonBit aliases an unknown class to the operator bit; the operator
+		// generation must advance too, or an admin uncordon snapshot taken
+		// before this cordon would clear it as if it predated the snapshot.
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("unknown-class-gen")
+		before := tracker.CordonGens(ups, "*")
+		tracker.CordonClass(ups, "*", "future detector", common.CordonClass("some-future-class"))
+		after := tracker.CordonGens(ups, "*")
+		assert.Greater(t, after[2], before[2], "unknown class advances the operator generation")
+
+		// A snapshot taken before the cordon must not clear it.
+		tracker.UncordonClassesAtMostGens(ups, "*", "admin recovery", before)
+		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
+		assert.NotZero(t, tm.CordonMask.Load(),
+			"post-snapshot unknown-class cordon survives the admin clear")
+	})
+
+	t.Run("operator_uncordon_leaves_punishment_and_availability_bits", func(t *testing.T) {
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("multi-class-operator")
+		tracker.CordonClass(ups, "*", "misbehaving in consensus", common.CordonClassPunishment)
+		tracker.CordonClass(ups, "*", "poller lag", common.CordonClassAvailability)
+		tracker.CordonClass(ups, "*", "vendor maintenance", common.CordonClassOperator)
+
+		tracker.UncordonClass(ups, "*", "vendor resolved", common.CordonClassOperator)
+		classes := tracker.CordonClasses(ups, "*")
+		hasPunishment, hasAvailability, hasOperator := false, false, false
+		for _, c := range classes {
+			switch c {
+			case common.CordonClassPunishment:
+				hasPunishment = true
+			case common.CordonClassAvailability:
+				hasAvailability = true
+			case common.CordonClassOperator:
+				hasOperator = true
+			}
+		}
+		assert.True(t, hasPunishment, "punishment bit must survive operator uncordon")
+		assert.True(t, hasAvailability, "availability bit must survive operator uncordon")
+		assert.False(t, hasOperator, "operator bit must clear")
+	})
+
+	t.Run("partial_uncordon_restores_remaining_class_reason", func(t *testing.T) {
+		// LastCordonedReason is a single snapshot. Cordon overwrites it, so a
+		// later availability cordon would leave an availability reason after
+		// only punishment remains — unless Uncordon restores a remaining
+		// class's stored reason. erpc_listCordoned / CordonedReason read that
+		// snapshot.
+		tracker := NewTracker(&log.Logger, "test-project", 2*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := common.NewFakeUpstream("multi-class")
+		tracker.CordonClass(ups, "*", "misbehaving in consensus", common.CordonClassPunishment)
+		reason, ok := tracker.CordonedReason(ups, "*")
+		require.True(t, ok)
+		assert.Equal(t, "misbehaving in consensus", reason)
+
+		tracker.CordonClass(ups, "*", "poller lag", common.CordonClassAvailability)
+		reason, ok = tracker.CordonedReason(ups, "*")
+		require.True(t, ok)
+		assert.Equal(t, "poller lag", reason)
+
+		tracker.UncordonClass(ups, "*", "availability recovered", common.CordonClassAvailability)
+		require.True(t, tracker.IsCordoned(ups, "*"), "punishment bit must still be set")
+		reason, ok = tracker.CordonedReason(ups, "*")
+		require.True(t, ok)
+		assert.Equal(t, "misbehaving in consensus", reason,
+			"surviving punishment cordon must keep its own reason after availability is cleared")
 	})
 
 	t.Run("idle_sweep_evicts_silent_methods", func(t *testing.T) {
@@ -1587,7 +1751,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 
 		ups := common.NewFakeUpstream("cordoned-method-target")
 		tracker.RecordUpstreamRequest(ups, "eth_call", common.DataFinalityStateUnknown)
-		tracker.Cordon(ups, "eth_call", "investigated regression")
+		tracker.CordonClass(ups, "eth_call", "investigated regression", common.CordonClassOperator)
 
 		// Wait through a couple of sweep cycles.
 		time.Sleep(2500 * time.Millisecond)
@@ -1597,7 +1761,7 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		// MUST survive.
 		tm, ok := tracker.upsMetrics.Load(upstreamKey{ups, "eth_call", common.DataFinalityStateAll})
 		require.True(t, ok, "cordoned per-method entry must NOT be evicted by the idle sweep")
-		assert.True(t, tm.(*TrackedMetrics).Cordoned.Load(),
+		assert.True(t, tm.(*TrackedMetrics).CordonMask.Load() != 0,
 			"cordon flag must still be set after the sweep")
 	})
 
@@ -1618,10 +1782,10 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		before := promUtil.ToFloat64(uncordonCounter)
 
 		require.NotPanics(t, func() {
-			tracker.Uncordon(ups, "*", "spurious uncordon")
+			tracker.UncordonClass(ups, "*", "spurious uncordon", common.CordonClassOperator)
 		})
 		tm := tracker.getUpsMetrics(upstreamKey{ups, "*", common.DataFinalityStateAll})
-		assert.False(t, tm.Cordoned.Load())
+		assert.False(t, tm.CordonMask.Load() != 0)
 		assert.Equal(t, int64(0), tm.CordonedAtMs.Load())
 		assert.Equal(t, before, promUtil.ToFloat64(uncordonCounter),
 			"no-op uncordon must NOT increment the event counter")

@@ -19,10 +19,17 @@ type NormalizedResponse struct {
 	expectedSize int
 
 	fromCache atomic.Bool
+	// cacheable is the write-admission mark set by modules (consensus in v1).
+	// nil = undecided; true/false = explicit. Cache.Set combines this with
+	// cachingStrategy (see AllowsCacheWrite).
+	cacheable atomic.Pointer[bool]
 	attempts  atomic.Value
 	retries   atomic.Value
 	hedges    atomic.Value
 	upstream  atomic.Value
+	// source names the part of eRPC that built a response no upstream gave:
+	// one of the Source* labels.
+	source atomic.Pointer[string]
 
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
 	evmBlockNumber  atomic.Value
@@ -39,6 +46,8 @@ type NormalizedResponse struct {
 	parseOnce sync.Once
 
 	duration time.Duration
+	// sentAt is when the request this answers was sent to its upstream.
+	sentAt time.Time
 
 	// pendingOps tracks background users (e.g., async cache writes).
 	// Release will wait for all pending ops to finish before freeing buffers.
@@ -113,6 +122,28 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 	return r
 }
 
+// Cacheable returns the write-admission mark (nil = undecided).
+func (r *NormalizedResponse) Cacheable() *bool {
+	if r == nil {
+		return nil
+	}
+	return r.cacheable.Load()
+}
+
+// SetCacheable stores the write-admission mark. Pass nil to clear (undecided).
+func (r *NormalizedResponse) SetCacheable(v *bool) *NormalizedResponse {
+	if r == nil {
+		return r
+	}
+	if v == nil {
+		r.cacheable.Store(nil)
+		return r
+	}
+	b := *v
+	r.cacheable.Store(&b)
+	return r
+}
+
 func (r *NormalizedResponse) EvmBlockRef() interface{} {
 	if r == nil {
 		return nil
@@ -179,6 +210,22 @@ func (r *NormalizedResponse) Duration() time.Duration {
 		return 0
 	}
 	return r.duration
+}
+
+// SentAt is when the request this answers was sent to its upstream; zero
+// for an answer no upstream sent now.
+func (r *NormalizedResponse) SentAt() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+	return r.sentAt
+}
+
+func (r *NormalizedResponse) SetSentAt(at time.Time) {
+	if r == nil {
+		return
+	}
+	r.sentAt = at
 }
 
 func (r *NormalizedResponse) SetDuration(dur time.Duration) {
@@ -272,6 +319,72 @@ func (r *NormalizedResponse) SetUpstream(upstream Upstream) *NormalizedResponse 
 
 	if upstream != nil {
 		r.upstream.Store(upstream)
+	}
+	return r
+}
+
+// The vendor and upstream labels of a response that no upstream gave, in the
+// network request metrics. Each names the part of eRPC that answered.
+const (
+	// SourceCache: a cache connector.
+	SourceCache = "<cache>"
+	// SourceHead: the network's head, such as eth_blockNumber, getSlot, or
+	// null for a block no upstream serves yet.
+	SourceHead = "<head>"
+	// SourceLocal: eRPC's own answer to a method whose answer no upstream
+	// decides, such as eth_chainId or net_version.
+	SourceLocal = "<local>"
+	// SourceStatic: a network's configured staticResponses.
+	SourceStatic = "<static>"
+	// SourceSplit: the merged answers of a request's sub-requests, such as a
+	// split eth_getLogs or trace_filter.
+	SourceSplit = "<split>"
+	// SourceQuery: a page of an eth_query* request.
+	SourceQuery = "<query>"
+	// SourceIdempotent: eth_sendRawTransaction answered with the hash of a
+	// transaction the network already knows.
+	SourceIdempotent = "<idempotent>"
+	// SourceErpc: any other response eRPC built itself.
+	SourceErpc = "<erpc>"
+)
+
+// SetSource names the part of eRPC that built r, one of the Source* labels,
+// when no upstream gave it.
+func (r *NormalizedResponse) SetSource(source string) *NormalizedResponse {
+	if r == nil || source == "" {
+		return r
+	}
+	r.source.Store(&source)
+	return r
+}
+
+// SourceLabels returns the vendor and upstream labels of what answered r: the
+// cache, the upstream, or the part of eRPC that built it.
+func (r *NormalizedResponse) SourceLabels() (vendor, upstreamId string) {
+	if r.FromCache() {
+		return SourceCache, SourceCache
+	}
+	if up := r.Upstream(); up != nil {
+		return up.VendorName(), up.Id()
+	}
+	if r != nil {
+		if s := r.source.Load(); s != nil {
+			return *s, *s
+		}
+	}
+	return SourceErpc, SourceErpc
+}
+
+// WithSourceOf gives r the upstream, cache mark and source of src: who
+// answered src answered r.
+func (r *NormalizedResponse) WithSourceOf(src *NormalizedResponse) *NormalizedResponse {
+	if r == nil || src == nil {
+		return r
+	}
+	r.SetUpstream(src.Upstream())
+	r.SetFromCache(src.FromCache())
+	if s := src.source.Load(); s != nil {
+		r.source.Store(s)
 	}
 	return r
 }
@@ -625,8 +738,8 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 
 	r := NewNormalizedResponse()
 	r.WithRequest(req)
-	r.SetUpstream(resp.Upstream())
-	r.SetFromCache(resp.FromCache())
+	r.WithSourceOf(resp)
+	r.SetCacheable(resp.Cacheable())
 	r.SetAttempts(resp.Attempts())
 	r.SetRetries(resp.Retries())
 	r.SetHedges(resp.Hedges())

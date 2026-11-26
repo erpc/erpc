@@ -133,9 +133,9 @@ tables and exact defaults live in each page's agent section.
 
 **Hook dispatch model.** Four hook entry-points in [`architecture/evm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/evm/hooks.go):
 
-- `HandleProjectPreForward` — runs at project layer before cache and upstream selection; handles `eth_blockNumber`, `eth_call`, `eth_chainId`, `eth_getLogs`, `trace_filter`/`arbtrace_filter`.
-- `HandleNetworkPreForward` — runs after upstream selection, can short-circuit; handles `eth_getLogs`, `eth_chainId`, `trace_filter`/`arbtrace_filter`.
-- `HandleNetworkPostForward` — called after response comes back at network layer; handles `eth_getBlockByNumber`, `eth_getLogs`, `eth_sendRawTransaction`, `trace_filter`/`arbtrace_filter`.
+- `HandleProjectPreForward` — runs at project layer before cache and upstream selection; handles `eth_call`, `eth_estimateGas`, `eth_chainId`, `eth_getLogs`, `trace_filter`/`arbtrace_filter`.
+- `HandleNetworkPreForward` — runs after upstream selection, can short-circuit; handles `eth_getLogs`, `eth_chainId`, `eth_blockNumber` (answered from the served tip), `trace_filter`/`arbtrace_filter`.
+- `HandleNetworkPostForward` — called after response comes back at network layer; handles `eth_blockNumber` (pinned to the served tip), `eth_getBlockByNumber`, `eth_getLogs`, `eth_sendRawTransaction`, `trace_filter`/`arbtrace_filter`.
 - `HandleUpstreamPostForward` — richest hook, called per-upstream; checks `MarkEmptyAsErrorMethods`, applies per-method validation, marks unexpected empties as `ErrEndpointMissingData`.
 
 **Block tag normalization.** [`NormalizeHttpJsonRpc`](https://github.com/erpc/erpc/blob/main/architecture/evm/json_rpc.go#L92) runs on every incoming JSON-RPC request: caches the numeric block number on the request, and when the tag is `"latest"` or `"finalized"` and the network has a known head, replaces the tag with a concrete `0x…` hex. Tags `"safe"` and `"pending"` are intentionally passed through unchanged. The `X-ERPC-Skip-Interpolation` directive or `skipInterpolation` request directive suppresses mutations while still caching the numeric block number.
@@ -149,7 +149,7 @@ tables and exact defaults live in each page's agent section.
 
 **Syncing state.** A self-hosted node must return `eth_syncing: false` **four consecutive times** (`FullySyncedThreshold = 4` at [`architecture/evm/evm_state_poller.go:L21`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L21)) before eRPC stops syncing-check requests. One `syncing=true` resets the counter to 1.
 
-**Block-head rollback tolerance.** `DefaultToleratedBlockHeadRollback = 1024` at [`architecture/evm/evm_state_poller.go:L26`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L26) — the maximum block-head rollback the poller tolerates before treating it as a large rollback event (emits `erpc_upstream_block_head_large_rollback` gauge).
+**Block-head rollback tolerance.** `DefaultToleratedBlockHeadRollback = 1024` at [`architecture/evm/evm_state_poller.go:L26`](https://github.com/erpc/erpc/blob/main/architecture/evm/evm_state_poller.go#L26) — the maximum block-head rollback the poller tolerates before treating it as a large rollback event (emits `erpc_upstream_block_head_large_rollback` gauge). A large rollback applies only once the lower head moves on, so a provider's node stuck far behind never pulls a head back.
 
 **Error normalizer precedence.** [`ExtractJsonRpcError`](https://github.com/erpc/erpc/blob/main/architecture/evm/error_normalizer.go#L20) uses text-based matching in strict order:
 
@@ -194,7 +194,7 @@ All fields under `networks[*].evm.*`. Populated by `EvmNetworkConfig.SetDefaults
 |---|---|---|---|
 | `evm.chainId` | int64 | required | EVM chain ID; used for `eth_chainId` responses and network ID (`evm:<chainId>`). |
 | `evm.fallbackFinalityDepth` | int64 | `1024` | Depth used when finality cannot be determined dynamically. Block considered finalized if `latestBlock - blockNumber >= fallbackFinalityDepth`. |
-| `evm.fallbackStatePollerDebounce` | Duration | `5s` | Fallback poll interval when dynamic block time is not yet known. |
+| `evm.fallbackStatePollerDebounce` | Duration | unset | Poll interval while the block time is not yet known; unset, 0.7s (the 1s cold block time × 0.7). |
 | `evm.integrity` | object | see below | **Deprecated** wrapper for directive-defaults; use `directiveDefaults` instead. |
 | `evm.integrity.enforceHighestBlock` | \*bool | `true` | Deprecated — migrates to `directiveDefaults.enforceHighestBlock`. |
 | `evm.integrity.enforceGetLogsBlockRange` | \*bool | `true` | Deprecated — migrates to `directiveDefaults.enforceGetLogsBlockRange`. |

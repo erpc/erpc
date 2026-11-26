@@ -50,7 +50,8 @@ func (n *Network) tryServeStaticResponse(
 
 	resp := common.NewNormalizedResponse().
 		WithRequest(req).
-		WithJsonRpcResponse(jrr)
+		WithJsonRpcResponse(jrr).
+		SetSource(common.SourceStatic)
 
 	telemetry.CounterHandle(
 		telemetry.MetricNetworkStaticResponseServedTotal,

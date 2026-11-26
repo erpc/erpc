@@ -2,7 +2,9 @@ package thirdparty
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -39,8 +41,6 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	100:        {}, // Gnosis
 	10200:      {}, // Gnosis Chiado
 	1666600000: {}, // Harmony Shard 0
-	17000:      {}, // Holesky
-	255:        {}, // Kroma
 	59144:      {}, // Linea
 	42:         {}, // Lukso
 	169:        {}, // Manta
@@ -58,8 +58,6 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	7000:       {}, // Zeta
 	324:        {}, // ZKsync
 	7777777:    {}, // Zora
-	50:         {}, // Xdc
-	51:         {}, // Xdc Testnet (Apothem)
 	2741:       {}, // Abstract
 	5115:       {}, // Citrea Testnet
 	7560:       {}, // Cyber
@@ -96,12 +94,17 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	1868:       {}, // Soneium
 	146:        {}, // Sonic
 	14601:      {}, // Sonic Testnet
-	531050104:  {}, // Sophon Testnet
 	5330:       {}, // Superseed
 	1923:       {}, // Swell
 	4217:       {}, // Tempo
 	480:        {}, // Worldchain
 	48900:      {}, // Zircuit
+	988:        {}, // Stable
+	4663:       {}, // Robinhood
+	5031:       {}, // Somnia
+	50312:      {}, // Somnia Testnet
+	5042:       {}, // Arc
+	728126428:  {}, // Tron
 }
 
 type EnvioVendor struct {
@@ -159,6 +162,10 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	if err != nil {
 		// Consider "failed to verify certificate" as unsupported due to how Envios load-balancing in their K8S works
 		if strings.Contains(err.Error(), "failed to verify certificate") {
+			return false, nil
+		}
+		// A chain Envio does not serve has no {chainId}.{rootDomain} host.
+		if isHostNotFound(err) {
 			return false, nil
 		}
 		return false, err
@@ -276,4 +283,14 @@ func (v *EnvioVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Log
 	// Store the client for this chain ID
 	v.headlessClients.Store(chainId, client)
 	return client, nil
+}
+
+// isHostNotFound reports whether err is a DNS answer that the host does not
+// exist. Temporary DNS failures are not.
+func isHostNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsNotFound
+	}
+	return strings.Contains(err.Error(), "no such host")
 }

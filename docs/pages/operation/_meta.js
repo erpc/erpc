@@ -2,6 +2,9 @@ module.exports = {
 	"url": {
 		title: "URL",
 	},
+	"websocket": {
+		title: "WebSocket",
+	},
 	"healthcheck": {
 		title: "Healthcheck",
 	},

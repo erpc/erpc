@@ -241,11 +241,13 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 	})
 
 	t.Run("TriesNextPolicyAfterAgeRejection", func(t *testing.T) {
-		// Create two mock connectors
-		mockConnector1 := &data.MockConnector{}
+		// Two policies fan out concurrently, so the connectors must not hand the
+		// shared request to testify: its argument diff reflect-reads the request
+		// while the other goroutine lazily parses it, which -race reports.
+		mockConnector1 := &reqBlindConnector{MockConnector: &data.MockConnector{}}
 		mockConnector1.On("Id").Return("mock-connector-1")
 
-		mockConnector2 := &data.MockConnector{}
+		mockConnector2 := &reqBlindConnector{MockConnector: &data.MockConnector{}}
 		mockConnector2.On("Id").Return("mock-connector-2")
 
 		// Create an old cached response for connector 1 (2 minutes ago)
@@ -312,8 +314,9 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 			policies:  []*data.CachePolicy{policy1, policy2},
 		}
 
-		// Create request
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",true],"id":1}`))
+		// A numbered request: plan H2 deletes the cache key on the word
+		// `latest`, so a tag with no Head is not cached at all.
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1235",true],"id":1}`))
 
 		// Perform Get operation
 		resp, err := cache.Get(ctx, req)
@@ -326,4 +329,14 @@ func TestEvmJsonRpcCache_BlockAgeValidation(t *testing.T) {
 		// Ensure we received a cached response; hash may vary depending on age-guard acceptance
 		assert.True(t, resp.FromCache())
 	})
+}
+
+// reqBlindConnector forwards Get to the testify mock without the request
+// metadata, so concurrent policy goroutines never reflect over the request.
+type reqBlindConnector struct {
+	*data.MockConnector
+}
+
+func (c *reqBlindConnector) Get(ctx context.Context, index, partitionKey, rangeKey string, _ interface{}) ([]byte, error) {
+	return c.MockConnector.Get(ctx, index, partitionKey, rangeKey, nil)
 }

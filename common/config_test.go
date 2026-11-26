@@ -659,6 +659,22 @@ failsafe:
 		assert.Equal(t, 2*time.Second, config.Failsafe[0].Timeout.Duration.Resolve(nil))
 		assert.Equal(t, 3, config.Failsafe[0].Retry.MaxAttempts)
 	})
+
+	t.Run("old single object format keeps failover", func(t *testing.T) {
+		yamlData := `
+architecture: evm
+failsafe:
+  timeout:
+    duration: 2s
+failover:
+  onDefaultsExhausted: true
+`
+		var config NetworkConfig
+		err := yaml.Unmarshal([]byte(yamlData), &config)
+		assert.NoError(t, err)
+		assert.Len(t, config.Failsafe, 1)
+		assert.True(t, config.Failover.Enabled())
+	})
 }
 
 func TestNetworkDefaultsFailsafeBackwardCompatibility(t *testing.T) {
@@ -696,6 +712,22 @@ failsafe:
 		assert.Len(t, defaults.Failsafe, 1)
 		assert.Equal(t, "*", defaults.Failsafe[0].MatchMethod) // Should default to "*"
 		assert.Equal(t, 2*time.Second, defaults.Failsafe[0].Timeout.Duration.Resolve(nil))
+	})
+
+	t.Run("old single object format keeps failover", func(t *testing.T) {
+		yamlData := `
+rateLimitBudget: "test"
+failsafe:
+  timeout:
+    duration: 2s
+failover:
+  onDefaultsExhausted: true
+`
+		var defaults NetworkDefaults
+		err := yaml.Unmarshal([]byte(yamlData), &defaults)
+		assert.NoError(t, err)
+		assert.Len(t, defaults.Failsafe, 1)
+		assert.True(t, defaults.Failover.Enabled())
 	})
 }
 
@@ -1212,6 +1244,52 @@ projects:
 	})
 }
 
+func TestNetworkConfig_SetDefaults_FailoverInheritsFromDefaults(t *testing.T) {
+	enabled := true
+	defaults := &NetworkDefaults{
+		Failover: &FailoverConfig{OnDefaultsExhausted: &enabled},
+	}
+	n := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	err := n.SetDefaults(nil, defaults)
+	assert.NoError(t, err)
+	assert.NotNil(t, n.Failover)
+	assert.True(t, n.Failover.Enabled())
+}
+
+func TestFailoverConfig_Enabled(t *testing.T) {
+	var nilCfg *FailoverConfig
+	assert.False(t, nilCfg.Enabled())
+	assert.False(t, (&FailoverConfig{}).Enabled())
+	disabled, enabled := false, true
+	assert.False(t, (&FailoverConfig{OnDefaultsExhausted: &disabled}).Enabled())
+	assert.True(t, (&FailoverConfig{OnDefaultsExhausted: &enabled}).Enabled())
+}
+
+func TestNetworkConfig_SetDefaults_ShortCircuitFutureBlocksInheritsFromDefaults(t *testing.T) {
+	enabled, disabled := true, false
+	defaults := &NetworkDefaults{Evm: &EvmNetworkConfig{ShortCircuitFutureBlocks: &enabled}}
+
+	inherited := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1}}
+	assert.NoError(t, inherited.SetDefaults(nil, defaults))
+	assert.True(t, inherited.Evm.ShortCircuitFutureBlocksEnabled())
+
+	// An explicit network-level false wins over a true default.
+	overridden := &NetworkConfig{Architecture: ArchitectureEvm, Evm: &EvmNetworkConfig{ChainId: 1, ShortCircuitFutureBlocks: &disabled}}
+	assert.NoError(t, overridden.SetDefaults(nil, defaults))
+	assert.False(t, overridden.Evm.ShortCircuitFutureBlocksEnabled())
+}
+
+func TestEvmNetworkConfig_ShortCircuitFutureBlocksEnabled(t *testing.T) {
+	var nilCfg *EvmNetworkConfig
+	assert.False(t, nilCfg.ShortCircuitFutureBlocksEnabled())
+	assert.False(t, (&EvmNetworkConfig{}).ShortCircuitFutureBlocksEnabled())
+	enabled, disabled := true, false
+	assert.False(t, (&EvmNetworkConfig{ShortCircuitFutureBlocks: &disabled}).ShortCircuitFutureBlocksEnabled())
+	assert.True(t, (&EvmNetworkConfig{ShortCircuitFutureBlocks: &enabled}).ShortCircuitFutureBlocksEnabled())
+	// Only the explicit key turns it on; a servedTip block does not.
+	assert.False(t, (&EvmNetworkConfig{ServedTip: &EvmServedTipConfig{Quorum: ServedTipQuorumMajority}}).ShortCircuitFutureBlocksEnabled())
+}
+
 func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	cfg := &Config{}
 	base := func(mode RateLimitCountMode) *UpstreamConfig {
@@ -1227,6 +1305,63 @@ func TestUpstreamConfig_ValidateRateLimitCountMode(t *testing.T) {
 	err := base("credits").Validate(cfg, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "rateLimitCountMode")
+}
+
+// Upstream registration is asynchronous, so a consensus block at upstream
+// scope must fail config load. Otherwise the executor's rejection is only a
+// log line and the upstream silently drops out of the pool.
+func TestUpstreamConfig_ValidateRejectsConsensus(t *testing.T) {
+	cfg := &Config{}
+	ups := &UpstreamConfig{
+		Id:       "up1",
+		Endpoint: "http://localhost",
+		Failsafe: []*FailsafeConfig{{MatchMethod: "*", Consensus: &ConsensusPolicyConfig{MaxParticipants: 2, AgreementThreshold: 2}}},
+	}
+	err := ups.Validate(cfg, false)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "consensus")
+	}
+
+	ups.Failsafe[0].Consensus = nil
+	assert.NoError(t, ups.Validate(cfg, false))
+}
+
+// Provider-generated upstreams inherit upstreamDefaults only when no override
+// matches, after config load, inside a background bootstrap task. Consensus
+// on the defaults object must fail validation too, and so must matchCommitment,
+// or those upstreams drop out with only a log line.
+func TestProjectConfig_ValidateRejectsNetworkOnlyFailsafeInUpstreamDefaults(t *testing.T) {
+	cfg := &Config{}
+	prj := &ProjectConfig{
+		Id: "main",
+		Providers: []*ProviderConfig{{
+			Id:                 "alchemy",
+			Vendor:             "alchemy",
+			UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+		}},
+		UpstreamDefaults: &UpstreamConfig{
+			Failsafe: []*FailsafeConfig{{
+				MatchMethod: "*",
+				Consensus:   &ConsensusPolicyConfig{MaxParticipants: 2, AgreementThreshold: 2},
+			}},
+		},
+	}
+	err := prj.Validate(cfg)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "upstreamDefaults")
+		assert.Contains(t, err.Error(), "consensus")
+	}
+
+	prj.UpstreamDefaults.Failsafe[0].Consensus = nil
+	prj.UpstreamDefaults.Failsafe[0].MatchCommitment = []string{"confirmed"}
+	err = prj.Validate(cfg)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "upstreamDefaults")
+		assert.Contains(t, err.Error(), "matchCommitment")
+	}
+
+	prj.UpstreamDefaults.Failsafe[0].MatchCommitment = nil
+	assert.NoError(t, prj.Validate(cfg))
 }
 
 // Hedge quantile is scope-generic: connector-level failsafe accepts the

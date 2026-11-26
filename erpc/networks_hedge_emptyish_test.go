@@ -61,7 +61,7 @@ func nullResultJSON() map[string]interface{} {
 // (the sweep wrapping the hedge ALSO rejects emptyish mid-rotation).
 func TestHedge_EmptyishLosesToNonEmpty_GetBlockByNumber(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -111,7 +111,7 @@ func TestHedge_EmptyishLosesToNonEmpty_GetBlockByNumber(t *testing.T) {
 // means "not yet on this upstream", not "doesn't exist".
 func TestHedge_EmptyishLosesToNonEmpty_GetTransactionByHash(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -170,7 +170,7 @@ func TestHedge_EmptyishLosesToNonEmpty_GetTransactionByHash(t *testing.T) {
 // upstream has indexed the receipt and another has not.
 func TestHedge_EmptyishLosesToNonEmpty_GetTransactionReceipt(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -234,7 +234,7 @@ func TestHedge_EmptyishLosesToNonEmpty_GetTransactionReceipt(t *testing.T) {
 // The retry layer is responsible for any further fan-out.
 func TestHedge_AllEmptyish_ReturnsEmpty_GetBlockByNumber(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -278,7 +278,7 @@ func TestHedge_AllEmptyish_ReturnsEmpty_GetBlockByNumber(t *testing.T) {
 // short-circuit the hedge — empty is the legitimate answer.
 func TestHedge_EmptyishWinsForAcceptedMethod_GetLogs(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x10","toBlock":"0x10"}]}`)
@@ -344,7 +344,7 @@ func TestHedge_EmptyishWinsForAcceptedMethod_GetLogs(t *testing.T) {
 // short-circuit the hedge.
 func TestHedge_EmptyishWinsForAcceptedMethod_GetBalance(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	requestBytes := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x` +
@@ -403,7 +403,7 @@ func TestHedge_EmptyishWinsForAcceptedMethod_GetBalance(t *testing.T) {
 // non-empty primary keeps its win and the hedge never has to fire.
 func TestHedge_NonEmptyPrimaryWins(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	// rpc2 mock should remain unused (one pending mock expected).
 	defer util.AssertNoPendingMocks(t, 1)
@@ -456,7 +456,7 @@ func TestHedge_NonEmptyPrimaryWins(t *testing.T) {
 // is returned.
 func TestHedge_EmptyishLosesToNonEmpty_ThreeUpstreams(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 

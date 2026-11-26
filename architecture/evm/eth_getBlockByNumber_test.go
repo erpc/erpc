@@ -2,11 +2,13 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testNetwork is a simple test implementation of common.Network interface for this file
@@ -52,16 +54,11 @@ func (t *testNetwork) Logger() *zerolog.Logger {
 	return &logger
 }
 
-func (t *testNetwork) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
-	return t.highestLatest
+func (t *testNetwork) EvmHead(ctx context.Context, req *common.NormalizedRequest) common.EvmHead {
+	return common.EvmHead{Latest: t.highestLatest}
 }
-
-func (t *testNetwork) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
-	return 0
-}
-
-func (t *testNetwork) EvmLeaderUpstream(ctx context.Context) common.Upstream {
-	return nil
+func (t *testNetwork) EvmLaneHead(string, string) common.EvmHead {
+	return t.EvmHead(context.Background(), nil)
 }
 
 func (t *testNetwork) GetMethodMetrics(method string) common.TrackedMetrics {
@@ -170,6 +167,32 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.True(t, result.IsResultEmptyish())
 	})
 
+	// #477: "latest" is interpolated to the Head's number, and the null-for-tag
+	// opt-out still reads the tag the client sent.
+	t.Run("InterpolatedLatestTagWithEnforcementDisabled_ReturnsNull", func(t *testing.T) {
+		request := common.NewNormalizedRequestFromJsonRpcRequest(
+			common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{"latest", true}),
+		)
+		request.SetNetwork(&testNetwork{highestLatest: 0x20})
+		request.SetDirectives(&common.RequestDirectives{
+			EnforceNonNullTaggedBlocks: false,
+		})
+		jrq, err := request.JsonRpcRequest()
+		require.NoError(t, err)
+		NormalizeHttpJsonRpc(context.Background(), request, jrq)
+		require.Equal(t, "0x20", jrq.Params[0], "latest must be interpolated to the Head")
+
+		jsonResp, _ := common.NewJsonRpcResponse(1, nil, nil)
+		response := common.NewNormalizedResponse().
+			WithRequest(request).
+			WithJsonRpcResponse(jsonResp)
+
+		result, err := enforceNonNullBlock(context.Background(), request, response)
+		assert.NoError(t, err)
+		require.NotNil(t, result)
+		assert.True(t, result.IsResultEmptyish())
+	})
+
 	t.Run("TaggedBlockWithNilDirectives_DefaultsToNoEnforce", func(t *testing.T) {
 		// Create a request WITHOUT setting directives (nil)
 		// This tests the behavior when directives are not set
@@ -192,5 +215,35 @@ func TestEnforceNonNullTaggedBlocks(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.True(t, result.IsResultEmptyish())
+	})
+}
+
+func TestUnservedNull_PreservesNullRoundError(t *testing.T) {
+	t.Parallel()
+	newReq := func() *common.NormalizedRequest {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x65",false]}`))
+		req.TakeHeadRefusal(&common.HeadRefusal{Block: 101, Latest: 100, Rule: common.HeadBand})
+		return req
+	}
+
+	t.Run("direct null-round missing data stays an error", func(t *testing.T) {
+		out, ok := unservedNull(context.Background(), newReq(), lotusNull(t, 101))
+		assert.False(t, ok, "a null round must not be rewritten to synthetic JSON null")
+		assert.Nil(t, out)
+	})
+
+	t.Run("exhausted bundle containing null round stays an error", func(t *testing.T) {
+		exhausted := common.NewErrUpstreamsExhaustedWithCause(errors.Join(lotusNull(t, 101), common.NewErrUpstreamBlockUnavailable("rpc2", 101, 100, 0)))
+		out, ok := unservedNull(context.Background(), newReq(), exhausted)
+		assert.False(t, ok, "an exhausted bundle with a null round must not be rewritten to synthetic JSON null")
+		assert.Nil(t, out)
+	})
+
+	t.Run("transient missing data above Latest still synthesizes null", func(t *testing.T) {
+		transient := common.NewErrEndpointMissingData(errors.New("block not found"), nil)
+		out, ok := unservedNull(context.Background(), newReq(), transient)
+		require.True(t, ok)
+		require.NotNil(t, out)
+		assert.True(t, out.IsResultEmptyish())
 	})
 }

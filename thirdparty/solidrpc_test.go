@@ -19,7 +19,7 @@ func TestSolidrpcVendor(t *testing.T) {
 	logger := zerolog.Nop()
 
 	t.Run("supports catalog networks", func(t *testing.T) {
-		require.Len(t, solidrpcChainIDs, 55)
+		require.Len(t, solidrpcChainIDs, 87)
 		for chainID := range solidrpcChainIDs {
 			supported, err := vendor.SupportsNetwork(ctx, &logger, common.VendorSettings{}, "evm:"+strconv.FormatInt(chainID, 10))
 			require.NoError(t, err)

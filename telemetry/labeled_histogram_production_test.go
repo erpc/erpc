@@ -28,3 +28,22 @@ func TestProductionFlow_SetPolicyThenRegister(t *testing.T) {
 		t.Fatalf("SetHistogramBuckets: %v", err)
 	}
 }
+
+// TestProductionFlow_ConsensusPolicyEvalDurationIsRegistered guards against the
+// class of bug where a histogram is declared but never reaches /metrics.
+// consensus_policy_eval_duration_seconds must register through the production
+// Configure/SetHistogramBuckets path like its sibling consensus_duration_seconds.
+func TestProductionFlow_ConsensusPolicyEvalDurationIsRegistered(t *testing.T) {
+	reg := withFreshRegistry(t)
+	if err := SetHistogramBuckets(""); err != nil {
+		t.Fatalf("SetHistogramBuckets: %v", err)
+	}
+
+	MetricConsensusPolicyEvalDuration.WithLabelValues("proj-1", "net-1").Observe(0.01)
+
+	families := gatheredFamilies(t, reg)
+	if _, ok := families["erpc_consensus_policy_eval_duration_seconds"]; !ok {
+		t.Fatalf("erpc_consensus_policy_eval_duration_seconds not exported after SetHistogramBuckets "+
+			"— histogram declared but never registered (scraped families: %v)", families)
+	}
+}

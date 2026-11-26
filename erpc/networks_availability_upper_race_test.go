@@ -158,6 +158,7 @@ func setupLowerOnlyRaceNetwork(t *testing.T, ctx context.Context, fixtures []low
 	// like the issue's config.
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	network, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
@@ -195,7 +196,7 @@ func setupLowerOnlyRaceNetwork(t *testing.T, ctx context.Context, fixtures []low
 // ErrUpstreamBlockUnavailable) without ever querying the upstream for the block.
 func TestNetworkAvailability_Issue934_LowerOnly_FreshBlockAboveStaleTip_Forward(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -230,7 +231,7 @@ func TestNetworkAvailability_Issue934_LowerOnly_FreshBlockAboveStaleTip_Forward(
 // style of the existing direct checkUpstreamBlockAvailability tests.
 func TestNetworkAvailability_Issue934_LowerOnly_DoesNotTriggerImplicitUpperBound_Direct(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -258,7 +259,7 @@ func TestNetworkAvailability_Issue934_LowerOnly_DoesNotTriggerImplicitUpperBound
 // below the configured lower bound must still be skipped (non-retryable).
 func TestNetworkAvailability_Issue934_LowerBound_StillEnforced(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -339,6 +340,7 @@ func setupDirectAvailabilityNetwork(t *testing.T, ctx context.Context, upEvm *co
 		ntwCfg = &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	}
 	network, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
 	require.NoError(t, network.Bootstrap(ctx))
@@ -366,7 +368,7 @@ func balanceReqAt(network *Network, blockHex string, bn int64) *common.Normalize
 // awareness is owned by served-tip + enforceHighestBlock, not this path.
 func TestNetworkAvailability_Issue934_NoBounds_EnforceTrue_AboveTip_Allowed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -383,12 +385,13 @@ func TestNetworkAvailability_Issue934_NoBounds_EnforceTrue_AboveTip_Allowed(t *t
 		"an upstream with no configured bounds must not be head-gated, even with enforceBlockAvailability:true (issue #934)")
 }
 
-// (2) An explicit upper cap (latestBlockMinus:5) is a real structural bound: a block
-// above the cap but still at/below the live head must be rejected (non-retryable,
-// since waiting will not help), while a block at/below the cap is served.
+// (2) An explicit upper cap is a real structural bound: a block above the cap is
+// skipped and a block at/below it is served. A latestBlockMinus cap moves with the
+// head, so a block 3 above it is servable 3 blocks later (retryable); an exactBlock
+// cap never moves, so the same skip is final.
 func TestNetworkAvailability_Issue934_ExplicitUpperCap_BelowHead_Enforced(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -402,12 +405,12 @@ func TestNetworkAvailability_Issue934_ExplicitUpperCap_BelowHead_Enforced(t *tes
 		}, nil,
 	)
 
-	// tip-2 (0x11118886) is above the cap (tip-5) but at/below the head → reject, not retryable.
+	// tip-2 (0x11118886) is above the cap (tip-5): skipped, reopens as the head advances.
 	above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
 	skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
 	require.Error(t, skipErr, "block above the configured upper cap must be skipped")
 	require.True(t, common.HasErrorCode(skipErr, common.ErrCodeUpstreamBlockUnavailable))
-	require.False(t, retryable, "above the cap but not ahead of the live head → not retryable")
+	require.True(t, retryable, "a moving cap 3 below the block reaches it within MaxRetryableBlockDistance")
 
 	// tip-8 (0x11118880) is at/below the cap → served.
 	below := balanceReqAt(network, "0x11118880", issue934MockTip-8)
@@ -415,12 +418,34 @@ func TestNetworkAvailability_Issue934_ExplicitUpperCap_BelowHead_Enforced(t *tes
 	require.NoError(t, skipErr2, "block within the configured upper cap must be served")
 }
 
+func TestNetworkAvailability_Issue934_ExactUpperCap_NeverRetryable(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	network, ups := setupDirectAvailabilityNetwork(t, ctx,
+		&common.EvmUpstreamConfig{
+			BlockAvailability: &common.EvmBlockAvailabilityConfig{
+				Upper: &common.EvmAvailabilityBoundConfig{ExactBlock: i64(issue934MockTip - 5)},
+			},
+		}, nil,
+	)
+
+	above := balanceReqAt(network, "0x11118886", issue934MockTip-2)
+	skipErr, retryable := network.checkUpstreamBlockAvailability(ctx, ups, above, "eth_getBalance")
+	require.Error(t, skipErr)
+	require.False(t, retryable, "a fixed cap never reaches the block, so waiting cannot help")
+}
+
 // (3) The migration path / opt-in head gating: blockAvailability.upper.latestBlockMinus:0
 // reproduces the old "serve only blocks the node has actually synced" behavior. At the
 // head is allowed; one block ahead is a retryable skip; far ahead is non-retryable.
 func TestNetworkAvailability_Issue934_UpperLatestMinusZero_OptInHeadGating(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -457,7 +482,7 @@ func TestNetworkAvailability_Issue934_UpperLatestMinusZero_OptInHeadGating(t *te
 // that disables bound enforcement even on an upstream that has bounds configured.
 func TestNetworkAvailability_Issue934_MethodLevelEnforceFalse_DisablesBounds(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -494,7 +519,7 @@ func TestNetworkAvailability_Issue934_MethodLevelEnforceFalse_DisablesBounds(t *
 // lower-only.
 func TestNetworkAvailability_Issue934_Window_AboveTipWithinWindow_Allowed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -522,7 +547,7 @@ func TestNetworkAvailability_Issue934_Window_AboveTipWithinWindow_Allowed(t *tes
 // this path must defer to the hook (return no skip).
 func TestNetworkAvailability_Issue934_RangeMethod_DeferredToHook(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -586,7 +611,7 @@ func mockIssue934Node(endpoint, chainIDHex, staleTipHex, finalizedHex, freshBloc
 // rather than rejected with ErrUpstreamBlockUnavailable.
 func TestNetworkAvailability_Issue934_ExactConfigFromYAML_ServesFreshBlock(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -665,6 +690,7 @@ projects:
 
 	ntwCfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: chainID}}
 	network, err := NewNetwork(ctx, &log.Logger, "my-chain", ntwCfg, rlr, upr, mt, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 	require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(chainID)))
 	require.NoError(t, network.Bootstrap(ctx))
@@ -706,13 +732,12 @@ projects:
 // maps), so block-availability gating fails open and the request is forwarded — i.e. it
 // is never constrained by the state poller. This test grounds both in reality.
 //
-// Note: eRPC does not provide the newHeads websocket subscription itself (the ws upstream
-// client is unimplemented and the server is request/response only), so — as in the issue
-// — the client subscribes to newHeads directly on a node and uses eRPC for the follow-up
-// JSON-RPC calls.
+// Note: as in the issue, the client subscribes to newHeads directly on a node and uses
+// eRPC only for the follow-up JSON-RPC calls; eRPC's own WebSocket server and
+// eth_subscribe are not part of this flow.
 func TestNetworkAvailability_Issue934_ArcSyncFlow_CustomMethodAndFreshBlock(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

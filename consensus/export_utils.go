@@ -70,13 +70,21 @@ func sanitizeForFilename(s string) string {
 
 // resolveFilePattern resolves placeholders in the file pattern.
 // Supported placeholders:
-// - {dateByHour}: formatted as 2006-01-02-15
-// - {dateByDay}: formatted as 2006-01-02
-// - {method}: the RPC method name
-// - {networkId}: the network ID with : replaced by _
-// - {instanceId}: unique instance identifier
-func resolveFilePattern(pattern string, method string, networkId string, timestamp time.Time) string {
+//   - {dateByHour}: formatted as 2006-01-02-15
+//   - {dateByDay}: formatted as 2006-01-02
+//   - {method}: the RPC method name
+//   - {networkId}: the network ID with : replaced by _
+//   - {instanceId}: unique instance identifier
+//   - {timestampMs}: UTC unix milliseconds
+//   - {policy}: injective hex encoding of the consensus policy name via
+//     common.ConsensusPolicyObjectKeyComponent (required when multiple policies
+//     share a destination — sanitizeForFilename alone is non-injective, e.g.
+//     "a/b" and "a_b")
+func resolveFilePattern(pattern string, method string, networkId string, timestamp time.Time, policyName string) string {
 	// No defaulting here; defaults are applied during config SetDefaults
+	if policyName == "" {
+		policyName = defaultPolicyName
+	}
 
 	replacements := map[string]string{
 		"{dateByHour}":  timestamp.UTC().Format("2006-01-02-15"),
@@ -85,12 +93,19 @@ func resolveFilePattern(pattern string, method string, networkId string, timesta
 		"{networkId}":   sanitizeForFilename(networkId),
 		"{instanceId}":  getInstanceID(),
 		"{timestampMs}": fmt.Sprintf("%d", timestamp.UTC().UnixMilli()),
+		"{policy}":      common.ConsensusPolicyObjectKeyComponent(policyName),
 	}
 
-	result := pattern
+	// One-pass replacement so a substituted value is never scanned again: an
+	// open-ended value that itself looks like a placeholder (e.g. method
+	// "{policy}") must not be re-replaced by a later pass (Copilot finding:
+	// multi-pass map iteration made names nondeterministic). strings.Replacer
+	// scans the input once, left to right, and never re-reads its own output.
+	pairs := make([]string, 0, len(replacements)*2)
 	for placeholder, value := range replacements {
-		result = strings.ReplaceAll(result, placeholder, value)
+		pairs = append(pairs, placeholder, value)
 	}
+	result := strings.NewReplacer(pairs...).Replace(pattern)
 
 	if !strings.HasSuffix(result, ".ndjson") && !strings.HasSuffix(result, ".jsonl") {
 		result += ".jsonl"
@@ -100,9 +115,9 @@ func resolveFilePattern(pattern string, method string, networkId string, timesta
 }
 
 // resolveFilePatternWithDefaults uses different defaults based on destination type
-func resolveFilePatternWithDefaults(cfg *common.MisbehaviorsDestinationConfig, method string, networkId string, timestamp time.Time) string {
+func resolveFilePatternWithDefaults(cfg *common.MisbehaviorsDestinationConfig, method string, networkId string, timestamp time.Time, policyName string) string {
 	pattern := cfg.FilePattern
-	return resolveFilePattern(pattern, method, networkId, timestamp)
+	return resolveFilePattern(pattern, method, networkId, timestamp, policyName)
 }
 
 // parseS3Path parses an S3 URI into bucket and key prefix

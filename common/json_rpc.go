@@ -1216,6 +1216,21 @@ type JsonRpcRequest struct {
 	// UnmarshalJSON. Empty when the request was constructed programmatically.
 	idRaw []byte
 
+	// idAbsent records that the request had no "id" member: a notification
+	// (JSON-RPC 2.0 §4.1). "id": null is a request, not a notification.
+	idAbsent bool
+
+	// idInvalid records that the "id" member was neither a string, a number,
+	// nor null (JSON-RPC 2.0 §4). Validate rejects such a request before it
+	// is routed, and its error reply carries a null id: the id it gave cannot
+	// be echoed.
+	idInvalid bool
+
+	// idNullReply makes error replies carry a null id. An architecture sets
+	// it when its nodes cannot read the id the client gave and answer null
+	// for it (a Solana node and a negative id).
+	idNullReply bool
+
 	// networkId holds the optional top-level "networkId" member, the body-side
 	// equivalent of the /<architecture>/<chainId> path segments. It is captured
 	// by the envelope parse so routing reads it from the same result as
@@ -1223,7 +1238,54 @@ type JsonRpcRequest struct {
 	// upstream: the outbound body is rebuilt from the four JSON-RPC members.
 	networkId string
 
+	// paramsLiteral keeps the verbatim "params" bytes, but only when the body
+	// holds a number whose literal form the float64 decode of Params loses: a
+	// fraction or exponent (470000000.0 decodes like 470000000), a minus sign,
+	// or more than 15 digits. It is the request as the client sent it; params
+	// rewrites never update it.
+	paramsLiteral []byte
+
 	cacheHash atomic.Value
+}
+
+// ParamsLiteral returns the "params" bytes as the client sent them when a
+// number there lost its literal form in the float64 decode of Params, else
+// nil. An architecture whose nodes tell 5 from 5.0, or need integers above
+// 2^53 exactly, decodes these bytes instead of reading Params.
+func (r *JsonRpcRequest) ParamsLiteral() []byte {
+	if r == nil {
+		return nil
+	}
+	return r.paramsLiteral
+}
+
+// hasLossyNumber reports whether data holds a JSON number that a float64
+// decode does not carry literally: one with a fraction, an exponent or a minus
+// sign, or with more than 15 digits. It scans bytes only, so the common
+// request pays no allocation.
+func hasLossyNumber(data []byte) bool {
+	for i := 0; i < len(data); i++ {
+		switch c := data[i]; {
+		case c == '"':
+			for i++; i < len(data) && data[i] != '"'; i++ {
+				if data[i] == '\\' {
+					i++
+				}
+			}
+		case c == '-':
+			return true
+		case c >= '0' && c <= '9':
+			j := i
+			for j < len(data) && data[j] >= '0' && data[j] <= '9' {
+				j++
+			}
+			if j-i > 15 || (j < len(data) && (data[j] == '.' || data[j] == 'e' || data[j] == 'E')) {
+				return true
+			}
+			i = j - 1
+		}
+	}
+	return false
 }
 
 // NetworkIdHint returns the "networkId" member carried in the request body, or
@@ -1288,6 +1350,14 @@ func (r *JsonRpcRequest) RLockWithTrace(ctx context.Context) {
 	r.RLock()
 }
 
+// IsNotification reports whether the request had no "id" member, making it
+// a JSON-RPC 2.0 notification that must not be answered.
+func (r *JsonRpcRequest) IsNotification() bool {
+	r.RLock()
+	defer r.RUnlock()
+	return r.idAbsent
+}
+
 func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	r.RLock()
 	defer r.RUnlock()
@@ -1302,10 +1372,14 @@ func (r *JsonRpcRequest) Clone() *JsonRpcRequest {
 	}
 
 	clone := &JsonRpcRequest{
-		JSONRPC: r.JSONRPC,
-		ID:      r.ID,
-		Method:  r.Method,
-		Params:  clonedParams,
+		JSONRPC:       r.JSONRPC,
+		ID:            r.ID,
+		Method:        r.Method,
+		Params:        clonedParams,
+		idAbsent:      r.idAbsent,
+		idInvalid:     r.idInvalid,
+		idNullReply:   r.idNullReply,
+		paramsLiteral: r.paramsLiteral,
 	}
 	// Carry idRaw forward so the cloned request still round-trips its id
 	// byte-for-byte through normalizeResponse. Without this, the clone falls
@@ -1357,8 +1431,8 @@ func (r *JsonRpcRequest) SetID(id interface{}) error {
 }
 
 // IDRawBytes returns a copy of the verbatim id bytes as received over the
-// wire, or nil if the request was constructed programmatically (e.g. via
-// NewJsonRpcRequest) or the request id was the literal `null`. Used by the
+// wire, `null` included, or nil if the request was constructed
+// programmatically (e.g. via NewJsonRpcRequest) or carried no id. Used by the
 // response path to round-trip the id back to the client without precision
 // loss for large integers or fractional ids.
 func (r *JsonRpcRequest) IDRawBytes() []byte {
@@ -1370,6 +1444,36 @@ func (r *JsonRpcRequest) IDRawBytes() []byte {
 	out := make([]byte, len(r.idRaw))
 	copy(out, r.idRaw)
 	return out
+}
+
+// ResponseID is the id an error response built outside the upstream path must
+// carry: the client's verbatim id bytes when the wire had them, else the typed
+// id. A `null` id answers `null` only when echoNull is set (Solana, as Agave
+// does); otherwise it answers the random id the request was given for
+// upstreams, which is what EVM clients have always received. An id that is not
+// a JSON-RPC id (a bool, object, or array) answers `null` (JSON-RPC 2.0 §5),
+// and so does an id marked by AnswerIDAsNull.
+func (r *JsonRpcRequest) ResponseID(echoNull bool) interface{} {
+	r.RLock()
+	nullID := r.idInvalid || r.idNullReply
+	r.RUnlock()
+	if nullID {
+		return nil
+	}
+	if raw := r.IDRawBytes(); raw != nil && (echoNull || string(raw) != "null") {
+		return json.RawMessage(raw)
+	}
+	r.RLock()
+	defer r.RUnlock()
+	return r.ID
+}
+
+// AnswerIDAsNull makes error replies to this request carry `"id": null`, as a
+// node does for an id it cannot read.
+func (r *JsonRpcRequest) AnswerIDAsNull() {
+	r.Lock()
+	r.idNullReply = true
+	r.Unlock()
 }
 
 // UnmarshalJSON is the one place a raw request body becomes a JsonRpcRequest.
@@ -1391,8 +1495,26 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}
 	aux.JSONRPC = "2.0"
 
-	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
-		return err
+	if err := SonicCfg.Unmarshal(data, aux); err != nil {
+		// MIP-16 answers eth_query* params that are not an array with
+		// -32602, not a parse error: decode the envelope again with the
+		// params left raw and drop them, so the query parser rejects the
+		// request with the right code.
+		raw := &struct {
+			JSONRPC   string          `json:"jsonrpc,omitempty"`
+			ID        json.RawMessage `json:"id,omitempty"`
+			Method    uniqueString    `json:"method"`
+			Params    json.RawMessage `json:"params"`
+			NetworkID interface{}     `json:"networkId,omitempty"`
+		}{Method: uniqueString{member: "method"}}
+		if SonicCfg.Unmarshal(data, raw) != nil || !strings.HasPrefix(strings.ToLower(raw.Method.value), "eth_query") {
+			return err
+		}
+		if raw.JSONRPC != "" {
+			r.JSONRPC = raw.JSONRPC
+		}
+		r.Params = nil
+		aux.ID, aux.Method, aux.NetworkID = raw.ID, raw.Method, raw.NetworkID
 	}
 
 	// Absent and present-but-empty stay distinct on the wire: an object with
@@ -1403,19 +1525,36 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}
 	r.Method = aux.Method.value
 	r.networkId, _ = aux.NetworkID.(string)
+	r.idAbsent = aux.ID == nil
+	if r.Params != nil && hasLossyNumber(data) {
+		lit := &struct {
+			Params json.RawMessage `json:"params"`
+		}{}
+		if SonicCfg.Unmarshal(data, lit) == nil {
+			r.paramsLiteral = lit.Params
+		}
+	}
 
 	if aux.ID != nil {
 		var id interface{}
 		if err := SonicCfg.Unmarshal(aux.ID, &id); err != nil {
 			return err
 		}
-		// Preserve verbatim id bytes for non-null ids so the response can
-		// echo them back without precision loss. Skip the literal `null`
-		// case so the existing random-id fallback below still applies.
-		if id != nil {
-			r.idRaw = make([]byte, len(aux.ID))
-			copy(r.idRaw, aux.ID)
+		switch id.(type) {
+		case float64, string, nil:
+		default:
+			// A bool, object, or array id is not a JSON-RPC id. The request
+			// still parses so Validate can answer it as an Invalid Request
+			// on its own, without failing the rest of a batch.
+			r.idInvalid = true
+			r.ID = util.RandomID()
+			return nil
 		}
+		// Preserve the verbatim id bytes, `null` included, so the response
+		// echoes exactly what the client sent. The typed ID below still gets a
+		// random value for a null id, because upstreams need a non-null id.
+		r.idRaw = make([]byte, len(aux.ID))
+		copy(r.idRaw, aux.ID)
 		switch v := id.(type) {
 		case float64:
 			// Sonic decodes every JSON number as float64, which cannot hold
@@ -1426,8 +1565,17 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			// onto the same internal id. idRaw still preserves the original
 			// bytes for the client echo, but this typed ID feeds the upstream
 			// request body and internal identity, so it must not be corrupted.
-			idInt, err := strconv.ParseInt(util.B2Str(bytes.TrimSpace(aux.ID)), 10, 64)
+			idText := util.B2Str(bytes.TrimSpace(aux.ID))
+			idInt, err := strconv.ParseInt(idText, 10, 64)
 			if err != nil {
+				// An integer above the int64 range, up to the u64 maximum
+				// (the id range of a Solana node), is echoed from idRaw. The
+				// typed ID only names the request upstream, so it gets a
+				// random value, as a null id does.
+				if _, uerr := strconv.ParseUint(idText, 10, 64); uerr == nil {
+					r.ID = util.RandomID()
+					return nil
+				}
 				return fmt.Errorf("json-rpc request id %s cannot be represented as a 64-bit integer", aux.ID)
 			}
 			r.ID = idInt
@@ -1861,6 +2009,20 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// The client can free a slot by unsubscribing; -32603 would read as a server fault.
+	if HasErrorCode(err, ErrCodeSubscriptionLimitExceeded) {
+		reason := "subscription limit exceeded"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorCapacityExceeded,
+			reason,
+			err,
+			nil,
+		)
+	}
 	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
 		var reason string
 		if se, ok := err.(StandardError); ok {
@@ -1872,6 +2034,31 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorUnsupportedException,
 			"method ignored by upstream: "+reason,
+			err,
+			nil,
+		)
+	}
+	// geth answers an unknown eth_unsubscribe id with its generic -32000.
+	if HasErrorCode(err, ErrCodeSubscriptionNotFound) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorCallException,
+			"subscription not found",
+			err,
+			nil,
+		)
+	}
+	// geth answers a subscription it cannot serve with -32601; -32603 would
+	// read as a server fault worth retrying.
+	if HasErrorCode(err, ErrCodeNoSubscriptionSource) {
+		reason := "no subscription source"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnsupportedException,
+			reason,
 			err,
 			nil,
 		)
@@ -1911,6 +2098,21 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
+	// JSON-RPC 2.0 "Invalid Request": the envelope itself is refused before
+	// any of it runs, so the message names the limit the client crossed.
+	if HasErrorCode(err, ErrCodeClientBatchTooLarge, ErrCodeRequestBodyTooLarge) {
+		msg := "request too large"
+		if se, ok := err.(StandardError); ok {
+			msg = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorClientSideException,
+			msg,
+			err,
+			nil,
+		)
+	}
 	if HasErrorCode(err, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
@@ -1925,6 +2127,26 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorEvmLargeRange,
 			"getLogs request exceeded max allowed range",
+			err,
+			nil,
+		)
+	}
+	// A method eRPC declines to serve (filter lifecycle methods under a
+	// multi-upstream pool, eth_accounts/eth_sign, subscriptions over HTTP) is
+	// "method not supported", not an internal fault. Without this it falls
+	// through to -32603, which clients read as a transient server error: ethers
+	// only downgrades filters to polling when the error classifies as
+	// UNSUPPORTED_OPERATION (code -32601 / a "not found|supported" message), so a
+	// -32603 leaves it re-arming the same call on every block forever.
+	if HasErrorCode(err, ErrCodeNotImplemented) {
+		reason := "method not supported"
+		if se, ok := err.(StandardError); ok {
+			reason = se.DeepestMessage()
+		}
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnsupportedException,
+			reason,
 			err,
 			nil,
 		)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 )
 
@@ -32,6 +33,14 @@ import (
 // (default 32) is the real bound, this is a guard for misconfigured windows.
 const absentBlockScanCap = 512
 
+// GetLogsEmptyGate is the logs gate's check id (chain tracker spec §6.4
+// logs gate): an upstream's empty eth_getLogs answer for blocks near the
+// head, which the held headers do not prove empty, is confirmed by another
+// upstream that holds the block before it is served. The network's request
+// path runs it, never the engine, so it registers no method: with it off,
+// such an answer is served as it came, and the gate sends nothing.
+const GetLogsEmptyGate = "getLogsEmptyGate"
+
 func init() {
 	register(&Check{
 		ID: "getLogsFilterSanity", Family: FamilyStructural, Class: Deterministic,
@@ -47,7 +56,7 @@ func init() {
 				if l.Removed {
 					continue // reorg-removed marker, not a filter member
 				}
-				if !f.Matches(l) {
+				if !f.Matches(l.Address, l.Topics) {
 					return failf("log %s (block %s, logIndex %s) does not match the request filter", l.TransactionHash, l.BlockNumber, l.LogIndex)
 				}
 				if f.BlockHash != "" && l.BlockHash != "" && !eqHex(l.BlockHash, f.BlockHash) {
@@ -64,7 +73,7 @@ func init() {
 	})
 
 	register(&Check{
-		ID: "getLogsCompleteness", Family: FamilyStructural, Class: ReorgSensitive,
+		ID: "getLogsCompleteness", Family: FamilyStructural, Class: ReorgSensitive, History: true,
 		Methods: []string{MethodGetLogs},
 		// An empty [] response is the everything-dropped shape — the absent-block
 		// sweep below is exactly the check for it, so opt into emptyish responses
@@ -158,7 +167,7 @@ func init() {
 				missing := 0
 				for i := range expected {
 					for j := range expected[i].Logs {
-						if !expected[i].Logs[j].Removed && f.Matches(&expected[i].Logs[j]) {
+						if l := &expected[i].Logs[j]; !l.Removed && f.Matches(l.Address, l.Topics) {
 							missing++
 						}
 					}
@@ -171,6 +180,8 @@ func init() {
 			return done()
 		},
 	})
+
+	register(&Check{ID: GetLogsEmptyGate, Family: FamilyStructural, Class: ReorgSensitive})
 }
 
 // compareBlockLogs cross-references one block's response logs against the
@@ -178,12 +189,12 @@ func init() {
 // block hash): the filter applied to the canonical logs must yield exactly the
 // response's set, with identical content per logIndex. Returns Skipped when
 // the data is not comparable (malformed indexes) — never rejects on our own data.
-func compareBlockLogs(f *LogsFilter, blockHash string, canonical []Receipt, got []*Log) *Violation {
+func compareBlockLogs(f *logfilter.LogsFilter, blockHash string, canonical []Receipt, got []*Log) *Violation {
 	expected := map[int64]*Log{}
 	for i := range canonical {
 		for j := range canonical[i].Logs {
 			l := &canonical[i].Logs[j]
-			if l.Removed || !f.Matches(l) {
+			if l.Removed || !f.Matches(l.Address, l.Topics) {
 				continue
 			}
 			idx, err := common.HexToInt64(l.LogIndex)

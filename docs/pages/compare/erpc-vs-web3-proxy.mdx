@@ -1,0 +1,88 @@
+---
+title: eRPC vs web3-proxy
+description: eRPC vs web3-proxy (llamanodes) feature by feature, with a source link in every cell, and where web3-proxy is the better fit.
+---
+
+import { LLMsTxtLink, AISection } from "../../components";
+
+<LLMsTxtLink />
+
+# eRPC vs web3-proxy
+
+[web3-proxy](https://github.com/llamanodes/web3-proxy) is the Rust proxy that ran LlamaNodes' public RPC.
+It ships a full RPC-as-a-service layer: wallet login, keys, tiers and compute-unit billing.
+eRPC is an EVM and Solana JSON-RPC proxy built around failover, a finality-aware cache, and cost control.
+Every cell below links to the page or line that states it. Facts were checked on 2026-10-22.
+
+## Feature table
+
+| | eRPC | web3-proxy |
+|---|---|---|
+| Language, license | Go, Apache-2.0 ([LICENSE](https://github.com/erpc/erpc/blob/32a8a1e450c6ab5a78477859c85221b6a9058c72/LICENSE#L1)) | Rust, GPL-3.0 ([LICENSE](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/LICENSE#L1-L2)) |
+| Latest release | 0.4.0, 2026-10-11 ([release](https://github.com/erpc/erpc/releases/tag/0.4.0)) | No GitHub releases; last tag v1.43.99, 2023-12-03 ([tags](https://github.com/llamanodes/web3-proxy/tags)) |
+| Last commit | 2026-10-22 ([commits](https://github.com/erpc/erpc/commits/main)) | 2023-12-05 ([commit](https://github.com/llamanodes/web3-proxy/commit/f4a71ee0b621c461828956436f6d55372228ec18)) |
+| Chains | EVM and Solana, many chains per process ([networks](/config/projects/networks)) | EVM, one `chain_id` per process ([example.toml](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/config/example.toml#L1-L2)) |
+| Config | YAML or TypeScript ([quick start](/)) | TOML ([example.toml](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/config/example.toml)) |
+| Upstream selection | Score from errors, latency, 429s, block lag ([selection policies](/config/projects/selection-policies)) | Synced head, latency tiers, peak-EWMA load ([one.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/rpcs/one.rs#L270-L365)) |
+| Failover and retry | Yes, per method ([retry](/config/failsafe/retry)) | Next ranked upstream on error ([consensus.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/rpcs/consensus.rs#L947-L1013)) |
+| Hedged requests | Yes ([hedge](/config/failsafe/hedge)) | No; "fastest" mode is `todo!()` ([many.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/rpcs/many.rs#L583-L590)) |
+| Circuit breaker | Yes ([circuit breaker](/config/failsafe/circuit-breaker)) | Not found in source ([src](https://github.com/llamanodes/web3-proxy/tree/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src)) |
+| Cross-checking answers | Consensus across N upstreams ([consensus](/config/failsafe/consensus)) | Head-block agreement only; response quorum is `todo!()` ([many.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/rpcs/many.rs#L588)) |
+| Cache | Memory, Redis, PostgreSQL, DynamoDB; finality-aware ([drivers](/config/database/drivers), [cache](/config/database/evm-json-rpc-cache)) | In-memory; keys include block hash ([app/mod.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/app/mod.rs#L411-L416), [block_number.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/block_number.rs#L353-L369)) |
+| Rate limits | Per client, project, network, upstream ([rate limiters](/config/rate-limiters)) | Per upstream soft/hard limits; per IP and per key tier ([config.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/config.rs#L398-L428), [authorization.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/frontend/authorization.rs#L680-L720)) |
+| Client auth | Secret, JWT, SIWE, IP, database ([auth](/config/auth)) | RPC keys, SIWE login, IP/origin/referer allowlists ([authentication.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/frontend/users/authentication.rs#L78-L130)) |
+| Billing | No; cost headers for an external meter ([directives](/operation/directives)) | Yes: compute units, balances, deposits, Stripe ([compute_units.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/compute_units.rs#L14-L80)) |
+| `eth_getLogs` splitting | Yes ([getLogs splitting](/reference/evm/getlogs-splitting)) | No; ranges over 200,000 blocks rejected ([block_number.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/block_number.rs#L438-L452)) |
+| JSON-RPC batch | Yes ([batch](/operation/batch)) | Yes ([app/mod.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/app/mod.rs#L1011-L1017)) |
+| `eth_subscribe` | newHeads, logs, newPendingTransactions ([websocket](/operation/websocket)) | newHeads, newPendingTransactions ([ws.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/app/ws.rs#L41-L252)) |
+| Metrics, tracing | Prometheus, OpenTelemetry ([monitoring](/operation/monitoring), [tracing](/operation/tracing)) | Prometheus, InfluxDB stats, Sentry ([prometheus.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/prometheus.rs#L15-L44), [Cargo.toml](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/Cargo.toml#L76-L80)) |
+| Archive routing | Block availability per upstream ([upstreams](/config/projects/upstreams)) | Probes each upstream's history depth automatically ([one.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/rpcs/one.rs#L368-L490)) |
+| Deployment | Binaries, Docker, Kubernetes manifests, `npx start-erpc` ([docker](/deployment/docker), [kubernetes](/deployment/kubernetes)) | Build with cargo or the Dockerfile ([Dockerfile](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/Dockerfile#L204-L216)) |
+
+"Not found in source" means a search of the web3-proxy source found no code for it.
+
+## Where web3-proxy is stronger
+
+- **RPC-as-a-service built in.** Users, sub-users, tiers, compute-unit pricing, on-chain deposits and Stripe ([compute_units.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/compute_units.rs#L14-L80)). eRPC has no billing.
+- **Private transaction routing.** `eth_sendRawTransaction` goes to `private_rpcs` such as Flashbots ([app/mod.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/app/mod.rs#L1101-L1185)).
+- **ERC-4337 bundler routing** to a separate upstream pool ([app/mod.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/app/mod.rs#L1468-L1477)).
+- **Automatic archive-depth probing** per upstream, with no config ([one.rs](https://github.com/llamanodes/web3-proxy/blob/f4a71ee0b621c461828956436f6d55372228ec18/web3_proxy/src/rpcs/one.rs#L368-L450)).
+
+## Where eRPC is stronger
+
+- Active releases; web3-proxy has had no commit since December 2023.
+- Hedging, circuit breaker and response consensus ([failsafe](/config/failsafe)).
+- Shared, finality-aware cache on Redis, PostgreSQL or DynamoDB ([cache](/config/database/evm-json-rpc-cache)).
+- `eth_getLogs` range splitting instead of a range cap ([getLogs splitting](/reference/evm/getlogs-splitting)).
+- Many chains, EVM and Solana, in one process ([networks](/config/projects/networks)).
+
+<AISection title="eRPC vs web3-proxy — agent reference">
+
+### Sources and snapshot
+
+- eRPC: `erpc/erpc` at `32a8a1e450c6ab5a78477859c85221b6a9058c72`, docs at docs.erpc.cloud.
+- web3-proxy: `llamanodes/web3-proxy` `main` at `f4a71ee0b621c461828956436f6d55372228ec18` (2023-12-05). The repo is not archived.
+- Checked 2026-10-22. "Not found in source" and "No" for hedging, circuit breaker and OpenTelemetry rest on a source search and the `todo!()` branches cited. The code was not run.
+
+### Moving from web3-proxy to eRPC
+
+| web3-proxy concept | eRPC equivalent |
+|---|---|
+| one process per `chain_id` | one process, many `networks[]` ([networks](/config/projects/networks)) |
+| `balanced_rpcs` | `projects[].upstreams[]` ([upstreams](/config/projects/upstreams)) |
+| `backup = true` upstream | fallback tier in a selection policy ([selection policies](/config/projects/selection-policies)) |
+| `soft_limit` / `hard_limit` | upstream rate-limit budget ([rate limiters](/config/rate-limiters)) |
+| RPC keys in the URL | `secret` or `database` auth ([auth](/config/auth)) |
+| in-memory response cache | `database.evmJsonRpcCache` ([cache](/config/database/evm-json-rpc-cache)) |
+
+### Keep web3-proxy when
+
+- You need its built-in billing and user accounts and accept an unmaintained codebase.
+
+### Related pages
+
+- [Why eRPC?](/why)
+- [eRPC vs dshackle](/compare/erpc-vs-dshackle)
+- [eRPC vs dRPC NodeCore](/compare/erpc-vs-drpc-nodecore)
+
+</AISection>

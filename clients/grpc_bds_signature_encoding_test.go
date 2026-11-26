@@ -13,6 +13,8 @@ import (
 // transaction r/s per its armed chain: QUANTITY (minimal hex) everywhere,
 // 32-byte DATA on Tron. go-ethereum rejects the padded form on non-Tron
 // chains, so a regression here breaks every eth_getTransactionByHash consumer.
+// The transaction is also node-shaped: a legacy, pre-EIP-155 one carries no
+// receipt figures, no access list, no chainId and no null fields.
 func TestSendRequest_SignatureEncodingFollowsChain(t *testing.T) {
 	const tronMainnet uint64 = 728126428
 	cases := []struct {
@@ -44,6 +46,10 @@ func TestSendRequest_SignatureEncodingFollowsChain(t *testing.T) {
 			require.NoError(t, sonic.Unmarshal([]byte(jrr.GetResultString()), &tx))
 			require.Equal(t, tc.r, tx["r"])
 			require.Equal(t, tc.s, tx["s"])
+			for _, absent := range []string{"gasUsed", "effectiveGasPrice", "accessList", "chainId", "yParity", "l1Fee"} {
+				require.NotContains(t, tx, absent)
+			}
+			require.Equal(t, "0x1b", tx["v"])
 		})
 	}
 }

@@ -3,9 +3,11 @@ package erpc
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,6 +20,8 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/net/http2"
 )
 
 var mainMutex sync.Mutex
@@ -175,6 +179,132 @@ func TestInit_InvalidHttpPort(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for Init to return an error")
+	}
+}
+
+// After SIGTERM, Init must not return (main exits right after it) while the
+// HTTP server is still draining requests that were in flight when the drain
+// began, even when waitAfterShutdown is far shorter than that drain. Both an
+// HTTP/1.1 and a cleartext HTTP/2 request are held open across the shutdown,
+// so the drain Init waits for has to cover both kinds of connection.
+func TestInit_WaitsForHttpDrainBeforeReturning(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
+	defer gock.Off()
+	defer gock.DisableNetworking()
+	defer gock.Clean()
+	defer gock.CleanUnmatchedRequest()
+
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		host := strings.Split(req.URL.Host, ":")[0]
+		return host == "localhost" || host == "127.0.0.1"
+	})
+	util.SetupMocksForEvmStatePoller()
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := probe.Addr().(*net.TCPAddr).Port
+	require.NoError(t, probe.Close())
+
+	cfg := h2cTestConfig()
+	cfg.Server.HttpPortV4 = &port
+	cfg.Server.WaitBeforeShutdown = common.Duration(50 * time.Millisecond).Ptr()
+	cfg.Server.WaitAfterShutdown = common.Duration(10 * time.Millisecond).Ptr()
+
+	appCtx, sigterm := context.WithCancel(context.Background())
+	defer sigterm()
+	initDone := make(chan error, 1)
+	go func() { initDone <- Init(appCtx, cfg, log.Logger) }()
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	require.Eventually(t, func() bool {
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		c.Close()
+		return true
+	}, 10*time.Second, 20*time.Millisecond, "http server never started listening")
+
+	h1 := &http.Transport{}
+	defer h1.CloseIdleConnections()
+	h2c := &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+	}
+	defer h2c.CloseIdleConnections()
+
+	// Each request's body arrives in two halves, so its handler stays blocked on
+	// the read until the test releases the second half.
+	const reqBody = `{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`
+	type result struct {
+		proto  int
+		status int
+		body   string
+		err    error
+	}
+	type held struct {
+		name   string
+		bodyW  *io.PipeWriter
+		result chan result
+	}
+	hold := func(name string, rt http.RoundTripper) held {
+		bodyR, bodyW := io.Pipe()
+		req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/main/evm/123", bodyR)
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		h := held{name: name, bodyW: bodyW, result: make(chan result, 1)}
+		go func() {
+			resp, err := rt.RoundTrip(req)
+			if err != nil {
+				h.result <- result{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			h.result <- result{proto: resp.ProtoMajor, status: resp.StatusCode, body: string(body), err: err}
+		}()
+		_, err = bodyW.Write([]byte(reqBody[:20]))
+		require.NoError(t, err)
+		return h
+	}
+	inFlight := []held{hold("http/1.1", h1), hold("h2c", h2c)}
+	time.Sleep(200 * time.Millisecond)
+
+	sigterm()
+
+	// waitBeforeShutdown + waitAfterShutdown is 60ms; the requests are held far
+	// longer, so returning here means Init did not wait for the drain.
+	select {
+	case err := <-initDone:
+		t.Fatalf("Init returned (err=%v) while requests were still in flight on the draining server", err)
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	for i, h := range inFlight {
+		_, err := h.bodyW.Write([]byte(reqBody[20:]))
+		require.NoError(t, err, h.name)
+		require.NoError(t, h.bodyW.Close(), h.name)
+		select {
+		case r := <-h.result:
+			require.NoError(t, r.err, "%s request in flight at SIGTERM must complete", h.name)
+			require.Equal(t, i+1, r.proto, h.name)
+			require.Equal(t, http.StatusOK, r.status, h.name)
+			require.Contains(t, r.body, `"result":"0x7b"`, h.name)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s request in flight at SIGTERM never completed", h.name)
+		}
+	}
+
+	select {
+	case err := <-initDone:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Init did not return after the drain completed")
 	}
 }
 

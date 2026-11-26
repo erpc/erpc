@@ -62,6 +62,103 @@ export type ArchitectureHandler = any;
 // source: architecture_evm.go
 
 export const UpstreamTypeEvm: UpstreamType = "evm";
+/**
+ * HeadNeed is what a head Ask must produce (spec §6.8); the Ask's pace
+ * is the oldest evidence that meets it.
+ */
+export type HeadNeed = number /* uint8 */;
+/**
+ * HeadNeedNumber: a fresh number; a shared counter whose report is
+ * younger than the pace meets it.
+ */
+export const HeadNeedNumber: HeadNeed = 0;
+/**
+ * HeadNeedHash: a hash vote; only a local fetch sent within the pace
+ * meets it.
+ */
+export const HeadNeedHash: HeadNeed = 1;
+/**
+ * HeadNeedFork: a hash need whose answer is fresh evidence of the
+ * node's head, whatever its earlier votes say (spec §6.3 fork poll):
+ * only a fork fetch meets it, sent after the Ask at pace 0, else
+ * within the pace.
+ */
+export const HeadNeedFork: HeadNeed = 2;
+/**
+ * AskReason is a head Ask's caller, the reason label of
+ * erpc_head_ask_total (spec §6.8, §17).
+ */
+export type AskReason = string;
+/**
+ * AskClock: a lane's block clock (spec §6.8); every such fetch is a
+ * fire erpc_head_clock_total counts by kind.
+ */
+export const AskClock: AskReason = "clock";
+/**
+ * AskPoll: the latest part of an upstream's full poll, every
+ * statePollerInterval; a head the upstream pushed or a clock fetch
+ * within the interval meets it, within the interval plus a block, at
+ * most two intervals, while the clock has a turn of the upstream
+ * planned (ClockTurn).
+ */
+export const AskPoll: AskReason = "poll";
+export const AskRefusal: AskReason = "refusal";
+export const AskSettle: AskReason = "settle";
+/**
+ * AskOutcome is how a head Ask was met, the outcome label of
+ * erpc_head_ask_total (spec §17).
+ */
+export type AskOutcome = string;
+/**
+ * AskFetched: the Ask started a fetch.
+ */
+export const AskFetched: AskOutcome = "fetched";
+/**
+ * AskSharedFresh: the shared counter met a number need.
+ */
+export const AskSharedFresh: AskOutcome = "shared_fresh";
+/**
+ * AskInflight: a local fetch sent within the pace met it, in flight
+ * or answered.
+ */
+export const AskInflight: AskOutcome = "inflight";
+/**
+ * AskBackoff: the upstream backs off; nothing was fetched.
+ */
+export const AskBackoff: AskOutcome = "backoff";
+/**
+ * AskPushed: a head the upstream pushed within the pace met its
+ * poll's latest part; nothing was fetched.
+ */
+export const AskPushed: AskOutcome = "pushed";
+/**
+ * HeadAnswer is what a head Ask gives its caller: the fetch's one
+ * outcome, the same for every waiter.
+ */
+export interface HeadAnswer {
+  outcome: AskOutcome;
+  /**
+   * Block is the upstream's latest counter after the outcome.
+   */
+  block: number /* int64 */;
+  /**
+   * At is when the evidence that met the Ask was taken: the meeting
+   * fetch's send, or the shared counter's report; zero with no evidence
+   * (backoff, a fork fetch queued and not yet sent).
+   */
+  at: any /* time.Time */;
+  /**
+   * Next is when an Ask at the same pace may fetch again: the meeting
+   * fetch's send plus the pace or its backed-off cadence, the longer;
+   * zero when it may now.
+   */
+  next: any /* time.Time */;
+}
+/**
+ * EvmHeader is a latest header past intake check 0, parsed once where it
+ * was fetched: the evm package's SourceHeader.
+ */
+export type EvmHeader = any;
 export type EvmUpstream = 
     Upstream;
 /**
@@ -167,6 +264,15 @@ export const MaxShredInsertSlotLagThreshold: number /* int64 */ = 100;
  * so pre-multi-chain configs keep producing "svm:<cluster>" IDs.
  */
 export const SvmChainSolana = "solana";
+/**
+ * SvmHistory is the slots from which a cluster's Agave history records block
+ * fields. Below them Agave renders the field null whatever an archive holds;
+ * a nil bound means the cluster records the field from its first slot.
+ */
+export interface SvmHistory {
+  blocktimefrom?: number /* uint64 */;
+  blockheightfrom?: number /* uint64 */;
+}
 
 //////////
 // source: blocktime_adaptive_duration.go
@@ -198,6 +304,32 @@ export interface BlockTimeAdaptiveDuration {
 // source: cache_dal.go
 
 export type CacheDAL = any;
+/**
+ * CachePurgeScope describes which cache keys an admin purge should match.
+ * Suffix must come from network config (never from API params).
+ */
+export interface CachePurgeScope {
+  networkid: string;
+  suffix: string; // network cacheKeySuffix
+  method: string; // "" = all methods
+  blockref: string; // "" = all refs
+  dryrun: boolean;
+}
+/**
+ * CachePurgeResult is one connector's outcome from a purge (or dry-run).
+ */
+export interface CachePurgeResult {
+  connectorid: string;
+  driver: string;
+  matched: number /* int64 */;
+  deleted: number /* int64 */;
+  durationms: number /* int64 */;
+}
+/**
+ * CachePurger is an optional capability on a CacheDAL. Unsupported
+ * implementations must surface an error — never silently no-op.
+ */
+export type CachePurger = any;
 
 //////////
 // source: cache_mock.go
@@ -254,6 +386,13 @@ export interface ServerConfig {
   trustedIPHeaders?: string[];
   responseHeaders?: { [key: string]: string};
   /**
+   * MaxRequestBodySize caps one HTTP request body in bytes, counted after
+   * gzip decompression (0 = unlimited). An over-limit body gets HTTP 413
+   * and none of it runs.
+   */
+  maxRequestBodySize?: number /* int64 */;
+  webSocket?: WebSocketServerConfig;
+  /**
    * ExecutionHeaders controls the per-request diagnostic headers
    * (X-ERPC-Attempts, X-ERPC-Upstreams-Tried, etc.) that expose how
    * eRPC routed and resolved each request. Defaults to "all" — set
@@ -269,6 +408,40 @@ export interface ServerConfig {
    * CreditUnitsProvider and UpstreamConfig.CreditUnits.
    */
   costHeaders?: boolean;
+}
+export interface WebSocketServerConfig {
+  /**
+   * Enabled accepts WebSocket upgrades on the HTTP port. Off by default:
+   * with it off an upgrade request is ordinary HTTP.
+   */
+  enabled?: boolean;
+  readBufferSize?: number /* int */;
+  writeBufferSize?: number /* int */;
+  maxMessageSize?: number /* int64 */;
+  pingInterval?: Duration;
+  maxSubscriptionsPerConnection?: number /* int */;
+  /**
+   * MaxConcurrentRequestsPerConnection bounds the messages a connection has
+   * in flight; further frames wait (backpressure) instead of being rejected.
+   * A batch is one message; its requests run concurrently, as over HTTP.
+   */
+  maxConcurrentRequestsPerConnection?: number /* int */;
+  /**
+   * MaxConnections caps concurrent client connections on this instance
+   * (0 = unlimited). Unlike the per-IP cap it holds when client IPs are
+   * unknown or spoofed.
+   */
+  maxConnections?: number /* int */;
+  /**
+   * MaxConnectionsPerIP caps concurrent client connections from one
+   * resolved client IP (0 = unlimited); see trustedIPForwarders.
+   */
+  maxConnectionsPerIP?: number /* int */;
+  /**
+   * MaxSubscriptions caps active subscriptions across all connections on
+   * this instance (0 = unlimited).
+   */
+  maxSubscriptions?: number /* int */;
 }
 /**
  * ExecutionHeadersMode controls how much per-request execution detail is
@@ -394,10 +567,25 @@ export interface SharedStateConfig {
    */
   updateMaxWait?: Duration;
 }
+/**
+ * CachingStrategy controls write-side admission when combined with a response
+ * cacheability mark (see AllowsCacheWrite). Cache hits are served with zero
+ * re-validation, so modules that decide grades (consensus in v1) mark the
+ * response instead of teaching the cache policy names.
+ */
+export type CachingStrategy = string;
+export const CachingStrategyDefaultAllow: CachingStrategy = "defaultAllow";
+export const CachingStrategyDefaultIgnore: CachingStrategy = "defaultIgnore";
 export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   compression?: CompressionConfig;
+  /**
+   * CachingStrategy is the default write posture for unmarked responses.
+   * Omit → defaultAllow (today's open write). defaultIgnore writes only when
+   * a module marks the response cacheable (true).
+   */
+  cachingStrategy?: 'defaultAllow' | 'defaultIgnore';
 }
 export interface CompressionConfig {
   enabled?: boolean;
@@ -499,6 +687,12 @@ export interface GrpcConnectorConfig {
    * (0) a built-in default is used.
    */
   poolSize?: number /* int */;
+  /**
+   * HealthCheckService is a grpc.health.v1 service name. When set, each
+   * connection watches it on every resolved address and sends requests only
+   * to addresses reporting SERVING. Empty (default) disables health checking.
+   */
+  healthCheckService?: string;
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
@@ -709,6 +903,21 @@ export interface NetworkDefaults {
   evm?: TsEvmNetworkConfigForDefaults;
   svm?: TsSvmNetworkConfigForDefaults;
   multiplexing?: boolean;
+  cacheKeySuffix?: string;
+  failover?: FailoverConfig;
+  maxClientBatchSize?: number /* int */;
+}
+/**
+ * FailoverConfig controls per-request escalation to fallback-tier upstreams,
+ * independent of the selection policy.
+ */
+export interface FailoverConfig {
+  /**
+   * OnDefaultsExhausted tries upstreams not tagged `tier:fallback` first and
+   * advances to the fallback tier within the same request only once every
+   * other upstream failed with an error retryable toward the network.
+   */
+  onDefaultsExhausted?: boolean;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -728,6 +937,11 @@ export interface ProviderConfig {
   upstreamIdTemplate?: string;
   overrides?: { [key: string]: UpstreamConfig | undefined};
 }
+/**
+ * TagTierFallback marks an upstream as part of the fallback tier, used only
+ * when the other upstreams are unavailable.
+ */
+export const TagTierFallback = "tier:fallback";
 /**
  * RateLimitCountMode selects the accounting unit an upstream's rate-limit
  * budget charges per call.
@@ -794,6 +1008,13 @@ export interface UpstreamConfig {
    * copied onto every upstream the provider generates.
    */
   creditUnits?: { [key: string]: number /* int64 */};
+  /**
+   * CreditAllowance is the prepaid credit allowance of the vendor account
+   * this upstream bills to. When set and the vendor reports account usage
+   * (common.CreditUsageProvider), the selection policy sees `u.creditPace`:
+   * credits used this billing period over the pro-rata allowance so far.
+   */
+  creditAllowance?: CreditAllowanceConfig;
   shadow?: ShadowUpstreamConfig;
   /**
    * Routing holds per-upstream routing hints consumed by the selection
@@ -888,13 +1109,13 @@ export interface ShadowUpstreamConfig {
   sampleRate?: number /* float64 */;
   ignoreFields?: { [key: string]: string[]};
   /**
-   * PinBlockTag rewrites a tag block selector ("latest"/"pending") in the mirrored copy to a
-   * concrete height before forwarding: the primary's resolved block number when its response
-   * carries one, else the network's tracked head at mirror time. Without it the shadow executes
-   * the tag at its OWN head wall-clock-later than the primary did, so any read of volatile state
-   * (pool reserves, oracle prices — most visibly large multicalls) diverges by construction and
-   * reports a mismatch that says nothing about correctness. Default false = mirror byte-identical
-   * requests, exactly as before.
+   * PinBlockTag rewrites a "latest" block selector (stated or omitted) of a state read in the
+   * mirrored copy to the block the primary was sent: its response's own block number when it
+   * carries one, else the request's Latest, or the serving upstream's own head when the tag
+   * reached it as is. Without it the shadow executes the tag at its OWN head wall-clock-later
+   * than the primary did, so any read of volatile state (pool reserves, oracle prices — most
+   * visibly large multicalls) diverges by construction and reports a mismatch that says nothing
+   * about correctness. Default false: the shadow is sent the primary's params as they are.
    */
   pinBlockTag?: boolean;
 }
@@ -913,6 +1134,15 @@ export interface UpstreamIntegrityEthGetBlockReceiptsConfig {
 }
 export type UJAlias = UpstreamConfig;
 export type UYAlias = UpstreamConfig;
+/**
+ * CreditAllowanceConfig is a vendor account's prepaid credit allowance per
+ * billing period. ApiKey is the account's admin key; the vendor uses it to
+ * read account-wide usage, calls from outside eRPC included.
+ */
+export interface CreditAllowanceConfig {
+  credits: number /* int64 */;
+  apiKey: string;
+}
 export interface RateLimitAutoTuneConfig {
   enabled?: boolean;
   adjustmentPeriod: Duration;
@@ -931,7 +1161,7 @@ export interface JsonRpcUpstreamConfig {
   proxyPool?: string;
 }
 /**
- * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds://) upstream. It is the
+ * GrpcUpstreamConfig tunes a gRPC (grpc:// / grpc+bds:// / grpcs://) upstream. It is the
  * gRPC analogue of JsonRpcUpstreamConfig: JsonRpc holds JSON-RPC/HTTP-specific
  * knobs, this holds gRPC-specific ones. Headers are applied as gRPC metadata on
  * every outbound request (e.g. an edge-api auth key: authorization: Bearer ...).
@@ -944,6 +1174,10 @@ export interface GrpcUpstreamConfig {
    * When unset (0) a built-in default is used.
    */
   poolSize?: number /* int */;
+  /**
+   * HealthCheckService: see GrpcConnectorConfig.HealthCheckService.
+   */
+  healthCheckService?: string;
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
@@ -951,8 +1185,9 @@ export interface EvmUpstreamConfig {
   /**
    * StatePollerDebounce overrides the debounce interval for the state poller.
    * When 0 (default), the interval is dynamically inferred from the chain's
-   * observed block time, falling back to the network-level
-   * FallbackStatePollerDebounce, then to a 1s floor.
+   * observed block time; until that is known, the network-level
+   * FallbackStatePollerDebounce when set, else 0.7s (the 1s cold block
+   * time × dynamicBlockTimeDebounceMultiplier).
    */
   statePollerDebounce?: Duration;
   blockAvailability?: EvmBlockAvailabilityConfig;
@@ -981,6 +1216,25 @@ export interface EvmUpstreamConfig {
    */
   headLagToleranceBlocks?: number /* int64 */;
   /**
+   * PinLatestTag sends this upstream the network head as a concrete block number wherever a
+   * state call (eth_call, eth_getBalance, ...) asks for "latest" or omits the block, and skips the
+   * upstream when its blockAvailability upper bound is below that head or the head is unknown.
+   * For an upstream whose own head lags the network: it answers only blocks it holds, and a block
+   * it lacks fails as missing data so the next upstream answers, instead of an older "latest".
+   * Never a request whose tag reaches upstreams as is (translateLatestTag: false, skip-interpolation).
+   */
+  pinLatestTag?: boolean;
+  /**
+   * SubscriptionSource sets when this ws/wss upstream pushes newHeads to
+   * the chain tracker: off, onDemand (while a client tap needs every
+   * block: eth_subscribe newHeads or logs, a gRPC block stream; it stops
+   * 60s after the last one ends) or always (from network init). Anything
+   * but off on another endpoint is refused at load: the block clock
+   * fetches every upstream's head. Unset: onDemand for ws/wss endpoints,
+   * off otherwise.
+   */
+  subscriptionSource?: SubscriptionSourceMode;
+  /**
    * Deprecated: never read at runtime. Configure data integrity via the network
    * `integrity` block instead. Retained only so existing YAML still parses.
    */
@@ -994,14 +1248,59 @@ export interface EvmUpstreamConfig {
    */
   maxAvailableRecentBlocks?: number /* int64 */;
   queryShim?: EvmQueryShimConfig;
+  /**
+   * Multicall3 packs eth_calls bound for this upstream that share a block into one
+   * Multicall3 aggregate3 eth_call, so a vendor billed per request is billed once
+   * per pack. Nil (default) sends every eth_call alone.
+   */
+  multicall3?: EvmMulticall3Config;
+  /**
+   * CallGasCap is the most gas this upstream lets one eth_call use, in place
+   * of the cap eRPC measures. Set it for a node that refuses gas above its
+   * cap, which the probe cannot measure, or to correct a measure. 0
+   * (default) measures it.
+   */
+  callGasCap?: number /* uint64 */;
 }
+/**
+ * EvmMulticall3Config bounds one pack. A call joins the open pack for its block,
+ * and the pack is sent MaxWait after its first call or when it holds MaxCalls.
+ * A call the pack cannot answer exactly (multicall failed, inner call reverted
+ * or returned nothing) is sent alone, as it would be without packing.
+ */
+export interface EvmMulticall3Config {
+  maxWait?: Duration;
+  maxCalls?: number /* int */;
+  /**
+   * BypassContracts are target addresses whose calls are never packed, for
+   * contracts that answer differently when the caller is Multicall3 instead
+   * of the zero address (msg.sender or caller-code checks) without reverting.
+   * Contracts that revert inside a pack but succeed alone are learned at
+   * runtime and need no entry.
+   */
+  bypassContracts?: string[];
+}
+/**
+ * EvmQueryShimConfig lets an upstream serve the sub-requests (eth_getBlockByNumber,
+ * eth_getBlockReceipts, eth_getLogs, trace_block / debug_traceBlockByNumber) the
+ * eth_query* executor issues when no native QueryService upstream answers. The
+ * sub-requests go through the network like any request; the budget bounds the
+ * work of one MIP-16 page.
+ */
 export interface EvmQueryShimConfig {
   enabled?: boolean;
   allowedMethods?: string[];
-  concurrency?: number /* int */;
-  maxBlockRange?: number /* int64 */;
-  maxLimit?: number /* int */;
-  defaultLimit?: number /* int */;
+  /**
+   * MaxBlocksPerPage is the budget of blocks one page may scan. A page that
+   * reaches it ends at the last scanned block.
+   */
+  maxBlocksPerPage?: number /* int64 */;
+  /**
+   * MaxPageDuration is the budget of time one page may scan. A page that
+   * reaches it ends at the last complete block, or fails with -32005 when no
+   * block completed.
+   */
+  maxPageDuration?: Duration;
 }
 /**
  * EvmBlockAvailability defines optional lower/upper block availability expressions for an upstream.
@@ -1029,19 +1328,32 @@ export interface EvmAvailabilityBoundConfig {
   probe?: EvmAvailabilityProbeType;
   updateRate?: Duration;
 }
+/**
+ * SubscriptionSourceMode is when a ws/wss upstream pushes newHeads
+ * (evm.subscriptionSource).
+ */
+export type SubscriptionSourceMode = string;
+export const SubscriptionSourceOff: SubscriptionSourceMode = "off";
+export const SubscriptionSourceOnDemand: SubscriptionSourceMode = "onDemand";
+export const SubscriptionSourceAlways: SubscriptionSourceMode = "always";
 export interface FailsafeConfig {
   matchMethod?: string;
   matchFinality?: DataFinalityState[];
   /**
-   * MatchRequestKind scopes this policy by who issued the request:
-   * "user" (client traffic), "internal" (erpc's own auxiliary fetches, e.g.
-   * the integrity module's canonical corroboration), or ""/"*" for both.
-   * This is what lets an operator give INTERNAL canonical fetches a
-   * consensus policy (quorum-verified ground truth, deduplicated to ~once
-   * per block by the ChainView) while user data methods rely on integrity
-   * validation instead of per-request fan-out.
+   * MatchCommitment scopes a network-scope policy by the Solana commitment
+   * erpc pins on the wire: the caller's value, else the svm.commitment default
+   * that injection writes, else "none". Empty = any. Values are OR-ed and
+   * exact (confirmed does not match processed). Non-SVM requests and SVM
+   * write methods (sendTransaction, simulateTransaction, requestAirdrop) are "none".
+   * Rejected at upstream and connector scopes.
    */
-  matchRequestKind?: 'user' | 'internal' | '*';
+  matchCommitment?: ('none' | 'processed' | 'confirmed' | 'finalized')[];
+  /**
+   * MatchRequestKind "user", "*" or "" matches every client request: no
+   * eRPC-own request (tracker fetch, head poll, probe) goes through a
+   * failsafe policy. "internal" is refused at load.
+   */
+  matchRequestKind?: 'user' | '*';
   retry?: RetryPolicyConfig;
   circuitBreaker?: CircuitBreakerPolicyConfig;
   timeout?: TimeoutPolicyConfig;
@@ -1159,11 +1471,23 @@ export interface ConsensusPolicyConfig {
    */
   preferHighestValueFor?: { [key: string]: string[]};
   /**
+   * BlockEvidenceFields is an opt-in that weakens the empty-outside-retention
+   * waiver. It names, per method, the response field paths that carry the
+   * winning answer's own block number ("result", a flat field such as
+   * "blockNumber", or "*.field" for array results). When neither the request
+   * nor a non-winner gives the waiver a block, it trusts this one. The
+   * agreeing upstreams then vouch for their own claim: two that collude can
+   * get a fabricated hash lookup served. A non-winner that contradicts the
+   * block still fails the waiver closed.
+   */
+  blockEvidenceFields?: { [key: string]: string[]};
+  /**
    * FireAndForget when true, allows consensus to return a response to the client immediately
    * upon short-circuit, but does NOT cancel in-flight requests to other upstreams.
    * This is useful for write operations like eth_sendRawTransaction where you want to
    * broadcast the transaction to as many nodes as possible while still returning quickly.
    * Default is false (normal behavior - cancel remaining requests on short-circuit).
+   * An explicit false overlays a true base under extends; an omitted field does not.
    */
   fireAndForget?: boolean;
   /**
@@ -1201,6 +1525,65 @@ export interface ConsensusPolicyConfig {
    * like any other low-participation tick. Empty (default) = disabled.
    */
   requiredParticipants?: (ConsensusRequiredParticipant | undefined)[];
+  /**
+   * Extends names a one-level base for this named policy: another entry in
+   * `policies`, or "default" for the inline consensus block. Resolved at
+   * load (SetDefaults): the base is copied, this policy's set fields overlay
+   * it (explicit requiredParticipants: [] clears quotas), then defaults run
+   * on the result. Without Extends a named policy starts from stock defaults,
+   * not the inline block — operators who want the shared hygiene say
+   * extends: default explicitly (feature §2). Only meaningful on named
+   * policies; ignored on the inline block.
+   */
+  extends?: string;
+  /**
+   * CustomPolicy, when set, enables the pre-round consensus-policy selector.
+   * Its EvalFunction is freeform operator JS `(ctx) => string | null` run once
+   * per request before fan-out; the returned name selects one of the named
+   * `Policies` to govern the round. An empty/null result, an unknown name, or
+   * any eval failure falls closed to THIS (the enclosing/inline) config, which
+   * is therefore the strictest default. Nil (default) = selector disabled and
+   * the inline config governs every round.
+   */
+  customPolicy?: ConsensusCustomPolicyConfig;
+  /**
+   * Policies is the set of named policies the selector can choose from. Each
+   * value is a full ConsensusPolicyConfig; the selector's returned name keys
+   * into this map. Names not present here resolve to the inline default
+   * (fail-closed). Nested CustomPolicy/Policies on a named policy are ignored —
+   * selection happens once, at the top level. Empty (default) = no named
+   * policies (only the inline default exists).
+   */
+  policies?: { [key: string]: ConsensusPolicyConfig | undefined};
+  /**
+   * CacheableResponses marks whether responses produced under this policy may
+   * be persisted by the cache. Consensus.Run stamps the winning response with
+   * this value; Cache.Set combines it with cachingStrategy (feature
+   * cacheable-responses). Omit defaults: inline / fail-closed "default" →
+   * true; named policies.* → false (stamped before extends so extends:default
+   * does not inherit the inline true).
+   */
+  cacheableResponses?: boolean;
+}
+/**
+ * ConsensusDefaultPolicyName is the reserved label reported (metric +
+ * X-ERPC-Consensus-Policy header) whenever a round runs under the inline
+ * default policy — either because the eval returned null or because it fell
+ * closed. It cannot be used as a key in consensus.policies, so the label
+ * stays unambiguous between "selector chose the policy named default" and
+ * "selector fell closed to the inline default".
+ */
+export const ConsensusDefaultPolicyName = "default";
+/**
+ * ConsensusCustomPolicyConfig configures the pre-round consensus-policy
+ * selector. EvalFunction is the operator-supplied JS expression evaluating to
+ * `(ctx) => string | null`; EvalTimeout caps its wall-clock per request (an
+ * overrun fails closed to the default policy). See common/defaults.go for the
+ * EvalTimeout default.
+ */
+export interface ConsensusCustomPolicyConfig {
+  evalFunction: string;
+  evalTimeout?: Duration;
 }
 /**
  * ConsensusRequiredParticipant is one tag-quota entry for
@@ -1217,6 +1600,43 @@ export interface ConsensusRequiredParticipant {
   tag: string;
   minParticipants: number /* int */;
   minAgreement?: number /* int */;
+  /**
+   * WaiveAgreementOnMissingData, when true, waives this entry's MinAgreement
+   * winner-composition quota for a round in which at least MinAgreement
+   * distinct tag-matching participants returned ErrEndpointMissingData and
+   * no matching participant returned data. Sibling errors do not block the
+   * count; a matching successful result holds the quota so disagreement
+   * cannot be waived away. Default false = the quota is never waived (strict).
+   */
+  waiveAgreementOnMissingData?: boolean;
+  /**
+   * WaiveAgreementOnEmptyOutsideRetention, when true, waives this entry's
+   * MinAgreement quota for a round in which at least MinAgreement distinct
+   * tag-matching participants returned an EMPTY result, no matching
+   * participant returned a non-empty result, AND the block is older than
+   * RetentionBlocks behind the observed chain head. It lets an abstainer that
+   * legitimately pruned old history (e.g. post-EIP-4444) fall out of the
+   * quota without weakening the quota for recent data — a null on a recent
+   * block still holds the quota and disputes. The block is the one the
+   * client's request names. A hash lookup names none, so its answer's block
+   * counts only once an upstream outside the agreeing set confirms it;
+   * agreeing upstreams cannot fabricate the proof unless the policy opts
+   * into BlockEvidenceFields. Tag requests never waive.
+   * A matching sibling that returned data also holds the quota (that is a
+   * real vote, not a prune). Sibling errors do not block the empty count.
+   * Requires RetentionBlocks > 0.
+   * Default false = the quota is never waived on empty (strict).
+   */
+  waiveAgreementOnEmptyOutsideRetention?: boolean;
+  /**
+   * RetentionBlocks is the depth, in blocks behind the observed chain head,
+   * that this participant is expected to retain. It defines the boundary for
+   * WaiveAgreementOnEmptyOutsideRetention: a requested block is "outside
+   * retention" when head - requestedBlock > RetentionBlocks. Only meaningful
+   * when WaiveAgreementOnEmptyOutsideRetention is set. Default 0 = no
+   * retention boundary (the empty-waiver never fires).
+   */
+  retentionBlocks?: number /* int64 */;
 }
 export type MisbehaviorsDestinationType = string;
 export const MisbehaviorsDestinationTypeFile: MisbehaviorsDestinationType = "file";
@@ -1351,11 +1771,28 @@ export interface NetworkConfig {
   methods?: MethodsConfig;
   multiplexing?: boolean;
   staticResponses?: (StaticResponseConfig | undefined)[];
+  failover?: FailoverConfig;
   /**
    * Integrity overrides the project-wide data-integrity configuration for this
    * network. Merges over the project block (network wins).
    */
   integrity?: IntegrityConfig;
+  /**
+   * CacheKeySuffix, when set, is inserted into the JSON-RPC cache partition
+   * key as {networkId}:{suffix}:{blockRef} so two networks that share a
+   * chainId (and a Redis) do not collide. Empty keeps {networkId}:{blockRef}.
+   * When {networkId}:{suffix} is itself a valid network id, colons in the
+   * network id are escaped; see CachePartitionKey.
+   */
+  cacheKeySuffix?: string;
+  /**
+   * MaxClientBatchSize caps how many requests one client JSON-RPC batch may
+   * address to this network. Unset inherits networkDefaults; unset there or
+   * 0 means no limit. An over-limit batch runs none of its requests.
+   * Distinct from upstream jsonRpc.batchMaxSize, which shapes the batches
+   * eRPC itself sends to an upstream.
+   */
+  maxClientBatchSize?: number /* int */;
 }
 /**
  * StaticResponseConfig declares a canned JSON-RPC response for a specific
@@ -1406,9 +1843,12 @@ export interface DirectiveDefaultsConfig {
    * retained only so existing YAML still parses. At startup the flags that map
    * to a current check are translated into `integrity.checks` by
    * migrateLegacyIntegrityChecks (an explicit `integrity` block wins per check);
-   * they are NOT read at runtime. The receipt-count / expected-block /
-   * receipt-to-transaction flags have no equivalent in the new model and are
-   * accepted but ignored. See docs/pages/config/failsafe/integrity.mdx.
+   * they are NOT read at runtime, except validateTransactionsRoot: false,
+   * which also says the network's roots are not Ethereum's trie, so the
+   * chain tracker takes gasUsed 0 as an empty block. The receipt-count /
+   * expected-block / receipt-to-transaction flags have no equivalent in
+   * the new model and are accepted but ignored. See
+   * docs/pages/config/failsafe/integrity.mdx.
    */
   validateTransactionsRoot?: boolean;
   validateHeaderFieldLengths?: boolean;
@@ -1463,6 +1903,16 @@ export interface SvmNetworkConfig {
    */
   statePollerDebounce?: Duration;
   /**
+   * SkipProcessedSlotProbe skips the state poller's getSlot(processed)
+   * probe and lets the finalized probe feed LatestSlot. Default false
+   * (probe runs) — correct for any finality gap. Set true only on chains
+   * finalizing within ~1 slot of the processed tip (Alpenglow); on
+   * ~32-slot-gap chains (TowerBFT) it shifts the shred-lag cordon and
+   * availability windows by that gap. Plain bool: unset and false are the
+   * same (poll), matching the opt-in skip framing.
+   */
+  skipProcessedSlotProbe?: boolean;
+  /**
    * MaxFinalizedSlotLag bounds how many slots an upstream's FinalizedSlot may
    * trail the pool's highest FinalizedSlot before it is excluded from
    * consensus voting on finalized data. Only applied when a consensus policy
@@ -1510,6 +1960,43 @@ export interface SvmUpstreamConfig {
    * private/local clusters with no published genesis hash still work.
    */
   checkGenesisHash?: boolean;
+  /**
+   * StatePollerDebounce is a hard per-upstream override for the poll fan-out
+   * gate. When non-zero it short-circuits networks[*].svm.statePollerDebounce
+   * for this upstream only (same precedence shape as upstreams[*].evm.statePollerDebounce).
+   * Zero / omit inherits the network debounce after defaults. Does not disable
+   * the poller — 0 means inherit, never "off".
+   */
+  statePollerDebounce?: Duration;
+  /**
+   * BlockAvailability is an operator restriction on the slot window this
+   * upstream may serve. Only what the operator declares is enforced; the
+   * upstream's oldest stored block (getBlocksWithLimit(0, 1)) is probed for
+   * every upstream and anchors a firstAvailableSlotPlus bound, mirroring EVM's
+   * earliestBlockPlus. Unknown floor = unbounded.
+   */
+  blockAvailability?: SvmBlockAvailabilityConfig;
+}
+/**
+ * SvmBlockAvailabilityConfig is the per-upstream declared slot window.
+ * Presence of lower/upper implies the restriction is active. When both are
+ * nil, it is effectively off.
+ */
+export interface SvmBlockAvailabilityConfig {
+  lower?: SvmAvailabilityBoundConfig;
+  upper?: SvmAvailabilityBoundConfig;
+}
+/**
+ * SvmAvailabilityBoundConfig is a single declared slot bound.
+ * Exactly one of ExactSlot, LatestSlotMinus, FirstAvailableSlotPlus must be set.
+ * UpdateRate applies only to firstAvailableSlotPlus: how often the floor it
+ * anchors on is re-probed. 0 freezes it after the first observation, as EVM.
+ */
+export interface SvmAvailabilityBoundConfig {
+  exactSlot?: number /* int64 */;
+  latestSlotMinus?: number /* int64 */;
+  firstAvailableSlotPlus?: number /* int64 */;
+  updateRate?: Duration;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
@@ -1519,11 +2006,15 @@ export interface EvmNetworkConfig {
   /**
    * ServedTip configures how the network derives the "latest"/"finalized"
    * block it advertises to clients (and enforces via block-availability).
-   * Nil or disabled selects the default mode (the corroborated latest across eligible
-   * upstreams, see ServedTipPick.Freshest); set Enabled to opt into the majority tip. See
+   * Nil uses the defaults: quorum 2, regression guard on, no guarantees. See
    * EvmServedTipConfig.
    */
   servedTip?: EvmServedTipConfig;
+  /**
+   * ChainTracker configures the network's chain trackers: how far back they
+   * hold the chain and follow reorgs.
+   */
+  chainTracker?: EvmChainTrackerConfig;
   getLogsMaxAllowedRange?: number /* int64 */;
   getLogsMaxAllowedAddresses?: number /* int64 */;
   getLogsMaxAllowedTopics?: number /* int64 */;
@@ -1556,6 +2047,23 @@ export interface EvmNetworkConfig {
    */
   traceFilterSplitConcurrency?: number /* int */;
   /**
+   * CallGasCap is the most gas one eth_call may use on this network: eRPC
+   * lowers a larger gas to it, as a node lowers it to its own cap. 0
+   * (default) takes the highest cap that CallGasCapQuorum of the network's
+   * upstreams give (upstreams[].evm.callGasCap, else measured); routing
+   * sends a call to those first. A value above it is a promise fewer
+   * upstreams keep, so it fails sooner when they are down.
+   */
+  callGasCap?: number /* uint64 */;
+  /**
+   * CallGasCapQuorum is how many upstreams must give the default CallGasCap:
+   * an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset uses
+   * DefaultServedTipQuorum (2), so one node's large cap is never promised
+   * alone. With fewer upstreams than the quorum, the cap is the one all of
+   * them give.
+   */
+  callGasCapQuorum?: number | 'majority';
+  /**
    * EnforceBlockAvailability controls whether the network should enforce per-upstream
    * block availability bounds (upper/lower) for methods by default. Method-level config may override.
    * When nil or true, enforcement is enabled.
@@ -1578,6 +2086,12 @@ export interface EvmNetworkConfig {
    */
   markEmptyAsErrorMethods?: string[];
   /**
+   * LocalAnswers turns off eRPC's own answer for a method on this network:
+   * `{net_peerCount: false}` routes net_peerCount to the upstreams. Every
+   * method in LocalAnswerMethods is answered by eRPC unless set false here.
+   */
+  localAnswers?: { [key: string]: boolean};
+  /**
    * DynamicBlockTimeDebounceMultiplier scales the EMA-estimated block time to derive
    * the debounce interval for block polling. A value of 0.7 means debounce = 70% of
    * the estimated block time, preferring fresher data at the cost of slightly more
@@ -1585,6 +2099,16 @@ export interface EvmNetworkConfig {
    * Default: 0.7 (30% under the estimated block time).
    */
   dynamicBlockTimeDebounceMultiplier?: number /* float64 */;
+  /**
+   * FinalizedDebounceDepthMultiplier sets how stale an upstream's finalized block may
+   * get before the state poller fetches it again, as a fraction of the chain's
+   * finality depth in time: (latest - finalized) x EMA block time x multiplier. The
+   * result applies only when it is longer than the regular debounce. Finalized
+   * advances once per finality window, so polling it at the latest-block cadence
+   * mostly returns the same number. 0 disables it (finalized uses the regular debounce).
+   * Default: 0.05 (refresh about 20 times per finality window).
+   */
+  finalizedDebounceDepthMultiplier?: number /* float64 */;
   /**
    * BlockUnavailableDelayMultiplier scales the EMA-estimated block time to derive the
    * retry delay when the requested data isn't available yet (ErrUpstreamBlockUnavailable
@@ -1614,6 +2138,18 @@ export interface EvmNetworkConfig {
    */
   emptyResultConfidence?: AvailbilityConfidence;
   /**
+   * ShortCircuitFutureBlocks returns null for a numbered eth_getBlockByNumber
+   * above the highest latest head across every upstream of the network
+   * (regardless of selection policy, tier or syncing state), without
+   * dispatching it; it never fires while any upstream's head is unknown.
+   * Clients that poll the next block by number otherwise walk every routed
+   * upstream on each poll.
+   * The head is what the state poller and head subscriptions last reported, so
+   * a block an upstream produced since then gets null until eRPC sees it: only
+   * enable it where heads arrive promptly (e.g. over WebSocket).
+   */
+  shortCircuitFutureBlocks?: boolean;
+  /**
    * SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
    * requests carrying the `safe` block tag. Matching upstreams define and
    * serve `safe`; empty (without an inherited network default) keeps existing
@@ -1622,36 +2158,48 @@ export interface EvmNetworkConfig {
   safeBlockSource?: string;
 }
 /**
+ * EvmChainTrackerConfig sizes the window a chain tracker holds.
+ */
+export interface EvmChainTrackerConfig {
+  /**
+   * ReorgWindow is the floor of the window in blocks, the window of group
+   * trackers, and the deepest reorg a tracker walks and replays (default
+   * 32). Raise it for deep-reorg chains (e.g. polygon 256).
+   */
+  reorgWindow?: number /* int */;
+  /**
+   * MaxBackfill is how much chain time, compared on header timestamps, the
+   * network-wide tracker holds for resumable taps (default 5m).
+   */
+  maxBackfill?: Duration;
+}
+/**
  * EvmServedTipConfig controls how the network derives the "latest"/"finalized"
  * block it advertises (and enforces) from its upstreams.
- * In the default mode the served tip is the corroborated latest block across eligible
- * non-syncing upstreams (second-highest, or the only one) — which can still advertise a block a slightly-ahead
- * pair has, causing "block not found" churn when requests route to a
- * slightly-behind upstream. When a tag is listed in EnabledFor, that tag's
- * served value is instead the freshest block a strict MAJORITY of the eligible
- * upstreams already have, so interpolated requests land on upstreams that can
- * serve the advertised block.
+ * Both axes use one rule: among the eligible (selection-policy), non-syncing
+ * upstreams, only the best voter rank present votes (live, then benched, then
+ * static-capped, then benched and static-capped), and the served block is the
+ * highest one at least Quorum of those voters already have. The health
+ * tracker benches an upstream whose head stopped moving while another kept
+ * advancing, until it catches up again. "finalized" never steps back below a
+ * block already served, by this instance or (network-wide, through shared
+ * state) by another, while a voter here still reports it finalized.
  */
 export interface EvmServedTipConfig {
   /**
-   * EnabledFor lists the block tags whose served value uses the cluster-min tip
-   * instead of the default corroborated head. Valid entries: "latest" and "finalized" (the
-   * "safe" tag follows "finalized"). Empty selects the default mode for all tags.
+   * Quorum is how many eligible upstreams must already have a block before it
+   * is served: an integer >= 1, or "majority" (floor(N/2)+1 of N). Unset
+   * uses DefaultServedTipQuorum (2). A ballot with fewer voters than the
+   * quorum serves the block all of them have.
    */
-  enabledFor?: string[];
-  /**
-   * Deprecated: ClusterDelta configured the former cluster-based picker and is
-   * ignored — the majority order statistic needs no tuning. Kept only so
-   * existing configs keep parsing.
-   */
-  clusterDelta?: number /* int64 */;
+  quorum?: number | 'majority';
   /**
    * GuaranteedMethods lists method name patterns (glob; e.g. "trace_*",
    * "debug_traceBlockByNumber") whose supporting-upstream subset must be able to
    * serve the advertised latest. For a request on a matching method, "latest"
    * resolves against the majority of only the upstreams that support it
    * (membership auto-detected via ShouldHandleMethod — no per-upstream config).
-   * Empty means only the global (all-eligible) majority is computed.
+   * Empty means only the global ballot is computed.
    */
   guaranteedMethods?: string[];
   /**
@@ -1666,35 +2214,34 @@ export interface EvmServedTipConfig {
   guaranteedFor?: string[];
   /**
    * MaxRegressionBlocks is how far below the corroborated LIVE upstream head
-   * (the second-highest live head) the majority pick may fall before it is
-   * treated as a poisoned ballot rather than as reality. While a pick is below
-   * that bound the network keeps serving its last corroborated pick
+   * (the second-highest live head) the finalized pick may fall before it is
+   * treated as a poisoned ballot rather than as reality. While a pick is
+   * below that bound the network keeps serving its last corroborated pick
    * (in-process, for at most one minute, then it fails open and serves the
-   * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) — the
+   * pick as computed). 0 uses DefaultToleratedBlockHeadRollback (1024) - the
    * same rollback tolerance the state poller and health tracker apply to a
-   * retreating head, so all three layers agree on what counts as a genuine
-   * deep correction. -1 disables the regression guard entirely (the symmetric
-   * opposite of trajectoryWindow: 0); no other negative value is accepted.
+   * retreating head - widened to twice the lane's typical finality step
+   * (the lower median of its last eight finalized advances), so a chain
+   * that finalizes in larger batches does not hold when one voter lags a
+   * batch. -1 disables the regression guard entirely; no other negative
+   * value is accepted.
    */
   maxRegressionBlocks?: number /* int64 */;
   /**
-   * TrajectoryWindow is how much recorded head history the trajectory referee
-   * needs before it may participate in the pick. The referee tracks where this
-   * network's head has been over the window and, when a stalled group holds
-   * the majority, serves the corroborated group that is actually where the
-   * chain should be by now (see architecture/evm's TipTrajectory: advisory,
-   * upward-only, in-process, and a no-op until every confidence condition
-   * holds). Unset uses DefaultServedTipTrajectoryWindow (10m); an explicit 0
-   * disables the referee entirely — nothing is recorded and the pick is the
-   * plain majority. Any other value must be between
-   * MinServedTipTrajectoryWindow and MaxServedTipTrajectoryWindow: below the
-   * minimum the window is self-defeating (it must be long enough that a stall
-   * cannot look like a trajectory), and above the maximum the sample ring can
-   * never span it, so the referee would stand down forever while looking
-   * configured. WRITE IT AS A DURATION STRING — trajectoryWindow: "10m". A
-   * bare number is parsed as MILLISECONDS.
+   * FollowCacheHead lowers the "latest" a network-wide read takes to the
+   * cache's newest block while the cache would serve it, and keeps its
+   * "finalized" at or below it: the newest block of the first realtime
+   * cache policy, with a TTL, on a head-aware connector (the grpc driver)
+   * that serves eth_getBlockByNumber("latest") for this network, as long as
+   * that policy's realtime TTL admits its age. eth_blockNumber, latest
+   * blocks and tag interpolation then name a block the cache already holds,
+   * so follow-up reads of it hit the cache. Older or unknown: reads take
+   * the chain tracker's head. It never raises latest, and holds it at the
+   * value last served for at most one TTL rather than step back. The chain
+   * tracker, its pins and reorg handling, and every stream (newHeads, gRPC,
+   * taps) never see it.
    */
-  trajectoryWindow?: Duration;
+  followCacheHead?: boolean;
 }
 /**
  * EvmIntegrityConfig is deprecated. Use DirectiveDefaultsConfig for validation settings.
@@ -1813,6 +2360,14 @@ export interface AuthConfig {
   strategies: TsAuthStrategyConfig[];
 }
 export interface AuthStrategyConfig {
+  /**
+   * Name identifies this strategy for operator logic that keys on which
+   * strategy authenticated the caller (e.g. consensus.customPolicy evals
+   * compare ctx.user.auth). Optional; unnamed strategies stamp "" on the
+   * user. Never accepted from client-controlled input — only this config
+   * field (feature §4.3).
+   */
+  name?: string;
   ignoreMethods?: string[];
   allowMethods?: string[];
   rateLimitBudget?: string;
@@ -1927,7 +2482,6 @@ export interface MetricsConfig {
    * families are exposed at all, which of their labels survive, and which
    * buckets a histogram uses. Entries are applied by specificity rather than
    * by list order — see MetricsCustomizationConfig.
-   *
    * 	metrics:
    * 	  customizations:
    * 	    - subject: "consensus_*"
@@ -1941,7 +2495,7 @@ export interface MetricsConfig {
    * 	    - subject: network_request_duration_seconds
    * 	      buckets: [0.05, 0.5, 5]
    */
-  customizations?: MetricsCustomizationConfig[];
+  customizations?: (MetricsCustomizationConfig | undefined)[];
   /**
    * Deprecated: use Customizations with a `labels` list. Kept working so
    * existing configs keep loading; it is desugared onto the same rules as an
@@ -1987,7 +2541,6 @@ export const MetricActionDrop: MetricCustomizationAction = "drop";
 /**
  * MetricsCustomizationConfig is one entry of metrics.customizations: a subject
  * selecting metric families, and what to do with them.
- *
  * Overlapping subjects resolve by specificity, not by list order: an exact
  * family name beats a prefix, a longer prefix beats a shorter one, and equally
  * specific subjects break to the one written later. So "drop consensus_*, keep
@@ -2007,7 +2560,6 @@ export interface MetricsCustomizationConfig {
    * Action drops the matched families from /metrics, or keeps them against a
    * broader drop. Omit it to leave exposure alone and only customize labels or
    * buckets.
-   *
    * A dropped eRPC family is never registered, so it costs no series and no
    * collection time — but that makes it a startup decision, undone only by a
    * restart. Stock collectors are registered outside eRPC and so are filtered
@@ -2019,20 +2571,19 @@ export interface MetricsCustomizationConfig {
    * Labels projects the matched families' label sets. Same precedence rules as
    * Subject, applied to label names: `agent_*: drop` then `agent_name: keep`
    * drops the group and spares the one label.
-   *
    * Dropping a label collapses every series that differed only in it. Counter
    * sums stay correct, but the dimension stops being queryable — check what
    * reads it (billing or attribution pipelines, dashboards) first. Gauges have
    * no projection, because collapsing gauge series would report whichever
    * writer wrote last rather than a coarser number.
    */
-  labels?: MetricLabelCustomizationConfig[];
+  labels?: (MetricLabelCustomizationConfig | undefined)[];
   /**
    * Buckets replaces the bucket boundaries of the matched histograms,
    * overriding both metrics.histogramBuckets and what the metric declares in
    * code. Must be strictly increasing.
    */
-  buckets?: number[];
+  buckets?: number /* float64 */[];
 }
 /**
  * MetricLabelCustomizationConfig keeps or drops one label, or a "*"-terminated
@@ -2050,7 +2601,36 @@ export interface RateLimitStoreConfig {
   redis?: RedisConnectorConfig;
   cacheKeyPrefix?: string;
   nearLimitRatio?: number /* float32 */;
+  /**
+   * OnFailure decides a request the redis store could not: not connected,
+   * erroring, slower than redis.getTimeout, or at its in-flight cap.
+   */
+  onFailure?: RateLimitStoreFailureMode;
+  /**
+   * LocalLimitFactor scales every maxCount for the in-process limiter that
+   * onFailure: local decides with. It counts this replica only, so set it
+   * near 1/replicas. Required for local; must be > 0 and <= 1.
+   */
+  localLimitFactor?: number /* float64 */;
 }
+/**
+ * RateLimitStoreFailureMode is what a redis-backed budget does with a request
+ * its store could not decide.
+ */
+export type RateLimitStoreFailureMode = string;
+/**
+ * RateLimitStoreFailureAllow (default) admits the request.
+ */
+export const RateLimitStoreFailureAllow: RateLimitStoreFailureMode = "allow";
+/**
+ * RateLimitStoreFailureDeny rejects the request as rate limited.
+ */
+export const RateLimitStoreFailureDeny: RateLimitStoreFailureMode = "deny";
+/**
+ * RateLimitStoreFailureLocal decides it with an in-process limiter that
+ * counts every request, at maxCount × localLimitFactor.
+ */
+export const RateLimitStoreFailureLocal: RateLimitStoreFailureMode = "local";
 
 //////////
 // source: config_integrity.go
@@ -2110,12 +2690,6 @@ export interface IntegritySettings {
    */
   invalidBehavior?: IntegrityInvalidBehaviorConfig;
   /**
-   * ReorgWindow is how many blocks back from the tip the integrity ChainView
-   * keeps a number→hash pin + header and tracks reorgs (default 32). Raise for
-   * deep-reorg chains (e.g. polygon 256).
-   */
-  reorgWindow?: number /* int */;
-  /**
    * ObserveOnly runs every enabled check but never lets a verdict touch the
    * response: violations that WOULD have been rejected are recorded with the
    * outcome "would_reject" and served anyway. This is the safe way to enable
@@ -2142,15 +2716,18 @@ export interface IntegritySettings {
    * rejects feed — for the selection policy to act on (e.g. the
    * misbehaviorRateAbove predicate); absence of proof has no effect at all,
    * and ObserveOnly suppresses the misbehavior recording like every other
-   * integrity effect. Requires follow to be enabled (the verified header is
-   * the trust anchor). Off by default.
+   * integrity effect. These pinned probes require follow to be enabled
+   * (the verified header is the trust anchor). Off by default. On, it also
+   * runs, from the network's first client request, the "latest" tag-state
+   * probe behind the tag-state gate, with or without follow; off, no probe
+   * runs and that gate skips no upstream.
    */
   stateProbe?: IntegrityStateProbeConfig;
   /**
-   * Follow turns the ChainView into an actual chain follower: it walks the
-   * chain forward block by block, requires each block to name its
-   * predecessor's hash, and reconciles reorgs by finding the common ancestor.
-   * Off by default — it costs one eth_getBlockByNumber per block per network.
+   * Follow opens one integrity follow tap per chain tracker at the
+   * network's first client request: it holds demand at its interval's
+   * pace, so source polls run while clients are quiet, and it drives the
+   * state prober on each new head. Off by default.
    */
   follow?: IntegrityFollowConfig;
   /**
@@ -2162,28 +2739,24 @@ export interface IntegritySettings {
   misbehaviorsDestination?: MisbehaviorsDestinationConfig;
 }
 /**
- * IntegrityFollowConfig configures the ChainView chain follower.
- * Following gives the module a CONTIGUOUS, parent-linked view of the chain
- * instead of the sparse scatter of heights that client traffic happens to
- * touch. That is what lets it answer "is this block canonical" from a verified
- * chain rather than from whichever source was observed first, and it is the
- * precondition for any check that compares consecutive headers.
+ * DefaultIntegrityFollowInterval is the follow tap's pace when its config
+ * sets none.
+ */
+export const DefaultIntegrityFollowInterval = any /* time.Second */;
+/**
+ * IntegrityFollowConfig configures the integrity follow tap.
  */
 export interface IntegrityFollowConfig {
   /**
-   * Enabled turns the follower on for this network. Default false.
+   * Enabled opens the follow tap for this network. Default false.
    */
   enabled?: boolean;
   /**
-   * Interval is how often to check for new blocks (default 1s). Keep it below
-   * the chain's block time or the follower will run a step behind.
+   * Interval is the pace the follow tap needs heads at (default 1s): while
+   * it is a network's only newHeads demand, the tracker asks upstreams for
+   * newer heads no more often than this.
    */
   interval?: Duration;
-  /**
-   * MaxBlocksPerTick bounds catch-up work per tick (default 16), so a
-   * follower starting far behind converges steadily instead of bursting.
-   */
-  maxBlocksPerTick?: number /* int */;
 }
 /**
  * IntegrityStateProbeConfig configures the per-upstream state-trie probes.
@@ -2315,6 +2888,17 @@ export type JsonRpcErrorExtractor = any;
  * Similar to http.HandlerFunc style adapters.
  */
 export type JsonRpcErrorExtractorFunc = any;
+
+//////////
+// source: evm_local_answers.go
+
+/**
+ * EvmRoutableUpstreamsProvider is the optional surface a network exposes its
+ * routable upstreams through: the selection policy's eligible set in routing
+ * order, narrowed to the request's use-upstream selector. Asserted narrowly,
+ * like EvmStateProvenWriter, so EvmNetwork implementations need not change.
+ */
+export type EvmRoutableUpstreamsProvider = any;
 
 //////////
 // source: exec_state.go
@@ -2468,8 +3052,25 @@ export interface ExecStateSnapshot {
   consensusslots: number /* int */;
   consensusdisputes: number /* int */;
   consensuslowparticipants: number /* int */;
+  consensuspolicy: string;
   startedat: any /* time.Time */;
 }
+
+//////////
+// source: history_evidence.go
+
+/**
+ * HistoryEvidence is what an architecture tells the consensus history waivers
+ * (waiveAgreementOnEmptyOutsideRetention, waiveAgreementOnMissingData) about
+ * where data sits on its chain. A block is the chain's height unit: an EVM
+ * block number, an SVM slot. Every method fails closed: it answers 0, false or
+ * "" when it cannot tell, and the waiver then holds the quota.
+ */
+export type HistoryEvidence = any;
+
+//////////
+// source: history_evidence_evm.go
+
 
 //////////
 // source: network.go
@@ -2479,13 +3080,166 @@ export const ArchitectureEvm: NetworkArchitecture = "evm";
 export const ArchitectureSvm: NetworkArchitecture = "svm";
 export type Network = any;
 /**
- * EvmNetwork is the EVM-specific view of a Network. Callers that need
- * block-number accessors or leader-upstream selection should go through the
- * EvmHighestLatestBlockNumber / EvmHighestFinalizedBlockNumber / EvmLeaderUpstream
- * helpers below, which type-assert and degrade to zero-value on mismatch.
+ * EvmNetwork is the EVM-specific view of a Network. Callers read the head
+ * through EvmHeadOf, which type-asserts and degrades to the zero Head.
  */
 export type EvmNetwork = 
     Network;
+/**
+ * EvmHead is one lane's head (spec §6.4, §6.5), published as one value. The
+ * zero Head is an unknown one. Latest, LatestHash and Firm are the lane's
+ * one view, the chain tracker's; the rest is the head loop's number facts.
+ */
+export interface EvmHead {
+  /**
+   * Latest is the view's Head: the highest pin one counted hash vote
+   * holds, undisputed, within every guarantee, sticky until the pins move.
+   */
+  latest: number /* int64 */;
+  /**
+   * LatestHash is Latest's hash, the hash every transport sends there.
+   */
+  latesthash: string /* []byte */;
+  /**
+   * Firm is the highest block at or below Latest that q voters hold;
+   * routing and the refusal rule read it, nothing serves it alone.
+   */
+  firm: number /* int64 */;
+  /**
+   * Finalized is the q-th highest voter finalized number, at most Latest.
+   */
+  finalized: number /* int64 */;
+  /**
+   * Leader is the highest voter within Latest + maxRetryableBlockDistance.
+   */
+  leader: Upstream;
+  /**
+   * Ceiling is the raw max report of the lane's counted upstreams, at
+   * least Latest, which exists; 0 while any of them has none.
+   */
+  ceiling: number /* int64 */;
+  /**
+   * OldestReportAt is when the oldest counted report's evidence was
+   * taken: a poll's send time, a push's receive time; zero while one has
+   * none.
+   */
+  oldestreportat: any /* time.Time */;
+  /**
+   * Reach and ReachAt are the counted report that puts the chain
+   * furthest once the blocks it made since each report are counted:
+   * Reach its head, ReachAt when its evidence was taken; zero ReachAt
+   * while a report has none. The refusal rule's near future reads them
+   * (ReachNow): no counted upstream can hold a block far above it.
+   */
+  reach: number /* int64 */;
+  reachat: any /* time.Time */;
+  /**
+   * CeilingPeak is the highest Ceiling this instance published for the
+   * lane, and CeilingFellAt when Ceiling last fell below the one before
+   * it: a cursor between the two heights names a block no upstream
+   * reports any more (spec §10.1, §19 C16).
+   */
+  ceilingpeak: number /* int64 */;
+  ceilingfellat: any /* time.Time */;
+  /**
+   * LatestAt is when the lane's view first stood at Latest; zero when
+   * Latest is not the view's Head (a limit, a guarantee cap, the cache
+   * head's anchor lowered it) or unknown.
+   */
+  latestat: any /* time.Time */;
+  /**
+   * Anchored is set when the read follows the cache's fresh head
+   * (evm.servedTip.followCacheHead): Latest is at most that head, and a
+   * read of latest is served from the cache or by number, never sent to
+   * an upstream as the tag. Unset with no cache head, or a stale one.
+   */
+  anchored: boolean;
+  /**
+   * NextAt is the earliest time the lane's next block may come: LatestAt
+   * plus the shorter of half a block and the shortest recent step of the
+   * view; zero while LatestAt is, or too few steps or no block time are
+   * known.
+   */
+  nextat: any /* time.Time */;
+}
+/**
+ * HeadRule is the refusal rule's row for block N on a request (spec §6.4).
+ */
+export type HeadRule = number /* uint8 */;
+/**
+ * HeadServe: N ≤ Firm, or Latest or Firm unknown (tags and numbers
+ * reach upstreams unchanged).
+ */
+export const HeadServe: HeadRule = 0;
+/**
+ * HeadThin: Firm < N ≤ Latest: fewer than q voters hold N yet.
+ */
+export const HeadThin: HeadRule = 1;
+/**
+ * HeadBand: Latest < N ≤ ceiling, or the ceiling is unknown.
+ */
+export const HeadBand: HeadRule = 2;
+/**
+ * HeadFuture: above the ceiling, every counted report younger than
+ * 1 bt: no counted upstream has N yet.
+ */
+export const HeadFuture: HeadRule = 3;
+/**
+ * HeadStale: above the ceiling, a counted report 1 bt old or older:
+ * those reports are Asked before N is decided again. Never a request's
+ * verdict.
+ */
+export const HeadStale: HeadRule = 4;
+/**
+ * HeadRefusal is the refusal rule's verdict for one request's block, taken
+ * once (spec §6.4), and the retryable misses its legs got since.
+ */
+export interface HeadRefusal {
+  rule: HeadRule;
+  block: number /* int64 */;
+  /**
+   * Latest is the Latest Block was decided against, 0 while the head
+   * was unknown: then no block was promised.
+   */
+  latest: number /* int64 */;
+  /**
+   * Ceiling is the ceiling Block was decided against: the one the
+   * near-future wait saw when Waited.
+   */
+  ceiling: number /* int64 */;
+  /**
+   * Waited: N, near the ceiling, waited up to W for it (spec §6.4 near
+   * future).
+   */
+  waited: boolean;
+  /**
+   * Held: Block is pinned in the lane's view, so it exists; only who
+   * holds it is open. Nothing Asks an upstream for it: each attempt
+   * waits for the upstream that most likely holds it soonest (spec §6.4
+   * held).
+   */
+  held: boolean;
+}
+/**
+ * RefusalLeg is one execution of a request: a consensus slot, a hedge
+ * leg, or a retry round's. One goroutine runs it.
+ */
+export interface RefusalLeg {
+}
+/**
+ * MissVerdict is what an empty or missing answer above Firm is to the leg
+ * that got it.
+ */
+export type MissVerdict = number /* uint8 */;
+/**
+ * MissRetry: the leg's one retryable miss; the leg retries.
+ */
+export const MissRetry: MissVerdict = 0;
+/**
+ * MissFinal: the answer after the leg's miss, sent as the upstream
+ * gave it.
+ */
+export const MissFinal: MissVerdict = 1;
 /**
  * SvmNetwork is the SVM-specific view of a Network. Production Network
  * implementations satisfy this automatically when the underlying network is
@@ -2500,40 +3254,22 @@ export type TrackedMetrics = any;
 // source: served_tip.go
 
 /**
- * ServedTipInput is a single observation: an upstream's last-known tip block.
- * Callers are responsible for excluding syncing or cordoned upstreams BEFORE
- * passing observations here; the picker treats every input as a candidate.
- */
-export interface ServedTipInput {
-  /**
-   * UpstreamID is preserved only for telemetry attribution. It is not used
-   * in the pick.
-   */
-  upstreamid: string;
-  /**
-   * BlockNumber is the upstream's reported tip. Zero or negative values are
-   * treated as "no data yet" and filtered before picking.
-   */
-  blocknumber: number /* int64 */;
-}
-/**
  * ServedTipPick is the picker's output.
  */
 export interface ServedTipPick {
   /**
    * Tip is the value to advertise as latest/finalized: the highest block
-   * number that a strict MAJORITY of the inputs have already reached, or 0
-   * when there are no valid inputs.
+   * number that at least quorum of the inputs have already reached (all of
+   * them when there are fewer inputs than the quorum), or 0 when there are
+   * no valid inputs.
    */
   tip: number /* int64 */;
   /**
    * Freshest is the freshest CORROBORATED view: the 2nd-highest valid input
    * (or the only input when N=1) — the reference for the deliberate-lag
    * gauge (Freshest - Tip). Using the 2nd-highest instead of the raw max
-   * means a single rogue far-future upstream cannot inflate the lag gauge
-   * (the problem the old velocity gate solved via MaxEligible: one
-   * wrong-chain endpoint used to make the gauge read hundreds of thousands
-   * of blocks). The absolute per-upstream maxima remain observable via
+   * means a single rogue far-future upstream cannot inflate the lag gauge.
+   * The absolute per-upstream maxima remain observable via
    * erpc_upstream_latest_block_number.
    */
   freshest: number /* int64 */;
@@ -2545,17 +3281,36 @@ export interface ServedTipPick {
    */
   max: number /* int64 */;
   /**
-   * Inputs is the number of valid (BlockNumber > 0) observations.
+   * Inputs is the number of valid (> 0) heads.
    */
   inputs: number /* int */;
-  /**
-   * Sorted is the valid inputs, DESCENDING by block number — the order
-   * statistic's own working slice, exposed so the trajectory referee can
-   * cluster the very same ballot without sorting it a second time. Nil when
-   * there are no valid inputs; never mutate it.
-   */
-  sorted: ServedTipInput[];
 }
+/**
+ * ServedTipQuorum is how many voters must already have a block before it is
+ * served: a fixed count (>= 1), or ServedTipQuorumMajority for floor(N/2)+1 of
+ * the N voters. The zero value is DefaultServedTipQuorum. In YAML/JSON it is a
+ * positive integer or the string "majority".
+ */
+export type ServedTipQuorum = number /* int */;
+/**
+ * ServedTipQuorumMajority requires a strict majority of the voters.
+ */
+export const ServedTipQuorumMajority: ServedTipQuorum = -1;
+
+//////////
+// source: signals.go
+
+/**
+ * Invariant is one chain-tracking invariant (spec §15.3) counted by
+ * erpc_chain_tracker_invariant_violations_total (§17).
+ */
+export type Invariant = string;
+export const InvariantSentAboveHead: Invariant = "sent_above_head";
+export const InvariantTapGap: Invariant = "tap_gap";
+export const InvariantRemovedUnsent: Invariant = "removed_unsent";
+export const InvariantPinsUnlinked: Invariant = "pins_unlinked";
+export const InvariantFinalHashChanged: Invariant = "final_hash_changed";
+export const InvariantLatestRegressed: Invariant = "latest_regressed";
 
 //////////
 // source: timeout_func.go
@@ -2582,36 +3337,61 @@ export const ScopeNetwork: Scope = "network";
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
 /**
+ * CordonClass is the typed reason-category a cordon carries. The consensus
+ * selector matches on this class, never on the free-text cordon reason (which
+ * is diagnostic only), so the eval never couples to the message text of a
+ * cordon-producing call site. An upstream can hold several classes at once —
+ * the health tracker stores one flag per class (see health.Tracker), so
+ * classes do not overwrite each other and Uncordon clears only its own class.
+ * The class is a required parameter at every call site, so there is no runtime
+ * "unknown" class: a class added in the future must be mapped explicitly by the
+ * selector before it can ever permit a downgrade — fail closed by construction.
+ */
+export type CordonClass = string;
+/**
+ * CordonClassPunishment is set by the consensus executor's misbehavior
+ * sitout. It BLOCKS role-gated fallback: a punished upstream anywhere pins
+ * the request to the strictest policy.
+ */
+export const CordonClassPunishment: CordonClass = "punishment";
+/**
+ * CordonClassAvailability is set by the EVM state poller (chain-identity
+ * mismatch) and the SVM state poller (lag / unhealthy). It ALLOWS role-gated
+ * fallback — a genuine availability failure is the case fallback exists for.
+ */
+export const CordonClassAvailability: CordonClass = "availability";
+/**
+ * CordonClassOperator is set by the admin API. It BLOCKS fallback (fail
+ * closed): an admin cordon is undifferentiated between maintenance and
+ * distrust, so it is read as distrust.
+ */
+export const CordonClassOperator: CordonClass = "operator";
+/**
  * HealthTracker is an interface for tracking upstream health metrics.
  * `finality` is the DataFinalityState the request resolved to —
  * `DataFinalityStateAll` when the caller can't determine finality
  * (legacy call sites, internal probes, batch retries). Cordon/Uncordon
  * stay finality-agnostic because cordoning is an admin-level decision
  * about an entire (upstream, method) pair, not a per-finality bucket.
+ * Cordon and Uncordon stay class-less so existing tracker implementations
+ * keep compiling. Class-aware cordoning is the optional ClassedHealthTracker.
  */
 export type HealthTracker = any;
-export type Upstream = any;
-
-//////////
-// source: user.go
-
 /**
- * User is the authenticated caller. Beyond identity (Id) it carries the
- * per-caller capabilities resolved at authentication time. Capability fields
- * are populated ONLY by auth strategies; the trusted-header path
- * (NormalizedRequest.SetUserFromTrustedHeader) sets Id alone, so an
- * unvalidated header can never grant a capability.
+ * ClassedHealthTracker is the optional capability for a cordon that carries a
+ * class. The consensus selector reads CordonClasses. A tracker that does not
+ * implement this still receives HealthTracker.Cordon/Uncordon; the class is
+ * not stored, and the selector does not treat that upstream as
+ * availability-only (the only class that permits a policy downgrade).
  */
-export interface User {
-  id: string;
-  ratelimitbudget: string;
-  /**
-   * AllowClientDirectives is the client-directive wildcard pattern granted by
-   * the strategy that authenticated this user. Nil means "no strategy-level
-   * override" — the project-level pattern applies.
-   */
-  allowclientdirectives?: string;
-}
+export type ClassedHealthTracker = any;
+export type Upstream = any;
+/**
+ * ClassedUpstream is the optional capability for an upstream that records a
+ * cordon class. In-tree upstreams implement it. Out-of-tree upstreams keep
+ * the class-less Upstream.Cordon/Uncordon methods.
+ */
+export type ClassedUpstream = any;
 
 //////////
 // source: validation.go

@@ -24,7 +24,7 @@ request pinned to the normal group). Built so far:
   [erpc/networks.go](../../erpc/networks.go) shouldHandleMethod). Targeting +
   failover containment.
 - **Phase 2′ — selector-scoped served tip** *(done)*: the request is bound to
-  ctx at the top of `Forward`; `tipCandidateUpstreams` filters the served-tip
+  ctx at the top of `Forward`; `EvmRoutableUpstreams` filters the served-tip
   input set by the request's selector, so both max-mode (`evmHighestBlockMax`)
   and cluster-mode (`clusteredServedTip`) resolve `latest`/`finalized` AMONG the
   selected subset (plus the future-block short-circuit and
@@ -121,8 +121,8 @@ to tags is the only change; containment is automatic.
 ## 5. Lag isolation — request-time fence (the central change)
 
 **Today** block-head-lag exclusion is a *background* policy predicate
-(`.excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)))`,
-[internal/policy/default_policy.js:43](../../internal/policy/default_policy.js))
+(`.excludeIf(any(blockNumberLagAbove(16), blockSecondsLagAbove(30)), { probe: false })`,
+[internal/policy/default_policy.js:46](../../internal/policy/default_policy.js))
 reading the *precomputed network-wide scalar* `BlockHeadLag`
 ([health/tracker.go:1339](../../health/tracker.go)). That decision is computed
 once per `(network, method, finality)` tick, request-independent, so a
@@ -171,9 +171,9 @@ resolve `latest`/`finalized` and gate block availability. They must reflect the
 request's selector so a `systx`-targeted request never resolves `latest` to a
 block only a faster family has.
 
-- `ComputeServedTipCandidate` ([architecture/evm/served_tip.go:102-196](../../architecture/evm/served_tip.go))
-  stays a **pure, unchanged** function. `gatherEvmTipInputsForMethod`
-  ([erpc/networks.go:275-305](../../erpc/networks.go)) gains a selector filter on
+- The picker, `common.PickServedTip` ([common/served_tip.go](../../common/served_tip.go)),
+  stays a **pure** function. The candidate walk, `EvmRoutableUpstreams`
+  ([erpc/networks.go](../../erpc/networks.go)), applies the selector filter to
   its inputs.
 - **Untargeted** → existing network-wide monotonic counter
   (`servedLatestBlockShared`, [erpc/networks.go:59-62](../../erpc/networks.go)).

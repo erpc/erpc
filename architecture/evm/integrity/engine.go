@@ -3,14 +3,18 @@ package integrity
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 // Input is everything Validate needs to check one upstream response.
 type Input struct {
-	Method   string
+	Method string
+	// Logger is the owning network's logger; a check that panics logs there.
+	Logger   *zerolog.Logger
 	Upstream common.Upstream
 	Response *common.NormalizedResponse
 	Checks   CheckSet
@@ -36,7 +40,20 @@ type Input struct {
 	// violation serves the original immediately, corrected by nothing.
 	// ObserveOnly outranks this like it outranks everything else.
 	AutoCorrect bool
+	// Modes, when set, overrides a check for the whole network (the
+	// unanimous-failure suspension): CheckOff does not run it, CheckObserve
+	// records what it would reject and serves the response.
+	Modes func(checkID string) CheckMode
 }
+
+// CheckMode is how the network currently runs one check.
+type CheckMode int
+
+const (
+	CheckEnforced CheckMode = iota
+	CheckOff
+	CheckObserve
+)
 
 // Recorded is a reorg-sensitive mismatch that was observed but not rejected
 // (the block was unfinalized, so it may be a benign reorg). Callers emit a
@@ -92,7 +109,8 @@ type Result struct {
 // canonical fetch — a reorg, not corruption; served), "would_reject"
 // (observe-only mode suppressed a rejection and served the response anyway —
 // the count is the client-facing cost enforcement would incur), "off"
-// (disabled for this finality or check).
+// (disabled for this finality or check), "panic" (the check crashed on this
+// response; logged, no verdict, response served).
 type CheckOutcome struct {
 	CheckID string
 	Outcome string
@@ -153,6 +171,15 @@ func Validate(ctx context.Context, in Input) Result {
 			continue
 		}
 		cfg := in.Checks.For(c.ID)
+		mode := CheckEnforced
+		if in.Modes != nil {
+			mode = in.Modes(c.ID)
+		}
+		if mode == CheckOff {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "off"})
+			continue
+		}
+		observe := in.ObserveOnly || mode == CheckObserve
 		// Resolve the verdict for this check up front. If it would be ignored
 		// (invalidBehavior unfinalized: off, or a per-check onFailure: off),
 		// skip the check entirely — and with it any force-fetch it would issue.
@@ -162,7 +189,11 @@ func Validate(ctx context.Context, in Input) Result {
 			continue
 		}
 
-		v := c.Run(ctx, d, cfg)
+		v, panicked := runCheck(ctx, in.Logger, c, d, cfg)
+		if panicked {
+			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "panic"})
+			continue
+		}
 		if v == nil {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "pass"})
 			continue
@@ -187,12 +218,16 @@ func Validate(ctx context.Context, in Input) Result {
 				case PinFresh:
 					// Skipped counts as cleared too: the adopted pin resolved the
 					// dispute and the check has nothing left to verify.
-					if v2 := c.Run(ctx, d, cfg); v2 == nil || v2 == Skipped {
+					v2, panicked := runCheck(ctx, in.Logger, c, d, cfg)
+					if panicked {
+						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "panic"})
+						continue
+					}
+					if v2 == nil || v2 == Skipped {
 						res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reconfirmed"})
 						continue
-					} else {
-						v = v2
 					}
+					v = v2
 				case PinRateLimited:
 					// The pin could not be re-checked right now, so this violation
 					// rests on CACHED state we have no fresh evidence for. Hard
@@ -218,7 +253,7 @@ func Validate(ctx context.Context, in Input) Result {
 			// verdictFor so it covers every path that can reach a rejection —
 			// including Deterministic checks, which ignore invalidBehavior, and any
 			// check added by a later release.
-			if in.ObserveOnly {
+			if observe {
 				res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "would_reject"})
 				res.Recorded = append(res.Recorded, Recorded{
 					CheckID: c.ID, Reason: v.Reason, Class: c.Class,
@@ -240,7 +275,7 @@ func Validate(ctx context.Context, in Input) Result {
 		// the flagged original instead of an error, so the client never pays
 		// for a mismatch that might be a benign reorg. ObserveOnly was handled
 		// above (a recordOnly verdict under observe is just a record).
-		if in.AutoCorrect && !in.ObserveOnly {
+		if in.AutoCorrect && !observe {
 			res.Outcomes = append(res.Outcomes, CheckOutcome{c.ID, "reject_recoverable"})
 			res.Err = contentValidation(c, v, in.Upstream)
 			res.RejectedCheckID = c.ID
@@ -255,6 +290,20 @@ func Validate(ctx context.Context, in Input) Result {
 		res.Recorded = append(res.Recorded, Recorded{CheckID: c.ID, Reason: v.Reason, Class: c.Class, Finality: fin.label(ctx, in, d), Verdict: "record_only"})
 	}
 	return res
+}
+
+// runCheck runs one check and turns a panic into "no verdict". Checks parse
+// upstream bytes, so a crash in one must cost that check's verdict, never the
+// request or the process.
+func runCheck(ctx context.Context, logger *zerolog.Logger, c *Check, d *Decoded, cfg CheckConfig) (v *Violation, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error().Str("check", c.ID).Str("method", d.method).Interface("panic", r).
+				Str("stack", string(debug.Stack())).Msg("integrity: check panicked; no verdict for this response")
+			v, panicked = nil, true
+		}
+	}()
+	return c.Run(ctx, d, cfg), false
 }
 
 // finalityOnce caches the response block's finality for one Validate call.

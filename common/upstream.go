@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
+	"slices"
 
 	"github.com/rs/zerolog"
 )
@@ -22,6 +24,33 @@ const (
 
 type UpstreamType string
 
+// CordonClass is the typed reason-category a cordon carries. The consensus
+// selector matches on this class, never on the free-text cordon reason (which
+// is diagnostic only), so the eval never couples to the message text of a
+// cordon-producing call site. An upstream can hold several classes at once —
+// the health tracker stores one flag per class (see health.Tracker), so
+// classes do not overwrite each other and Uncordon clears only its own class.
+//
+// The class is a required parameter at every call site, so there is no runtime
+// "unknown" class: a class added in the future must be mapped explicitly by the
+// selector before it can ever permit a downgrade — fail closed by construction.
+type CordonClass string
+
+const (
+	// CordonClassPunishment is set by the consensus executor's misbehavior
+	// sitout. It BLOCKS role-gated fallback: a punished upstream anywhere pins
+	// the request to the strictest policy.
+	CordonClassPunishment CordonClass = "punishment"
+	// CordonClassAvailability is set by the EVM state poller (chain-identity
+	// mismatch) and the SVM state poller (lag / unhealthy). It ALLOWS role-gated
+	// fallback — a genuine availability failure is the case fallback exists for.
+	CordonClassAvailability CordonClass = "availability"
+	// CordonClassOperator is set by the admin API. It BLOCKS fallback (fail
+	// closed): an admin cordon is undifferentiated between maintenance and
+	// distrust, so it is read as distrust.
+	CordonClassOperator CordonClass = "operator"
+)
+
 // HealthTracker is an interface for tracking upstream health metrics.
 //
 // `finality` is the DataFinalityState the request resolved to —
@@ -29,12 +58,28 @@ type UpstreamType string
 // (legacy call sites, internal probes, batch retries). Cordon/Uncordon
 // stay finality-agnostic because cordoning is an admin-level decision
 // about an entire (upstream, method) pair, not a per-finality bucket.
+// Cordon and Uncordon stay class-less so existing tracker implementations
+// keep compiling. Class-aware cordoning is the optional ClassedHealthTracker.
 type HealthTracker interface {
 	RecordUpstreamMisbehavior(up Upstream, method string, finality DataFinalityState)
 	RecordUpstreamRequest(up Upstream, method string, finality DataFinalityState)
 	RecordUpstreamFailure(up Upstream, method string, finality DataFinalityState, err error)
 	Cordon(upstream Upstream, method string, reason string)
 	Uncordon(upstream Upstream, method string, reason string)
+}
+
+// ClassedHealthTracker is the optional capability for a cordon that carries a
+// class. The consensus selector reads CordonClasses. A tracker that does not
+// implement this still receives HealthTracker.Cordon/Uncordon; the class is
+// not stored, and the selector does not treat that upstream as
+// availability-only (the only class that permits a policy downgrade).
+type ClassedHealthTracker interface {
+	CordonClass(upstream Upstream, method string, reason string, class CordonClass)
+	UncordonClass(upstream Upstream, method string, reason string, class CordonClass)
+	// CordonClasses returns the classes currently held for (upstream, method),
+	// as the union of the exact-method scope and the wildcard "*" scope.
+	// Empty means not cordoned.
+	CordonClasses(upstream Upstream, method string) []CordonClass
 }
 
 type Upstream interface {
@@ -60,21 +105,63 @@ type Upstream interface {
 }
 
 // UniqueUpstreamKey returns a unique hash for an upstream.
-// It is used to identify the upstream uniquely in shared-state storage.
-// Sometimes ID might not be enough for example if user changes the endpoint to a completely different network.
+// It is used to identify the upstream uniquely in shared-state storage and the
+// client cache, so it is derived from static config only (the network id is
+// unknown until registration) with headers in sorted order.
 func UniqueUpstreamKey(up Upstream) string {
 	sha := sha256.New()
 	cfg := up.Config()
 
 	sha.Write([]byte(cfg.Id))
 	sha.Write([]byte(cfg.Endpoint))
-	sha.Write([]byte(up.NetworkId()))
-	if cfg.JsonRpc != nil && cfg.JsonRpc.Headers != nil {
-		for k, v := range cfg.JsonRpc.Headers {
+	if cfg.JsonRpc != nil {
+		for _, k := range slices.Sorted(maps.Keys(cfg.JsonRpc.Headers)) {
 			sha.Write([]byte(k))
-			sha.Write([]byte(v))
+			sha.Write([]byte(cfg.JsonRpc.Headers[k]))
 		}
 	}
 
 	return cfg.Id + "/" + hex.EncodeToString(sha.Sum(nil))
+}
+
+// ClassedUpstream is the optional capability for an upstream that records a
+// cordon class. In-tree upstreams implement it. Out-of-tree upstreams keep
+// the class-less Upstream.Cordon/Uncordon methods.
+type ClassedUpstream interface {
+	CordonClass(method string, reason string, class CordonClass)
+	UncordonClass(method string, reason string, class CordonClass)
+}
+
+// CordonClassed cordons up under class when it implements ClassedUpstream.
+// Otherwise it calls Cordon, so a legacy upstream is still taken out of rotation.
+func CordonClassed(up Upstream, method, reason string, class CordonClass) {
+	if c, ok := up.(ClassedUpstream); ok {
+		c.CordonClass(method, reason, class)
+		return
+	}
+	up.Cordon(method, reason)
+}
+
+// UncordonClassed lifts one class when up implements ClassedUpstream.
+// Otherwise it calls Uncordon.
+func UncordonClassed(up Upstream, method, reason string, class CordonClass) {
+	if c, ok := up.(ClassedUpstream); ok {
+		c.UncordonClass(method, reason, class)
+		return
+	}
+	up.Uncordon(method, reason)
+}
+
+// CordonClassesOf reads classes when tr implements ClassedHealthTracker.
+// A nil tracker or a legacy tracker returns nil: no class is visible, so the
+// selector must not treat the upstream as availability-only.
+func CordonClassesOf(tr HealthTracker, up Upstream, method string) []CordonClass {
+	if tr == nil {
+		return nil
+	}
+	c, ok := tr.(ClassedHealthTracker)
+	if !ok {
+		return nil
+	}
+	return c.CordonClasses(up, method)
 }

@@ -119,13 +119,32 @@ func TestBatchExecHeaders_AggregateCountersAndPartialCache(t *testing.T) {
 	assert.Empty(t, h.Get("X-ERPC-Upstreams-Truncated"))
 }
 
+func TestBatchExecHeaders_ConsensusPolicyAgreesOrOmitsMixed(t *testing.T) {
+	s := costTestServer(&common.ServerConfig{})
+
+	a := routedResponse(t, "eth_call")
+	b := routedResponse(t, "eth_getBalance")
+	a.Request().ExecState().SetConsensusPolicy("waive-missing")
+	b.Request().ExecState().SetConsensusPolicy("waive-missing")
+
+	w := httptest.NewRecorder()
+	s.writeBatchExecHeaders(context.Background(), w, []interface{}{a, b})
+	assert.Equal(t, "waive-missing", w.Header().Get("X-ERPC-Consensus-Policy"))
+
+	c := routedResponse(t, "eth_getBlockByNumber")
+	c.Request().ExecState().SetConsensusPolicy("default")
+	w = httptest.NewRecorder()
+	s.writeBatchExecHeaders(context.Background(), w, []interface{}{a, c})
+	assert.Empty(t, w.Header().Get("X-ERPC-Consensus-Policy"), "mixed policies have no single batch value")
+}
+
 // routedResponseOnNetwork is routedResponse with the request bound to a
 // network, the way a real forward resolves one from the URL before routing.
 func routedResponseOnNetwork(t *testing.T, method, networkId, networkLabel string) *common.NormalizedResponse {
 	t.Helper()
 	resp := routedResponse(t, method)
 	req := resp.Request()
-	req.SetNetwork(&Network{networkId: networkId, networkLabel: networkLabel})
+	req.SetNetwork(&Network{networkId: networkId, networkLabel: networkLabel, cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}})
 	return resp
 }
 
@@ -135,7 +154,7 @@ func TestCostHeaders_NetworkIdAndAlias(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	s.writeCostHeaders(context.Background(), w, []interface{}{
-		routedResponseOnNetwork(t, "eth_call", "evm:42161", "arbitrum-one"),
+		routedResponseOnNetwork(t, "eth_call", "evm:42161", "arbitrum-one").WithFinality(common.DataFinalityStateUnfinalized),
 	})
 
 	h := w.Header()
@@ -143,6 +162,7 @@ func TestCostHeaders_NetworkIdAndAlias(t *testing.T) {
 	// The alias is exactly what eRPC's own `network` metric label carries, so a
 	// proxy attributing usage per network matches eRPC's numbers by construction.
 	assert.Equal(t, "arbitrum-one", h.Get("X-ERPC-Network-Alias"))
+	assert.Equal(t, "unfinalized", h.Get("X-ERPC-Finality"))
 }
 
 func TestCostHeaders_NetworkAliasFallsBackToId(t *testing.T) {
@@ -185,12 +205,13 @@ func TestCostHeaders_NetworkOmittedWhenBatchDisagrees(t *testing.T) {
 	// about the response — omit rather than pick a side.
 	w := httptest.NewRecorder()
 	s.writeCostHeaders(context.Background(), w, []interface{}{
-		routedResponseOnNetwork(t, "eth_call", "evm:1", "mainnet"),
-		routedResponseOnNetwork(t, "eth_call", "evm:8453", "base"),
+		routedResponseOnNetwork(t, "eth_call", "evm:1", "mainnet").WithFinality(common.DataFinalityStateFinalized),
+		routedResponseOnNetwork(t, "eth_call", "evm:8453", "base").WithFinality(common.DataFinalityStateRealtime),
 	})
 
 	h := w.Header()
 	assert.Empty(t, h.Get("X-ERPC-Network-Id"))
 	assert.Empty(t, h.Get("X-ERPC-Network-Alias"))
+	assert.Empty(t, h.Get("X-ERPC-Finality"), "a batch of mixed finality has no single value")
 	assert.Equal(t, "2", h.Get("X-ERPC-Calls"))
 }

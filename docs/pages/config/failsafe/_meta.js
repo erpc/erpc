@@ -4,5 +4,6 @@ module.exports = {
 	timeout: { title: "Timeout" },
 	"circuit-breaker": { title: "Circuit breaker" },
 	consensus: { title: "Consensus" },
+	"consensus-policies": { title: "Consensus policies" },
 	integrity: { title: "Integrity" },
 };

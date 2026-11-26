@@ -25,7 +25,7 @@ func init() {
 
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 
 	// Set up required chainId/latest/finalized/syncing mocks BEFORE any components start
 	// so upstream detectFeatures and state pollers don't hang or steal test mocks.
@@ -131,6 +131,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		t.Errorf("expected nil, got %v", err)
 	}
 	erpcInstance, err := NewERPC(ctx1, &lg, ssr, nil, nil, cfg)
+	stopERPCAtEnd(t, erpcInstance, ctx1)
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}

@@ -196,11 +196,12 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 		return
 	}
 
-	method, methErr := req.Method()
-	if methErr != nil || method == "" {
+	jrq, jrqErr := req.JsonRpcRequest(ctx)
+	if jrqErr != nil || jrq == nil || jrq.Method == "" {
 		telemetry.MetricSelectionProbeSkipped.WithLabelValues(p.networkID, "no_method").Inc()
 		return
 	}
+	method := jrq.Method
 
 	// Write-method gate — never mirror state-mutating calls. eRPC has
 	// the methods directives system but no central "is mutating"
@@ -221,8 +222,23 @@ func (p *Prober) onRequest(ctx context.Context, req *common.NormalizedRequest) {
 			continue
 		}
 		p.wg.Add(1)
-		go p.mirror(req, u, cfg) // #nosec G118 -- probe runs independently; must not be cancelled by the originating request
+		go p.mirror(probeRequest(req, jrq), u, cfg) // #nosec G118 -- probe runs independently; must not be cancelled by the originating request
 	}
+}
+
+// probeRequest copies the client's request for one mirror. Forward records
+// its outcome on the request it is given (the last valid response, the
+// last upstream), and the client's request reads those when its own
+// upstreams fail: a mirror forwarding the client's request itself hands
+// the excluded upstream's answer to the client.
+func probeRequest(req *common.NormalizedRequest, jrq *common.JsonRpcRequest) *common.NormalizedRequest {
+	probe := common.NewNormalizedRequestFromJsonRpcRequest(jrq.Clone())
+	if dirs := req.Directives(); dirs != nil {
+		probe.SetDirectives(dirs.Clone())
+	}
+	probe.CopyHttpContextFrom(req)
+	probe.SetNetwork(req.Network())
+	return probe
 }
 
 // tryReserveProbe runs every gate AND — if all pass — atomically

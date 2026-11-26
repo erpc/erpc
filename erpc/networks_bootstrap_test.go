@@ -22,7 +22,7 @@ import (
 
 func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -72,6 +72,7 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 	// Network config without static upstreams to force provider path
 	ncfg := &common.NetworkConfig{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}
 	net, err := NewNetwork(ctx, &log.Logger, "prjA", ncfg, rlr, upr, mt, nil)
+	stopAtEnd(t, net)
 	require.NoError(t, err)
 
 	// Prepare upstreams with provider tasks and wait; we expect initialization to succeed after provider config conversion.
@@ -82,7 +83,7 @@ func TestNetworksBootstrap_SlowProviderUpstreams_InitializeThenServe(t *testing.
 
 func TestNetworksBootstrap_UnsupportedNetwork_FatalFast(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 
@@ -112,7 +113,7 @@ func TestNetworksBootstrap_UnsupportedNetwork_FatalFast(t *testing.T) {
 
 func TestNetworksBootstrap_ProviderInitializing_503Retry(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	defer util.AssertNoPendingMocks(t, 0)
 

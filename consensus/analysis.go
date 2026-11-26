@@ -21,8 +21,42 @@ type responseGroup struct {
 
 	// Cached largest result/error for quick access (prefer largest response even within same consensus group)
 	LargestResult *common.NormalizedResponse
-	FirstError    error
-	HasResult     bool
+	// RepresentativeError is the error every winner rule returns for this group.
+	// It is the member with the lowest upstream id (ties broken by attempt
+	// index), never the first to arrive: a group can hold members whose codes or
+	// messages differ — missing-data groups by verdict, and no group has ever
+	// hashed the message — so picking by arrival made the client-visible error
+	// depend on which upstream happened to answer first.
+	RepresentativeError error
+	// repKey is the sort key of the member RepresentativeError came from.
+	repKey    representativeKey
+	HasResult bool
+}
+
+// representativeKey orders a group's error members. Upstream id is the stable
+// axis; attempt index only breaks ties when one upstream answered twice, and an
+// unattributed result (no upstream) always loses to an attributed one.
+type representativeKey struct {
+	unattributed bool
+	upstreamID   string
+	index        int
+}
+
+func newRepresentativeKey(r *execResult) representativeKey {
+	if r.Upstream == nil {
+		return representativeKey{unattributed: true, index: r.Index}
+	}
+	return representativeKey{upstreamID: r.Upstream.Id(), index: r.Index}
+}
+
+func (k representativeKey) before(other representativeKey) bool {
+	if k.unattributed != other.unattributed {
+		return !k.unattributed
+	}
+	if k.upstreamID != other.upstreamID {
+		return k.upstreamID < other.upstreamID
+	}
+	return k.index < other.index
 }
 
 func (g *responseGroup) participants() []common.ParticipantInfo {
@@ -51,10 +85,15 @@ type consensusAnalysis struct {
 	// Use for "how many more can arrive" math; use totalParticipants for
 	// vote counting.
 	collectedResponses int
-	validParticipants  int
-	originalRequest    *common.NormalizedRequest
-	leaderUpstream     common.Upstream
-	method             string // The RPC method being called (e.g., "eth_getTransactionCount")
+	// collectionSealed marks the bag round-complete for waivers even when
+	// collectedResponses < maxParticipants. Only set when every participant
+	// slot has produced a terminal acknowledgement — cancellation alone must
+	// not seal (cancel-ignoring / already-buffered results can still arrive).
+	collectionSealed  bool
+	validParticipants int
+	originalRequest   *common.NormalizedRequest
+	leaderUpstream    common.Upstream
+	method            string // The RPC method being called (e.g., "eth_getTransactionCount")
 
 	// Cached computed values
 	cachedBestNonEmpty *responseGroup
@@ -63,6 +102,50 @@ type consensusAnalysis struct {
 	cachedBestByCount  *responseGroup
 	cachedBestBySize   *responseGroup
 	cachedValidGroups  []*responseGroup
+
+	// evidence is the history-waiver evidence of the participants' chain
+	// architecture, resolved on first use by historyEvidence.
+	evidence         common.HistoryEvidence
+	evidenceResolved bool
+
+	// waiverBlocks memoizes waiverBlock per winning group: confirming a hash
+	// lookup's block is a network probe, and one determineWinner can ask
+	// for the same group more than once.
+	waiverBlocks map[*responseGroup]waiverBlockProof
+}
+
+// historyEvidence is the history-waiver evidence of the architecture the
+// participants' network id names, or nil when it has none: the waivers then
+// fail closed. Every participant serves the request's one network.
+func (a *consensusAnalysis) historyEvidence() common.HistoryEvidence {
+	if a == nil {
+		return nil
+	}
+	if a.evidenceResolved {
+		return a.evidence
+	}
+	a.evidenceResolved = true
+	for _, g := range a.groups {
+		for _, r := range g.Results {
+			if r != nil && r.Upstream != nil {
+				a.evidence = common.HistoryEvidenceOfNetworkId(r.Upstream.NetworkId())
+				return a.evidence
+			}
+		}
+	}
+	return nil
+}
+
+// upstreamsHistoryEvidence is the history-waiver evidence of the
+// architecture the upstreams' network id names. Every upstream of a request
+// serves its one network, so the first decides.
+func upstreamsHistoryEvidence(ups []common.Upstream) common.HistoryEvidence {
+	for _, u := range ups {
+		if u != nil {
+			return common.HistoryEvidenceOfNetworkId(u.NetworkId())
+		}
+	}
+	return nil
 }
 
 func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *config, responses []*execResult) *consensusAnalysis {
@@ -78,8 +161,8 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 			analysis.method = method
 		}
 		if net := req.Network(); net != nil && net.Architecture() == common.ArchitectureEvm {
-			// Use the executor context; leader selection is read-only and fast
-			analysis.leaderUpstream = common.EvmLeaderUpstream(net, ctx)
+			// The request's Head.Leader: within reach of its Latest (#1154).
+			analysis.leaderUpstream = common.EvmHeadOf(net, ctx, req).Leader
 		}
 	}
 
@@ -121,15 +204,16 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 				// First successful response in this group
 				group.LargestResult = r.Result
 				group.ResponseSize = r.CachedResponseSize
-				group.FirstError = nil
+				group.RepresentativeError = nil
 				group.HasResult = true
 			} else if r.CachedResponseSize > group.ResponseSize {
 				// Found a larger response in the same consensus group
 				group.LargestResult = r.Result
 				group.ResponseSize = r.CachedResponseSize
 			}
-		} else if group.FirstError == nil && r.Err != nil {
-			group.FirstError = r.Err
+		} else if key := newRepresentativeKey(r); group.RepresentativeError == nil || key.before(group.repKey) {
+			group.RepresentativeError = r.Err
+			group.repKey = key
 		}
 	}
 
@@ -224,8 +308,23 @@ func dedupeByUpstream(responses []*execResult) []*execResult {
 // totalParticipants: a deduplicated duplicate consumed a participant slot —
 // counting it as still-arriving capacity would suppress short-circuits (and
 // hold composition-dispute rounds open) after every slot already answered.
+//
+// A sealed collection reports false even when collectedResponses <
+// maxParticipants — used only when every slot has already acknowledged.
 func (a *consensusAnalysis) hasRemaining() bool {
+	if a == nil || a.collectionSealed {
+		return false
+	}
 	return a.config.maxParticipants > a.collectedResponses
+}
+
+// sealCollection marks the response bag final for waiver evaluation.
+// Callers must only seal after every participant slot has produced a
+// terminal result/acknowledgement — not merely after cancelling stragglers.
+func (a *consensusAnalysis) sealCollection() {
+	if a != nil {
+		a.collectionSealed = true
+	}
 }
 
 func (a *consensusAnalysis) participants() []common.ParticipantInfo {
@@ -245,7 +344,7 @@ func (a *consensusAnalysis) groupOf(sr *slotResult) *responseGroup {
 		return nil
 	}
 	for _, g := range a.groups {
-		if sr.Error != nil && g.FirstError == sr.Error {
+		if sr.Error != nil && g.RepresentativeError == sr.Error {
 			return g
 		}
 		for _, r := range g.Results {
@@ -410,9 +509,9 @@ func (a *consensusAnalysis) getLeaderFirstErrorIncludingInfra() error {
 		return nil
 	}
 	for _, group := range a.groups {
-		if group == nil || group.FirstError == nil {
+		if group == nil || group.RepresentativeError == nil {
 			// Fast path: skip groups without cached error
-			// Still scan results in case FirstError isn't populated
+			// Still scan results in case RepresentativeError isn't populated
 		}
 		for _, r := range group.Results {
 			if r != nil && r.Upstream != nil && r.Upstream == a.leaderUpstream && r.Err != nil {
@@ -440,20 +539,44 @@ func isAgreedUponError(err error) bool {
 }
 
 // errorToConsensusHash generates a comparable hash from an error.
+//
+// Missing-data errors hash by verdict, not by number. A provider's JSON-RPC code
+// for "I do not have this" reports its own storage layout, not the chain: agave
+// answers a permanently absent slot with -32007 when check_blockstore_root
+// settles it locally and -32009 when check_bigtable_result had to ask long-term
+// storage, and answers a block it cannot serve with -32001 when its ledger was
+// pruned below the slot and -32004 when the slot is above its rooted tip. Two
+// honest upstreams therefore landed in different groups and disputed under
+// returnError, which is the one outcome neither of them claimed.
+//
+// EVM is unaffected in practice: every EVM missing-data site already normalizes
+// to JsonRpcErrorMissingData, so those responses shared a group before this and
+// share one now.
 func errorToConsensusHash(err error) string {
 	if err == nil {
 		return ""
 	}
+	hash := "error:generic"
 	var jre *common.ErrJsonRpcExceptionInternal
-	if errors.As(err, &jre) {
-		return fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
-	}
-	if se, ok := err.(common.StandardError); ok {
-		if base := se.Base(); base != nil {
-			return string(base.Code)
+	switch {
+	case common.HasErrorCode(err, common.ErrCodeEndpointMissingData):
+		hash = "missingdata"
+	case errors.As(err, &jre):
+		hash = fmt.Sprintf("jsonrpc:%d", jre.NormalizedCode())
+	default:
+		if se, ok := err.(common.StandardError); ok {
+			if base := se.Base(); base != nil {
+				hash = string(base.Code)
+			}
 		}
 	}
-	return "error:generic"
+	// "Skipped for good" and "not indexed yet" are opposite claims about whether
+	// asking again can help. One group would hand the caller whichever arrived
+	// first, so permanence stays part of the key and the two dispute instead.
+	if common.IsPermanentlyMissingData(err) {
+		hash += ":permanent"
+	}
+	return hash
 }
 
 // resultToJsonRpcResponse safely converts a result to a JsonRpcResponse.

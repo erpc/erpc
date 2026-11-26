@@ -122,6 +122,8 @@ Use `IsFinalizedCommitment` semantics when reasoning about which upstream can se
 | options slot holds a non-object (legacy `getBlock(slot, "base64")` encoding form) | `""`, injection skipped — a valid request shape is never corrupted |
 | required positional args missing (including `getBlocks` with no start slot) | `""`, injection skipped |
 
+**Config-less reads get `{}` when nothing is pinned.** Some providers treat the optional config object of `getBlock`, `getTransaction` and `getProgramAccounts` as required, and answer a request without it with `-32602` "Invalid params" (`missing value for required argument 1`). With no network default, eRPC appends `{}` to such a request (e.g. `getBlock [slot]` becomes `[slot, {}]`). Agave's config for these methods has only optional fields, so `{}` means exactly agave's defaults, and `[slot]` and `[slot, {}]` share one cache key. Methods whose config is a bare commitment object (`getTokenSupply`, `getInflationGovernor`, …) never get `{}`: agave answers it with `-32602` "missing field `commitment`".
+
 **Injection runs at the project layer, before the cache read.** Despite the hook's name it is invoked from `HandleProjectPreForward`, ahead of the network-layer cache lookup, and it invalidates the memoized `CacheHash` so the cache keys on the rewritten body. Running it after the cache read would key every request on its pre-injection params and produce a permanent cache miss.
 
 **Options-index table.** Solana puts the config object at a different param position per method, so injection is table-driven:
@@ -160,10 +162,18 @@ When the configured default is `processed` and the target method is in that set,
 **`minContextSlot` is a node-freshness floor, not a history bound.** Per the Solana RPC reference it is the minimum bank slot at which a request may be **evaluated**. It is *not* a lower bound on returned history and never restricts how far back a query may look — `getBalance(pubkey, {minContextSlot: 1})` still answers at the current head. Consequently:
 
 - It is **not** a finality-promotion signal. A `minContextSlot` on a moving-head read does not make the response immutable.
-- It **is** used to pre-filter upstreams: a request carrying `minContextSlot` skips upstreams whose tracked slot (at the request's commitment) is known to be behind it, avoiding a guaranteed `-32016` round-trip. The comparison slot matches the commitment — a finalized-commitment request needs the node's *finalized* slot at `minContextSlot`, anything weaker needs only the processed tip.
+- It **is** used to order upstreams: a request carrying `minContextSlot` puts last the upstreams whose tracked slot (at the request's commitment) is more than one poll behind it, closest first. The comparison slot matches the commitment — a finalized-commitment request needs the node's *finalized* slot at `minContextSlot`, anything weaker needs only the processed tip.
 - It **is** the SVM cache's partition dimension (`<networkId>:<slotRef>`).
 
-The upstream pre-filter is defensive: unknown state (no poller, zero slot, non-SVM upstream) never excludes, and if every upstream would be excluded the original list is returned so the `-32016` failover path reports the truth rather than an empty pool.
+The ordering never removes an upstream. The tracked slot is a poll that trails the node by up to one poll interval, so an upstream it calls behind has often reached the slot, and the upstreams ahead of it may not serve the method at all (some providers answer `getProgramAccountsV2` with `-32601`). "One poll" is the `getBlock` guard's margin: 2 slots plus one slot per 400 ms of `networks[*].svm.statePollerDebounce`. Within it the upstreams keep their score order, so a client that asks for the newest slot goes to the best upstream, not to the one polled last. Unknown state (no poller, zero slot, non-SVM upstream) counts as at or ahead. An upstream that really trails answers `-32016`, which fails over like any server error.
+
+**V2 scan cursors have one meaning: a page starts at `paginationKey`.** `getProgramAccountsV2` and `getTokenAccountsByOwnerV2` page through accounts in pubkey order, and providers disagree on the cursor. Some answer the accounts after the key and return the page's last account as the next key; others answer from the key on and return the key just after the page's last account. A cursor from the first kind therefore repeats an account on the second. eRPC makes every provider answer the same page, so a scan may move between upstreams on any page:
+
+1. The request carries the key just before the cursor (32-byte big-endian minus one; the zero key drops `paginationKey`). Both kinds of provider then answer from the cursor on, plus at most that one key. A cursor that is not a 32-byte base58 key goes out untouched.
+2. Each upstream's page drops a leading account equal to the key sent, and lowers `count` by one when present.
+3. A next key equal to the page's last account becomes the key just after it (`null` past the largest key). Any other next key stays: a provider that answers after the key may name the last account its filter rejected, and a page that starts there rejects it again.
+
+The request rewrite runs at the project layer, before the cache read, as commitment injection does; the response rewrite runs per upstream, before consensus, hedging and the cache see the page. A client that sends the last account it received as the cursor gets that account again: send the `paginationKey` eRPC returned.
 
 **`getGenesisHash` short-circuit.** Cluster genesis hashes are immutable, so `getGenesisHash` is answered from a hardcoded table with no upstream round-trip — mirroring EVM's `eth_chainId` short-circuit.
 
@@ -292,14 +302,14 @@ Commitment injection emits no metrics of its own — it is a params rewrite. Its
 | Signal | Where |
 |---|---|
 | `finality` label on `erpc_network_*` / `erpc_upstream_*` / `erpc_cache_*` metrics | Reflects `GetFinality`, so a mispinned commitment shows up as an unexpected finality mix |
-| `erpc_upstream_request_skipped_total` | Includes upstreams skipped by the `minContextSlot` pre-filter |
-| `-32016` in `erpc_upstream_request_errors_total` | `MinContextSlotNotReached` — the pre-filter did not have fresh enough state to avoid the round-trip |
+| `-32016` in `erpc_upstream_request_errors_total` | `MinContextSlotNotReached` — an upstream had not reached the slot; eRPC failed over to the next one |
 
 ### Source code entry points
 
-- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `resolveCommitment`, `effectiveCommitment`, `solanaDefaultCommitment`, `commitmentOptionsIndex`, `atLeastConfirmedMethods`, `clampCommitmentForMethod`, `writeCommitmentField`, `networkPreForward_injectCommitment`, `networkPreForward_injectWriteCommitment`, `projectPreForward_getGenesisHash`.
+- [`architecture/svm/hooks.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/hooks.go) — `resolveCommitment`, `effectiveCommitment`, `FailsafeCommitment` (the level failsafe `matchCommitment` compares), `solanaDefaultCommitment`, `commitmentOptionsIndex`, `atLeastConfirmedMethods`, `clampCommitmentForMethod`, `writeCommitmentField`, `networkPreForward_injectCommitment`, `networkPreForward_injectWriteCommitment`, `projectPreForward_getGenesisHash`.
 - [`architecture/svm/finality.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/finality.go) — `GetFinality`, `IsFinalizedCommitment`, and the moving-head rationale.
-- [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `FilterByMinContextSlot`, `MinContextSlotOf`, `isAtOrAheadOfSlot`.
+- [`architecture/svm/slot_lag.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/slot_lag.go) — `OrderByMinContextSlot`, `MinContextSlotOf`, `trackedSlot`.
+- [`architecture/svm/pagination.go`](https://github.com/erpc/erpc/blob/main/architecture/svm/pagination.go) — `projectPreForward_scanCursor`, `upstreamPostForward_scanCursor`, `normalizeScanPage`.
 - <SourceLink file="common/config.go" lines="2336-2342" label="common/config.go — SvmNetworkConfig.Commitment" />
 
 ### Related pages
@@ -307,7 +317,8 @@ Commitment injection emits no metrics of its own — it is a params rewrite. Its
 - [SVM slot tracking & health](/reference/svm/slot-tracking) — the state poller, `getSlot` correction, ingestion lag, and cordoning.
 - [SVM JSON-RPC cache](/config/database/svm-json-rpc-cache) — the finality classification tables and cache-key derivation.
 - [Networks](/config/projects/networks) — declaring an SVM network and the full `svm.*` schema.
-- [Consensus](/config/failsafe/consensus) — how `matchFinality` gates a consensus policy.
+- [Consensus](/config/failsafe/consensus) — how `matchFinality` and `matchCommitment` gate a consensus policy.
+- [Matchers](/config/matcher) — `matchCommitment` semantics vs `matchFinality`.
 - [Error taxonomy](/reference/errors#svm-solana-error-contract) — `-32016` and the rest of the SVM error contract.
 
 </AISection>

@@ -1,9 +1,12 @@
 package integrity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"math/big"
+	"strconv"
 
 	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -47,6 +50,39 @@ func deriveKnownBlockFields() map[string]struct{} {
 	return set
 }
 
+// ethereumBlockHash is the standard Ethereum header format (HeaderFormat):
+// keccak(RLP(header)) of a block's top-level keys (gethHeaderHash). A
+// timestamp counts in any form ParseTimestamp reads, so a node that sends
+// it as an integer is still judged.
+func ethereumBlockHash(_ int64, fields map[string]json.RawMessage) (hash string, ok bool) {
+	if ts := fields["timestamp"]; len(ts) > 0 && !bytes.HasPrefix(ts, []byte(`"0x`)) {
+		v, ok := JSONTimestamp(ts)
+		if !ok {
+			return "", false
+		}
+		fields = maps.Clone(fields)
+		fields["timestamp"] = json.RawMessage(`"0x` + strconv.FormatInt(v, 16) + `"`)
+	}
+	return gethHeaderHash(fields)
+}
+
+// BindChainId gives blockHashRecompute the chain id that chain-bound header
+// formats hash with; without it they encode nothing and the check skips.
+// Applied after the operator's overrides, which replace a check's params.
+func BindChainId(cs CheckSet, chainId int64) {
+	cfg, ok := cs["blockHashRecompute"]
+	if !ok || chainId == 0 {
+		return
+	}
+	params := maps.Clone(cfg.Params)
+	if params == nil {
+		params = make(map[string]string, 1)
+	}
+	params["chainId"] = strconv.FormatInt(chainId, 10)
+	cfg.Params = params
+	cs["blockHashRecompute"] = cfg
+}
+
 func init() {
 	// blockHashRecompute — keccak(RLP(header)) must equal the reported hash.
 	register(&Check{
@@ -57,25 +93,15 @@ func init() {
 			if h == nil || h.Hash == "" {
 				return Skipped
 			}
-
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(d.raw, &fields); err != nil {
-				return Skipped // not an object → leave it to schemaConformance
+			chainId, _ := strconv.ParseInt(cfg.param("chainId", "0"), 10, 64)
+			format, encodable := VerifyBlockHash(chainId, d.raw)
+			switch {
+			case format != "":
+				return nil
+			case !encodable:
+				return Skipped
 			}
-			for k := range fields {
-				if _, ok := knownBlockFields[k]; !ok {
-					return Skipped // custom/unknown field → header not fully understood
-				}
-			}
-
-			var gh gethtypes.Header
-			if err := gh.UnmarshalJSON(d.raw); err != nil {
-				return Skipped // missing a required header field → do not false-flag
-			}
-			if got := gh.Hash().Hex(); !eqHex(got, h.Hash) {
-				return failf("block hash %s does not match recomputed %s", h.Hash, got)
-			}
-			return nil
+			return failf("block hash %s matches no header format that encodes the block", h.Hash)
 		},
 	})
 

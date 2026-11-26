@@ -25,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -128,6 +129,7 @@ func setupSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamConf
 		metricsTracker,
 		policyEngine,
 	)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -142,8 +144,8 @@ func setupSelectionPolicyNetwork(t *testing.T, ctx context.Context, upstreamConf
 	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	for _, ups := range upsList {
 		require.NoError(t, ups.Bootstrap(ctx))
-		ups.EvmStatePoller().SuggestLatestBlock(1000)
-		ups.EvmStatePoller().SuggestFinalizedBlock(900)
+		ups.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
+		ups.EvmStatePoller().SuggestFinalizedBlock(900, time.Now())
 	}
 	expectedCount := len(upstreamConfigs)
 	// Wait until the registry returns every configured upstream — the
@@ -419,7 +421,7 @@ func resetGockHits() {
 // excludes it BEFORE scoring.
 func TestNetworkPolicy_SlowUpstream_Excluded(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -464,7 +466,7 @@ func TestNetworkPolicy_SlowUpstream_Excluded(t *testing.T) {
 // it's out.
 func TestNetworkPolicy_ErroringUpstream_Excluded(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -510,7 +512,7 @@ func TestNetworkPolicy_ErroringUpstream_Excluded(t *testing.T) {
 // it's filtered out entirely.
 func TestNetworkPolicy_LaggingUpstream_Excluded(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -560,7 +562,7 @@ func TestNetworkPolicy_LaggingUpstream_Excluded(t *testing.T) {
 // prevents the throttled vendor from being selected at all.
 func TestNetworkPolicy_ThrottledUpstream_Excluded(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -602,7 +604,7 @@ func TestNetworkPolicy_ThrottledUpstream_Excluded(t *testing.T) {
 // only one that should receive traffic.
 func TestNetworkPolicy_MixedDegraded_OnlyHealthyServed(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -651,7 +653,7 @@ func TestNetworkPolicy_MixedDegraded_OnlyHealthyServed(t *testing.T) {
 // preferTag sees no healthy primaries, it switches to the fallback tier.
 func TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -698,7 +700,7 @@ func TestNetworkPolicy_FallbackTier_ActivatesWhenPrimaryAllBroken(t *testing.T) 
 // failing closed. Better a flaky response than no response.
 func TestNetworkPolicy_SafetyNet_WhenAllBroken(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -745,7 +747,7 @@ func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 	for _, finality := range []string{"realtime", "unfinalized", "finalized"} {
 		t.Run(finality+"_holds_prior_primary", func(t *testing.T) {
 			util.ResetGock()
-			defer util.ResetGock()
+			t.Cleanup(util.ResetGock)
 			util.SetupMocksForEvmStatePoller()
 			setupGockObserver(t)
 
@@ -810,7 +812,7 @@ func TestNetworkPolicy_StickyPrimary_AllFinalities(t *testing.T) {
 // seeding the tracker, the same way a probe call would.
 func TestNetworkPolicy_NoTimeBasedReadmit_OnlyMetricsHeal(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -873,7 +875,7 @@ func idsFromUpstreams(ups []common.Upstream) []string {
 // via a custom eval.
 func TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 	setupGockObserver(t)
 
@@ -913,6 +915,65 @@ func TestNetworkPolicy_SpreadAcrossTags_PreventsCohortCascade(t *testing.T) {
 		c0, c1)
 	assert.Equal(t, "cohort:cohort-2", c1,
 		"cohort:cohort-2 (the only one) must be position[1] under spreadAcrossTags('cohort:')")
+}
+
+// TestNetworkPolicy_BlockMethods_SkipsUpstreamForOneMethodOnly walks
+// `blockMethods` end to end: a 9s trace p99 blocks the upstream for traces
+// only, eth_call keeps it, the blocked upstream is a probe
+// candidate for traces alone, and blocking every upstream keeps them all.
+func TestNetworkPolicy_BlockMethods_SkipsUpstreamForOneMethodOnly(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+	setupGockObserver(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const trace = "debug_traceBlockByNumber"
+	upstreamConfigs := []*common.UpstreamConfig{
+		{Type: common.UpstreamTypeEvm, Id: "slowtrace", Endpoint: upstreamHostFromID("slowtrace"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Type: common.UpstreamTypeEvm, Id: "fasttrace", Endpoint: upstreamHostFromID("fasttrace"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+	}
+	network := setupSelectionPolicyNetworkWithEval(t, ctx, upstreamConfigs,
+		`(upstreams, ctx) => upstreams
+			.blockMethods({ match: ['debug_trace*', 'trace_*'], when: all(samplesAbove(20), latencyAbove(5000, 99)) })
+			.probeExcluded({ sampleRate: 1, minSamples: 0 })`)
+
+	slow, fast := upstreamByID(t, network, "slowtrace"), upstreamByID(t, network, "fasttrace")
+	for _, u := range []common.Upstream{slow, fast} {
+		seedDegraded(network.metricsTracker, u, seedSpec{method: "eth_call", successful: 100, successAvgMs: 10})
+	}
+	seedDegraded(network.metricsTracker, slow, seedSpec{method: trace, successful: 100, successAvgMs: 9000})
+	seedDegraded(network.metricsTracker, fast, seedSpec{method: trace, successful: 100, successAvgMs: 300})
+	policy.TickForTest(network.policyEngine, network.networkId, "*")
+
+	listed := func(method string) []string {
+		ids := idsFromUpstreams(network.policyEngine.GetOrdered(network.networkId, method, "*"))
+		sort.Strings(ids)
+		return ids
+	}
+	assert.Equal(t, []string{"fasttrace"}, listed(trace), "trace p99 9s must block slowtrace for traces")
+	assert.Equal(t, []string{"fasttrace", "slowtrace"}, listed("eth_call"), "the block must not touch eth_call")
+	assert.Equal(t, []string{"slowtrace"}, idsFromUpstreams(network.policyEngine.GetExcluded(network.networkId, trace, "*")),
+		"the blocked upstream is a trace probe candidate")
+	assert.Empty(t, network.policyEngine.GetExcluded(network.networkId, "eth_call", "*"),
+		"no eth_call probes: nothing is blocked for eth_call")
+
+	// Forward drops slowtrace from every trace request, whatever the order.
+	mockClean(t, upstreamHostFromID("slowtrace"), trace, "0x1")
+	mockClean(t, upstreamHostFromID("fasttrace"), trace, "0x2")
+	for i := 0; i < 5; i++ {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + trace + `","params":["0x10",{"tracer":"callTracer"}]}`))
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.Equal(t, "fasttrace", resp.Upstream().Id(), "a blocked upstream never serves the blocked method")
+	}
+
+	// Both upstreams slow for traces: a method never loses every upstream.
+	seedDegraded(network.metricsTracker, fast, seedSpec{method: trace, successful: 1000, successAvgMs: 9000})
+	policy.TickForTest(network.policyEngine, network.networkId, "*")
+	assert.Equal(t, []string{"fasttrace", "slowtrace"}, listed(trace), "all blocked: traces keep every upstream")
 }
 
 // firstTagWithPrefix returns the first tag in `tags` whose value
@@ -975,6 +1036,7 @@ func setupSelectionPolicyNetworkWithEval(t *testing.T, ctx context.Context, upst
 	policyEngine := policy.NewEngine(ctx, &log.Logger, "test", metricsTracker, policystdlib.Install, nil)
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig,
 		rateLimitersRegistry, upstreamsRegistry, metricsTracker, policyEngine)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	upstreamsRegistry.Bootstrap(ctx)
@@ -985,8 +1047,8 @@ func setupSelectionPolicyNetworkWithEval(t *testing.T, ctx context.Context, upst
 	upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 	for _, ups := range upsList {
 		require.NoError(t, ups.Bootstrap(ctx))
-		ups.EvmStatePoller().SuggestLatestBlock(1000)
-		ups.EvmStatePoller().SuggestFinalizedBlock(900)
+		ups.EvmStatePoller().SuggestLatestBlock(1000, time.Now())
+		ups.EvmStatePoller().SuggestFinalizedBlock(900, time.Now())
 	}
 	time.Sleep(50 * time.Millisecond)
 

@@ -24,6 +24,10 @@ type EvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	logger    *zerolog.Logger
 
+	// cachingStrategy is the write-side admission default (see
+	// common.AllowsCacheWrite). Combined with resp.Cacheable() at Set.
+	cachingStrategy common.CachingStrategy
+
 	// Compression settings
 	compressionEnabled   bool
 	compressionThreshold int
@@ -68,9 +72,14 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		policies = append(policies, policy)
 	}
 
+	strategy := cfg.CachingStrategy
+	if strategy == "" {
+		strategy = common.CachingStrategyDefaultAllow
+	}
 	cache := &EvmJsonRpcCache{
-		policies: policies,
-		logger:   logger,
+		policies:        policies,
+		logger:          logger,
+		cachingStrategy: strategy,
 	}
 
 	// Initialize compression if configured
@@ -141,6 +150,7 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 		logger:               &lg,
 		policies:             c.policies,
 		projectId:            projectId,
+		cachingStrategy:      c.cachingStrategy,
 		compressionEnabled:   c.compressionEnabled,
 		compressionThreshold: c.compressionThreshold,
 		compressionLevel:     c.compressionLevel,
@@ -183,7 +193,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	)
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
@@ -200,7 +210,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	ntwId := req.NetworkId()
 	finState := req.Finality(ctx)
-	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState, true))
 	span.SetAttributes(
 		attribute.String("request.method", rpcReq.Method),
 		attribute.String("request.finality", finState.String()),
@@ -211,7 +221,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		policySpan.End()
 		return nil, err
 	}
-	if len(policies) == 0 {
+	if len(policies) == 0 || finState == common.DataFinalityStateFinalized && revertedFinal(ctx, req) {
 		telemetry.MetricCacheGetSkippedTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkLabel(),
@@ -366,6 +376,14 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				}
 				return
 			}
+			if finState != common.DataFinalityStateFinalized && orphaned(ctx, req, jrr) {
+				policySpan.SetAttributes(attribute.String("cache.get_outcome", "orphaned"))
+				select {
+				case results <- fanResult{policy: policy, connector: connector, missReason: "orphaned"}:
+				case <-fanCtx.Done():
+				}
+				return
+			}
 			// An emptyish result under EmptyState=Ignore is a miss for THIS
 			// policy — report as miss and let peer connectors keep racing.
 			// Without this, the first emptyish result would win the fan-out,
@@ -416,7 +434,7 @@ drain:
 				continue
 			}
 			switch r.missReason {
-			case "ttl_rejected":
+			case "ttl_rejected", "orphaned":
 				rr := r
 				lastReject = &rr
 			case "empty_result":
@@ -462,7 +480,7 @@ drain:
 						connector = rr.connector
 					} else {
 						switch r.missReason {
-						case "ttl_rejected":
+						case "ttl_rejected", "orphaned":
 							rr := r
 							lastReject = &rr
 						case "empty_result":
@@ -508,7 +526,7 @@ drain:
 		case lastReject != nil:
 			labelConnector = lastReject.connector
 			labelPolicy = lastReject.policy
-			missReason = "ttl_rejected"
+			missReason = lastReject.missReason
 		case lastMiss != nil:
 			labelConnector = lastMiss.connector
 			labelPolicy = lastMiss.policy
@@ -637,10 +655,21 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	))
 	defer span.End()
 
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		)
+	}
+
+	// Write-side admission: strategy × response mark. Cache stays ignorant of
+	// consensus policy names; modules stamp resp.Cacheable() before Set.
+	if !common.AllowsCacheWrite(c.cachingStrategy, resp.Cacheable()) {
+		c.logger.Debug().
+			Str("cachingStrategy", string(c.cachingStrategy)).
+			Interface("cacheable", resp.Cacheable()).
+			Interface("id", req.ID()).
+			Msg("skipping cache write: response marked uncacheable under cachingStrategy")
+		return nil
 	}
 
 	// TODO after subscription epic this method can be called for every new block data to pre-populate the cache,
@@ -657,6 +686,10 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		common.SetTraceSpanError(span, err)
 		return err
 	}
+	if rpcResp == nil {
+		// No answer to store: the policy match must not reach the writers.
+		return nil
+	}
 
 	ntwId := req.NetworkId()
 	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Interface("id", req.ID()).Logger()
@@ -666,27 +699,22 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		attribute.String("network.id", ntwId),
 	)
 
-	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(ctx, req)
+	// Key "latest"/"finalized" by the response's block (see ResolveCacheBlockRef).
+	blockRef, blockNumber, err := ResolveCacheBlockRef(ctx, req, resp)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return err
 	}
 
-	// Use response finality if available, otherwise fall back to request finality
-	var finState common.DataFinalityState
-	if resp != nil {
-		finState = resp.Finality(ctx)
-	} else {
-		finState = req.Finality(ctx)
-	}
-	isEmptyish := resp == nil || resp.IsResultEmptyish()
-	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState, isEmptyish)
+	finState := resp.Finality(ctx)
+	isEmptyish := resp.IsResultEmptyish()
+	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, finState, false), isEmptyish)
 	span.SetAttributes(
 		attribute.String("block.finality", finState.String()),
 		attribute.Int("cache.policies_matched", len(policies)),
 		attribute.Bool("response.emptyish", isEmptyish),
 	)
-	if common.IsTracingDetailed {
+	if common.IsTracingDetailed() {
 		span.SetAttributes(
 			attribute.String("block.ref", blockRef),
 			attribute.Int64("block.number", blockNumber),
@@ -846,7 +874,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, valueToStore, storageTTL)
+			setCtx := data.WithReverseIndex(ctx, req.NetworkId(), req.CacheKeySuffix())
+			err = connector.Set(setCtx, pk, rk, valueToStore, storageTTL)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -910,6 +939,15 @@ func (c *EvmJsonRpcCache) IsObjectNull() bool {
 	return c == nil || c.logger == nil
 }
 
+// Purge implements common.CachePurger: deletes (or dry-runs) cache entries
+// matching scope across every unique writable connector in the policy set.
+func (c *EvmJsonRpcCache) Purge(ctx context.Context, scope common.CachePurgeScope) ([]common.CachePurgeResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("evm json rpc cache is nil")
+	}
+	return data.PurgeConnectors(ctx, c.policies, scope), nil
+}
+
 // defaultRealtimeColdStartTTL bounds realtime staleness when a policy sets
 // ttlBlockTimeMultiplier but has no static ttl and the network's block time
 // isn't known yet (cold start / not head-tracked), so the guard never accepts
@@ -961,7 +999,7 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		// can still be enforced for these methods when the connector is head-aware (read-through).
 		blockTimestamp = 0
 		if reporter, ok := policy.GetConnector().(data.CacheHeadReporter); ok {
-			if ts, known := reporter.CacheLatestBlockTimestamp(req.NetworkId()); known && ts > 0 {
+			if _, ts, known := reporter.CacheLatestBlock(req.NetworkId()); known {
 				blockTimestamp = ts
 			}
 		}
@@ -978,18 +1016,14 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 		}
 	}
 
-	// Calculate the age of the block
-	now := time.Now().Unix()
-	age := time.Duration(now-blockTimestamp) * time.Second
-
-	// Check if the age exceeds the TTL
-	if age > effectiveTTL {
+	now := time.Now()
+	if !realtimeAdmits(effectiveTTL, blockTimestamp, now) {
 		if c.logger.GetLevel() <= zerolog.DebugLevel {
 			c.logger.Debug().
-				Dur("age", age).
+				Dur("age", time.Duration(now.Unix()-blockTimestamp)*time.Second).
 				Dur("ttl", effectiveTTL).
 				Int64("blockTimestamp", blockTimestamp).
-				Int64("now", now).
+				Int64("now", now.Unix()).
 				Str("policy", policy.String()).
 				Msg("rejecting cached result because block age exceeds policy TTL")
 		}
@@ -1014,6 +1048,15 @@ func (c *EvmJsonRpcCache) shouldAcceptCachedResult(
 	return true
 }
 
+// realtimeAdmits reports whether a block stamped blockTimestamp (unix seconds)
+// is still young enough at now to serve under a realtime policy's ttl. Whole
+// seconds on both sides, as block timestamps are. It is the one rule for the
+// realtime age guard and the cache-head anchor, so the network serves "latest"
+// at the cache's head exactly while the cache would serve that block.
+func realtimeAdmits(ttl time.Duration, blockTimestamp int64, now time.Time) bool {
+	return time.Duration(now.Unix()-blockTimestamp)*time.Second <= ttl
+}
+
 // networkBlockTime returns the request network's estimated block time, or 0 if
 // it's not available (network unset, not head-tracked, or not yet warmed up).
 func networkBlockTime(req *common.NormalizedRequest) time.Duration {
@@ -1027,7 +1070,43 @@ func networkBlockTime(req *common.NormalizedRequest) time.Duration {
 	return 0
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState, isEmptyish bool) ([]*data.CachePolicy, error) {
+// cacheFinalities are the finalities whose policies a request of finality
+// fin reads (get) or writes: fin, and for a "latest" tag interpolated to a
+// block N also N's. Its key is N's (ResolveCacheBlockRef) and N's answer
+// is its answer (spec §7), so N's entries, written by numbered reads and
+// the head fetch's seed (spec §6), serve it: Unfinalized above the
+// request Head's Finalized; at or below it (finality at the head, as on
+// Avalanche) a get reads N's entries of either finality (Finalized
+// matches both), and a write adds none, since only a numbered answer's
+// own finality makes an entry permanent (#90).
+func cacheFinalities(ctx context.Context, req *common.NormalizedRequest, fin common.DataFinalityState, get bool) finalities {
+	fs := finalities{f: [2]common.DataFinalityState{fin}, n: 1}
+	if fin != common.DataFinalityStateRealtime || RequestBlockTag(ctx, req) != "latest" {
+		return fs
+	}
+	n := TagBlockNumber(ctx, req)
+	switch {
+	case n <= 0:
+		return fs
+	case n > common.EvmHeadOf(req.Network(), ctx, req).Finalized:
+		fs.f[1] = common.DataFinalityStateUnfinalized
+	case get:
+		fs.f[1] = common.DataFinalityStateFinalized
+	default:
+		return fs
+	}
+	fs.n = 2
+	return fs
+}
+
+// finalities holds one or two finalities by value, so a request builds
+// them without an allocation.
+type finalities struct {
+	f [2]common.DataFinalityState
+	n int
+}
+
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, fs finalities, isEmptyish bool) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -1035,24 +1114,27 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 			c.logger.Trace().
 				Str("networkId", networkId).
 				Str("method", method).
-				Str("finality", finality.String()).
+				Interface("finalities", fs.f[:fs.n]).
 				Interface("params", params).
 				Interface("policy", policy).
 				Msg("checking policy match for set")
 		}
 
-		match, err := policy.MatchesForSet(networkId, method, params, finality, isEmptyish)
-		if err != nil {
-			return nil, err
-		}
-		if match {
-			policies = append(policies, policy)
+		for _, finality := range fs.f[:fs.n] {
+			match, err := policy.MatchesForSet(networkId, method, params, finality, isEmptyish)
+			if err != nil {
+				return nil, err
+			}
+			if match {
+				policies = append(policies, policy)
+				break
+			}
 		}
 	}
 	return policies, nil
 }
 
-func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
+func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, fs finalities) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	visitedConnectorsMap := make(map[data.Connector]bool)
 	for _, policy := range c.policies {
@@ -1061,31 +1143,69 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 			c.logger.Trace().
 				Str("networkId", networkId).
 				Str("method", method).
-				Str("finality", finality.String()).
+				Interface("finalities", fs.f[:fs.n]).
 				Interface("params", params).
 				Interface("policy", policy).
 				Msg("checking policy match for get")
 		}
 
-		match, err := policy.MatchesForGet(networkId, method, params, finality)
-		if err != nil {
-			return nil, err
-		}
-		if match {
-			if c := policy.GetConnector(); !visitedConnectorsMap[c] {
-				policies = append(policies, policy)
-				visitedConnectorsMap[c] = true
+		for _, finality := range fs.f[:fs.n] {
+			match, err := policy.MatchesForGet(networkId, method, params, finality)
+			if err != nil {
+				return nil, err
+			}
+			if match {
+				if c := policy.GetConnector(); !visitedConnectorsMap[c] {
+					policies = append(policies, policy)
+					visitedConnectorsMap[c] = true
+				}
+				break
 			}
 		}
 	}
 	return policies, nil
 }
 
+// LogsHead is the newest block that a connector Get would read req's
+// eth_getLogs from reports holding (data.CacheHeadReporter), the highest of
+// them; false when none reports one. A range store such as Prism refuses a
+// range past that block whole, though it holds every block below it.
+func (c *EvmJsonRpcCache) LogsHead(ctx context.Context, req *common.NormalizedRequest) (int64, bool) {
+	rpcReq, err := req.JsonRpcRequest(ctx)
+	if err != nil {
+		return 0, false
+	}
+	policies, err := c.findGetPolicies(req.NetworkId(), rpcReq.Method, rpcReq.Params, cacheFinalities(ctx, req, req.Finality(ctx), true))
+	if err != nil {
+		return 0, false
+	}
+	useUpstream := useUpstreamSelector(req)
+	head, found := int64(0), false
+	for _, p := range policies {
+		conn := p.GetConnector()
+		if req.ShouldSkipCacheRead(conn.Id()) {
+			continue
+		}
+		if eligible, _ := p.MatchesUpstreamSelector(useUpstream); !eligible {
+			continue
+		}
+		reporter, ok := conn.(data.CacheHeadReporter)
+		if !ok {
+			continue
+		}
+		if number, _, known := reporter.CacheLatestBlock(req.NetworkId()); known && (!found || number > head) {
+			head, found = number, true
+		}
+	}
+	return head, found
+}
+
 func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, error) {
 	rpcReq.RLockWithTrace(ctx)
 	defer rpcReq.RUnlock()
 
-	blockRef, _, err := ExtractBlockReferenceFromRequest(ctx, req)
+	// Key "latest"/"finalized" by the network's current tip (see ResolveCacheBlockRef).
+	blockRef, _, err := ResolveCacheBlockRef(ctx, req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1181,15 +1301,16 @@ func shouldCacheResponse(
 	// never serve such a value as-is, so caching it can only poison future
 	// reads (e.g. the eth_blockNumber sawtooth: a lagging upstream's value
 	// lands in the cache and is then served for a full TTL window). The tip
-	// is resolved network-wide on purpose — the cache entry is shared by all
-	// requests regardless of any use-upstream selector — and the guard fails
-	// open when pollers don't know a tip yet.
+	// is the network-wide lane's on purpose, whatever lane the request used
+	// (spec §6.4, #932): the cache entry is shared by all requests regardless
+	// of any use-upstream selector. The guard fails open while that Head is
+	// unknown.
 	if finality == common.DataFinalityStateRealtime && resp != nil {
 		if req := resp.Request(); req != nil {
 			if dirs := req.Directives(); dirs != nil && dirs.EnforceHighestBlock {
-				if ntw := req.Network(); ntw != nil {
+				if ntw, ok := req.Network().(common.EvmNetwork); ok {
 					if _, respBlock, err := ExtractBlockReferenceFromResponse(ctx, resp); err == nil && respBlock > 0 {
-						if tip := common.EvmHighestLatestBlockNumber(ntw, ctx); tip > respBlock {
+						if tip := ntw.EvmLaneHead("", "").Latest; tip > respBlock {
 							lg.Debug().
 								Int64("responseBlockNumber", respBlock).
 								Int64("knownHighestBlock", tip).
@@ -1204,12 +1325,15 @@ func shouldCacheResponse(
 	result := rpcResp.GetResultBytes()
 	// Check if we should cache empty results
 	isEmpty := resp == nil || rpcResp == nil || result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
-	// Never cache an empty result for a not-yet-produced (future) block: the block
-	// will exist later, so a cached null would be served as a wrong answer until the
+	// Never cache an empty result for a block above Firm, or one the
+	// refusal rule calls final: the block will exist on every upstream
+	// later, so a cached null would be served as a wrong answer until the
 	// TTL expires. This holds regardless of the policy's empty behavior.
-	if isEmpty && resp != nil && emptyResultBeyondConfidence(ctx, resp.Request()) {
-		lg.Debug().Msg("skip caching empty result for a not-yet-produced (future) block")
-		return false, nil
+	if isEmpty && resp != nil {
+		if rq := resp.Request(); EmptyResultBeyondConfidence(ctx, rq) || HeadRefusalOf(ctx, rq).AboveFirm() {
+			lg.Debug().Msg("skip caching empty result for a block above Firm")
+			return false, nil
+		}
 	}
 	switch policy.EmptyState() {
 	case common.CacheEmptyBehaviorIgnore:
@@ -1221,6 +1345,65 @@ func shouldCacheResponse(
 	default:
 		return false, fmt.Errorf("unknown cache empty behavior: %s", policy.EmptyState())
 	}
+}
+
+// revertedFinal reports whether req's block is one a followed majority
+// branch reverted at or below Finalized (spec §6.5), on the network-wide
+// tracker or on the request's lane tracker: a permanent entry written
+// before the revert may hold the old branch, so the read skips the cache
+// and the fresh answer replaces it.
+func revertedFinal(ctx context.Context, req *common.NormalizedRequest) bool {
+	_, bn, _ := ExtractBlockReferenceFromRequest(ctx, req)
+	if bn <= 0 {
+		return false
+	}
+	n := req.Network()
+	if ChainTrackerOf(ctx, n, "").RevertedFinal(bn) {
+		return true
+	}
+	sel := useUpstreamSelector(req)
+	return sel != "" && ChainTrackerOf(ctx, n, sel).RevertedFinal(bn)
+}
+
+// answerBlockPaths are where a cached answer names its block: a block, or
+// the first receipt or log of one.
+var answerBlockPaths = [][2][]interface{}{
+	{{"number"}, {"hash"}},
+	{{0, "blockNumber"}, {0, "blockHash"}},
+}
+
+// orphaned reports whether jrr, a cached answer to req, names a block that
+// the network-wide tracker or the request's lane tracker no longer pins at
+// its number: a reorg replaced it after the entry was written, so the read
+// skips the cache and the fresh answer replaces it (spec §19 P8). Whether
+// the tracker re-fetches that height by number, which also rewrites the
+// entry, depends on how it learned the new branch.
+func orphaned(ctx context.Context, req *common.NormalizedRequest, jrr *common.JsonRpcResponse) bool {
+	for _, p := range answerBlockPaths {
+		num, err := jrr.PeekStringByPath(ctx, p[0]...)
+		if err != nil {
+			continue
+		}
+		hash, err := jrr.PeekStringByPath(ctx, p[1]...)
+		if err != nil {
+			continue
+		}
+		bn, err := common.HexToInt64(num)
+		if err != nil || bn <= 0 {
+			return false
+		}
+		n := req.Network()
+		if pin, ok := ChainTrackerOf(ctx, n, "").HashAt(bn); ok && !strings.EqualFold(pin, hash) {
+			return true
+		}
+		sel := useUpstreamSelector(req)
+		if sel == "" {
+			return false
+		}
+		pin, ok := ChainTrackerOf(ctx, n, sel).HashAt(bn)
+		return ok && !strings.EqualFold(pin, hash)
+	}
+	return false
 }
 
 // useUpstreamSelector returns the request's use-upstream directive, used to gate
@@ -1242,11 +1425,11 @@ func generateKeysForJsonRpcRequest(
 		return "", "", err
 	}
 
-	if blockRef != "" {
-		return fmt.Sprintf("%s:%s", req.NetworkId(), blockRef), cacheKey, nil
-	} else {
-		return fmt.Sprintf("%s:nil", req.NetworkId()), cacheKey, nil
+	ref := blockRef
+	if ref == "" {
+		ref = "nil"
 	}
+	return common.CachePartitionKey(req.NetworkId(), req.CacheKeySuffix(), ref), cacheKey, nil
 }
 
 // compressValueBytes compresses byte data using zstd

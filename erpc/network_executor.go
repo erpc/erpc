@@ -1,8 +1,10 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -33,7 +35,7 @@ type networkExecutor struct {
 
 	method      string
 	finalities  []common.DataFinalityState
-	requestKind string // "*" (any) | "user" | "internal"
+	commitments []string
 
 	emptyResultAccept []string
 
@@ -49,6 +51,9 @@ type consensusRunner interface {
 		req *common.NormalizedRequest,
 		inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
 	) (*common.NormalizedResponse, error)
+	// HasSelector reports whether a pre-round customPolicy selector is
+	// configured. The request path skips building selector inputs when false.
+	HasSelector() bool
 }
 
 // NewNetworkExecutor builds a per-(method, finality) network executor.
@@ -61,7 +66,6 @@ func NewNetworkExecutor(
 	if cfg == nil {
 		return &networkExecutor{
 			method:                       "*",
-			requestKind:                  "*",
 			logger:                       logger,
 			emptyResultAccept:            common.DefaultEmptyResultAccept(),
 			dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
@@ -80,15 +84,12 @@ func NewNetworkExecutor(
 		logger:                       logger,
 		method:                       cfg.MatchMethod,
 		finalities:                   cfg.MatchFinality,
-		requestKind:                  cfg.MatchRequestKind,
+		commitments:                  cfg.MatchCommitment,
 		consensus:                    consensus,
 		dynamicBlockUnavailableDelay: dynamicBlockUnavailableDelay,
 	}
 	if e.method == "" {
 		e.method = "*"
-	}
-	if e.requestKind == "" {
-		e.requestKind = "*"
 	}
 	if cfg.Timeout != nil {
 		e.timeout = common.NewTimeoutFunc(logger, cfg.Timeout)
@@ -107,8 +108,8 @@ func (e *networkExecutor) MatchMethod() string { return e.method }
 // MatchFinality returns the configured finality filter.
 func (e *networkExecutor) MatchFinality() []common.DataFinalityState { return e.finalities }
 
-// MatchRequestKind returns the configured request-kind filter ("*"/"user"/"internal").
-func (e *networkExecutor) MatchRequestKind() string { return e.requestKind }
+// MatchCommitment returns the configured commitment filter (nil/empty = any).
+func (e *networkExecutor) MatchCommitment() []string { return e.commitments }
 
 // Timeout exposes the configured TimeoutFunc (nil when no timeout).
 func (e *networkExecutor) Timeout() common.TimeoutFunc { return e.timeout }
@@ -124,12 +125,86 @@ func (e *networkExecutor) HasConsensus() bool {
 	return e.cfg.Consensus != nil
 }
 
+// runsConsensus reports whether Run votes req through the consensus policy.
+// The SkipConsensus directive (header `X-ERPC-Skip-Consensus: true`, query
+// `?skip-consensus=true`, or `directiveDefaults.skipConsensus: true`) falls
+// through to the standard retry+hedge path; retry, hedge, breaker and timeout
+// still apply.
+//
+// A single-dispatch write (requestAirdrop) must never enter consensus: the
+// executor spawns maxParticipants slots in parallel, each drawing a
+// DISTINCT upstream, so one client call would mint once per participant and
+// then report a dispute over the signatures it just created. Falling
+// through to retry(hedge(sweep)) keeps the single-dispatch guard that the
+// hedge gate and the SVM post-forward write guard already enforce.
+// Tx broadcasts stay consensus-eligible on purpose — consensus
+// short-circuits them to the first valid signature.
+func (e *networkExecutor) runsConsensus(req *common.NormalizedRequest) bool {
+	if !e.HasConsensus() || e.consensus == nil {
+		return false
+	}
+	if rds := req.Directives(); rds != nil && rds.SkipConsensus {
+		return false
+	}
+	m, err := req.Method()
+	return err != nil || !svm.IsSingleDispatchWriteMethod(m)
+}
+
+// consensusKeepsEmptyAsSlotVote reports whether the selected consensus policy
+// opted into empty-outside-retention waiver for this request's method, so a
+// consensus-slot hedge must keep an emptyish result as the slot's vote
+// (feature §7.1.4). The flag is stamped by consensus.executor once the
+// policy for the round is known — only when the waiver can get a block (the
+// request's, or a hash lookup's answer block) — before participant hedges run.
+func (e *networkExecutor) consensusKeepsEmptyAsSlotVote(req *common.NormalizedRequest) bool {
+	if req == nil {
+		return false
+	}
+	return req.ExecState().KeepEmptyConsensusSlot()
+}
+
 // EmptyResultAccept returns the configured empty-result accept list.
 func (e *networkExecutor) EmptyResultAccept() []string {
 	if e == nil {
 		return common.DefaultEmptyResultAccept()
 	}
 	return e.emptyResultAccept
+}
+
+func (e *networkExecutor) acceptsEmptyResult(method string, resp *common.NormalizedResponse) bool {
+	if slices.Contains(e.EmptyResultAccept(), method) {
+		return true
+	}
+	if method != "debug_traceBlockByNumber" ||
+		(e != nil && e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.EmptyResultAccept != nil) {
+		return false
+	}
+	return isEmptyTraceArray(resp) && evm.HasVerifiedEmptyTraceBlock(resp.Request())
+}
+
+func isEmptyTraceArray(resp *common.NormalizedResponse) bool {
+	if resp == nil {
+		return false
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil || jrr == nil {
+		return false
+	}
+	result := jrr.GetResultBytes()
+	if len(result) == 0 {
+		var buf bytes.Buffer
+		if _, err := jrr.WriteResultTo(&buf, false); err != nil {
+			return false
+		}
+		result = buf.Bytes()
+	}
+	result = bytes.Trim(result, " \t\r\n")
+	return len(result) >= 2 && result[0] == '[' && result[len(result)-1] == ']' &&
+		len(bytes.Trim(result[1:len(result)-1], " \t\r\n")) == 0
+}
+
+func isEmptyNetworkResult(method string, resp *common.NormalizedResponse) bool {
+	return resp.IsResultEmptyish() || (method == "debug_traceBlockByNumber" && isEmptyTraceArray(resp))
 }
 
 // HasHedge returns whether hedge is configured.
@@ -181,53 +256,38 @@ func (e *networkExecutor) Run(
 	}
 
 	// Consensus branch: each slot is retry(hedge(tryOneUpstream)).
-	// Skipped when the request carries the SkipConsensus directive (header
-	// `X-ERPC-Skip-Consensus: true`, query `?skip-consensus=true`, or
-	// `directiveDefaults.skipConsensus: true` in the network/project config).
-	// Falls through to the standard non-consensus retry+hedge path; all
-	// other policies (retry, hedge, breaker, timeout) still apply.
-	skipConsensus := false
-	if rds := req.Directives(); rds != nil {
-		skipConsensus = rds.SkipConsensus
-	}
-	// A single-dispatch write (requestAirdrop) must never enter consensus: the
-	// executor spawns maxParticipants slots in parallel, each drawing a
-	// DISTINCT upstream, so one client call would mint once per participant and
-	// then report a dispute over the signatures it just created. Falling
-	// through to retry(hedge(sweep)) keeps the single-dispatch guard that the
-	// hedge gate below and the SVM post-forward write guard already enforce.
-	// Tx broadcasts stay consensus-eligible on purpose — consensus
-	// short-circuits them to the first valid signature.
-	singleDispatchWrite := false
-	if m, merr := req.Method(); merr == nil {
-		singleDispatchWrite = svm.IsSingleDispatchWriteMethod(m)
-	}
-	if e.HasConsensus() && e.consensus != nil && !skipConsensus && !singleDispatchWrite {
+	if e.runsConsensus(req) {
 		slotInner := func(slotCtx context.Context, slotReq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream)
+			return e.runRetryHedge(slotCtx, slotReq, tryOneUpstream, true, common.SlotPaceOf(slotCtx))
 		}
 		return e.consensus.Run(ctx, req, slotInner)
 	}
 
 	// Non-consensus branch: retry(hedge(runUpstreamSweep)).
-	return e.runRetryHedge(ctx, req, runUpstreamSweep)
+	return e.runRetryHedge(ctx, req, runUpstreamSweep, false, nil)
 }
 
+// runRetryHedge runs retry(hedge(inner)). pace, when set, learns each wait
+// with no attempt in flight, so a consensus round can stop waiting for a
+// slot that cannot answer before its wait cap.
 func (e *networkExecutor) runRetryHedge(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
+	consensusSlot bool,
+	pace *common.SlotPace,
 ) (*common.NormalizedResponse, error) {
 	hedgeWrapped := func(ctx context.Context) (*common.NormalizedResponse, error) {
-		return e.runHedge(ctx, req, inner)
+		return e.runHedge(ctx, req, inner, consensusSlot, pace)
 	}
-	return e.runRetry(ctx, req, hedgeWrapped)
+	return e.runRetry(ctx, req, hedgeWrapped, pace)
 }
 
 func (e *networkExecutor) runRetry(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	hedged func(ctx context.Context) (*common.NormalizedResponse, error),
+	pace *common.SlotPace,
 ) (*common.NormalizedResponse, error) {
 	maxAttempts := 1
 	if e.cfg != nil && e.cfg.Retry != nil && e.cfg.Retry.MaxAttempts > 0 {
@@ -351,7 +411,10 @@ func (e *networkExecutor) runRetry(
 					req.Finality(ctx).String(),
 				).Observe(d.Seconds())
 			}
-			if serr := failsafe.SleepCtx(ctx, d); serr != nil {
+			pace.IdleUntil(time.Now().Add(d))
+			serr := failsafe.SleepCtx(ctx, d)
+			pace.Busy()
+			if serr != nil {
 				// SleepCtx returns ctx.Err(). Get the cause for typed wrapping.
 				if cause := context.Cause(ctx); cause != nil {
 					return bestResp, cause
@@ -377,6 +440,13 @@ func (e *networkExecutor) shouldRetry(req *common.NormalizedRequest, resp *commo
 	return e.shouldRetryWithReason(req, resp, err, attempt) != ""
 }
 
+// spentAnswer reports whether an outcome with err is req's answer under
+// the refusal rule (spec §6.4): the request is spent, and err is none or
+// missing data.
+func spentAnswer(req *common.NormalizedRequest, err error) bool {
+	return req != nil && req.HeadRefusal().Spent() && (err == nil || common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
+}
+
 // dataUnavailableCapReached reports whether the EmptyResultMaxAttempts cap — the
 // single bound on retries when the requested data simply isn't on the upstream yet
 // (empty/missing-data point-lookups, pending tx-lookups, and
@@ -390,6 +460,24 @@ func (e *networkExecutor) dataUnavailableCapReached(attempt int) bool {
 	return limit > 0 && attempt+1 >= limit
 }
 
+// blockSkipsAllFinal reports whether every cause of err is a block-availability
+// skip the gate judged final: it wraps those in ErrUpstreamRequestSkipped (see
+// handleBlockSkip). Waiting cannot change such a round, so retrying it only
+// repeats the same skips.
+func blockSkipsAllFinal(err error) bool {
+	causes := []error{err}
+	if ue, ok := err.(*common.ErrUpstreamsExhausted); ok {
+		causes = ue.Errors()
+	}
+	for _, c := range causes {
+		if !common.HasErrorCode(c, common.ErrCodeUpstreamRequestSkipped) ||
+			!common.HasErrorCode(c, common.ErrCodeUpstreamBlockUnavailable) {
+			return false
+		}
+	}
+	return len(causes) > 0
+}
+
 // shouldRetryWithReason returns the reason for retrying, or "" if no
 // retry should fire. The reason becomes the `reason` label of the
 // retry metric so operators can see which retry-path is busy.
@@ -400,16 +488,28 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 	if req != nil && req.IsCompositeRequest() {
 		return ""
 	}
+	// The refusal rule allows one retryable miss for a band block and none
+	// for a future one (spec §6.4); a spent request's empty or missing
+	// answer is its answer.
+	if spentAnswer(req, err) {
+		return ""
+	}
 	if err != nil {
+		// Every upstream already gave a final answer (e.g. each rejected a
+		// transaction): another round would select no upstream, only wait.
+		if req != nil && req.AllUpstreamsFailedPermanently() {
+			return ""
+		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-			if se, ok := err.(common.StandardError); ok {
-				if retryable, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && retryable {
-					return "execution_exception_retryable"
-				}
+			if common.IsRetryableExecutionException(err) {
+				return "execution_exception_retryable"
 			}
 			return ""
 		}
-		if common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable) {
+		if blockSkipsAllFinal(err) {
+			return ""
+		}
+		if common.HasRetryableBlockUnavailable(err) {
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
@@ -499,17 +599,14 @@ func (e *networkExecutor) shouldRetryWithReason(req *common.NormalizedRequest, r
 
 	// RetryEmpty directive on emptyish responses.
 	if rds != nil && rds.RetryEmpty {
-		if resp.IsResultEmptyish() {
+		method, _ := req.Method()
+		if isEmptyNetworkResult(method, resp) {
 			// Respect the shared "data not available yet" cap.
 			if e.dataUnavailableCapReached(attempt) {
 				return ""
 			}
-			// If the method is in the empty-result-accept list, treat empty as valid.
-			method, _ := req.Method()
-			for _, m := range e.emptyResultAccept {
-				if m == method {
-					return ""
-				}
+			if e.acceptsEmptyResult(method, resp) {
+				return ""
 			}
 			return "empty_result"
 		}
@@ -564,8 +661,9 @@ func (e *networkExecutor) computeDelay(req *common.NormalizedRequest, resp *comm
 	// (blockTime × BlockUnavailableDelayMultiplier) once it's warmed up, else the
 	// relevant fixed fallback. One mechanism covers both cases; there is no
 	// separate per-policy empty-result multiplier.
-	isBlockUnavailable := err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamBlockUnavailable)
-	isEmptyResult := (resp != nil && !resp.IsObjectNull() && resp.IsResultEmptyish()) ||
+	isBlockUnavailable := common.HasRetryableBlockUnavailable(err)
+	method, _ := req.Method()
+	isEmptyResult := (resp != nil && !resp.IsObjectNull() && isEmptyNetworkResult(method, resp)) ||
 		(err != nil && common.HasErrorCode(err, common.ErrCodeEndpointMissingData))
 	if isBlockUnavailable || isEmptyResult {
 		if e.dynamicBlockUnavailableDelay != nil {
@@ -590,6 +688,8 @@ func (e *networkExecutor) runHedge(
 	ctx context.Context,
 	req *common.NormalizedRequest,
 	inner func(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error),
+	consensusSlot bool,
+	pace *common.SlotPace,
 ) (*common.NormalizedResponse, error) {
 	if e.cfg == nil || e.cfg.Hedge == nil || e.cfg.Hedge.MaxCount <= 0 {
 		return inner(ctx, req)
@@ -611,10 +711,11 @@ func (e *networkExecutor) runHedge(
 	// delays, Quantile for adaptive timing, Min/Max for floor/ceiling.
 	// ResolveForRequest looks up per-method latency via the network's
 	// QuantileTracker; returns Base alone when no data is available
-	// (cold start, no quantile, or no network on the request).
-	spec := e.cfg.Hedge.Delay
-	delayFn := func(idx int) time.Duration {
-		return spec.ResolveForRequest(req)
+	// (cold start, no quantile, or no network on the request). Resolved
+	// once, so every fire and settledNull read the same delay.
+	delay := e.cfg.Hedge.Delay.ResolveForRequest(req)
+	delayFn := func(int) time.Duration {
+		return delay
 	}
 	var fireCount atomic.Int32
 	wrapInner := func(hctx context.Context) (*common.NormalizedResponse, error) {
@@ -622,6 +723,11 @@ func (e *networkExecutor) runHedge(
 		_ = idx // hedge tag could be carried via a typed context value
 		return inner(hctx, req)
 	}
+	// seatErr is a consensus seat's own answer: the first error an upstream
+	// returned in this race. A hedge leg that finds no upstream left tries
+	// none and returns the shared ErrUpstreamsExhausted, which consensus
+	// counts as infrastructure; it must not replace the seat's answer.
+	var seatErr error
 	keep := func(r *common.NormalizedResponse, err error) bool {
 		kept := false
 		defer func() {
@@ -643,7 +749,27 @@ func (e *networkExecutor) runHedge(
 				finality.String(),
 			).Inc()
 		}()
+		// An eth_getBlockByNumber above Latest that the refusal rule
+		// spent has its answer, its null or missing data included (spec
+		// §6.4 band): no sibling hedge is waited for. Kept waiting, it
+		// answered a hedge delay late (optimism: 500 ms).
+		if v := req.HeadRefusal(); spentAnswer(req, err) && v.Block > v.Latest && evm.AnswersAtOnce(req) {
+			if m, _ := req.Method(); err != nil || r != nil && isEmptyNetworkResult(m, r) {
+				kept = true
+				return true
+			}
+		}
 		if err != nil {
+			if consensusSlot && seatErr == nil && r == nil &&
+				!common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+				seatErr = err
+			}
+			// No sibling can select an upstream any more: end the race now
+			// instead of waiting for the remaining hedge timers.
+			if req != nil && req.AllUpstreamsFailedPermanently() {
+				kept = true
+				return true
+			}
 			// ErrNoUpstreamsLeftToSelect: this fan-out exhausted its share —
 			// terminal for this leg, but the race continues if siblings have
 			// not yet returned. Same applies for an empty ErrUpstreamsExhausted
@@ -656,21 +782,6 @@ func (e *networkExecutor) runHedge(
 				if uxe.Upstreams() == nil || len(uxe.Upstreams()) == 0 {
 					return false
 				}
-				// When every upstream returned -32004/missing-data, no sibling
-				// hedge leg can do better — they will all find the same upstreams
-				// consumed. Keep this result so the retry layer (shouldRetryWithReason)
-				// sees ErrUpstreamsExhausted directly and applies the 500ms delay.
-				causes := uxe.Errors()
-				allMissing := len(causes) > 0
-				for _, c := range causes {
-					if !common.HasErrorCode(c, common.ErrCodeEndpointMissingData) {
-						allMissing = false
-						break
-					}
-				}
-				if allMissing {
-					return true
-				}
 			}
 			// Underlying-retryable wrapped errors (e.g. ErrUpstreamsExhausted
 			// wrapping a 5xx) should continue racing for a healthier sibling.
@@ -680,32 +791,17 @@ func (e *networkExecutor) runHedge(
 		if r == nil || r.IsObjectNull(ctx) {
 			return false
 		}
-		// Mirror the upstream-sweep empty-result policy so a fast
-		// {"result": null} from one hedge leg does not cancel siblings
-		// that may still return real data. When the method legitimately
-		// returns empty (eth_getLogs, eth_call, point state reads, …)
-		// the method is in emptyResultAccept and we keep the fast empty
-		// winner — preserving prior behaviour.
-		//
-		// For methods like eth_getBlockByNumber / eth_getTransactionByHash /
-		// eth_getTransactionReceipt, null means "this upstream does not
-		// have it yet" (tip lag, reorg, pruned). Letting that null win
-		// the hedge cancels the in-flight legs that could have returned
-		// the data, then forces the retry layer to redo the whole fan-
-		// out — amplifying latency on the cold path. Reject emptyish
-		// here so the hedge keeps racing for a non-empty sibling; if all
-		// legs finish empty the failsafe hedge falls through to the
-		// last response, matching the pre-existing terminal behaviour.
-		if r.IsResultEmptyish(ctx) {
-			method, _ := req.Method()
-			accepted := false
-			for _, m := range e.emptyResultAccept {
-				if m == method {
-					accepted = true
-					break
-				}
+		// Reject unavailable empty results without cancelling usable siblings.
+		// Consensus slots keep an empty vote only when the selected policy
+		// opts into waiveAgreementOnEmptyOutsideRetention and the method
+		// has block evidence the waiver can prove.
+		method, _ := req.Method()
+		if isEmptyNetworkResult(method, r) {
+			if consensusSlot && r.IsResultEmptyish(ctx) && e.consensusKeepsEmptyAsSlotVote(req) {
+				kept = true
+				return true
 			}
-			if !accepted {
+			if !e.acceptsEmptyResult(method, r) && !e.settledNull(req, consensusSlot, delay) {
 				return false
 			}
 		}
@@ -719,6 +815,7 @@ func (e *networkExecutor) runHedge(
 	}
 	hooks := failsafe.HedgeHooks{
 		OnFire: func(fireIdx int, d time.Duration) {
+			pace.Busy()
 			if st := req.ExecState(); st != nil {
 				// Each hedge fire is an extra inner invocation at the
 				// network scope: counts as both an attempt and a hedge.
@@ -727,8 +824,36 @@ func (e *networkExecutor) runHedge(
 				st.NetworkHedges.Add(1)
 			}
 		},
+		OnIdle: pace.IdleUntil,
 	}
-	return failsafe.RunHedged[*common.NormalizedResponse](
+	resp, err := failsafe.RunHedged[*common.NormalizedResponse](
 		ctx, e.cfg.Hedge.MaxCount, delayFn, wrapInner, keep, release, hooks,
 	)
+	if resp == nil && seatErr != nil &&
+		common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+		return nil, seatErr
+	}
+	return resp, err
+}
+
+// settledNull reports whether req's empty result ends its hedge race: a
+// lookup whose null only a new block changes (evm.NullUntilMined), outside
+// a consensus slot, answered empty by every upstream it may select, on a
+// Head no block can move before the last hedge would fire, delay times
+// MaxCount (common.EvmHead.Settled, spec §6.4 settled head), whose view
+// has not moved and above which no data showed since the request took it
+// (laneStill). A hedge then asks every
+// upstream again for the answer the first sweep already had; an upstream
+// still in flight in a sibling leg, or one that failed transiently, may
+// hold what the others lack, so the race waits for it.
+func (e *networkExecutor) settledNull(req *common.NormalizedRequest, consensusSlot bool, delay time.Duration) bool {
+	if consensusSlot || !evm.NullUntilMined(req) || !req.EveryUpstreamAnsweredEmpty() {
+		return false
+	}
+	h := req.EvmHead()
+	if h == nil || !h.Settled(time.Now(), delay*time.Duration(e.cfg.Hedge.MaxCount)) {
+		return false
+	}
+	n, ok := req.Network().(*Network)
+	return ok && n.laneStill(req, h.Latest)
 }

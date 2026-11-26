@@ -31,19 +31,19 @@ func TestGrpcConnectorConfig_Validate_PoolSize(t *testing.T) {
 
 func TestGrpcUpstreamConfig_Validate_PoolSize(t *testing.T) {
 	t.Run("zero (unset) is valid", func(t *testing.T) {
-		require.NoError(t, (&GrpcUpstreamConfig{PoolSize: 0}).Validate())
+		require.NoError(t, (&GrpcUpstreamConfig{PoolSize: 0}).Validate(""))
 	})
 	t.Run("positive is valid", func(t *testing.T) {
-		require.NoError(t, (&GrpcUpstreamConfig{PoolSize: 16}).Validate())
+		require.NoError(t, (&GrpcUpstreamConfig{PoolSize: 16}).Validate(""))
 	})
 	t.Run("negative is rejected with upstream scope", func(t *testing.T) {
-		err := (&GrpcUpstreamConfig{PoolSize: -5}).Validate()
+		err := (&GrpcUpstreamConfig{PoolSize: -5}).Validate("")
 		require.ErrorContains(t, err, "must not be negative")
 		require.ErrorContains(t, err, "upstream.*.grpc.poolSize")
 	})
 	t.Run("above max is rejected", func(t *testing.T) {
 		require.ErrorContains(t,
-			(&GrpcUpstreamConfig{PoolSize: MaxGrpcConnPoolSize + 1}).Validate(), "must be <=")
+			(&GrpcUpstreamConfig{PoolSize: MaxGrpcConnPoolSize + 1}).Validate(""), "must be <=")
 	})
 }
 
@@ -74,6 +74,30 @@ func TestUpstreamConfig_Validate_PropagatesGrpcPoolSize(t *testing.T) {
 
 	cfg.Grpc.PoolSize = 16
 	require.NoError(t, cfg.Validate(&Config{}, false))
+}
+
+// The health Watch stream skips client interceptors, so it never carries the
+// mount path; a health check on a mounted endpoint would probe the root.
+func TestGrpcHealthCheckRejectsMountedEndpoint(t *testing.T) {
+	ups := &UpstreamConfig{
+		Id:       "boost",
+		Endpoint: "grpcs://edge.example.com/boost",
+		Grpc:     &GrpcUpstreamConfig{HealthCheckService: "bds"},
+	}
+	require.ErrorContains(t, ups.Validate(&Config{}, false), "upstream.*.grpc.healthCheckService")
+
+	ups.Grpc.HealthCheckService = ""
+	require.NoError(t, ups.Validate(&Config{}, false))
+
+	ups.Endpoint = "grpcs://edge.example.com/"
+	ups.Grpc.HealthCheckService = "bds"
+	require.NoError(t, ups.Validate(&Config{}, false))
+
+	conn := &GrpcConnectorConfig{
+		Servers:            []string{"grpc://a:50051", "grpc://b:50051/boost"},
+		HealthCheckService: "bds",
+	}
+	require.ErrorContains(t, conn.Validate(), "database.*.connector.grpc.healthCheckService")
 }
 
 // TestGrpcUpstreamConfig_Copy_PreservesPoolSize guards the upstream-config copy

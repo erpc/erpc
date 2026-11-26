@@ -527,11 +527,11 @@ func TestRace_TwoParticipants_OneInfraError_CorrectlyLowParticipants(t *testing.
 		CachedResponseType: ResponseTypeInfrastructureError,
 	}
 	analysis.groups["error:generic"] = &responseGroup{
-		Hash:         "error:generic",
-		Results:      []*execResult{infraResult},
-		Count:        1,
-		ResponseType: ResponseTypeInfrastructureError,
-		FirstError:   infraResult.Err,
+		Hash:                "error:generic",
+		Results:             []*execResult{infraResult},
+		Count:               1,
+		ResponseType:        ResponseTypeInfrastructureError,
+		RepresentativeError: infraResult.Err,
 	}
 
 	require.Equal(t, 1, analysis.validParticipants,
@@ -540,7 +540,7 @@ func TestRace_TwoParticipants_OneInfraError_CorrectlyLowParticipants(t *testing.
 		"validParticipants=1 < threshold=2 is low-participants")
 
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(context.Background(), &lg, analysis)
 
 	require.NotNil(t, winner)
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),
@@ -686,7 +686,7 @@ func TestRace_AllParticipantsReturnNil_LowParticipants(t *testing.T) {
 	}
 
 	e := &executor{consensusPolicy: &consensusPolicy{logger: &lg, config: cfg}}
-	winner := e.determineWinner(&lg, analysis)
+	winner := e.determineWinner(context.Background(), &lg, analysis)
 
 	require.NotNil(t, winner)
 	assert.True(t, common.HasErrorCode(winner.Error, common.ErrCodeConsensusLowParticipants),

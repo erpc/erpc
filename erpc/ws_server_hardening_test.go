@@ -1,0 +1,879 @@
+package erpc
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
+	"github.com/erpc/erpc/util"
+	"github.com/gorilla/websocket"
+	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/rs/zerolog/log"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+//
+// --- Upgrade detection ---
+//
+
+// A client advertising gzip (every browser, most WS libraries) must still be
+// able to upgrade under the default config, where response gzip is enabled.
+func TestWebSocket_UpgradeWithAcceptEncodingGzip(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	cfg := httpOnlyConfig()
+	cfg.Server.EnableGzip = util.BoolPtr(true)
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	hdr := http.Header{}
+	hdr.Set("Accept-Encoding", "gzip, deflate, br")
+	conn, resp, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", addr), hdr)
+	require.NoError(t, err, "upgrade must succeed when the client accepts gzip")
+	defer conn.Close()
+	assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+
+	res := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+	assert.Equal(t, "0xabc123", res["result"])
+}
+
+// A plain JSON-RPC POST that merely carries an Upgrade header is not a
+// WebSocket handshake and must stay bounded by server.maxTimeout.
+func TestWebSocket_UpgradeHeaderDoesNotBypassMaxTimeout(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+	gock.New("http://rpc1.localhost").
+		Post("/").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Reply(200).
+		Delay(3 * time.Second).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1"})
+
+	cfg := httpOnlyConfig()
+	d := common.Duration(300 * time.Millisecond)
+	cfg.Server.MaxTimeout = &d
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/test_ws/evm/123", addr),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xaaaa","latest"]}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Upgrade", "websocket")
+
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 2*time.Second, "request must be cut off near maxTimeout, took %s (body=%s)", elapsed, body)
+	assert.Contains(t, string(body), "timeout")
+}
+
+// Header tokens are case-insensitive (RFC 6455 section 4.2.1); a handshake
+// spelled "Upgrade: WebSocket" must upgrade, not be answered as a
+// healthcheck. With WebSocket off the same handshake is ordinary HTTP.
+func TestWebSocket_UpgradeHeaderIsCaseInsensitive(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	handshake := func(t *testing.T, cfg *common.Config) *http.Response {
+		addr, cleanup := setupTestERPCServer(t, cfg)
+		t.Cleanup(cleanup)
+
+		raw, err := net.Dial("tcp", addr)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = raw.Close() })
+		_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+
+		_, err = fmt.Fprintf(raw, "GET /test_ws/evm/123 HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: WebSocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"+
+			"Sec-WebSocket-Version: 13\r\n\r\n", addr)
+		require.NoError(t, err)
+
+		resp, err := http.ReadResponse(bufio.NewReader(raw), nil)
+		require.NoError(t, err)
+		return resp
+	}
+
+	assert.Equal(t, http.StatusSwitchingProtocols, handshake(t, httpOnlyConfig()).StatusCode)
+
+	off := httpOnlyConfig()
+	off.Server.WebSocket = &common.WebSocketServerConfig{Enabled: util.BoolPtr(false)}
+	resp := handshake(t, off)
+	assert.NotEqual(t, http.StatusSwitchingProtocols, resp.StatusCode, "webSocket.enabled=false must not upgrade")
+	assert.Empty(t, resp.Header.Get("Upgrade"))
+}
+
+//
+// --- Connection lifecycle ---
+//
+
+// subscribingWsUpstream answers eth_subscribe/eth_unsubscribe on top of the
+// state-poller methods, with a fresh upstream id per subscribe.
+func subscribingWsUpstream(t *testing.T) string {
+	t.Helper()
+	var subs atomic.Int64
+	srv := mockWsUpstream(t, func(conn *websocket.Conn) {
+		standardMockWsHandler(conn, func(method string, id interface{}, req map[string]interface{}) {
+			result := interface{}("0x1")
+			switch method {
+			case "eth_subscribe":
+				result = fmt.Sprintf("0xupstreamsub%d", subs.Add(1))
+			case "eth_unsubscribe":
+				result = true
+			}
+			_ = mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
+		})
+	})
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+func wsConnCount(s *HttpServer) (active, subscribed int) {
+	s.activeWsConns.Range(func(_, _ interface{}) bool { active++; return true })
+	s.subscriptionManager.connMu.Lock()
+	subscribed = len(s.subscriptionManager.conns)
+	s.subscriptionManager.connMu.Unlock()
+	return active, subscribed
+}
+
+// wsGauges reads the pressure gauges of the test_ws project on evm:123:
+// client connections, ws taps of kind (one per client subscription), and
+// the subscriptions of kind live on ws-upstream.
+func wsGauges(kind string) (conns, clientSubs, upstreamSubs float64) {
+	return testutil.ToFloat64(telemetry.MetricWebsocketConnectionsActive.WithLabelValues("test_ws")),
+		testutil.ToFloat64(telemetry.MetricTaps.WithLabelValues("test_ws", "evm:123", "ws", kind)),
+		testutil.ToFloat64(telemetry.MetricUpstreamSubscriptionsActive.WithLabelValues("test_ws", "evm:123", "ws-upstream", kind))
+}
+
+// upstreamSubsOn sums the subscriptions of kind live on upstreamId of the
+// test_ws project, under whichever network label each was counted.
+func upstreamSubsOn(upstreamId, kind string) float64 {
+	ch := make(chan prometheus.Metric, 64)
+	go func() {
+		telemetry.MetricUpstreamSubscriptionsActive.Collect(ch)
+		close(ch)
+	}()
+	total := 0.0
+	for m := range ch {
+		var pb dto.Metric
+		if m.Write(&pb) != nil {
+			continue
+		}
+		labels := make(map[string]string, len(pb.GetLabel()))
+		for _, lp := range pb.GetLabel() {
+			labels[lp.GetName()] = lp.GetValue()
+		}
+		if labels["project"] == "test_ws" && labels["upstream"] == upstreamId && labels["kind"] == kind {
+			total += pb.GetGauge().GetValue()
+		}
+	}
+	return total
+}
+
+// A client that subscribes and immediately closes must not leave its
+// subscriptions or their taps behind, and shutting the server down
+// uncounts the upstream subscriptions it made.
+func TestWebSocket_SubscribeThenCloseDoesNotLeak(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	// An upstream id of its own: no other test's server counts under it.
+	const upsId = "ws-upstream-shutdown"
+	cfg := standardWsConfig(subscribingWsUpstream(t))
+	cfg.Projects[0].Upstreams[1].Id = upsId
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = srv.Shutdown(&log.Logger)
+			cancel()
+		}
+	}()
+
+	conn := dialWs(t, addr)
+	resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+	_, ok := resp["result"].(string)
+	require.True(t, ok, "subscribe failed: %v", resp)
+	require.Eventually(t, func() bool { return upstreamSubsOn(upsId, "newHeads") == 1 },
+		5*time.Second, 50*time.Millisecond, "the upstream newHeads subscription is counted")
+	_ = conn.Close()
+
+	for i := 0; i < 20; i++ {
+		conn := dialWs(t, addr)
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)))
+		require.NoError(t, conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")))
+		_ = conn.Close()
+	}
+
+	require.Eventually(t, func() bool {
+		active, subscribed := wsConnCount(srv)
+		conns, clientSubs, _ := wsGauges("newHeads")
+		return active == 0 && subscribed == 0 && conns == 0 && clientSubs == 0
+	}, 5*time.Second, 50*time.Millisecond, "connections must be fully cleaned up")
+
+	_ = srv.Shutdown(&log.Logger)
+	cancel()
+	stopped = true
+	require.Eventually(t, func() bool { return upstreamSubsOn(upsId, "newHeads") == 0 },
+		5*time.Second, 50*time.Millisecond, "shutdown uncounts the upstream subscription")
+}
+
+// eth_unsubscribe only reaches the caller's own subscriptions. The pressure
+// gauges follow subscribe, unsubscribe and close back to zero, and a
+// newPendingTransactions topic whose last client disconnects is released
+// upstream after the idle delay.
+func TestWebSocket_UnsubscribeIsScopedToConnection(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+	prevIdle := sourceIdleStop.Load()
+	sourceIdleStop.Store(300 * time.Millisecond)
+	defer sourceIdleStop.Store(prevIdle)
+
+	addr, cleanup := setupTestERPCServer(t, standardWsConfig(subscribingWsUpstream(t)))
+	defer cleanup()
+
+	connA := dialWs(t, addr)
+	defer connA.Close()
+	connB := dialWs(t, addr)
+	defer connB.Close()
+
+	resp := sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+	subID, ok := resp["result"].(string)
+	require.True(t, ok, "subscribe failed: %v", resp)
+	require.Eventually(t, func() bool {
+		_, clientSubs, _ := wsGauges("newHeads")
+		return clientSubs == 1
+	}, 5*time.Second, 10*time.Millisecond, "the subscription must open one tap")
+	require.Eventually(t, func() bool {
+		conns, _, _ := wsGauges("newHeads")
+		return conns == 2
+	}, 5*time.Second, 50*time.Millisecond, "earlier tests' connections must be gone, leaving these 2")
+
+	unsub := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"eth_unsubscribe","params":["%s"]}`, subID)
+	resp = sendAndReceive(t, connB, unsub)
+	assert.NotNil(t, resp["error"], "another connection must not remove the subscription")
+
+	resp = sendAndReceive(t, connA, unsub)
+	assert.Equal(t, true, resp["result"], "owner must still be able to unsubscribe: %v", resp)
+	require.Eventually(t, func() bool {
+		_, clientSubs, _ := wsGauges("newHeads")
+		return clientSubs == 0
+	}, 5*time.Second, 10*time.Millisecond, "unsubscribe must end the tap")
+
+	// The upstream may still be connecting: the subscribe opens, and the
+	// source subscribes the topic once connected.
+	resp = sendAndReceive(t, connA, `{"jsonrpc":"2.0","id":3,"method":"eth_subscribe","params":["newPendingTransactions"]}`)
+	_, ok = resp["result"].(string)
+	require.True(t, ok, "newPendingTransactions subscribe must succeed: %v", resp)
+	require.Eventually(t, func() bool {
+		_, clientSubs, _ := wsGauges("newPendingTransactions")
+		return clientSubs == 1
+	}, 5*time.Second, 10*time.Millisecond, "the subscription must open one tap")
+	require.Eventually(t, func() bool {
+		_, _, upstreamSubs := wsGauges("newPendingTransactions")
+		return upstreamSubs == 1
+	}, 5*time.Second, 50*time.Millisecond, "one newPendingTransactions topic must be live upstream")
+
+	// Closing without eth_unsubscribe leaves cleanup to CleanupConnection.
+	require.NoError(t, connA.Close())
+	require.NoError(t, connB.Close())
+	require.Eventually(t, func() bool {
+		conns, clientSubs, upstreamSubs := wsGauges("newPendingTransactions")
+		return conns == 0 && clientSubs == 0 && upstreamSubs == 0
+	}, 5*time.Second, 50*time.Millisecond, "closed connections must release every gauge and the upstream filter")
+}
+
+// Shutdown closes client connections with 1001 as soon as it starts, not
+// after waitBeforeShutdown, lets in-flight requests answer first, and
+// refuses new connections before the upgrade.
+func TestWebSocket_ShutdownClosesPromptlyAfterInflightRequests(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+	gock.New("http://rpc1.localhost").
+		Post("/").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Reply(200).
+		Delay(500 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xabc123"})
+
+	// As in production, the ws upstream serves only subscriptions, so
+	// eth_getBalance always reaches the slow HTTP mock.
+	cfg := standardWsConfig(subscribingWsUpstream(t))
+	cfg.Projects[0].Upstreams[1].IgnoreMethods = []string{"*"}
+	cfg.Projects[0].Upstreams[1].AllowMethods = []string{"eth_subscribe", "eth_unsubscribe"}
+	cfg.Server.WaitBeforeShutdown = common.Duration(5 * time.Second).Ptr()
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	defer func() { cancel(); _ = srv.Shutdown(&log.Logger) }()
+
+	subscriber := dialWs(t, addr)
+	defer subscriber.Close()
+	resp := sendAndReceive(t, subscriber, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+	require.NotNil(t, resp["result"], "subscribe failed: %v", resp)
+
+	requester := dialWs(t, addr)
+	defer requester.Close()
+	require.NoError(t, requester.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)))
+	time.Sleep(100 * time.Millisecond) // let the request start
+
+	refused := telemetry.MetricWebsocketRejectedTotal.WithLabelValues("test_ws", wsRejectShuttingDown)
+	refusedBefore := testutil.ToFloat64(refused)
+	start := time.Now()
+	cancel()
+
+	var closeErr *websocket.CloseError
+	_ = subscriber.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err := subscriber.ReadMessage()
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, websocket.CloseGoingAway, closeErr.Code)
+	assert.Less(t, time.Since(start), time.Second, "close must not wait for waitBeforeShutdown")
+
+	_ = requester.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, msg, err := requester.ReadMessage()
+	require.NoError(t, err, "in-flight request must be answered before the close")
+	assert.Contains(t, string(msg), "0xabc123")
+	_, _, err = requester.ReadMessage()
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, websocket.CloseGoingAway, closeErr.Code)
+
+	// A draining server refuses new connections with 503 before the upgrade.
+	late, status := dialWsExpectStatus(t, addr)
+	if late != nil {
+		_ = late.Close()
+	}
+	assert.Nil(t, late, "a draining server must not complete the handshake")
+	assert.Equal(t, http.StatusServiceUnavailable, status)
+	assert.Equal(t, refusedBefore+1, testutil.ToFloat64(refused), "the refusal must be counted")
+}
+
+// A peer that never answers pings is disconnected.
+func TestWebSocket_UnresponsivePeerIsDisconnected(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	cfg := httpOnlyConfig()
+	cfg.Server.WebSocket = &common.WebSocketServerConfig{PingInterval: common.Duration(200 * time.Millisecond).Ptr()}
+	srv, addr, cancel := startTestERPCServer(t, cfg)
+	defer func() { _ = srv.Shutdown(&log.Logger); cancel() }()
+
+	conn := dialWs(t, addr)
+	defer conn.Close()
+	conn.SetPingHandler(func(string) error { return nil }) // never pong
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	require.Eventually(t, func() bool {
+		active, _ := wsConnCount(srv)
+		return active == 0
+	}, 3*time.Second, 50*time.Millisecond)
+}
+
+// A connection runs at most maxConcurrentRequestsPerConnection requests at
+// once; the rest wait instead of failing.
+func TestWebSocket_ConcurrentRequestsAreBounded(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForEvmStatePoller()
+	gock.New("http://rpc1.localhost").
+		Post("/").
+		Persist().
+		Filter(func(r *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(r), "eth_getBalance")
+		}).
+		Reply(200).
+		Delay(300 * time.Millisecond).
+		JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0xabc123"})
+
+	cfg := httpOnlyConfig()
+	cfg.Server.WebSocket = &common.WebSocketServerConfig{MaxConcurrentRequestsPerConnection: 1}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	conn := dialWs(t, addr)
+	defer conn.Close()
+
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		// Distinct params so multiplexing can't merge them.
+		msg := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBalance","params":["0x%d","latest"]}`, i, i)
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(msg)))
+	}
+	for i := 0; i < 3; i++ {
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		assert.Contains(t, string(msg), "0xabc123")
+	}
+	assert.GreaterOrEqual(t, time.Since(start), 900*time.Millisecond, "requests must run one at a time")
+}
+
+//
+// --- Error shapes ---
+//
+
+func TestWebSocket_ErrorShapes(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	addr, cleanup := setupTestERPCServer(t, standardWsConfig(subscribingWsUpstream(t)))
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+
+	t.Run("UnknownSubscriptionTypeIsInvalidParams", func(t *testing.T) {
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newBananas"]}`)
+		require.NotNil(t, resp["error"])
+		assert.EqualValues(t, common.JsonRpcErrorInvalidArgument, resp["error"].(map[string]interface{})["code"])
+	})
+
+	t.Run("BatchWithLeadingWhitespace", func(t *testing.T) {
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(" \n[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBalance\",\"params\":[\"0xaaaa\",\"latest\"]}]")))
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		assert.True(t, strings.HasPrefix(string(msg), "["), "expected a batch response, got %s", msg)
+		assert.Contains(t, string(msg), `"result"`)
+	})
+
+	t.Run("EmptyBatchIsSingleInvalidRequest", func(t *testing.T) {
+		resp := sendAndReceive(t, conn, `[]`)
+		require.NotNil(t, resp["error"])
+		assert.EqualValues(t, common.JsonRpcErrorClientSideException, resp["error"].(map[string]interface{})["code"])
+	})
+
+	// The HTTP rule holds per message: a bool, object, or array id is an
+	// Invalid Request answered with a null id.
+	t.Run("NonScalarIdIsInvalidRequest", func(t *testing.T) {
+		for _, id := range []string{`true`, `{"a":1}`, `[1]`} {
+			resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":`+id+`,"method":"eth_getBalance","params":["0xaaaa","latest"]}`)
+			require.NotNil(t, resp["error"], "id %s: %v", id, resp)
+			assert.EqualValues(t, common.JsonRpcErrorClientSideException, resp["error"].(map[string]interface{})["code"], "id %s", id)
+			gotID, hasID := resp["id"]
+			assert.True(t, hasID, "id %s: reply must carry an id member", id)
+			assert.Nil(t, gotID, "id %s", id)
+		}
+	})
+}
+
+// maxClientBatchSize holds on a WebSocket connection as over HTTP: an
+// over-limit batch gets one -32600 error and reaches no upstream.
+func TestWebSocket_ClientBatchCap(t *testing.T) {
+	calls := countEvmGetBalanceCalls(t)
+	cfg := standardWsConfig("")
+	cfg.Projects[0].Networks[0].MaxClientBatchSize = util.IntPtr(2)
+	cfg.Projects[0].Upstreams = cfg.Projects[0].Upstreams[:1]
+	cfg.Projects[0].Upstreams[0].JsonRpc = &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(getBalanceBatch(2, ""))))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(string(msg), "["), "a batch at the limit is served, got %s", msg)
+	assert.EqualValues(t, 2, calls.Load())
+
+	resp := sendAndReceive(t, conn, getBalanceBatch(3, ""))
+	assert.Contains(t, resp, "id")
+	assert.Nil(t, resp["id"])
+	require.NotNil(t, resp["error"], "got %v", resp)
+	errObj := resp["error"].(map[string]interface{})
+	assert.EqualValues(t, common.JsonRpcErrorClientSideException, errObj["code"])
+	assert.Contains(t, errObj["message"], "batch of 3 requests")
+	assert.Contains(t, errObj["message"], "limit of 2")
+	assert.EqualValues(t, 2, calls.Load(), "an over-limit batch must reach no upstream")
+}
+
+// A WebSocket connection is bound to one network, so a path that doesn't
+// name one, or names one the project can't serve, is refused at the
+// handshake; the latter with the status and error a POST gets.
+func TestWebSocket_UpgradeRequiresNetwork(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
+	defer cleanup()
+
+	_, resp, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws", addr), nil)
+	require.Error(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	errorOf := func(resp *http.Response) map[string]interface{} {
+		t.Helper()
+		defer resp.Body.Close()
+		var body map[string]interface{}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		errObj, ok := body["error"].(map[string]interface{})
+		require.True(t, ok, "body must carry a JSON-RPC error: %v", body)
+		return errObj
+	}
+
+	post, err := http.Post(fmt.Sprintf("http://%s/test_ws/evm/999", addr), "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, post.StatusCode)
+	postErr := errorOf(post)
+
+	_, resp, err = websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/999", addr), nil)
+	require.Error(t, err, "an upgrade for an unknown network must be refused")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, postErr, errorOf(resp))
+}
+
+// A request that panics must still get a reply with its own id: WebSocket
+// clients match replies by id, so without one they wait for their timeout.
+func TestWebSocket_PanickedRequestRepliesWithItsId(t *testing.T) {
+	// No upgrade request: resolving the client IP panics inside handleRequest.
+	wsc := &WsConnection{
+		id:        "test",
+		logger:    &log.Logger,
+		networkId: "evm:123",
+		server:    &HttpServer{serverCfg: &common.ServerConfig{}},
+		project:   &PreparedProject{Config: &common.ProjectConfig{Id: "main"}},
+	}
+	startedAt := time.Now()
+
+	out, _, _ := wsc.handleRequest(t.Context(), []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_chainId"}`), &startedAt, false)
+	require.NotNil(t, out)
+	body, err := common.SonicCfg.Marshal(out)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"id":7`)
+	assert.Contains(t, string(body), `"error"`)
+}
+
+// Every message on a WebSocket connection authenticates with the upgrade
+// request's credentials, so an upgrade whose credentials no strategy accepts
+// is refused instead of holding a connection that can never be served.
+// Method scoping still applies per message.
+func TestWebSocket_UpgradeRequiresAcceptedCredentials(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	cfg := httpOnlyConfig()
+	cfg.Projects[0].Auth = &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{{
+		Type:          common.AuthTypeSecret,
+		Secret:        &common.SecretStrategyConfig{Value: "s3cret"},
+		IgnoreMethods: []string{"*"},
+		AllowMethods:  []string{"eth_getBalance"},
+	}}}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	_, resp, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123", addr), nil)
+	require.Error(t, err, "an upgrade without credentials must be refused")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	_, resp, err = websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123?secret=wrong", addr), nil)
+	require.Error(t, err, "an upgrade with a rejected secret must be refused")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/evm/123?secret=s3cret", addr), nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	ok := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x0000000000000000000000000000000000000001","latest"]}`)
+	assert.Equal(t, "0xabc123", ok["result"])
+
+	// The strategy only covers eth_getBalance; other methods stay unauthorized.
+	denied := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}`)
+	assert.NotNil(t, denied["error"], "method scoping must still apply per message")
+	assert.Nil(t, denied["result"])
+}
+
+// closeRecorder is a response body that records whether it was closed.
+type closeRecorder struct{ closed atomic.Bool }
+
+func (c *closeRecorder) Read([]byte) (int, error) { return 0, io.EOF }
+func (c *closeRecorder) Close() error             { c.closed.Store(true); return nil }
+
+// A response is released even when its write never starts, as on the batch
+// and HTTP paths.
+func TestWebSocket_ResponseReleasedWhenWriteNeverStarts(t *testing.T) {
+	wsc := &WsConnection{
+		id:     "test",
+		logger: &log.Logger,
+		server: &HttpServer{serverCfg: &common.ServerConfig{}},
+	}
+	wsc.closed.Store(true)
+
+	body := &closeRecorder{}
+	wsc.writeNormalizedResponse(common.NewNormalizedResponse().WithBody(body))
+	assert.Eventually(t, body.closed.Load, time.Second, 10*time.Millisecond)
+}
+
+// Errors raised before a WebSocket request is bound to its network carry
+// the connection's architecture, as on HTTP: an SVM consumer rate-limit
+// error uses the SVM wire code, not -32005 (NodeUnhealthy to Solana clients).
+func TestWebSocket_SvmAuthRateLimitUsesSvmWireCode(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	upstreamURL, _ := svmUpstream(t)
+
+	cfg := &common.Config{
+		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true)},
+		Projects: []*common.ProjectConfig{{
+			Id: "test_ws",
+			Networks: []*common.NetworkConfig{{
+				Architecture: common.ArchitectureSvm,
+				Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta"},
+			}},
+			Upstreams: []*common.UpstreamConfig{{
+				Id:       "svm-ws-test",
+				Type:     common.UpstreamTypeSvm,
+				Endpoint: upstreamURL,
+				Svm:      &common.SvmUpstreamConfig{Cluster: "mainnet-beta"},
+			}},
+			Auth: &common.AuthConfig{Strategies: []*common.AuthStrategyConfig{{
+				Type:            common.AuthTypeSecret,
+				Secret:          &common.SecretStrategyConfig{Value: "s3cret"},
+				RateLimitBudget: "one-per-minute",
+			}}},
+		}},
+		RateLimiters: &common.RateLimiterConfig{Budgets: []*common.RateLimitBudgetConfig{{
+			Id:    "one-per-minute",
+			Rules: []*common.RateLimitRuleConfig{{Method: "*", MaxCount: 1, Period: common.RateLimitPeriodMinute}},
+		}}},
+	}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/svm/mainnet-beta?secret=s3cret", addr), nil)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// Both run concurrently: one spends the budget, the other is rejected
+	// at auth straight away.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}`)))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"getSlot","params":[]}`)))
+	var limited map[string]interface{}
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(10*time.Second)))
+	for limited == nil {
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		var resp map[string]interface{}
+		require.NoError(t, json.Unmarshal(msg, &resp))
+		if _, isErr := resp["error"]; isErr {
+			limited = resp
+		}
+	}
+	errObj, ok := limited["error"].(map[string]interface{})
+	require.True(t, ok, "one request must be rate limited: %v", limited)
+	assert.EqualValues(t, -32000, errObj["code"])
+}
+
+// svmUpstream serves an SVM mainnet-beta network: getSlot and getGenesisHash
+// answer, other methods get one vendor's answer to ping (the error object as
+// a result). It counts the pings it receives.
+func svmUpstream(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
+	var pings atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.ID) == 0 {
+			req.ID = json.RawMessage("null")
+		}
+		result := `{"code":-32601,"message":"Method not found"}`
+		switch req.Method {
+		case "ping":
+			pings.Add(1)
+		case "getSlot":
+			result = "400000000"
+		case "getGenesisHash":
+			result = `"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":%s}`, req.ID, result)
+	}))
+	t.Cleanup(upstream.Close)
+	return upstream.URL, &pings
+}
+
+// web3.js and @solana/kit send {"jsonrpc":"2.0","method":"ping"} every 5 s on
+// a subscription socket. Agave has no ping method: it drops that frame unrun
+// and unanswered, and answers a ping with an id -32601 "Method not found".
+// eRPC does the same without asking an upstream, and meters nothing for the
+// dropped frame, so a socket's keepalive never bills.
+func TestWebSocket_SvmPingAnsweredLocally(t *testing.T) {
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+
+	upstreamURL, pings := svmUpstream(t)
+	cfg := &common.Config{
+		Server: &common.ServerConfig{ListenV4: util.BoolPtr(true), CostHeaders: util.BoolPtr(true)},
+		Projects: []*common.ProjectConfig{{
+			Id: "test_ws",
+			Networks: []*common.NetworkConfig{{
+				Architecture: common.ArchitectureSvm,
+				Svm:          &common.SvmNetworkConfig{Cluster: "mainnet-beta"},
+			}},
+			Upstreams: []*common.UpstreamConfig{{
+				Id:       "svm-ws-ping",
+				Type:     common.UpstreamTypeSvm,
+				Endpoint: upstreamURL,
+				Svm:      &common.SvmUpstreamConfig{Cluster: "mainnet-beta"},
+			}},
+		}},
+	}
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/test_ws/svm/mainnet-beta", addr),
+		http.Header{"X-ERPC-Cost-Frames": {"1"}})
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The id-less ping writes nothing, not even a metering-only frame, so
+	// the first frame is the reply to the ping with an id.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","method":"ping"}`)))
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
+	h, body := readCostFrame(t, conn)
+	var pong map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &pong))
+	assert.EqualValues(t, 1, pong["id"])
+	assert.NotContains(t, pong, "result", "%s", body)
+	errObj, ok := pong["error"].(map[string]interface{})
+	require.True(t, ok, "ping with an id must be answered with an error: %s", body)
+	assert.EqualValues(t, -32601, errObj["code"])
+	assert.Equal(t, "Method not found", errObj["message"])
+	assert.Equal(t, "0", h.Get("X-ERPC-Billable"))
+
+	// The socket still serves calls.
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":2,"method":"getSlot"}`)))
+	_, body = readCostFrame(t, conn)
+	var slot map[string]interface{}
+	require.NoError(t, json.Unmarshal(body, &slot))
+	assert.EqualValues(t, 2, slot["id"])
+	assert.IsType(t, float64(0), slot["result"], "getSlot answers a slot: %s", body)
+
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+	_, extra, err := conn.ReadMessage()
+	assert.Error(t, err, "no frame for the id-less ping, got %q", extra)
+	assert.Zero(t, pings.Load(), "no upstream is asked for ping")
+}
+
+// A request without an id is a notification: it runs but gets no reply
+// (JSON-RPC 2.0 §4.1), alone or in a batch. "id": null is a request and is
+// answered.
+func TestWebSocket_NotificationsGetNoReply(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+	addr, cleanup := setupTestERPCServer(t, httpOnlyConfig())
+	defer cleanup()
+	conn := dialWs(t, addr)
+	defer conn.Close()
+
+	const params = `"params":["0x0000000000000000000000000000000000000001","latest"]`
+
+	nullID := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":null,"method":"eth_getBalance",`+params+`}`)
+	assert.Equal(t, "0xabc123", nullID["result"], `"id": null is a request and must be answered`)
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","method":"eth_getBalance",`+params+`}`)))
+	reply := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":7,"method":"eth_getBalance",`+params+`}`)
+	assert.EqualValues(t, 7, reply["id"], "the first reply must be the request's, not the notification's")
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`[{"jsonrpc":"2.0","method":"eth_getBalance",`+params+`},{"jsonrpc":"2.0","method":"eth_getBalance",`+params+`}]`)))
+
+	// Neither the notification nor the batch of notifications is answered.
+	// (A gorilla read timeout ends the connection's reads, so check once.)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+	_, msg, err := conn.ReadMessage()
+	require.Error(t, err, "notifications must not be answered, got %s", msg)
+}
+
+// Two projects can define the same network, each with its own upstreams. A
+// subscription on the second project must be served by that project's
+// upstreams, not by the first project's network that was bootstrapped first.
+func TestWebSocket_ProjectsSharingANetworkUseTheirOwnUpstreams(t *testing.T) {
+	setupGock()
+	t.Cleanup(util.ResetGock)
+
+	var subscribesA, subscribesB atomic.Int32
+	mockWith := func(count *atomic.Int32, subID string) *httptest.Server {
+		return mockWsUpstream(t, func(conn *websocket.Conn) {
+			standardMockWsHandler(conn, func(method string, id interface{}, _ map[string]interface{}) {
+				result := interface{}("0x1")
+				if method == "eth_subscribe" {
+					count.Add(1)
+					result = subID
+				}
+				mockWriteJSON(conn, map[string]interface{}{"jsonrpc": "2.0", "id": id, "result": result})
+			})
+		})
+	}
+	upA, upB := mockWith(&subscribesA, "0xa"), mockWith(&subscribesB, "0xb")
+	defer upA.Close()
+	defer upB.Close()
+
+	cfg := standardWsConfig("ws" + strings.TrimPrefix(upA.URL, "http"))
+	second := *cfg.Projects[0]
+	second.Id = "test_ws2"
+	// Its own network config object, as a config file gives each project:
+	// a shallow copy would share the first project's, and both bootstraps
+	// would write it at once.
+	second.Networks = []*common.NetworkConfig{{Architecture: common.ArchitectureEvm, Evm: &common.EvmNetworkConfig{ChainId: 123}}}
+	second.Upstreams = []*common.UpstreamConfig{
+		{Id: "http-upstream", Type: common.UpstreamTypeEvm, Endpoint: "http://rpc1.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "ws-upstream", Type: common.UpstreamTypeEvm, Endpoint: "ws" + strings.TrimPrefix(upB.URL, "http"), Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+	}
+	cfg.Projects = append(cfg.Projects, &second)
+	addr, cleanup := setupTestERPCServer(t, cfg)
+	defer cleanup()
+
+	subscribe := func(project string) {
+		t.Helper()
+		conn, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://%s/%s/evm/123", addr, project), nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		resp := sendAndReceive(t, conn, `{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`)
+		require.Nil(t, resp["error"], "subscribe on %s: %v", project, resp)
+	}
+
+	subscribe("test_ws")
+	require.Eventually(t, func() bool { return subscribesA.Load() > 0 }, 5*time.Second, 20*time.Millisecond)
+	subscribe("test_ws2")
+	assert.Eventually(t, func() bool { return subscribesB.Load() > 0 }, 5*time.Second, 20*time.Millisecond,
+		"the second project's subscription must subscribe on its own upstream")
+}

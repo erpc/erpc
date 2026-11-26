@@ -17,10 +17,21 @@ func init() {
 type SvmArchitectureHandler struct{}
 
 func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, network common.Network, req *common.NormalizedRequest) (bool, *common.NormalizedResponse, error) {
+	// First: an id a Solana node cannot read decides the reply on its own.
+	if handled, resp, nerr := projectPreForward_negativeId(ctx, req); handled {
+		return handled, resp, nerr
+	}
 	method, err := req.Method()
 	if err != nil {
 		return false, nil, err
 	}
+	if handled, resp, perr := projectPreForward_ping(method); handled {
+		return handled, resp, perr
+	}
+	if handled, resp, perr := projectPreForward_u64Params(ctx, req, method); handled {
+		return handled, resp, perr
+	}
+	projectPreForward_scanCursor(ctx, req, method)
 	switch method {
 	case "getGenesisHash":
 		if handled, resp, gerr := projectPreForward_getGenesisHash(ctx, network, req); handled || gerr != nil {
@@ -55,8 +66,10 @@ func (h *SvmArchitectureHandler) HandleNetworkPreForward(ctx context.Context, ne
 	switch method {
 	case "getBlock", "getConfirmedBlock":
 		return networkPreForward_getBlock(ctx, network, req)
+	case "getBlockTime":
+		return networkPreForward_getBlockTime(ctx, network, req)
 	}
-	return false, nil, nil
+	return networkPreForward_minContextSlot(ctx, network, req)
 }
 
 func (h *SvmArchitectureHandler) HandleNetworkPostForward(ctx context.Context, network common.Network, req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
@@ -107,6 +120,13 @@ func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 	// this never walks a multi-megabyte getBlock payload. Silent on miss.
 	if err == nil {
 		upstreamPostForward_trackContextSlot(ctx, network, upstream, req, resp)
+		upstreamPostForward_scanCursor(ctx, req, resp, method)
+		if method == "getBlockTime" {
+			return resp, upstreamPostForward_getBlockTimeNull(ctx, network, upstream, req, resp)
+		}
+		// History sweep: a 200 answer that is provably incomplete for what the
+		// caller asked becomes MissingData so the sweep tries the next upstream.
+		return upstreamPostForward_historySweep(ctx, upstream, req, resp)
 	}
 	return resp, err
 }

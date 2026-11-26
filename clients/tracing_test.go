@@ -23,7 +23,7 @@ func TestSendSingleRequest_SpanAttributes(t *testing.T) {
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 	)
 	common.SetTracerProviderForTest(tp)
-	t.Cleanup(func() { common.IsTracingEnabled = false })
+	t.Cleanup(func() { common.SetTracingEnabled(false) })
 
 	util.ResetGock()
 	defer util.ResetGock()

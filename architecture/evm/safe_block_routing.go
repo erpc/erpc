@@ -33,7 +33,7 @@ func ApplySafeBlockSource(ctx context.Context, network common.Network, req *comm
 	if err != nil {
 		return err
 	}
-	methodCfg := getMethodConfig(method, network)
+	methodCfg := common.ResolveMethodConfig(method, network)
 	var refs [][]interface{}
 	if methodCfg != nil {
 		refs = methodCfg.ReqRefs
@@ -56,7 +56,7 @@ func ApplySafeBlockSource(ctx context.Context, network common.Network, req *comm
 		if err != nil {
 			continue
 		}
-		blockRef, _, err := parseCompositeBlockParam(value)
+		blockRef, _, err := common.ParseEvmBlockParam(value)
 		if err == nil && strings.EqualFold(blockRef, "safe") {
 			hasSafe = true
 			break

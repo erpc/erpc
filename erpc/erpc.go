@@ -129,3 +129,13 @@ func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {
 func (e *ERPC) GetProjects() []*PreparedProject {
 	return e.projectsRegistry.GetAll()
 }
+
+// wait waits, once the app ctx ended, until no goroutine of any project's
+// networks or upstreams runs (NetworksRegistry.wait,
+// UpstreamsRegistry.Wait).
+func (e *ERPC) wait() {
+	for _, p := range e.GetProjects() {
+		p.networksRegistry.wait()
+		p.upstreamsRegistry.Wait()
+	}
+}

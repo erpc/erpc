@@ -26,7 +26,7 @@ func init() {
 func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 	t.Run("RetryEmptyFalse_TransactionReceipt_NoRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
 
@@ -101,7 +101,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("RetryEmptyTrue_TransactionReceipt_Retries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0) // Both mocks should be consumed
 
@@ -178,7 +178,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("RetryEmptyTrue_GetTransactionByHash_Retries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -262,7 +262,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("RetryEmptyTrue_IgnoreIncludesReceipt_NoRetry", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called because method is ignored
 
@@ -332,7 +332,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("RetryEmptyFalse_EthLogs_NoRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
 
@@ -410,7 +410,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("HeaderOverridesDefaults_RetryEmptyFalse", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
 
@@ -487,7 +487,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("MaxAttemptsReached_StopsRetrying", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 mock may remain pending due to MaxAttempts
 
@@ -555,7 +555,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("NonEmptyResponse_NoRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1) // rpc2 should not be called
 
@@ -638,7 +638,7 @@ func TestNetworkFailsafe_RetryEmpty(t *testing.T) {
 
 	t.Run("RetryEmptyFalse_GetBlockByNumber_NoRetries", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
@@ -771,6 +771,7 @@ func setupTestNetworkWithRetryConfig(t *testing.T, ctx context.Context, directiv
 	time.Sleep(100 * time.Millisecond)
 
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -847,6 +848,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 	time.Sleep(100 * time.Millisecond)
 
 	network, err := NewNetwork(ctx, &log.Logger, "test", networkConfig, rateLimitersRegistry, upstreamsRegistry, metricsTracker, nil)
+	stopAtEnd(t, network)
 	require.NoError(t, err)
 
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkConfig.NetworkId())
@@ -862,7 +864,7 @@ func setupTestNetworkWithMultipleFailsafePolicies(t *testing.T, ctx context.Cont
 func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 	t.Run("FirstMatchingPolicy_ByFinality_BeforeMethodOnlyMatch", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -906,7 +908,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("SecondPolicy_WhenFirstDoesNotMatchFinality", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -950,7 +952,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("GenericFallback_WhenNoSpecificMatch", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -992,7 +994,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("WildcardMethodMatch_AnyMethod", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1026,7 +1028,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("WildcardPatternMatch_trace_star", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1072,7 +1074,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("PipeDelimitedMethodMatch", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1122,7 +1124,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("MultipleFinalitiesMatch", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1177,7 +1179,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("NoMatchingPolicy_ReturnsNil", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1213,7 +1215,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("ConfigOrder_FirstPolicyWins_EvenIfLessSpecific", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1252,7 +1254,7 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 
 	t.Run("RealWorldScenario_MonadConfig", func(t *testing.T) {
 		util.ResetGock()
-		defer util.ResetGock()
+		t.Cleanup(util.ResetGock)
 		util.SetupMocksForEvmStatePoller()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1343,61 +1345,118 @@ func TestGetFailsafeExecutor_OrderRespected(t *testing.T) {
 	})
 }
 
-// matchRequestKind scopes a policy by who issued the request: "internal" =
-// erpc's own auxiliary fetches (e.g. the integrity module's canonical
-// corroboration, marked IsInternal), "user" = client traffic. This is the
-// enabler for consensus-on-aux: internal canonical fetches get a consensus
-// policy while user data methods rely on integrity validation.
+// matchRequestKind "user" matches every client request, as "*" does: no
+// eRPC-own request goes through a network failsafe policy (spec §20), and
+// a timeout-only one (state probe) takes none at all.
 func TestGetFailsafeExecutor_MatchRequestKind(t *testing.T) {
 	util.ResetGock()
-	defer util.ResetGock()
+	t.Cleanup(util.ResetGock)
 	util.SetupMocksForEvmStatePoller()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	failsafeConfigs := []*common.FailsafeConfig{
-		{
-			MatchMethod:      "*",
-			MatchRequestKind: "internal",
-			Retry:            &common.RetryPolicyConfig{MaxAttempts: 5},
-		},
+	network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
 		{
 			MatchMethod:      "*",
 			MatchRequestKind: "user",
 			Retry:            &common.RetryPolicyConfig{MaxAttempts: 2},
 		},
+	})
+
+	t.Run("a timeout-only request (state probe) takes no network policy", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getProof","params":["0x0",[],"latest"]}`))
+		req.SetNetwork(network)
+		req.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTimeoutOnly})
+		executor := network.getFailsafeExecutor(ctx, req)
+		require.NotNil(t, executor)
+		assert.Nil(t, executor.cfg, "no retry, hedge or timeout from a configured policy")
+	})
+
+	t.Run("a client request takes the user policy", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
+		req.SetNetwork(network)
+		executor := network.getFailsafeExecutor(ctx, req)
+		require.NotNil(t, executor)
+		require.NotNil(t, executor.cfg)
+		assert.Equal(t, 2, executor.cfg.Retry.MaxAttempts)
+	})
+}
+
+func TestGetFailsafeExecutor_MatchCommitment(t *testing.T) {
+	ctx := context.Background()
+
+	// Consensus-style rule on [finalized, confirmed], then a catch-all.
+	newNetwork := func(t *testing.T, arch common.NetworkArchitecture, defaultCommitment string) *Network {
+		t.Helper()
+		cfg := &common.NetworkConfig{Architecture: arch}
+		if arch == common.ArchitectureSvm {
+			cfg.Svm = &common.SvmNetworkConfig{Cluster: "mainnet-beta", Commitment: defaultCommitment}
+		}
+		rule, err := NewNetworkExecutor(&common.FailsafeConfig{
+			MatchMethod:     "*",
+			MatchCommitment: []string{"finalized", "confirmed"},
+		}, &log.Logger, nil, nil)
+		require.NoError(t, err)
+		catchAll, err := NewNetworkExecutor(nil, &log.Logger, nil, nil)
+		require.NoError(t, err)
+		return &Network{cfg: cfg, failsafeExecutors: []*networkExecutor{rule, catchAll}}
 	}
-	network := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, failsafeConfigs)
+	matchesRule := func(n *Network, body string) bool {
+		req := common.NewNormalizedRequest([]byte(body))
+		req.SetNetwork(n)
+		return len(n.getFailsafeExecutor(ctx, req).MatchCommitment()) > 0
+	}
 
-	t.Run("internal request selects the internal policy", func(t *testing.T) {
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		req.SetNetwork(network)
-		req.SetDirectives(&common.RequestDirectives{IsInternal: true})
-		executor := network.getFailsafeExecutor(ctx, req)
-		require.NotNil(t, executor)
-		assert.Equal(t, "internal", executor.MatchRequestKind())
-	})
-
-	t.Run("user request skips the internal policy", func(t *testing.T) {
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		req.SetNetwork(network)
-		executor := network.getFailsafeExecutor(ctx, req)
-		require.NotNil(t, executor)
-		assert.Equal(t, "user", executor.MatchRequestKind())
-	})
-
-	t.Run("unset kind matches both (backward compatible)", func(t *testing.T) {
-		anyKind := setupTestNetworkWithMultipleFailsafePolicies(t, ctx, []*common.FailsafeConfig{
-			{MatchMethod: "*", Retry: &common.RetryPolicyConfig{MaxAttempts: 3}},
+	cases := []struct {
+		name              string
+		defaultCommitment string
+		body              string
+		want              bool
+	}{
+		{"explicit confirmed", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"confirmed"}]}`, true},
+		{"explicit processed", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"processed"}]}`, false},
+		{"signature statuses explicit finalized", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["sig"],{"commitment":"finalized"}]}`, true},
+		{"signature statuses preserve processed default", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["sig"],{"searchTransactionHistory":true}]}`, false},
+		// Injection makes this byte-identical to an explicit confirmed request,
+		// so it must take the same rule.
+		{"omitted takes the injected default", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, true},
+		{"omitted takes a processed default", "processed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, false},
+		// getBlock rejects processed, so injection writes confirmed.
+		{"omitted takes the clamped default", "processed", `{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[100]}`, true},
+		// Nothing is injected, so the bytes differ from an explicit finalized request.
+		{"omitted without a default is none", "", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk"]}`, false},
+		{"unknown value matches no level", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["pk",{"commitment":"recent"}]}`, false},
+		// Write methods are none whether the commitment is explicit or injected.
+		{"explicit simulateTransaction is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"simulateTransaction","params":["tx",{"commitment":"confirmed"}]}`, false},
+		{"injected simulateTransaction is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"simulateTransaction","params":["tx",{}]}`, false},
+		{"explicit requestAirdrop is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"requestAirdrop","params":["pk",1,{"commitment":"confirmed"}]}`, false},
+		{"sendTransaction preflight is none", "confirmed", `{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["tx",{"preflightCommitment":"confirmed"}]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := newNetwork(t, common.ArchitectureSvm, tc.defaultCommitment)
+			assert.Equal(t, tc.want, matchesRule(n, tc.body))
 		})
-		internal := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		internal.SetNetwork(anyKind)
-		internal.SetDirectives(&common.RequestDirectives{IsInternal: true})
-		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, internal))
+	}
 
-		user := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x100",false]}`))
-		user.SetNetwork(anyKind)
-		require.NotNil(t, anyKind.getFailsafeExecutor(ctx, user))
+	t.Run("same rule before and after injection", func(t *testing.T) {
+		n := newNetwork(t, common.ArchitectureSvm, "confirmed")
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["pk"]}`))
+		req.SetNetwork(n)
+		before := n.getFailsafeExecutor(ctx, req)
+		h, err := common.GetArchitectureHandler(common.ArchitectureSvm)
+		require.NoError(t, err)
+		_, _, err = h.HandleProjectPreForward(ctx, n, req)
+		require.NoError(t, err)
+		jrq, err := req.JsonRpcRequest(ctx)
+		require.NoError(t, err)
+		require.Len(t, jrq.Params, 2, "injection must append the options object")
+		assert.Same(t, before, n.getFailsafeExecutor(ctx, req))
+	})
+
+	t.Run("non-SVM requests are none", func(t *testing.T) {
+		n := newNetwork(t, common.ArchitectureEvm, "")
+		assert.False(t, matchesRule(n, `{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"},"finalized"]}`))
 	})
 }

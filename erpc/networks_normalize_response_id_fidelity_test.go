@@ -3,6 +3,7 @@ package erpc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -86,12 +87,57 @@ func TestNormalizeResponse_IDByteFidelity(t *testing.T) {
 	}
 }
 
+// TestNormalizeResponse_NullIDEchoIsSolanaOnly pins the split behind the
+// Solana wire fixes: Agave answers `"id":null` with `null`, so Solana clients
+// get `null` back; EVM clients keep the non-null id eRPC has always returned.
+func TestNormalizeResponse_NullIDEchoIsSolanaOnly(t *testing.T) {
+	ctx := context.Background()
+	network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
+
+	for _, tc := range []struct {
+		name     string
+		route    string
+		wantNull bool
+	}{
+		{name: "svm_echoes_null", route: `,"networkId":"svm:mainnet-beta"`, wantNull: true},
+		{name: "evm_keeps_typed_id", route: `,"networkId":"evm:1"`, wantNull: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"getSlot","id":null` + tc.route + `}`))
+			jrq, err := req.JsonRpcRequest(ctx)
+			require.NoError(t, err)
+
+			resp := common.NewNormalizedResponse().WithJsonRpcResponse(
+				common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`1`), nil))
+			require.NoError(t, network.normalizeResponse(ctx, req, resp))
+			out, err := resp.JsonRpcResponse(ctx)
+			require.NoError(t, err)
+			var buf bytes.Buffer
+			_, err = out.WriteTo(&buf)
+			require.NoError(t, err)
+
+			errBody := buildErrorResponseBody(req, common.NewErrInvalidRequest(assert.AnError), nil, nil).(*HttpJsonRpcErrorResponse)
+
+			if tc.wantNull {
+				assert.Contains(t, buf.String(), `"id":null`)
+				assert.Equal(t, json.RawMessage(`null`), errBody.Id)
+			} else {
+				assert.NotContains(t, buf.String(), `"id":null`)
+				assert.Equal(t, jrq.ID, errBody.Id)
+				assert.NotNil(t, jrq.ID)
+			}
+		})
+	}
+}
+
 // TestNormalizeResponse_IDLossyRejected pins that a numeric request id which
-// cannot be represented losslessly as int64 is rejected at parse time rather
+// is not an integer in the int64 or u64 range is rejected at parse time rather
 // than silently truncated/clamped into a different internal id (issue #869).
 // eRPC represents numeric request ids as int64 internally and echoes them to
 // upstreams, so a lossy id would corrupt the upstream-facing request and could
-// collapse distinct client ids onto the same internal id.
+// collapse distinct client ids onto the same internal id. An integer above the
+// int64 range, up to the u64 maximum, is carried instead: the upstream sees a
+// random int64 and the client gets its own id bytes back.
 func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
 	ctx := context.Background()
 	network := &Network{cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}}
@@ -100,9 +146,9 @@ func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
 		`3.14`,                       // fractional
 		`1e20`,                       // exponent, out of int64 range
 		`9.3e18`,                     // exponent within magnitude but not an exact int
-		`9223372036854775808`,        // MaxInt64 + 1
-		`18446744073709551614`,       // near uint64 max
-		`99999999999999999999999999`, // far beyond int64
+		`18446744073709551616`,       // u64 max + 1
+		`-9223372036854775809`,       // MinInt64 - 1
+		`99999999999999999999999999`, // far beyond u64
 	}
 
 	for _, idJSON := range lossy {
@@ -116,6 +162,27 @@ func TestNormalizeResponse_IDLossyRejected(t *testing.T) {
 			err := network.normalizeResponse(ctx, req, resp)
 			require.Error(t, err, "lossy id %s must be rejected, not silently converted", idJSON)
 			assert.Contains(t, err.Error(), "cannot be represented as a 64-bit integer")
+		})
+	}
+
+	for _, idJSON := range []string{`9223372036854775808`, `18446744073709551615`} {
+		t.Run("carried/"+idJSON, func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":` + idJSON + `}`)
+			req := common.NewNormalizedRequest(body)
+			jrq, err := req.JsonRpcRequest()
+			require.NoError(t, err)
+			_, isInt := jrq.ID.(int64)
+			assert.True(t, isInt, "the upstream-facing id is an int64, got %T", jrq.ID)
+
+			jrr := common.MustNewJsonRpcResponseFromBytes([]byte(`42`), []byte(`"0x1"`), nil)
+			resp := common.NewNormalizedResponse().WithJsonRpcResponse(jrr)
+			require.NoError(t, network.normalizeResponse(ctx, req, resp))
+			out, err := resp.JsonRpcResponse()
+			require.NoError(t, err)
+			var wire bytes.Buffer
+			_, err = out.WriteTo(&wire)
+			require.NoError(t, err)
+			assert.Contains(t, wire.String(), `"id":`+idJSON+`,`, "the client gets its own id bytes back")
 		})
 	}
 }
@@ -133,7 +200,8 @@ func TestJsonRpcRequest_IDRawBytes(t *testing.T) {
 		{name: "string", body: `{"jsonrpc":"2.0","method":"x","id":"a"}`, want: `"a"`},
 		{name: "large_int", body: `{"jsonrpc":"2.0","method":"x","id":9007199254740993}`, want: `9007199254740993`},
 		{name: "negative_int", body: `{"jsonrpc":"2.0","method":"x","id":-42}`, want: `-42`},
-		{name: "null_id_no_raw", body: `{"jsonrpc":"2.0","method":"x","id":null}`, want: ``},
+		// A null id is echoed as null (Agave does), so its bytes are kept.
+		{name: "null_id", body: `{"jsonrpc":"2.0","method":"x","id":null}`, want: `null`},
 		{name: "missing_id_no_raw", body: `{"jsonrpc":"2.0","method":"x"}`, want: ``},
 	}
 

@@ -38,6 +38,11 @@ module.exports = {
 		title: "Reference",
 	},
 	reference: { title: "Reference", display: "children" },
+	"-- Compare": {
+		type: "separator",
+		title: "Compare",
+	},
+	compare: { title: "Compare", display: "children" },
 	// Presets / examples are still accessible via direct URL (/presets/*)
 	// but are not surfaced in the sidebar.
 	presets: { display: "hidden" },

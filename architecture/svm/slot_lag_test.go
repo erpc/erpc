@@ -13,8 +13,10 @@ import (
 // pollerAtSlot is a minimal SvmStatePoller used for slot-lag filter tests.
 // It reports a fixed finalized slot and stubs out everything else.
 type pollerAtSlot struct {
-	slot int64
-	null bool
+	slot       int64
+	null       bool
+	floor      int64
+	floorKnown bool
 }
 
 func (p *pollerAtSlot) Bootstrap(context.Context) error   { return nil }
@@ -28,6 +30,10 @@ func (p *pollerAtSlot) IsHealthy() bool                   { return true }
 func (p *pollerAtSlot) SuggestLatestSlot(int64)           {}
 func (p *pollerAtSlot) SuggestFinalizedSlot(int64)        {}
 func (p *pollerAtSlot) SetDebounceInterval(time.Duration) {}
+func (p *pollerAtSlot) SetSkipProcessedSlotProbe(bool)    {}
+func (p *pollerAtSlot) FirstAvailableSlot() (int64, bool) {
+	return p.floor, p.floorKnown
+}
 
 // slotLagUpstream is a per-id SvmUpstream stub — svmUpstreamStub in
 // hooks_test.go has a fixed id so it can't be reused for multi-upstream
@@ -135,28 +141,6 @@ func TestFilterByFinalizedSlotLag_IncludesUnreadyPollers(t *testing.T) {
 	}
 }
 
-func TestHighestFinalizedSlot_PicksMaxAcrossUpstreams(t *testing.T) {
-	t.Parallel()
-	ups := []common.Upstream{
-		upstreamAt("a", 500),
-		upstreamAt("b", 1200),
-		upstreamAt("c", 900),
-	}
-	if got := HighestFinalizedSlot(ups); got != 1200 {
-		t.Fatalf("expected 1200, got %d", got)
-	}
-}
-
-func TestHighestFinalizedSlot_ZeroWhenNoSvmUpstreams(t *testing.T) {
-	t.Parallel()
-	// stubSvm (from error_normalizer_test.go) implements common.Upstream but
-	// not common.SvmUpstream — no SvmStatePoller method.
-	nonSvm := newSvmStub()
-	if got := HighestFinalizedSlot([]common.Upstream{nonSvm}); got != 0 {
-		t.Fatalf("non-svm upstreams must contribute 0, got %d", got)
-	}
-}
-
 func TestReferenceFinalizedSlot(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -220,7 +204,7 @@ func TestReferenceFinalizedSlot_HonestPoolSurvivesLiar(t *testing.T) {
 	}
 }
 
-func TestFilterByMinContextSlot(t *testing.T) {
+func TestOrderByMinContextSlot(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name      string
@@ -228,20 +212,21 @@ func TestFilterByMinContextSlot(t *testing.T) {
 		mcs       int64
 		finalized bool
 		want      []string
+		moved     int
 	}{
-		{name: "mcs zero passes everything through", ups: []common.Upstream{
+		{name: "mcs zero keeps the order", ups: []common.Upstream{
 			upstreamAt("behind", 500),
 			upstreamAt("ahead", 2000),
 		}, mcs: 0, want: []string{"behind", "ahead"}},
-		{name: "empty list passes through", ups: []common.Upstream{},
+		{name: "empty list stays empty", ups: []common.Upstream{},
 			mcs: 1000, want: []string{}},
-		{name: "unknown state included, known-behind dropped", ups: []common.Upstream{
+		{name: "unknown state stays in place, known-behind goes last", ups: []common.Upstream{
+			upstreamAt("behind", 500),
 			&slotLagUpstream{id: "no-poller"},
 			&slotLagUpstream{id: "null-poller", poller: &pollerAtSlot{slot: 500, null: true}},
 			upstreamAt("zero-slot", 0),
-			upstreamAt("behind", 500),
 			upstreamAt("ahead", 2000),
-		}, mcs: 1000, want: []string{"no-poller", "null-poller", "zero-slot", "ahead"}},
+		}, mcs: 1000, want: []string{"no-poller", "null-poller", "zero-slot", "ahead", "behind"}, moved: 1},
 		{name: "finalized=false compares latest slot", ups: []common.Upstream{
 			upstreamAtSlots("diverged", 1500, 900), // latest ahead, finalized behind
 			upstreamAt("anchor", 2000),
@@ -249,22 +234,24 @@ func TestFilterByMinContextSlot(t *testing.T) {
 		{name: "finalized=true compares finalized slot", ups: []common.Upstream{
 			upstreamAtSlots("diverged", 1500, 900),
 			upstreamAt("anchor", 2000),
-		}, mcs: 1000, finalized: true, want: []string{"anchor"}},
-		{name: "all behind falls back to original list", ups: []common.Upstream{
-			upstreamAt("a", 500),
-			upstreamAt("b", 700),
-		}, mcs: 1000, want: []string{"a", "b"}},
-		{name: "mixed keeps only at-or-ahead", ups: []common.Upstream{
-			upstreamAt("just-behind", 999),
+		}, mcs: 1000, finalized: true, want: []string{"anchor", "diverged"}, moved: 1},
+		{name: "all behind keeps every upstream, closest first", ups: []common.Upstream{
+			upstreamAt("far", 500),
+			upstreamAt("near", 990),
+			upstreamAt("mid", 700),
+		}, mcs: 1000, want: []string{"near", "mid", "far"}, moved: 3},
+		// No debounce configured: tipStalenessMargin is 2 slots.
+		{name: "within the poll margin keeps the order, past it goes last", ups: []common.Upstream{
+			upstreamAt("at-margin", 998),
 			upstreamAt("exactly-at", 1000),
-			upstreamAt("ahead", 1001),
-		}, mcs: 1000, want: []string{"exactly-at", "ahead"}},
+			upstreamAt("past-margin", 997),
+		}, mcs: 1000, want: []string{"at-margin", "exactly-at", "past-margin"}, moved: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := idsOf(FilterByMinContextSlot(tc.ups, tc.mcs, tc.finalized))
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("FilterByMinContextSlot = %v, want %v", got, tc.want)
+			ordered, moved := OrderByMinContextSlot(&fakeNetwork{}, tc.ups, tc.mcs, tc.finalized)
+			if got := idsOf(ordered); !reflect.DeepEqual(got, tc.want) || moved != tc.moved {
+				t.Fatalf("OrderByMinContextSlot = %v moved %d, want %v moved %d", got, moved, tc.want, tc.moved)
 			}
 		})
 	}

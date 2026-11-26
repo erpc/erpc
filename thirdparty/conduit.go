@@ -45,6 +45,104 @@ func (v *ConduitVendor) Name() string {
 	return "conduit"
 }
 
+// conduitCreditUnits is Conduit's published compute-unit (CU) table
+// (https://docs.conduit.xyz/rpc-nodes/information/compute-units, 2026-11-24).
+// The docs price unlisted methods at 10 CU ("*"). Values are Conduit CUs,
+// not money.
+var conduitCreditUnits = map[string]int64{
+	"*":                                       10,
+	"net_version":                             0,
+	"eth_chainId":                             0,
+	"eth_syncing":                             0,
+	"eth_protocolVersion":                     0,
+	"net_listening":                           0,
+	"eth_uninstallFilter":                     10,
+	"eth_accounts":                            10,
+	"eth_blockNumber":                         10,
+	"eth_subscribe":                           10,
+	"eth_unsubscribe":                         10,
+	"eth_feeHistory":                          10,
+	"eth_maxPriorityFeePerGas":                10,
+	"eth_getUncleByBlockHashAndIndex":         10,
+	"eth_getUncleByBlockNumberAndIndex":       10,
+	"eth_getUncleCountByBlockHash":            10,
+	"eth_getUncleCountByBlockNumber":          10,
+	"debug_getBadBlocks":                      10,
+	"debug_getRawTransaction":                 10,
+	"eth_blobBaseFee":                         10,
+	"eth_getAccount":                          10,
+	"eth_getRawTransactionByHash":             15,
+	"eth_getTransactionReceipt":               15,
+	"eth_getTransactionByBlockHashAndIndex":   15,
+	"eth_getTransactionByBlockNumberAndIndex": 15,
+	"web3_clientVersion":                      15,
+	"web3_sha3":                               15,
+	"eth_getBlockByNumber":                    15,
+	"eth_getStorageAt":                        15,
+	"eth_getTransactionByHash":                15,
+	"eth_getHeaderByHash":                     15,
+	"eth_getHeaderByNumber":                   15,
+	"eth_gasPrice":                            20,
+	"eth_getBalance":                          20,
+	"eth_getCode":                             20,
+	"eth_getFilterChanges":                    20,
+	"eth_newBlockFilter":                      20,
+	"eth_newFilter":                           20,
+	"eth_newPendingTransactionFilter":         20,
+	"eth_getBlockTransactionCountByHash":      20,
+	"eth_getBlockTransactionCountByNumber":    20,
+	"eth_getBlockByHash":                      20,
+	"eth_getTransactionCount":                 20,
+	"eth_getTransactionBySenderAndNonce":      20,
+	"eth_getAccountInfo":                      20,
+	"eth_createAccessList":                    50,
+	"debug_getRawBlock":                       75,
+	"debug_getRawHeader":                      75,
+	"eth_getProof":                            75,
+	"eth_call":                                75,
+	"eth_getFilterLogs":                       75,
+	"eth_getLogs":                             75,
+	"eth_fillTransaction":                     75,
+	"debug_dbGet":                             75,
+	"debug_executionWitness":                  75,
+	"eth_estimateGas":                         100,
+	"eth_callMany":                            100,
+	"trace_block":                             100,
+	"eth_simulateV1":                          120,
+	"eth_callBundle":                          120,
+	"debug_getRawReceipts":                    200,
+	"eth_sendRawTransaction":                  200,
+	"eth_sendRawTransactionConditional":       200,
+	"eth_getBlockReceipts":                    200,
+	"alchemy_getTransactionReceipts":          200,
+	"trace_call":                              200,
+	"eth_sendRawTransactionSync":              200,
+	"trace_filter":                            200,
+	"trace_transaction":                       200,
+	"trace_rawTransaction":                    200,
+	"debug_traceCallMany":                     200,
+	"trace_callMany":                          240,
+	"debug_traceTransaction":                  300,
+	"debug_traceCall":                         300,
+	"debug_traceBlock":                        300,
+	"debug_traceBlockByHash":                  300,
+	"debug_traceBlockByNumber":                300,
+	"txpool_content":                          300,
+	"trace_replayTransaction":                 410,
+	"trace_replayBlockTransactions":           410,
+}
+
+// CreditUnits implements common.CreditUnitsProvider: Conduit's CU table,
+// overridable per method via `providers[].settings.creditUnits`.
+func (v *ConduitVendor) CreditUnits(req *common.NormalizedRequest, upstream *common.UpstreamConfig) int64 {
+	method, _ := req.Method()
+	var override map[string]int64
+	if upstream != nil {
+		override = upstream.CreditUnits
+	}
+	return common.ResolveCreditUnits(conduitCreditUnits, override, method)
+}
+
 func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil

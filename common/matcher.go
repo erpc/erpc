@@ -2,9 +2,12 @@ package common
 
 import (
 	"fmt"
+	"maps"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/IGLOU-EU/go-wildcard/v2"
 	"github.com/erpc/erpc/telemetry"
@@ -43,13 +46,48 @@ func NewWildcardMatcher(pattern string) (MatcherFunc, error) {
 	return p.parseExpression()
 }
 
+// WildcardMatch matches value against pattern, compiled once per distinct
+// pattern: the head loop matches each lane's selector against every
+// upstream id and tag on each computation, and parsing dominated it.
 func WildcardMatch(pattern, value string) (bool, error) {
+	if p := compiledMatchers.Load(); p != nil {
+		if m, ok := (*p)[pattern]; ok {
+			return m(value), nil
+		}
+	}
 	matcher, err := NewWildcardMatcher(pattern)
 	if err != nil {
 		return false, err
 	}
-
+	compileMatcher(pattern, matcher)
 	return matcher(value), nil
+}
+
+// compiledMatchers maps a pattern to its MatcherFunc. Readers load it
+// without a lock or an allocation; a writer replaces it with a copy.
+var (
+	compiledMatchers   atomic.Pointer[map[string]MatcherFunc]
+	compiledMatchersMu sync.Mutex
+)
+
+// maxCompiledMatchers caps compiledMatchers: patterns also come from client
+// directives, and past the cap a new one is compiled per call as before.
+const maxCompiledMatchers = 1024
+
+func compileMatcher(pattern string, m MatcherFunc) {
+	compiledMatchersMu.Lock()
+	defer compiledMatchersMu.Unlock()
+	var cur map[string]MatcherFunc
+	if p := compiledMatchers.Load(); p != nil {
+		cur = *p
+	}
+	if _, ok := cur[pattern]; ok || len(cur) >= maxCompiledMatchers {
+		return
+	}
+	next := make(map[string]MatcherFunc, len(cur)+1)
+	maps.Copy(next, cur)
+	next[pattern] = m
+	compiledMatchers.Store(&next)
 }
 
 // MatchesSelector reports whether a selector pattern matches an entity that is

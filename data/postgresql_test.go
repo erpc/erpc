@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/jackc/pgconn"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -423,4 +423,22 @@ func TestPostgreSQLIAMAuthValidation(t *testing.T) {
 		cfg.IAMAuth.Auth = &common.AwsAuthConfig{Mode: "typo"}
 		require.ErrorContains(t, cfg.Validate(), "auth.mode")
 	})
+}
+
+func TestPostgresLikePattern(t *testing.T) {
+	t.Parallel()
+
+	// '_' is a single-character LIKE wildcard. Suffix foo_bar must not match foo-bar.
+	assert.Equal(t, `evm:998:foo\_bar:%`, postgresLikePattern("evm:998:foo_bar:*"))
+	assert.Equal(t, `evm:998:foo-bar:%`, postgresLikePattern("evm:998:foo-bar:*"))
+	assert.NotEqual(t,
+		postgresLikePattern("evm:998:foo_bar:*"),
+		postgresLikePattern("evm:998:foo-bar:*"),
+	)
+
+	// Method names on the main-index range key contain '_'.
+	assert.Equal(t, `eth\_call:%`, postgresLikePattern("eth_call:*"))
+	assert.Equal(t, `100\%`, postgresLikePattern("100%"))
+	assert.Equal(t, `a\\b`, postgresLikePattern(`a\b`))
+	assert.Equal(t, `a%b\_c\%d`, postgresLikePattern(`a*b_c%d`))
 }

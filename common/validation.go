@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog/log"
 )
 
@@ -91,6 +93,26 @@ func (s *ServerConfig) Validate() error {
 	}
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
+	}
+	if s.MaxRequestBodySize != nil && *s.MaxRequestBodySize < 0 {
+		return fmt.Errorf("server.maxRequestBodySize must be 0 (no limit) or greater, got %d", *s.MaxRequestBodySize)
+	}
+	if ws := s.WebSocket; ws != nil {
+		if ws.PingInterval == nil || *ws.PingInterval <= 0 {
+			return fmt.Errorf("server.webSocket.pingInterval must be greater than 0")
+		}
+		if ws.ReadBufferSize < 0 || ws.WriteBufferSize < 0 || ws.MaxMessageSize < 0 {
+			return fmt.Errorf("server.webSocket buffer and message sizes must not be negative")
+		}
+		if ws.MaxSubscriptionsPerConnection < 1 {
+			return fmt.Errorf("server.webSocket.maxSubscriptionsPerConnection must be at least 1")
+		}
+		if ws.MaxConcurrentRequestsPerConnection < 1 {
+			return fmt.Errorf("server.webSocket.maxConcurrentRequestsPerConnection must be at least 1")
+		}
+		if ws.MaxConnections < 0 || ws.MaxConnectionsPerIP < 0 || ws.MaxSubscriptions < 0 {
+			return fmt.Errorf("server.webSocket.maxConnections, maxConnectionsPerIP and maxSubscriptions must not be negative")
+		}
 	}
 
 	// Validate trusted IP forwarders if provided (IPs or CIDRs). Support legacy + new field
@@ -183,12 +205,26 @@ func (r *RateLimiterConfig) Validate() error {
 		if r.Store.NearLimitRatio != 0 && (r.Store.NearLimitRatio <= 0 || r.Store.NearLimitRatio >= 1) {
 			return fmt.Errorf("rateLimiters.store.nearLimitRatio must be > 0 and < 1")
 		}
+		switch r.Store.OnFailure {
+		case "", RateLimitStoreFailureAllow, RateLimitStoreFailureDeny:
+			if r.Store.LocalLimitFactor != 0 {
+				return fmt.Errorf("rateLimiters.store.localLimitFactor is only used with onFailure: %s", RateLimitStoreFailureLocal)
+			}
+		case RateLimitStoreFailureLocal:
+			if r.Store.LocalLimitFactor <= 0 || r.Store.LocalLimitFactor > 1 {
+				return fmt.Errorf("rateLimiters.store.localLimitFactor must be > 0 and <= 1 when onFailure is %s", RateLimitStoreFailureLocal)
+			}
+		default:
+			return fmt.Errorf("rateLimiters.store.onFailure '%s' is invalid, must be one of: %s, %s, %s", r.Store.OnFailure, RateLimitStoreFailureAllow, RateLimitStoreFailureDeny, RateLimitStoreFailureLocal)
+		}
 		// Validate redis connector
 		if err := r.Store.Redis.Validate(); err != nil {
 			return fmt.Errorf("rateLimiters.store.redis is invalid: %w", err)
 		}
 	case "memory":
-		// No validation for memory store
+		if r.Store.OnFailure != "" || r.Store.LocalLimitFactor != 0 {
+			return fmt.Errorf("rateLimiters.store.onFailure and localLimitFactor apply only to driver: redis")
+		}
 	case "":
 		fallthrough
 	default:
@@ -357,6 +393,12 @@ func (s *SharedStateConfig) Validate() error {
 }
 
 func (c *CacheConfig) Validate() error {
+	switch c.CachingStrategy {
+	case "", CachingStrategyDefaultAllow, CachingStrategyDefaultIgnore:
+		// empty is fine pre-SetDefaults; after SetDefaults it is defaultAllow
+	default:
+		return fmt.Errorf("cache.*.cachingStrategy must be 'defaultAllow' or 'defaultIgnore', got %q", c.CachingStrategy)
+	}
 	existingIds := make(map[string]bool)
 	for _, connector := range c.Connectors {
 		if err := connector.Validate(); err != nil {
@@ -563,16 +605,45 @@ func validateGrpcConnPoolSize(scope string, poolSize int) error {
 	return nil
 }
 
+// validateGrpcHealthCheckMount rejects a health check on an endpoint mounted
+// below a URL path. grpc-go opens the health Watch stream past every
+// interceptor, so it always calls bare `/grpc.health.v1.Health/Watch`, never
+// the mount; the answer would come from whatever serves the root.
+func validateGrpcHealthCheckMount(scope, endpoint, healthCheckService string) error {
+	if healthCheckService == "" {
+		return nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%s: invalid gRPC endpoint %s: %w", scope, util.RedactEndpoint(endpoint), err)
+	}
+	if strings.TrimRight(parsed.Path, "/") != "" {
+		return fmt.Errorf("%s.healthCheckService cannot be used with %s: the URL path mounts every call, but the gRPC health check always calls the root path", scope, util.RedactEndpoint(endpoint))
+	}
+	return nil
+}
+
 // Validate checks the gRPC cache-connector knobs. A zero PoolSize is valid and
 // means "use the built-in default".
 func (g *GrpcConnectorConfig) Validate() error {
-	return validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize)
+	if err := validateGrpcConnPoolSize("database.*.connector.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	for _, server := range g.Servers {
+		if err := validateGrpcHealthCheckMount("database.*.connector.grpc", server, g.HealthCheckService); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Validate checks the gRPC upstream knobs. A zero PoolSize is valid and means
 // "use the built-in default".
-func (g *GrpcUpstreamConfig) Validate() error {
-	return validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize)
+func (g *GrpcUpstreamConfig) Validate(endpoint string) error {
+	if err := validateGrpcConnPoolSize("upstream.*.grpc", g.PoolSize); err != nil {
+		return err
+	}
+	return validateGrpcHealthCheckMount("upstream.*.grpc", endpoint, g.HealthCheckService)
 }
 
 func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *FailsafeConfig) error {
@@ -582,6 +653,9 @@ func validateConnectorFailsafe(connectorId, field string, index int, fsCfg *Fail
 	prefix := fmt.Sprintf("connector '%s'.%s[%d]", connectorId, field, index)
 	if fsCfg.Consensus != nil {
 		return fmt.Errorf("%s: consensus is not supported for connector-level failsafe", prefix)
+	}
+	if len(fsCfg.MatchCommitment) > 0 {
+		return fmt.Errorf("%s: matchCommitment is not supported for connector-level failsafe", prefix)
 	}
 	return nil
 }
@@ -758,6 +832,29 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	} else if len(p.Providers) == 0 {
 		return fmt.Errorf("project.*.upstreams or project.*.providers is required, add at least one of them")
 	}
+	// Provider-generated upstreams copy upstreamDefaults only when no override
+	// matches, and that copy runs in a background bootstrap task. The
+	// executor's rejection is then only a log line and the upstream drops out.
+	if p.UpstreamDefaults != nil {
+		for _, fs := range p.UpstreamDefaults.Failsafe {
+			if fs != nil && fs.Consensus != nil {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.consensus is only supported for network-level failsafe")
+			}
+			if fs != nil && len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("project.*.upstreamDefaults: failsafe.matchCommitment is only supported for network-level failsafe")
+			}
+		}
+	}
+	if p.NetworkDefaults != nil {
+		if err := p.NetworkDefaults.Validate(); err != nil {
+			return err
+		}
+	}
+	// Before the networks: each network's block already carries the project's
+	// folded in, so a project error must be reported as the project's.
+	if err := p.Integrity.Validate(); err != nil {
+		return fmt.Errorf("project.*: %w", err)
+	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
 		existingAliases := make(map[string]bool)
@@ -802,9 +899,6 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
-	}
-	if err := p.Integrity.Validate(); err != nil {
-		return fmt.Errorf("project.*: %w", err)
 	}
 	return nil
 }
@@ -1005,6 +1099,20 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
+	// routing.probe is compared by value against the two constants, so an
+	// unrecognised spelling — a YAML boolean such as `probe: false` lands here
+	// as the string "false" — silently means "not off", i.e. probing stays on
+	// while the config reads as though it were disabled.
+	if u.Routing != nil && u.Routing.Probe != "" {
+		allowed := []ProbeMode{ProbeModeOn, ProbeModeOff}
+		if !slices.Contains(allowed, u.Routing.Probe) {
+			return fmt.Errorf("upstream '%s': routing.probe '%s' is invalid, must be one of: %v",
+				u.Id, u.Routing.Probe, allowed)
+		}
+	}
+	if ca := u.CreditAllowance; ca != nil && (ca.Credits <= 0 || ca.ApiKey == "") {
+		return fmt.Errorf("upstream '%s': creditAllowance needs credits > 0 and apiKey", u.Id)
+	}
 	if u.Evm != nil {
 		if err := u.Evm.Validate(u); err != nil {
 			return err
@@ -1020,6 +1128,14 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 			if err := fs.Validate(); err != nil {
 				return err
 			}
+			if len(fs.MatchCommitment) > 0 {
+				return fmt.Errorf("upstream '%s': failsafe.matchCommitment is only supported for network-level failsafe", u.Id)
+			}
+			// Upstreams register in the background, so the executor's own
+			// rejection only logs and erpc keeps serving without the upstream.
+			if fs.Consensus != nil {
+				return fmt.Errorf("upstream '%s': failsafe.consensus is only supported for network-level failsafe", u.Id)
+			}
 		}
 	}
 	if u.JsonRpc != nil {
@@ -1028,7 +1144,7 @@ func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
 		}
 	}
 	if u.Grpc != nil {
-		if err := u.Grpc.Validate(); err != nil {
+		if err := u.Grpc.Validate(u.Endpoint); err != nil {
 			return err
 		}
 	}
@@ -1066,9 +1182,25 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			return fmt.Errorf("upstream.*.evm.chainId must be 0 for non-http endpoints, but '%d' is provided for %s", e.ChainId, util.RedactEndpoint(u.Endpoint))
 		}
 	}
+	switch e.SubscriptionSource {
+	case "", SubscriptionSourceOff, SubscriptionSourceOnDemand, SubscriptionSourceAlways:
+	default:
+		return fmt.Errorf("upstream '%s': upstreams[].evm.subscriptionSource '%s' is invalid, must be one of: %s, %s, %s", u.Id, e.SubscriptionSource, SubscriptionSourceOff, SubscriptionSourceOnDemand, SubscriptionSourceAlways)
+	}
+	pushes := e.SubscriptionSource != "" && e.SubscriptionSource != SubscriptionSourceOff
+	// A source is push only (spec §5.1): heads of any other endpoint come
+	// from the block clock.
+	if pushes && !util.IsWsEndpoint(u.Endpoint) {
+		return fmt.Errorf("upstream '%s': upstreams[].evm.subscriptionSource %s needs a ws or wss endpoint, %s is not one", u.Id, e.SubscriptionSource, util.RedactEndpoint(u.Endpoint))
+	}
 
 	if e.StatePollerInterval == 0 {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
+	}
+	// Shadow upstreams never join the network's upstreams, so intake would
+	// drop every header they feed.
+	if pushes && u.IsShadow() {
+		return fmt.Errorf("upstream '%s': evm.subscriptionSource %s is invalid on a shadow upstream, only off", u.Id, e.SubscriptionSource)
 	}
 	// NodeType deprecated; keep syntax validation for back-compat only
 	if e.NodeType != "" {
@@ -1086,6 +1218,19 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if e.BlockAvailability != nil {
 		if err := e.BlockAvailability.Validate(); err != nil {
 			return err
+		}
+	}
+	if m := e.Multicall3; m != nil {
+		if m.MaxWait <= 0 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxWait must be greater than 0")
+		}
+		if m.MaxCalls < 2 {
+			return fmt.Errorf("upstream.*.evm.multicall3.maxCalls must be at least 2")
+		}
+		for _, a := range m.BypassContracts {
+			if raw, err := HexToBytes(a); err != nil || len(raw) != 20 {
+				return fmt.Errorf("upstream.*.evm.multicall3.bypassContracts entry '%s' is not a 20-byte hex address", a)
+			}
 		}
 	}
 
@@ -1200,9 +1345,19 @@ func (f *FailsafeConfig) Validate() error {
 	}
 
 	switch f.MatchRequestKind {
-	case "", "*", "user", "internal":
+	case "", "*", "user":
+	case "internal":
+		return fmt.Errorf("failsafe.matchRequestKind 'internal' is deleted: no eRPC-own request (tracker fetch, head poll, probe) goes through a failsafe policy; remove it")
 	default:
-		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | internal | *", f.MatchRequestKind)
+		return fmt.Errorf("failsafe.matchRequestKind '%s' is invalid, must be one of: user | *", f.MatchRequestKind)
+	}
+
+	for _, c := range f.MatchCommitment {
+		switch c {
+		case "none", "processed", "confirmed", "finalized":
+		default:
+			return fmt.Errorf("failsafe.matchCommitment '%s' is invalid, must be one of: none | processed | confirmed | finalized", c)
+		}
 	}
 
 	if f.Timeout != nil {
@@ -1222,6 +1377,11 @@ func (f *FailsafeConfig) Validate() error {
 	}
 	if f.CircuitBreaker != nil {
 		if err := f.CircuitBreaker.Validate(); err != nil {
+			return err
+		}
+	}
+	if f.Consensus != nil {
+		if err := f.Consensus.Validate(); err != nil {
 			return err
 		}
 	}
@@ -1277,6 +1437,31 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	return nil
 }
 
+// lookupMethodFields resolves a per-method field list with the same
+// exact-first / case-insensitive precedence used at runtime for
+// blockEvidenceFields and ignoreFields. Returns the matched key so callers
+// can cite it in errors.
+func lookupMethodFields(defs map[string][]string, method string) ([]string, string, bool) {
+	if len(defs) == 0 || method == "" {
+		return nil, "", false
+	}
+	if fields, ok := defs[method]; ok {
+		return fields, method, true
+	}
+	var bestKey string
+	var best []string
+	var found bool
+	for k, v := range defs {
+		if !strings.EqualFold(k, method) {
+			continue
+		}
+		if !found || k < bestKey {
+			bestKey, best, found = k, v, true
+		}
+	}
+	return best, bestKey, found
+}
+
 func (c *ConsensusPolicyConfig) Validate() error {
 	if c.MaxParticipants <= 0 {
 		return fmt.Errorf("consensus.maxParticipants must be greater than 0")
@@ -1300,6 +1485,8 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		}
 	}
 
+	anyWaivable := false
+	haveNeverWaivableFloor := false
 	for i, rp := range c.RequiredParticipants {
 		if rp == nil {
 			return fmt.Errorf("consensus.requiredParticipants[%d] must not be null", i)
@@ -1319,9 +1506,263 @@ func (c *ConsensusPolicyConfig) Validate() error {
 		if rp.MinAgreement > rp.MinParticipants {
 			return fmt.Errorf("consensus.requiredParticipants[%d].minAgreement (%d) cannot exceed minParticipants (%d): the pool quota must invite at least as many matching upstreams as the winning group is required to contain", i, rp.MinAgreement, rp.MinParticipants)
 		}
+		if rp.RetentionBlocks < 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d].retentionBlocks must not be negative", i)
+		}
+		if rp.WaiveAgreementOnEmptyOutsideRetention && rp.RetentionBlocks <= 0 {
+			return fmt.Errorf("consensus.requiredParticipants[%d] uses waiveAgreementOnEmptyOutsideRetention but sets no retentionBlocks > 0: without a retention boundary the empty-waiver can never prove a block is outside range and would never fire", i)
+		}
+		if rp.WaiveAgreementOnMissingData || rp.WaiveAgreementOnEmptyOutsideRetention {
+			anyWaivable = true
+		} else if rp.MinAgreement > 0 {
+			// A never-waivable entry that actually enforces a quota. Entries with
+			// minAgreement<=0 are skipped by anyAgreementQuota /
+			// resultsSatisfyAgreementQuotas (consensus/quota.go), so they enforce
+			// nothing and cannot serve as the floor.
+			haveNeverWaivableFloor = true
+		}
+	}
+	// R9: a policy that opts into a waiver (MissingData or empty-outside-retention)
+	// must keep a floor — at least one never-waivable entry with minAgreement>0 —
+	// so the round can never be reduced to only-waivable quotas that all release
+	// at once.
+	if anyWaivable && !haveNeverWaivableFloor {
+		return fmt.Errorf("consensus.requiredParticipants: a policy using waiveAgreementOnMissingData or waiveAgreementOnEmptyOutsideRetention must also keep at least one never-waivable entry with minAgreement > 0 (the waivable quotas cannot be the only floor)")
+	}
+	// An evidence path that is also ignored would let differing block numbers
+	// collapse into one winner group while the waiver reads the block from a
+	// size-selected response. An ignore path that is an ancestor of the
+	// evidence path strips it too (ignoreFields["receipt"] removes
+	// receipt.blockNumber). Method lookup matches runtime methodFields.
+	for method, evidencePaths := range c.BlockEvidenceFields {
+		ignored, ignoreKey, found := lookupMethodFields(c.IgnoreFields, method)
+		if !found {
+			continue
+		}
+		for _, ep := range evidencePaths {
+			for _, ip := range ignored {
+				if ip == ep || strings.HasPrefix(ep, ip+".") {
+					return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is also listed in ignoreFields[%q]: evidence fields must not be ignored or the waiver's block can disagree with the winning group", method, ep, ignoreKey)
+				}
+			}
+		}
+	}
+	// extractFieldValues reads only "result", a flat field of a result object,
+	// or "*.field" over an array result. A nested path resolves to nothing at
+	// runtime and would silently never waive.
+	for method, paths := range c.BlockEvidenceFields {
+		for _, ep := range paths {
+			if ep == "result" || strings.HasPrefix(ep, "*.") {
+				continue
+			}
+			if strings.Contains(ep, ".") {
+				return fmt.Errorf("consensus.blockEvidenceFields[%q] path %q is unsupported: use \"result\", a flat field (e.g. \"blockNumber\"), or an array wildcard \"*.field\"", method, ep)
+			}
+		}
+	}
+	// Smoke-compile the custom-policy eval function so a syntactically broken
+	// selector fails at load time rather than falling closed on every request.
+	if c.CustomPolicy != nil {
+		if strings.TrimSpace(c.CustomPolicy.EvalFunction) == "" {
+			return fmt.Errorf("consensus.customPolicy.evalFunction is required when customPolicy is set")
+		}
+		// Zero is the SetDefaults sentinel (→ 50ms). Negative would disable the
+		// hard wall-clock cap and let a runaway eval hang request goroutines.
+		if c.CustomPolicy.EvalTimeout < 0 {
+			return fmt.Errorf("consensus.customPolicy.evalTimeout must be >= 0 (got %s); omit or use 0 for the default", c.CustomPolicy.EvalTimeout)
+		}
+		if _, err := sobek.Compile("consensus-policy.js", "("+c.CustomPolicy.EvalFunction+")", false); err != nil {
+			return fmt.Errorf("consensus.customPolicy.evalFunction failed to compile: %w", err)
+		}
+	}
+
+	// Validate every named policy the selector can choose from. Selection is
+	// top-level only, so a nested customPolicy/policies on a named policy is
+	// inert — reject it so operators are not misled into thinking it nests.
+	// Extends is resolved in SetDefaults before Validate runs on a live config;
+	// at validation time Extends should already be cleared, but an unresolved
+	// Extends pointing at an unknown/nested base is still rejected here for
+	// callers that Validate without SetDefaults.
+	for name, p := range c.Policies {
+		if p == nil {
+			return fmt.Errorf("consensus.policies[%q] must not be null", name)
+		}
+		if trimmed := strings.TrimSpace(name); trimmed != name {
+			return fmt.Errorf("consensus.policies[%q] has surrounding whitespace: the header value is trimmed on the wire to %q, so it would be indistinguishable from %q — pick a canonical name", name, trimmed, ConsensusDefaultPolicyName)
+		}
+		if name == ConsensusDefaultPolicyName {
+			return fmt.Errorf("consensus.policies[%q] uses the reserved name %q, which labels the fail-closed inline default in the consensus_policy metric and X-ERPC-Consensus-Policy header; pick another name", name, ConsensusDefaultPolicyName)
+		}
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("consensus.policies keys must be non-empty: an empty name is reserved for the inline default selector result and can never be selected")
+		}
+		if p.CustomPolicy != nil || len(p.Policies) > 0 {
+			return fmt.Errorf("consensus.policies[%q] must not itself define customPolicy or policies: selection happens once at the top level", name)
+		}
+		if base := strings.TrimSpace(p.Extends); base != "" {
+			if base == ConsensusDefaultPolicyName {
+				// ok — inline default
+			} else if b, ok := c.Policies[base]; !ok || b == nil {
+				return fmt.Errorf("consensus.policies[%q].extends references unknown base %q", name, base)
+			} else if strings.TrimSpace(b.Extends) != "" {
+				return fmt.Errorf("consensus.policies[%q].extends %q is itself an extends policy; only one-level extends is supported in v1", name, base)
+			}
+		}
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("consensus.policies[%q] is invalid: %w", name, err)
+		}
+	}
+
+	// R10: two policies (the inline default + any named policy) must not share
+	// an S3 misbehaviorsDestination.path unless each colliding policy's
+	// filePattern carries {timestampMs} — without it two exporters resolve the
+	// same object key and overwrite each other.
+	if err := validateConsensusS3PathCollisions(c); err != nil {
+		return err
+	}
+
+	// Named policies share one misbehavior limiter + sitout map (feature §4.4).
+	// Differing punishMisbehavior settings would make first-touch win for the
+	// shared rate limiter — reject that at load so every selectable policy
+	// enforces the same disputeThreshold / disputeWindow / sitOutPenalty.
+	if err := validateConsensusSharedPunishMisbehavior(c); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// validateConsensusSharedPunishMisbehavior requires the inline default and every
+// named policy to carry identical PunishMisbehavior (including all-nil).
+func validateConsensusSharedPunishMisbehavior(c *ConsensusPolicyConfig) error {
+	if len(c.Policies) == 0 {
+		return nil
+	}
+	type named struct {
+		name string
+		cfg  *PunishMisbehaviorConfig
+	}
+	all := []named{{name: "<default>", cfg: c.PunishMisbehavior}}
+	for name, p := range c.Policies {
+		if p == nil {
+			continue
+		}
+		all = append(all, named{name: name, cfg: p.PunishMisbehavior})
+	}
+	ref := all[0]
+	for _, other := range all[1:] {
+		if punishMisbehaviorEqual(ref.cfg, other.cfg) {
+			continue
+		}
+		return fmt.Errorf("consensus.policies[%q].punishMisbehavior must match consensus.punishMisbehavior (and every other named policy): the misbehavior limiter is shared across policies, so disputeThreshold / disputeWindow / sitOutPenalty cannot differ", other.name)
+	}
+	return nil
+}
+
+func punishMisbehaviorEqual(a, b *PunishMisbehaviorConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.DisputeThreshold == b.DisputeThreshold &&
+		a.DisputeWindow == b.DisputeWindow &&
+		a.SitOutPenalty == b.SitOutPenalty
+}
+
+// validateConsensusS3PathCollisions enforces R10 across the inline default
+// policy and every named policy for both S3 and file destinations that share
+// a path. Shared destinations require `{timestampMs}` and `{policy}` so
+// concurrent exporters cannot overwrite or interleave into the same object/file.
+func validateConsensusS3PathCollisions(c *ConsensusPolicyConfig) error {
+	type policyDest struct {
+		name string
+		dest *MisbehaviorsDestinationConfig
+		kind string // "s3" or "file"
+	}
+	var dests []policyDest
+	collect := func(name string, cfg *ConsensusPolicyConfig) {
+		if cfg == nil || cfg.MisbehaviorsDestination == nil {
+			return
+		}
+		t := strings.ToLower(string(cfg.MisbehaviorsDestination.Type))
+		switch t {
+		case string(MisbehaviorsDestinationTypeS3):
+			dests = append(dests, policyDest{name: name, dest: cfg.MisbehaviorsDestination, kind: "s3"})
+		case string(MisbehaviorsDestinationTypeFile), "":
+			dests = append(dests, policyDest{name: name, dest: cfg.MisbehaviorsDestination, kind: "file"})
+		}
+	}
+	collect(ConsensusDefaultPolicyName, c)
+	for name, p := range c.Policies {
+		collect(name, p)
+	}
+
+	byPath := make(map[string][]policyDest, len(dests))
+	for _, d := range dests {
+		key := d.kind + ":"
+		if d.kind == "s3" {
+			key += canonicalizeS3MisbehaviorPath(d.dest.Path)
+		} else {
+			key += filepath.Clean(d.dest.Path)
+		}
+		byPath[key] = append(byPath[key], d)
+	}
+	for path, group := range byPath {
+		if len(group) < 2 {
+			continue
+		}
+		// {policy} is substituted via ConsensusPolicyObjectKeyComponent —
+		// injective over the raw policy name — so sanitizeForFilename
+		// collisions (e.g. "a/b" vs "a_b") cannot collapse keys/filenames.
+		seenHex := make(map[string]string, len(group))
+		for _, d := range group {
+			label := "S3"
+			if d.kind == "file" {
+				label = "file"
+			}
+			if !strings.Contains(d.dest.FilePattern, "{timestampMs}") {
+				return fmt.Errorf("consensus policies %q and others share the %s misbehaviorsDestination.path %q but %q's filePattern %q does not contain {timestampMs}; without it the exporters overwrite each other's objects", d.name, label, path, d.name, d.dest.FilePattern)
+			}
+			if !strings.Contains(d.dest.FilePattern, "{policy}") {
+				return fmt.Errorf("consensus policies %q and others share the %s misbehaviorsDestination.path %q but %q's filePattern %q does not contain {policy}; without a policy discriminator concurrent exporters can write the same file/object even with {timestampMs}", d.name, label, path, d.name, d.dest.FilePattern)
+			}
+			hexName := ConsensusPolicyObjectKeyComponent(d.name)
+			if prev, ok := seenHex[hexName]; ok {
+				return fmt.Errorf("consensus policies %q and %q share the %s misbehaviorsDestination.path %q and resolve to the same {policy} discriminator %q (ConsensusPolicyObjectKeyComponent must stay injective)", prev, d.name, label, path, hexName)
+			}
+			seenHex[hexName] = d.name
+		}
+	}
+	return nil
+}
+
+// canonicalizeS3MisbehaviorPath normalizes an S3 URI for R10 collision
+// grouping the same way the exporter's parseS3Path treats destinations:
+// lowercase scheme/bucket only, preserve key-prefix case, ensure a non-empty
+// prefix ends with "/". Lowercasing the prefix would falsely collide
+// `s3://bucket/Logs` with `s3://bucket/logs`.
+func canonicalizeS3MisbehaviorPath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(lower, "s3://") {
+		return lower
+	}
+	rest := trimmed[len("s3://"):] // keep original case for the path portion
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		return lower
+	}
+	bucket := strings.ToLower(parts[0])
+	if len(parts) == 1 || parts[1] == "" {
+		return "s3://" + bucket
+	}
+	prefix := parts[1]
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return "s3://" + bucket + "/" + prefix
 }
 
 // Validate validates the MisbehaviorsDestinationConfig
@@ -1504,6 +1945,12 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return fmt.Errorf("network.*.alias '%s' must contain only alphanumeric characters, dash, or underscore", n.Alias)
 		}
 	}
+	if err := validateCacheKeySuffix("network.*.cacheKeySuffix", n.CacheKeySuffix); err != nil {
+		return err
+	}
+	if n.MaxClientBatchSize != nil && *n.MaxClientBatchSize < 0 {
+		return fmt.Errorf("network.*.maxClientBatchSize must be 0 (no limit) or greater, got %d", *n.MaxClientBatchSize)
+	}
 	for i, sr := range n.StaticResponses {
 		if err := sr.Validate(); err != nil {
 			return fmt.Errorf("network.*.staticResponses[%d]: %w", i, err)
@@ -1511,6 +1958,26 @@ func (n *NetworkConfig) Validate(c *Config) error {
 	}
 	if err := n.Integrity.Validate(); err != nil {
 		return fmt.Errorf("network.*: %w", err)
+	}
+	return nil
+}
+
+func (n *NetworkDefaults) Validate() error {
+	if n == nil {
+		return nil
+	}
+	if n.MaxClientBatchSize != nil && *n.MaxClientBatchSize < 0 {
+		return fmt.Errorf("networkDefaults.maxClientBatchSize must be 0 (no limit) or greater, got %d", *n.MaxClientBatchSize)
+	}
+	return validateCacheKeySuffix("networkDefaults.cacheKeySuffix", n.CacheKeySuffix)
+}
+
+func validateCacheKeySuffix(field, suffix string) error {
+	if suffix == "" {
+		return nil
+	}
+	if !util.IsValidIdentifier(suffix) {
+		return fmt.Errorf("%s '%s' must contain only alphanumeric characters, dash, or underscore", field, suffix)
 	}
 	return nil
 }
@@ -1543,34 +2010,23 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.FallbackFinalityDepth == 0 {
 		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
 	}
-	if e.FallbackStatePollerDebounce == 0 {
-		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")
-	}
 	if e.GetLogsMaxAllowedRange == 0 {
 		return fmt.Errorf("network.*.evm.getLogsMaxAllowedRange must be greater than 0")
 	}
-	if e.ServedTip != nil {
-		for _, tag := range e.ServedTip.EnabledFor {
-			switch strings.ToLower(strings.TrimSpace(tag)) {
-			case "latest", "finalized", "safe":
-			default:
-				return fmt.Errorf("network.*.evm.servedTip.enabledFor contains unknown tag %q (valid: latest, finalized, safe)", tag)
-			}
+	for method := range e.LocalAnswers {
+		if !slices.Contains(LocalAnswerMethods(), method) {
+			return fmt.Errorf("network.*.evm.localAnswers.%s: eRPC has no local answer for this method; one of %v", method, LocalAnswerMethods())
 		}
-		if e.ServedTip.ClusterDelta < 0 {
-			return fmt.Errorf("network.*.evm.servedTip.clusterDelta must be >= 0 (0 auto-derives from block time)")
+	}
+	if q := e.CallGasCapQuorum; q < 0 && q != ServedTipQuorumMajority {
+		return fmt.Errorf("network.*.evm.callGasCapQuorum must be an integer >= 1 or \"majority\"")
+	}
+	if e.ServedTip != nil {
+		if q := e.ServedTip.Quorum; q < 0 && q != ServedTipQuorumMajority {
+			return fmt.Errorf("network.*.evm.servedTip.quorum must be an integer >= 1 or \"majority\"")
 		}
 		if e.ServedTip.MaxRegressionBlocks < -1 {
 			return fmt.Errorf("network.*.evm.servedTip.maxRegressionBlocks must be >= 0, or -1 to disable the regression guard (0 uses the default rollback tolerance)")
-		}
-		if w := e.ServedTip.TrajectoryWindow; w != nil && w.Duration() != 0 {
-			if d := w.Duration(); d < MinServedTipTrajectoryWindow || d > MaxServedTipTrajectoryWindow {
-				return fmt.Errorf(
-					"network.*.evm.servedTip.trajectoryWindow must be 0 (disables the trajectory referee) "+
-						"or between %s and %s, got %s — NOTE a bare number in YAML is parsed as MILLISECONDS, "+
-						"so write trajectoryWindow: \"10m\", not trajectoryWindow: 10",
-					MinServedTipTrajectoryWindow, MaxServedTipTrajectoryWindow, d)
-			}
 		}
 		for _, m := range e.ServedTip.GuaranteedMethods {
 			if err := ValidatePattern(m); err != nil {
@@ -1581,6 +2037,14 @@ func (e *EvmNetworkConfig) Validate() error {
 			if err := ValidatePattern(sel); err != nil {
 				return fmt.Errorf("network.*.evm.servedTip.guaranteedFor has invalid selector %q: %w", sel, err)
 			}
+		}
+	}
+	if ct := e.ChainTracker; ct != nil {
+		if ct.ReorgWindow < 0 {
+			return fmt.Errorf("network.*.evm.chainTracker.reorgWindow must be >= 0")
+		}
+		if ct.MaxBackfill < 0 {
+			return fmt.Errorf("network.*.evm.chainTracker.maxBackfill must be >= 0")
 		}
 	}
 	if e.SafeBlockSource != "" {
@@ -1662,6 +2126,79 @@ func (s *SvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	}
 	if !isValidSvmSegment(s.Cluster) {
 		return fmt.Errorf("upstream.*.svm.cluster '%s' is invalid, must contain only alphanumeric characters, dash, underscore, or dot", s.Cluster)
+	}
+	if s.StatePollerDebounce.Duration() < 0 {
+		return fmt.Errorf("upstream.*.svm.statePollerDebounce must be greater than or equal to 0")
+	}
+	if s.BlockAvailability != nil {
+		if err := s.BlockAvailability.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *SvmBlockAvailabilityConfig) Validate() error {
+	if c.Lower != nil {
+		if err := c.Lower.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.lower is invalid: %w", err)
+		}
+	}
+	if c.Upper != nil {
+		if err := c.Upper.Validate(); err != nil {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.upper is invalid: %w", err)
+		}
+	}
+
+	if c.Lower != nil && c.Upper != nil && c.Lower.ExactSlot != nil && c.Upper.ExactSlot != nil {
+		if *c.Lower.ExactSlot > *c.Upper.ExactSlot {
+			return fmt.Errorf("upstream.*.svm.blockAvailability.lower.exactSlot must be <= upper.exactSlot")
+		}
+	}
+	if c.Lower != nil && c.Upper != nil && c.Lower.LatestSlotMinus != nil && c.Upper.LatestSlotMinus != nil {
+		if *c.Lower.LatestSlotMinus < *c.Upper.LatestSlotMinus {
+			return fmt.Errorf("upstream.*.svm.blockAvailability: when both bounds are latestSlotMinus, lower.latestSlotMinus must be >= upper.latestSlotMinus")
+		}
+	}
+	if c.Lower != nil && c.Upper != nil && c.Lower.FirstAvailableSlotPlus != nil && c.Upper.FirstAvailableSlotPlus != nil {
+		if *c.Lower.FirstAvailableSlotPlus > *c.Upper.FirstAvailableSlotPlus {
+			return fmt.Errorf("upstream.*.svm.blockAvailability: when both bounds are firstAvailableSlotPlus, lower.firstAvailableSlotPlus must be <= upper.firstAvailableSlotPlus")
+		}
+	}
+	return nil
+}
+
+func (b *SvmAvailabilityBoundConfig) Validate() error {
+	setCount := 0
+	if b.ExactSlot != nil {
+		setCount++
+	}
+	if b.LatestSlotMinus != nil {
+		setCount++
+	}
+	if b.FirstAvailableSlotPlus != nil {
+		setCount++
+	}
+	if setCount == 0 {
+		return fmt.Errorf("bound must set exactly one of: exactSlot, latestSlotMinus, firstAvailableSlotPlus")
+	}
+	if setCount > 1 {
+		return fmt.Errorf("bound fields exactSlot, latestSlotMinus, firstAvailableSlotPlus are mutually exclusive")
+	}
+	if b.ExactSlot != nil && *b.ExactSlot < 0 {
+		return fmt.Errorf("bound.exactSlot must be >= 0")
+	}
+	if b.LatestSlotMinus != nil && *b.LatestSlotMinus < 0 {
+		return fmt.Errorf("bound.latestSlotMinus must be >= 0")
+	}
+	if b.FirstAvailableSlotPlus != nil && *b.FirstAvailableSlotPlus < 0 {
+		return fmt.Errorf("bound.firstAvailableSlotPlus must be >= 0")
+	}
+	if b.UpdateRate < 0 {
+		return fmt.Errorf("bound.updateRate must be >= 0")
+	}
+	if b.UpdateRate != 0 && b.FirstAvailableSlotPlus == nil {
+		return fmt.Errorf("bound.updateRate applies only to firstAvailableSlotPlus")
 	}
 	return nil
 }
@@ -1819,8 +2356,8 @@ func (s *IntegritySettings) validate() error {
 	if b := s.Budget; b != nil && (b.MaxPerSecond < 0 || b.MaxConcurrent < 0) {
 		return fmt.Errorf("integrity.budget.maxPerSecond/maxConcurrent must be >= 0")
 	}
-	if s.ReorgWindow < 0 {
-		return fmt.Errorf("integrity.reorgWindow must be >= 0")
+	if f := s.Follow; f != nil && f.Interval < 0 {
+		return fmt.Errorf("integrity.follow.interval must be >= 0")
 	}
 	if s.MisbehaviorsDestination != nil {
 		if err := s.MisbehaviorsDestination.Validate(); err != nil {

@@ -153,12 +153,14 @@ then marshals to YAML (default) or JSON. Useful for verifying what a TypeScript 
 actually produces. Log output is also suppressed.
 
 **Graceful shutdown.** On SIGINT/SIGTERM: `signal.NotifyContext` cancels `appCtx`.
-The HTTP server's goroutine wakes, sleeps `server.waitBeforeShutdown` (default 10 s —
-gives Kubernetes time to mark the pod NotReady), then calls `srv.Shutdown(30 s budget)`.
-The metrics server shuts down with a 5 s budget. The OTel tracer provider shuts down in
-a goroutine with a 5 s budget. `erpc.Init` blocks on `<-appCtx.Done()` then sleeps
-`server.waitAfterShutdown` (default 10 s) before returning, allowing in-flight requests
-to drain.
+The HTTP server's goroutine wakes, disables keep-alives, sleeps `server.waitBeforeShutdown`
+(default 10 s — gives Kubernetes time to mark the pod NotReady), then calls
+`srv.Shutdown(30 s budget)`, which GOAWAYs HTTP/2 (including h2c) connections and waits
+for in-flight requests. The metrics server shuts down with a 5 s budget. The OTel tracer
+provider shuts down in a goroutine with a 5 s budget. `erpc.Init` blocks on
+`<-appCtx.Done()`, then waits for the HTTP drain to finish, then sleeps
+`server.waitAfterShutdown` (default 10 s) before returning, so the process lives up to
+`waitBeforeShutdown + 30 s + waitAfterShutdown` after the signal.
 
 **pprof.** A `//go:build pprof` file registers standard `net/http/pprof` routes and
 starts a listener at `0.0.0.0:<port>` (default `6060`; override with `ERPC_PPROF_PORT`).
@@ -198,7 +200,7 @@ pprof — build with `-tags pprof` to activate.
 | `healthCheck` | \*HealthCheckConfig | mode=`networks`, defaultEval=`any:initializedUpstreams` | Health check endpoint behaviour. |
 | `admin` | \*AdminConfig | nil | Admin JSON-RPC API; CORS defaults to `*` origin with no credentials when section is present. |
 | `database` | \*DatabaseConfig | nil | EVM JSON-RPC cache and/or shared-state connector. |
-| `projects` | []\*ProjectConfig | synthetic `main` project with public + envio providers when empty | Ordered list of project configs. When empty, `SetDefaults` injects a `main` project. |
+| `projects` | []\*ProjectConfig | synthetic `main` project with the public repository provider when empty | Ordered list of project configs. When empty, `SetDefaults` injects a `main` project. |
 | `rateLimiters` | \*RateLimiterConfig | nil | Rate limiter budgets. Budget IDs referenced by projects/upstreams/networks must exist here. |
 | `proxyPools` | []\*ProxyPoolConfig | nil | HTTP proxy pool definitions. |
 | `tracing` | \*TracingConfig | nil | OTel tracing; defaults when set: protocol=grpc, endpoint=localhost:4317, sampleRate=1.0, serviceName=erpc. |
@@ -224,6 +226,7 @@ pprof — build with `-tags pprof` to activate.
 | `ERPC_NOMETRICS` | `init()` (build tag `!test`) | When `"1"`, swaps the Prometheus default registry with a no-op. Irreversible within the process. |
 | `ERPC_PPROF_PORT` | `init()` (build tag `pprof`) | pprof listener port; default `6060`. Only effective when built with `-tags pprof`. Binds `0.0.0.0` — all interfaces. |
 | `ERPC_IGNORE_LOCAL_ENDPOINT_VALIDATION` | config analyzer | When `"true"`, skips validation of non-HTTP and local (loopback/localhost) upstream endpoints in `erpc validate`. [<SourceLink file="erpc/config_analyzer.go" lines="1024-1031" />] |
+| `ERPC_NOSTAR` | npm launcher (`npx start-erpc`, `@erpc-cloud/cli`) | When `"1"`, the launcher skips its one-time stderr line asking for a GitHub star. The line is also skipped when `CI` is set or stderr is not a TTY, and is shown at most once per machine (marker file `$XDG_CONFIG_HOME/erpc/star-prompt-shown`, default `~/.config/erpc/`). The Go binary ignores this variable. [`typescript/cli/src/star-prompt.ts`](https://github.com/erpc/erpc/blob/main/typescript/cli/src/star-prompt.ts) |
 | `INSTANCE_ID` | shared-state + consensus | First in the instance-identity chain. Used as `UpdatedBy` in shared-state writes and as `{instanceId}` in consensus dispute-log filenames. |
 | `POD_NAME` | shared-state + consensus | Second in the chain (Kubernetes pod name). |
 | `HOSTNAME` | shared-state + consensus | Third in the chain (OS hostname). |

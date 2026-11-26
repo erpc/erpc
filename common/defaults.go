@@ -273,17 +273,11 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getBlockByNumber": {
 		ReqRefs:  FirstParam,
 		RespRefs: NumberOrHashParam,
-		// The post-forward hook in evm/eth_getBlockByNumber.go only enforces "latest"/"finalized"
-		// tag handling; it does not gate numeric block requests against per-upstream bounds.
+		// The network-level future-block refusal and enforceNonNullBlock cover
+		// numeric blocks; per-upstream bounds are not gated for this method.
 		// Numeric blocks beyond an upstream's known head will be forwarded and may return
 		// missing-data, which the failsafe retry policy can space out via emptyResultDelay.
 		EnforceBlockAvailability: util.BoolPtr(false),
-		// Don't interpolate "latest"/"finalized" tags for this method - it should fetch actual
-		// current state from upstream. This method is the source of truth for block tags,
-		// not a consumer of interpolated values. Other methods (eth_getLogs, eth_call, etc.)
-		// will still interpolate tags using the state poller's highest known block.
-		TranslateLatestTag:    util.BoolPtr(false),
-		TranslateFinalizedTag: util.BoolPtr(false),
 	},
 	"eth_getTransactionByBlockHashAndIndex": {
 		ReqRefs:  FirstParam,
@@ -331,6 +325,13 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_estimateGas": {
 		ReqRefs: SecondParam,
 	},
+	"eth_createAccessList": {
+		ReqRefs: SecondParam,
+	},
+	"eth_callMany": {
+		// The state context object; its blockNumber leaf is the selector.
+		ReqRefs: SecondParam,
+	},
 	"trace_call": {
 		// Support both param orderings used in the wild:
 		// - second param as block tag/number (e.g., ["latest"])
@@ -346,8 +347,11 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 	"eth_getProof": {
 		ReqRefs: ThirdParam,
 	},
+	// arbtrace_* keep their "latest": Arbitrum classic nodes serve them, and
+	// their latest is not the network's (spec §7).
 	"arbtrace_call": {
-		ReqRefs: ThirdParam,
+		ReqRefs:            ThirdParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"eth_feeHistory": {
 		ReqRefs: SecondParam,
@@ -362,7 +366,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"arbtrace_callMany": {
-		ReqRefs: SecondParam,
+		ReqRefs:            SecondParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"eth_getBlockReceipts": {
 		ReqRefs: [][]interface{}{
@@ -393,6 +398,7 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		},
 		// architecture/evm/trace_filter.go hook enforces lower/upper-bound against per-upstream latest/finality.
 		EnforceBlockAvailability: util.BoolPtr(false),
+		TranslateLatestTag:       util.BoolPtr(false),
 	},
 	"debug_traceBlockByNumber": {
 		ReqRefs: FirstParam,
@@ -419,10 +425,12 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: FirstParam,
 	},
 	"arbtrace_block": {
-		ReqRefs: FirstParam,
+		ReqRefs:            FirstParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"arbtrace_replayBlockTransactions": {
-		ReqRefs: FirstParam,
+		ReqRefs:            FirstParam,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 }
 
@@ -444,7 +452,8 @@ var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
 		RespRefs: BlockNumberOrBlockHashParam,
 	},
 	"arbtrace_replayTransaction": {
-		ReqRefs: ArbitraryBlock,
+		ReqRefs:            ArbitraryBlock,
+		TranslateLatestTag: util.BoolPtr(false),
 	},
 	"trace_replayTransaction": {
 		ReqRefs: ArbitraryBlock,
@@ -592,6 +601,31 @@ func FindDefaultCacheMethodConfig(method string) *CacheMethodConfig {
 	return defaultCacheMethodsByLower[strings.ToLower(method)]
 }
 
+// ResolveMethodConfig resolves a method against the network's
+// methods.definitions, then the built-in tables. Networks configured with
+// preserveDefaultMethods:false keep only their own definitions, so the
+// built-in fallback is what still resolves the standard methods.
+func ResolveMethodConfig(method string, network Network) *CacheMethodConfig {
+	if network != nil {
+		if cfg := network.Config(); cfg != nil {
+			if mc := cfg.Methods.FindMethodConfig(method); mc != nil {
+				return mc
+			}
+		}
+	}
+	return FindDefaultCacheMethodConfig(method)
+}
+
+// IsKnownMethodName reports whether method is, exactly, a name m defines or a
+// built-in table does: a set config bounds, so a cache keyed by it cannot be
+// grown by client input (casing variants included).
+func IsKnownMethodName(m *MethodsConfig, method string) bool {
+	if m != nil && m.Definitions[method] != nil {
+		return true
+	}
+	return defaultCacheMethodsByName[method] != nil
+}
+
 // DefaultWithBlockMethodConfig resolves a method against DefaultWithBlockCacheMethods
 // only — the table that carries the system defaults for block-availability
 // enforcement.
@@ -666,7 +700,18 @@ func markStatefulMethod(defs map[string]*CacheMethodConfig, method string) {
 	defs[key] = &CacheMethodConfig{Stateful: true}
 }
 
+// ConsensusDefaultEvalTimeout is the wall-clock cap applied when
+// customPolicy.evalTimeout is omitted (0). Kept in sync with
+// ConsensusPolicyConfig.SetDefaults so NewConsensus (used by tests and any
+// caller that skips SetDefaults) cannot disable the selector timeout by
+// accident. Lives in defaults.go (tygo-excluded) so it is not emitted as
+// invalid TypeScript (`N * time.Millisecond` → `N * any`).
+const ConsensusDefaultEvalTimeout = 50 * time.Millisecond
+
 func (c *CacheConfig) SetDefaults() error {
+	if c.CachingStrategy == "" {
+		c.CachingStrategy = CachingStrategyDefaultAllow
+	}
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
 			if err := policy.SetDefaults(); err != nil {
@@ -881,6 +926,32 @@ func (s *ServerConfig) SetDefaults() error {
 		s.CostHeaders = util.BoolPtr(false)
 	}
 
+	if s.WebSocket == nil {
+		s.WebSocket = &WebSocketServerConfig{}
+	}
+	if s.WebSocket.Enabled == nil {
+		s.WebSocket.Enabled = util.BoolPtr(false)
+	}
+	if s.WebSocket.ReadBufferSize == 0 {
+		s.WebSocket.ReadBufferSize = 4096
+	}
+	if s.WebSocket.WriteBufferSize == 0 {
+		s.WebSocket.WriteBufferSize = 4096
+	}
+	if s.WebSocket.MaxMessageSize == 0 {
+		s.WebSocket.MaxMessageSize = 1 * 1024 * 1024 // 1MB
+	}
+	if s.WebSocket.PingInterval == nil {
+		d := Duration(30 * time.Second)
+		s.WebSocket.PingInterval = &d
+	}
+	if s.WebSocket.MaxSubscriptionsPerConnection == 0 {
+		s.WebSocket.MaxSubscriptionsPerConnection = 100
+	}
+	if s.WebSocket.MaxConcurrentRequestsPerConnection == 0 {
+		// Same as the HTTP/2 per-connection stream limit on this listener.
+		s.WebSocket.MaxConcurrentRequestsPerConnection = 250
+	}
 	// Safe defaults for client IP resolution
 	if len(s.TrustedIPForwarders) == 0 {
 		// Only loopback by default; do not trust private subnets unless explicitly configured
@@ -1335,14 +1406,7 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			if err := repositoryCfg.SetDefaults(p.UpstreamDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for repository provider: %w", err)
 			}
-			envioCfg := &ProviderConfig{
-				Id:     "envio",
-				Vendor: "envio",
-			}
-			if err := envioCfg.SetDefaults(p.UpstreamDefaults); err != nil {
-				return fmt.Errorf("failed to set defaults for envio provider: %w", err)
-			}
-			p.Providers = append(p.Providers, repositoryCfg, envioCfg)
+			p.Providers = append(p.Providers, repositoryCfg)
 		}
 	}
 	if p.Providers == nil {
@@ -1374,11 +1438,9 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			}
 		}
 	}
-	if p.Networks != nil {
-		for _, network := range p.Networks {
-			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
-				return fmt.Errorf("failed to set defaults for network: %w", err)
-			}
+	for _, network := range p.Networks {
+		if err := p.SetNetworkDefaults(network); err != nil {
+			return err
 		}
 	}
 	if p.Auth != nil {
@@ -1394,11 +1456,28 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 	return nil
 }
 
+// SetNetworkDefaults resolves n against this project: its defaults, then the
+// project-wide integrity block folded under n's own (network wins). It runs
+// before any network is built from n, for configured and lazy networks alike:
+// a network's trackers read n from their first message on.
+func (p *ProjectConfig) SetNetworkDefaults(n *NetworkConfig) error {
+	if err := n.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
+		return fmt.Errorf("failed to set defaults for network: %w", err)
+	}
+	if p.Integrity != nil {
+		n.Integrity = MergeIntegrityConfig(p.Integrity, n.Integrity)
+	}
+	return nil
+}
+
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
 	if strings.HasPrefix(upstream.Endpoint, "http://") ||
 		strings.HasPrefix(upstream.Endpoint, "https://") ||
+		strings.HasPrefix(upstream.Endpoint, "ws://") ||
+		strings.HasPrefix(upstream.Endpoint, "wss://") ||
 		strings.HasPrefix(upstream.Endpoint, "grpc://") ||
-		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") {
+		strings.HasPrefix(upstream.Endpoint, "grpc+bds://") ||
+		strings.HasPrefix(upstream.Endpoint, "grpcs://") {
 		return nil, nil
 	}
 
@@ -1630,7 +1709,7 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "solidrpc", "evm+solidrpc":
+	case "solidrpc", "evm+solidrpc", "willow", "evm+willow":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
@@ -1817,6 +1896,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.TraceFilterAutoSplittingRangeThreshold == 0 && defaults.Evm.TraceFilterAutoSplittingRangeThreshold != 0 {
 			u.Evm.TraceFilterAutoSplittingRangeThreshold = defaults.Evm.TraceFilterAutoSplittingRangeThreshold
 		}
+		if u.Evm.CallGasCap == 0 {
+			u.Evm.CallGasCap = defaults.Evm.CallGasCap
+		}
 	}
 	// Mirrors the evm branch above: upstreamDefaults.svm is a template, so an
 	// upstream that omits its own `svm` block inherits the whole thing (copied,
@@ -1828,8 +1910,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	// network identity: on an upstream it only says "which cluster do I serve",
 	// and a pool homogeneous across one cluster is the common case.
 	if u.Svm == nil && defaults.Svm != nil {
-		cp := *defaults.Svm
-		u.Svm = &cp
+		u.Svm = defaults.Svm.Copy()
 	} else if u.Svm != nil && defaults.Svm != nil {
 		if u.Svm.Chain == "" && defaults.Svm.Chain != "" {
 			u.Svm.Chain = defaults.Svm.Chain
@@ -1843,6 +1924,12 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		// inherited true is ever needed.
 		if defaults.Svm.CheckGenesisHash {
 			u.Svm.CheckGenesisHash = true
+		}
+		if u.Svm.StatePollerDebounce == 0 && defaults.Svm.StatePollerDebounce != 0 {
+			u.Svm.StatePollerDebounce = defaults.Svm.StatePollerDebounce
+		}
+		if u.Svm.BlockAvailability == nil && defaults.Svm.BlockAvailability != nil {
+			u.Svm.BlockAvailability = defaults.Svm.BlockAvailability.Copy()
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
@@ -2037,6 +2124,21 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.StatePollerDebounce == 0 && defaults != nil && defaults.StatePollerDebounce != 0 {
 		e.StatePollerDebounce = defaults.StatePollerDebounce
 	}
+	// Static and provider-generated upstreams both inherit here. eth_getLogs
+	// splits at each upstream's own threshold, so a provider upstream left at 0
+	// sent whole ranges its vendor refuses.
+	if e.GetLogsAutoSplittingRangeThreshold == 0 && defaults != nil {
+		e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
+	}
+	if e.TraceFilterAutoSplittingRangeThreshold == 0 && defaults != nil {
+		e.TraceFilterAutoSplittingRangeThreshold = defaults.TraceFilterAutoSplittingRangeThreshold
+	}
+	if e.CallGasCap == 0 && defaults != nil {
+		e.CallGasCap = defaults.CallGasCap
+	}
+	if e.SubscriptionSource == "" && defaults != nil {
+		e.SubscriptionSource = defaults.SubscriptionSource
+	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {
 			e.NodeType = defaults.NodeType
@@ -2111,6 +2213,23 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
+	if e.PinLatestTag == nil && defaults != nil {
+		e.PinLatestTag = defaults.PinLatestTag
+	}
+
+	if e.Multicall3 == nil && defaults != nil && defaults.Multicall3 != nil {
+		v := *defaults.Multicall3
+		e.Multicall3 = &v
+	}
+	if e.Multicall3 != nil {
+		if e.Multicall3.MaxWait == 0 {
+			e.Multicall3.MaxWait = Duration(10 * time.Millisecond)
+		}
+		if e.Multicall3.MaxCalls == 0 {
+			e.Multicall3.MaxCalls = 20
+		}
+	}
+
 	return nil
 }
 
@@ -2123,6 +2242,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		if n.RateLimitBudget == "" {
 			n.RateLimitBudget = defaults.RateLimitBudget
 		}
+		if n.CacheKeySuffix == "" {
+			n.CacheKeySuffix = defaults.CacheKeySuffix
+		}
+		if n.MaxClientBatchSize == nil && defaults.MaxClientBatchSize != nil {
+			v := *defaults.MaxClientBatchSize
+			n.MaxClientBatchSize = &v
+		}
 		if len(defaults.Failsafe) > 0 {
 			if len(n.Failsafe) == 0 {
 				n.Failsafe = make([]*FailsafeConfig, len(defaults.Failsafe))
@@ -2133,7 +2259,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			} else {
 				// Apply defaults to each failsafe config
 				for i, fs := range n.Failsafe {
-					// Find matching default by method/finality
+					// A default must cover every commitment selected by the network rule.
 					defaultFs := &FailsafeConfig{
 						MatchMethod: "*",
 					}
@@ -2150,7 +2276,17 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 						// Match finality (empty array means any finality)
 						finalityMatch := MatchFinalities(dfs.MatchFinality, fs.MatchFinality)
 
-						if methodMatch && finalityMatch {
+						commitmentMatch := len(dfs.MatchCommitment) == 0
+						if !commitmentMatch && len(fs.MatchCommitment) > 0 {
+							commitmentMatch = true
+							for _, commitment := range fs.MatchCommitment {
+								if !slices.Contains(dfs.MatchCommitment, commitment) {
+									commitmentMatch = false
+									break
+								}
+							}
+						}
+						if methodMatch && finalityMatch && commitmentMatch {
 							defaultFs = dfs
 							break
 						}
@@ -2182,6 +2318,14 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			v := *defaults.Multiplexing
 			n.Multiplexing = &v
 		}
+		if n.Failover == nil && defaults.Failover != nil {
+			cp := *defaults.Failover
+			if defaults.Failover.OnDefaultsExhausted != nil {
+				v := *defaults.Failover.OnDefaultsExhausted
+				cp.OnDefaultsExhausted = &v
+			}
+			n.Failover = &cp
+		}
 		if n.Evm != nil && defaults.Evm != nil {
 			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
 				n.Evm.Integrity = &EvmIntegrityConfig{}
@@ -2192,6 +2336,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			}
 			if n.Evm.DynamicBlockTimeDebounceMultiplier == nil && defaults.Evm.DynamicBlockTimeDebounceMultiplier != nil {
 				n.Evm.DynamicBlockTimeDebounceMultiplier = defaults.Evm.DynamicBlockTimeDebounceMultiplier
+			}
+			if n.Evm.FinalizedDebounceDepthMultiplier == nil && defaults.Evm.FinalizedDebounceDepthMultiplier != nil {
+				n.Evm.FinalizedDebounceDepthMultiplier = defaults.Evm.FinalizedDebounceDepthMultiplier
 			}
 			if n.Evm.BlockUnavailableDelayMultiplier == nil && defaults.Evm.BlockUnavailableDelayMultiplier != nil {
 				n.Evm.BlockUnavailableDelayMultiplier = defaults.Evm.BlockUnavailableDelayMultiplier
@@ -2211,6 +2358,12 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
 				n.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
 			}
+			if n.Evm.CallGasCap == 0 {
+				n.Evm.CallGasCap = defaults.Evm.CallGasCap
+			}
+			if n.Evm.CallGasCapQuorum == 0 {
+				n.Evm.CallGasCapQuorum = defaults.Evm.CallGasCapQuorum
+			}
 			if n.Evm.GetLogsSplitConcurrency == 0 && defaults.Evm.GetLogsSplitConcurrency != 0 {
 				n.Evm.GetLogsSplitConcurrency = defaults.Evm.GetLogsSplitConcurrency
 			}
@@ -2227,11 +2380,26 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				cp := *defaults.Evm.ServedTip
 				n.Evm.ServedTip = &cp
 			}
+			if n.Evm.ChainTracker == nil && defaults.Evm.ChainTracker != nil {
+				cp := *defaults.Evm.ChainTracker
+				n.Evm.ChainTracker = &cp
+			}
 			if n.Evm.SafeBlockSource == "" {
 				n.Evm.SafeBlockSource = defaults.Evm.SafeBlockSource
 			}
 			if n.Evm.EmptyResultConfidence == 0 && defaults.Evm.EmptyResultConfidence != 0 {
 				n.Evm.EmptyResultConfidence = defaults.Evm.EmptyResultConfidence
+			}
+			if n.Evm.ShortCircuitFutureBlocks == nil && defaults.Evm.ShortCircuitFutureBlocks != nil {
+				n.Evm.ShortCircuitFutureBlocks = defaults.Evm.ShortCircuitFutureBlocks
+			}
+			for method, on := range defaults.Evm.LocalAnswers {
+				if _, set := n.Evm.LocalAnswers[method]; !set {
+					if n.Evm.LocalAnswers == nil {
+						n.Evm.LocalAnswers = make(map[string]bool, len(defaults.Evm.LocalAnswers))
+					}
+					n.Evm.LocalAnswers[method] = on
+				}
 			}
 		} else if n.Evm == nil && defaults.Evm != nil && n.Svm == nil && n.Architecture != ArchitectureSvm {
 			// Copy EVM defaults only onto networks that are (or can become) EVM.
@@ -2295,7 +2463,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 
 	if len(upstreams) > 0 {
 		anyUpstreamInFallbackTier := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
-			return u.HasTag("tier:fallback")
+			return u.HasTag(TagTierFallback)
 		})
 		if anyUpstreamInFallbackTier && n.SelectionPolicy == nil {
 			defCfg := NewDefaultNetworkConfig(upstreams)
@@ -2380,8 +2548,8 @@ func migrateLegacyIntegrityChecks(n *NetworkConfig) {
 }
 
 const DefaultEvmFinalityDepth = 1024
-const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 const DefaultDynamicBlockTimeDebounceMultiplier = 0.7
+const DefaultFinalizedDebounceDepthMultiplier = 0.05
 const DefaultBlockUnavailableDelayMultiplier = 1.0
 
 // DefaultToleratedBlockHeadRollback is the tolerance (in blocks) applied when a
@@ -2392,37 +2560,12 @@ const DefaultBlockUnavailableDelayMultiplier = 1.0
 // and the health tracker so both layers converge on the same head.
 const DefaultToleratedBlockHeadRollback = 1024
 
-// DefaultServedTipTrajectoryWindow is how much head history the served-tip
-// trajectory referee needs before it may participate in a pick
-// (EvmServedTipConfig.TrajectoryWindow). Ten minutes is long enough that a
-// majority stall cannot masquerade as the trajectory (the referee's evidence is
-// the median of live heads, so a stall of half the window already flattens the
-// fit and stands the referee down), and short enough to be warm well within a
-// pod's lifetime.
-const DefaultServedTipTrajectoryWindow = 10 * time.Minute
-
-// ServedTipTrajectorySampleInterval and ServedTipTrajectoryMaxSamples are the
-// referee's recording cadence and its hard ring cap (architecture/evm's
-// tipSampleInterval / tipMaxBufferCapacity, which read them from here so the
-// config bounds below cannot drift from the mechanism they describe).
-const (
-	ServedTipTrajectorySampleInterval = 5 * time.Second
-	ServedTipTrajectoryMaxSamples     = 1024
-)
-
-// MinServedTipTrajectoryWindow / MaxServedTipTrajectoryWindow bound a configured
-// EvmServedTipConfig.TrajectoryWindow to the values that can actually work.
-//
-// Below a minute the window is self-defeating: it must be long enough that a
-// stall cannot look like a trajectory, and a fit over seconds of history is
-// noise. Above 80% of what the ring can span (cadence × capacity) the required
-// span is never reached, so the referee would stand down forever while looking
-// configured — the failure mode a range check exists to prevent, since nothing
-// in the metrics distinguishes "never warm" from "never needed".
-const (
-	MinServedTipTrajectoryWindow = time.Minute
-	MaxServedTipTrajectoryWindow = ServedTipTrajectorySampleInterval * ServedTipTrajectoryMaxSamples * 4 / 5
-)
+// DefaultServedTipQuorum is how many eligible upstreams must have a block
+// before the network serves it as "latest"/"finalized" (ServedTipQuorum).
+// Two keeps a lone far-ahead head out of every multi-upstream ballot, while a
+// ballot reduced to one voter (benched peers, a one-upstream network) still
+// serves that voter's head.
+const DefaultServedTipQuorum = 2
 
 // DefaultEmptyResultMaxAttempts bounds retries when the requested data isn't on the
 // upstream yet (empty/missing-data point-lookups, pending tx-lookups, and
@@ -2469,6 +2612,11 @@ func DefaultEmptyResultAccept() []string {
 		"eth_getCode",
 		"eth_getStorageAt",
 		"eth_getTransactionCount",
+		// Solana: 0 is a full-history node's real first slot, and [] is a
+		// program with no matching accounts. Retrying either asks every
+		// upstream the same question and returns the same answer.
+		"getFirstAvailableBlock",
+		"getProgramAccounts",
 	}
 }
 
@@ -2537,6 +2685,13 @@ func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
 		v := *defaults.EnforceBlockAvailability
 		dst.EnforceBlockAvailability = &v
 	}
+	// SkipProcessedSlotProbe is a plain bool (default false = poll). Only an
+	// opt-in true is worth propagating — same shape as upstream
+	// CheckGenesisHash. A per-network opt-OUT of an inherited true would need
+	// *bool; not required today.
+	if defaults.SkipProcessedSlotProbe {
+		dst.SkipProcessedSlotProbe = true
+	}
 }
 
 // SetDefaults populates SVM-network config fields that were left empty.
@@ -2570,16 +2725,27 @@ func (s *SvmNetworkConfig) SetDefaults() error {
 	return nil
 }
 
+// SetDefaults fills the reorg window (32 blocks) and maxBackfill (5m).
+func (c *EvmChainTrackerConfig) SetDefaults() {
+	if c.ReorgWindow == 0 {
+		c.ReorgWindow = 32
+	}
+	if c.MaxBackfill == 0 {
+		c.MaxBackfill = Duration(5 * time.Minute)
+	}
+}
+
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}
-	if e.FallbackStatePollerDebounce == 0 {
-		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
-	}
 	if e.DynamicBlockTimeDebounceMultiplier == nil {
 		d := DefaultDynamicBlockTimeDebounceMultiplier
 		e.DynamicBlockTimeDebounceMultiplier = &d
+	}
+	if e.FinalizedDebounceDepthMultiplier == nil {
+		d := DefaultFinalizedDebounceDepthMultiplier
+		e.FinalizedDebounceDepthMultiplier = &d
 	}
 	if e.BlockUnavailableDelayMultiplier == nil {
 		d := DefaultBlockUnavailableDelayMultiplier
@@ -2594,6 +2760,13 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 		log.Warn().Msg("config: evm.maxFutureBlockRetryDistance is deprecated and ignored; use evm.emptyResultConfidence (blockHead|finalizedBlock) instead")
 		e.MaxFutureBlockRetryDistance = nil
 	}
+	if e.ChainTracker == nil {
+		e.ChainTracker = &EvmChainTrackerConfig{}
+	} else {
+		cp := *e.ChainTracker
+		e.ChainTracker = &cp
+	}
+	e.ChainTracker.SetDefaults()
 	if e.Integrity == nil {
 		e.Integrity = &EvmIntegrityConfig{}
 	}
@@ -2792,9 +2965,6 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		} else if defaults.EmptyResultIgnore != nil {
 			r.EmptyResultAccept = defaults.EmptyResultIgnore
 		}
-	}
-	if r.EmptyResultAccept == nil {
-		r.EmptyResultAccept = DefaultEmptyResultAccept()
 	}
 
 	// "Data not available yet" (empty/missing-data/block-unavailable) retries are all
@@ -2995,7 +3165,210 @@ func (c *ConsensusPolicyConfig) SetDefaults() error {
 		}
 	}
 
+	// Custom-policy selector defaults. EvalTimeout bounds the per-request eval;
+	// ConsensusDefaultEvalTimeout is well beyond the observed per-eval cost yet
+	// still fails closed fast if an operator function runs away.
+	if c.CustomPolicy != nil {
+		if c.CustomPolicy.EvalTimeout == 0 {
+			c.CustomPolicy.EvalTimeout = Duration(ConsensusDefaultEvalTimeout)
+		}
+	}
+
+	// Named policies omit cacheableResponses → false. Stamp before extends so
+	// a child that omits the field does not inherit a base's true — including
+	// extends: default (inline omit→true) and named→named where the base
+	// explicitly set true. Named omit always means uncacheable unless the
+	// operator opts in on that named entry. Circle posture: weaker grades
+	// like fallback stay out of the shared cache by default.
+	for _, p := range c.Policies {
+		if p != nil && p.CacheableResponses == nil {
+			p.CacheableResponses = util.BoolPtr(false)
+		}
+	}
+
+	// Resolve one-level extends on named policies before applying defaults so
+	// each runtime policy is fully merged (feature §2). Unknown base / nested
+	// extends are load-time errors.
+	if err := c.resolveNamedPolicyExtends(); err != nil {
+		return err
+	}
+
+	// Inline / fail-closed default omit → true (open cache write under
+	// defaultAllow). Named policies already carry an explicit value from the
+	// pre-extends stamp or the operator.
+	if c.CacheableResponses == nil {
+		c.CacheableResponses = util.BoolPtr(true)
+	}
+
+	// Named policies are full consensus configs; apply the same defaults so a
+	// selected policy behaves identically to an inline one. Selection is
+	// top-level only, so any nested CustomPolicy/Policies on a named policy is
+	// inert — we intentionally do not recurse into it.
+	for name, p := range c.Policies {
+		if p == nil {
+			continue
+		}
+		if err := p.SetDefaults(); err != nil {
+			return fmt.Errorf("consensus.policies[%q] defaults: %w", name, err)
+		}
+		// Named policies already carry CacheableResponses from the pre-extends
+		// stamp (or an explicit operator value). Nested SetDefaults does not
+		// clear a non-nil pointer, so no post-restore is needed.
+	}
+
 	return nil
+}
+
+// resolveNamedPolicyExtends merges each named policy that sets `extends` onto
+// a one-level base (another named policy, or "default" = this inline block).
+// The named entry is replaced in place with the fully resolved config; Extends
+// is cleared. Nested extends (base itself declares extends) and unknown bases
+// are errors. Policies without extends are left untouched (stock defaults).
+func (c *ConsensusPolicyConfig) resolveNamedPolicyExtends() error {
+	if len(c.Policies) == 0 {
+		return nil
+	}
+
+	// Pass 1 — validate against the pre-resolve graph so map iteration order
+	// cannot clear a base's Extends before a child is checked. Also reject a
+	// nested selection surface here: overlay + strip would otherwise clear
+	// customPolicy/policies before Validate sees them (SetDefaults runs first).
+	for name, child := range c.Policies {
+		if child == nil {
+			continue
+		}
+		if child.CustomPolicy != nil || len(child.Policies) > 0 {
+			return fmt.Errorf("consensus.policies[%q] must not itself define customPolicy or policies: selection happens once at the top level", name)
+		}
+		baseName := strings.TrimSpace(child.Extends)
+		if baseName == "" {
+			continue
+		}
+		if baseName == ConsensusDefaultPolicyName {
+			continue
+		}
+		b, ok := c.Policies[baseName]
+		if !ok || b == nil {
+			return fmt.Errorf("consensus.policies[%q].extends references unknown base %q", name, baseName)
+		}
+		if strings.TrimSpace(b.Extends) != "" {
+			return fmt.Errorf("consensus.policies[%q].extends %q is itself an extends policy; only one-level extends is supported in v1", name, baseName)
+		}
+	}
+
+	// Pass 2 — merge.
+	for name, child := range c.Policies {
+		if child == nil {
+			continue
+		}
+		baseName := strings.TrimSpace(child.Extends)
+		if baseName == "" {
+			continue
+		}
+
+		var base *ConsensusPolicyConfig
+		switch baseName {
+		case ConsensusDefaultPolicyName:
+			// Inline block as base — strip selection surface so the child cannot
+			// inherit customPolicy/policies/extends.
+			base = c.Copy()
+			base.CustomPolicy = nil
+			base.Policies = nil
+			base.Extends = ""
+		default:
+			b := c.Policies[baseName]
+			base = b.Copy()
+			base.CustomPolicy = nil
+			base.Policies = nil
+			base.Extends = ""
+		}
+
+		overlayConsensusPolicy(base, child)
+		base.Extends = ""
+		base.CustomPolicy = nil
+		base.Policies = nil
+		c.Policies[name] = base
+	}
+	return nil
+}
+
+// overlayConsensusPolicy copies child's set fields onto base (child wins).
+// Pointer / map / slice fields treat non-nil (including empty requiredParticipants
+// []) as set; scalar zeros are treated as unset so an omitted field keeps the
+// base value.
+func overlayConsensusPolicy(base, child *ConsensusPolicyConfig) {
+	if child.MaxParticipants != 0 {
+		base.MaxParticipants = child.MaxParticipants
+	}
+	if child.AgreementThreshold != 0 {
+		base.AgreementThreshold = child.AgreementThreshold
+	}
+	if child.DisputeBehavior != "" {
+		base.DisputeBehavior = child.DisputeBehavior
+	}
+	if child.LowParticipantsBehavior != "" {
+		base.LowParticipantsBehavior = child.LowParticipantsBehavior
+	}
+	if child.PunishMisbehavior != nil {
+		base.PunishMisbehavior = child.PunishMisbehavior.Copy()
+	}
+	if child.DisputeLogLevel != "" {
+		base.DisputeLogLevel = child.DisputeLogLevel
+	}
+	if child.IgnoreFields != nil {
+		base.IgnoreFields = make(map[string][]string, len(child.IgnoreFields))
+		for method, fields := range child.IgnoreFields {
+			base.IgnoreFields[method] = append([]string(nil), fields...)
+		}
+	}
+	if child.PreferNonEmpty != nil {
+		v := *child.PreferNonEmpty
+		base.PreferNonEmpty = &v
+	}
+	if child.PreferLargerResponses != nil {
+		v := *child.PreferLargerResponses
+		base.PreferLargerResponses = &v
+	}
+	if child.CacheableResponses != nil {
+		v := *child.CacheableResponses
+		base.CacheableResponses = &v
+	}
+	if child.MisbehaviorsDestination != nil {
+		base.MisbehaviorsDestination = child.MisbehaviorsDestination.Copy()
+	}
+	if child.PreferHighestValueFor != nil {
+		base.PreferHighestValueFor = make(map[string][]string, len(child.PreferHighestValueFor))
+		for method, fields := range child.PreferHighestValueFor {
+			base.PreferHighestValueFor[method] = append([]string(nil), fields...)
+		}
+	}
+	if child.BlockEvidenceFields != nil {
+		base.BlockEvidenceFields = make(map[string][]string, len(child.BlockEvidenceFields))
+		for method, fields := range child.BlockEvidenceFields {
+			base.BlockEvidenceFields[method] = append([]string(nil), fields...)
+		}
+	}
+	if child.fireAndForgetSet {
+		base.FireAndForget = child.FireAndForget
+		base.fireAndForgetSet = true
+	}
+	if child.MaxWaitOnResult != nil {
+		base.MaxWaitOnResult = child.MaxWaitOnResult.Copy()
+	}
+	if child.MaxWaitOnEmpty != nil {
+		base.MaxWaitOnEmpty = child.MaxWaitOnEmpty.Copy()
+	}
+	// nil = unset (keep base); non-nil including empty slice = explicit clear/replace.
+	if child.RequiredParticipants != nil {
+		base.RequiredParticipants = make([]*ConsensusRequiredParticipant, len(child.RequiredParticipants))
+		for i, rp := range child.RequiredParticipants {
+			if rp == nil {
+				continue
+			}
+			rpCopy := *rp
+			base.RequiredParticipants[i] = &rpCopy
+		}
+	}
 }
 
 // SetDefaults applies defaults for misbehavior export destination
@@ -3006,7 +3379,9 @@ func (c *MisbehaviorsDestinationConfig) SetDefaults() error {
 	}
 	// Default file pattern handled in resolver at use-site; keep here for explicitness
 	if c.FilePattern == "" {
-		c.FilePattern = "{timestampMs}-{method}-{networkId}"
+		// Include {instanceId} so concurrent replicas cannot PutObject-overwrite
+		// the same key when threshold flushes share a millisecond.
+		c.FilePattern = "{timestampMs}-{instanceId}-{method}-{networkId}"
 	}
 	// S3 defaults
 	if c.Type == MisbehaviorsDestinationTypeS3 {
@@ -3335,6 +3710,9 @@ func (r *RateLimitStoreConfig) SetDefaults() error {
 		}
 		if err := r.Redis.SetDefaults(); err != nil {
 			return fmt.Errorf("failed to set defaults for redis connector: %w", err)
+		}
+		if r.OnFailure == "" {
+			r.OnFailure = RateLimitStoreFailureAllow
 		}
 	}
 	return nil

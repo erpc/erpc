@@ -76,7 +76,6 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	34443:      "mode-mainnet",
 	919:        "mode-sepolia",
 	69000:      "anime-mainnet",
-	6900:       "anime-sepolia",
 	33139:      "apechain-mainnet",
 	33111:      "apechain-curtis",
 	232:        "lens-mainnet",
@@ -154,6 +153,14 @@ var defaultAlchemyNetworkSubdomains = map[int64]string{
 	3448148188: "tron-testnet",
 }
 
+// alchemyCollidingChainIds holds chain ids under which Alchemy serves a
+// different chain than the one that id usually names. eth_chainId cannot tell
+// the two apart, so an auto-discovered upstream would serve another chain's
+// blocks.
+var alchemyCollidingChainIds = map[int64]struct{}{
+	6900: {}, // Alchemy: anime-sepolia testnet; 6900 is Nibiru mainnet
+}
+
 const DefaultAlchemyRecheckInterval = 24 * time.Hour
 
 // alchemyApiUrl is the tRPC endpoint used to discover Alchemy networks.
@@ -170,18 +177,27 @@ type alchemyNetworkConfigResponse struct {
 }
 
 // AlchemyVendor uses RemoteDataCache for lock-free, async-refresh access to
-// the network list AND the per-method credit-unit table. See remote_cache.go
-// for the request-path safety rule.
+// the network list, the per-method credit-unit table, and the team's usage
+// and app keys. See remote_cache.go for the request-path safety rule.
 type AlchemyVendor struct {
 	common.Vendor
 	cache   *RemoteDataCache[map[int64]string]
 	cuCache *RemoteDataCache[map[string]int64]
+	// usageCache holds the team's current-period CU usage keyed by admin
+	// access key, from GET /v1/usage/summary; CreditUsage reads it lock-free.
+	usageCache *RemoteDataCache[common.CreditUsage]
+	// teamAppKeys holds every app API key on the team keyed by admin access
+	// key, from GET /v1/apps. CreditUsage paces only upstreams whose
+	// endpoint key is one of them.
+	teamAppKeys *RemoteDataCache[map[string]struct{}]
 }
 
 func CreateAlchemyVendor() common.Vendor {
 	return &AlchemyVendor{
-		cache:   NewRemoteDataCache[map[int64]string]("alchemy"),
-		cuCache: NewRemoteDataCache[map[string]int64]("alchemy-cu"),
+		cache:       NewRemoteDataCache[map[int64]string]("alchemy"),
+		cuCache:     NewRemoteDataCache[map[string]int64]("alchemy-cu"),
+		usageCache:  NewRemoteDataCache[common.CreditUsage]("alchemy-usage"),
+		teamAppKeys: NewRemoteDataCache[map[string]struct{}]("alchemy-team-apps"),
 	}
 }
 
@@ -373,6 +389,174 @@ func parseAlchemyCreditUnits(md string) map[string]int64 {
 		out[method] = cu
 	}
 	return out
+}
+
+// Alchemy's usage data updates every minute; a fresher reading than the
+// policy needs only spends the Admin API's per-minute query budget.
+const DefaultAlchemyUsageRecheckInterval = 5 * time.Minute
+
+// Declared as vars so tests can point them at a mock server.
+var (
+	alchemyUsageURL = "https://admin-api.alchemy.com/v1/usage/summary"
+	alchemyAppsURL  = "https://admin-api.alchemy.com/v1/apps"
+)
+
+// CreditUsage implements common.CreditUsageProvider. Lock-free read of the
+// last team usage reading and of the team's app keys; stale or missing ones
+// trigger a background refresh. An upstream whose endpoint key is not one of
+// the team's apps (another Alchemy team) gets ok=false: its CU bills
+// elsewhere and must not be paced against this allowance.
+func (v *AlchemyVendor) CreditUsage(logger *zerolog.Logger, upstream *common.UpstreamConfig) (common.CreditUsage, bool) {
+	if v == nil || v.usageCache == nil || upstream == nil || upstream.CreditAllowance == nil || upstream.CreditAllowance.ApiKey == "" {
+		return common.CreditUsage{}, false
+	}
+	accessKey := upstream.CreditAllowance.ApiKey
+	if !v.teamOwnsEndpoint(logger, accessKey, upstream.Endpoint) {
+		return common.CreditUsage{}, false
+	}
+	usage, fresh := v.usageCache.Lookup(accessKey, DefaultAlchemyUsageRecheckInterval)
+	if !fresh {
+		v.usageCache.TriggerAsyncRefresh(logger, accessKey, func(ctx context.Context) (common.CreditUsage, error) {
+			return fetchAlchemyUsage(ctx, accessKey)
+		})
+	}
+	return usage, !usage.FetchedAt.IsZero()
+}
+
+// teamOwnsEndpoint reports whether the endpoint's app key is on the team
+// (refreshed hourly). Unknown (list not fetched yet) is false.
+func (v *AlchemyVendor) teamOwnsEndpoint(logger *zerolog.Logger, accessKey, endpoint string) bool {
+	appKey := alchemyEndpointAppKey(endpoint)
+	if appKey == "" {
+		return false
+	}
+	keys, fresh := v.teamAppKeys.Lookup(accessKey, time.Hour)
+	if !fresh {
+		v.teamAppKeys.TriggerAsyncRefresh(logger, accessKey, func(ctx context.Context) (map[string]struct{}, error) {
+			return fetchAlchemyTeamAppKeys(ctx, accessKey)
+		})
+	}
+	_, ok := keys[appKey]
+	return ok
+}
+
+// alchemyEndpointAppKey is the app API key of an Alchemy RPC URL: the path
+// segment after /v2/ in https://eth-mainnet.g.alchemy.com/v2/<key>.
+func alchemyEndpointAppKey(endpoint string) string {
+	at := -1
+	for _, marker := range []string{".alchemy.com/v2/", ".alchemyapi.io/v2/"} {
+		if i := strings.Index(endpoint, marker); i >= 0 {
+			at = i + len(marker)
+			break
+		}
+	}
+	if at < 0 {
+		return ""
+	}
+	key := endpoint[at:]
+	if end := strings.IndexAny(key, "/?#"); end >= 0 {
+		key = key[:end]
+	}
+	return key
+}
+
+func alchemyAdminGet(ctx context.Context, rawURL, accessKey string, out interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessKey)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("alchemy admin api %s returned status %d", req.URL.Path, resp.StatusCode)
+	}
+	if err := common.SonicCfg.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("failed to decode alchemy admin api %s response: %w", req.URL.Path, err)
+	}
+	return nil
+}
+
+// fetchAlchemyUsage reads the team's month-to-date CU from GET
+// /v1/usage/summary (needs the Usage read permission). Documented shape:
+// {"data":{"billingPeriod":{"startTime":<ISO>,"endTime":<ISO>},
+// "totals":{"monthToDate":{"amount":"<decimal>","unit":"ALCHEMY_COMPUTE_UNIT"},...}}}.
+func fetchAlchemyUsage(ctx context.Context, accessKey string) (common.CreditUsage, error) {
+	var body struct {
+		Data *struct {
+			BillingPeriod struct {
+				StartTime time.Time `json:"startTime"`
+				EndTime   time.Time `json:"endTime"`
+			} `json:"billingPeriod"`
+			Totals struct {
+				MonthToDate struct {
+					Amount string `json:"amount"`
+					Unit   string `json:"unit"`
+				} `json:"monthToDate"`
+			} `json:"totals"`
+		} `json:"data"`
+	}
+	if err := alchemyAdminGet(ctx, alchemyUsageURL, accessKey, &body); err != nil {
+		return common.CreditUsage{}, err
+	}
+	if body.Data == nil || body.Data.BillingPeriod.StartTime.IsZero() || !body.Data.BillingPeriod.EndTime.After(body.Data.BillingPeriod.StartTime) {
+		return common.CreditUsage{}, fmt.Errorf("alchemy usage: no billing period in response")
+	}
+	mtd := body.Data.Totals.MonthToDate
+	if mtd.Unit != "ALCHEMY_COMPUTE_UNIT" {
+		return common.CreditUsage{}, fmt.Errorf("alchemy usage: monthToDate unit %q is not ALCHEMY_COMPUTE_UNIT", mtd.Unit)
+	}
+	used, err := strconv.ParseFloat(mtd.Amount, 64)
+	if err != nil || used < 0 {
+		return common.CreditUsage{}, fmt.Errorf("alchemy usage: monthToDate amount %q is not a CU count", mtd.Amount)
+	}
+	return common.CreditUsage{
+		Used:        int64(used),
+		PeriodStart: body.Data.BillingPeriod.StartTime,
+		PeriodEnd:   body.Data.BillingPeriod.EndTime,
+		FetchedAt:   time.Now(),
+	}, nil
+}
+
+// fetchAlchemyTeamAppKeys pages GET /v1/apps (needs the App Management read
+// permission) and returns every app API key on the team.
+func fetchAlchemyTeamAppKeys(ctx context.Context, accessKey string) (map[string]struct{}, error) {
+	keys := map[string]struct{}{}
+	cursor := ""
+	for {
+		q := url.Values{"limit": {"25"}}
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		var body struct {
+			Data *struct {
+				Apps []struct {
+					ApiKey string `json:"apiKey"`
+				} `json:"apps"`
+				Cursor string `json:"cursor"`
+			} `json:"data"`
+		}
+		if err := alchemyAdminGet(ctx, alchemyAppsURL+"?"+q.Encode(), accessKey, &body); err != nil {
+			return nil, err
+		}
+		if body.Data == nil {
+			return nil, fmt.Errorf("alchemy apps: no data in response")
+		}
+		for _, app := range body.Data.Apps {
+			if app.ApiKey != "" {
+				keys[app.ApiKey] = struct{}{}
+			}
+		}
+		if body.Data.Cursor == "" {
+			return keys, nil
+		}
+		cursor = body.Data.Cursor
+	}
 }
 
 func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
@@ -623,6 +807,9 @@ func (v *AlchemyVendor) fetchAlchemyNetworks(ctx context.Context, apiUrl string)
 		if _, exists := newData[chainID]; !exists {
 			newData[chainID] = subdomain
 		}
+	}
+	for chainID := range alchemyCollidingChainIds {
+		delete(newData, chainID)
 	}
 
 	return newData, nil

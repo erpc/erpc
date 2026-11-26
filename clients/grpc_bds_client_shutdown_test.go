@@ -56,7 +56,7 @@ func newAbandonedBdsClient(t *testing.T) *GenericGrpcBdsClient {
 	parsedURL, err := url.Parse("http://127.0.0.1:59999")
 	require.NoError(t, err)
 	logger := zerolog.Nop()
-	client, err := NewGrpcBdsClient(context.Background(), &logger, "test-project", nil, parsedURL, bdsAbandonedPoolSize)
+	client, err := NewGrpcBdsClient(context.Background(), &logger, "test-project", nil, parsedURL, bdsAbandonedPoolSize, "")
 	require.NoError(t, err)
 
 	// data/grpc.go can only release an abandoned client through a runtime

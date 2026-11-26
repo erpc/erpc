@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,12 +45,16 @@ func (h *reconfirmingHistory) ReconfirmPin(ctx context.Context, n int64) (string
 // at every finality — the exact policy that made a stale pin self-blocking.
 var rejectAll = ReorgPolicy{Finalized: BehaviorError, Unfinalized: BehaviorError}
 
+// testLogger is the logger tests hand Validate on paths that log.
+var testLogger = zerolog.Nop()
+
 func validateBlockPolicy(t *testing.T, result []byte, cs CheckSet, hist History, policy ReorgPolicy) Result {
 	t.Helper()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`))
 	jrr := common.MustNewJsonRpcResponseFromBytes([]byte("1"), result, nil)
 	rs := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
 	return Validate(context.Background(), Input{
+		Logger:   &testLogger,
 		Method:   "eth_getBlockByNumber",
 		Upstream: common.NewFakeUpstream("u"),
 		Response: rs,
@@ -239,4 +244,67 @@ func TestReconfirm_ReceiptVsBlockPinBranch(t *testing.T) {
 	assert.NoError(t, res.Err)
 	assert.Equal(t, "reconfirmed", outcomeOf(res, "receiptVsBlock"))
 	assert.Equal(t, "0xnew", hist.pins[0x10])
+}
+
+// registerForTest adds a check for the duration of t, then removes it from the
+// method registry and allChecks so other tests are unaffected. The id stays in
+// the common validation catalog (same as other test-time RegisterIntegrityCheckID
+// calls) — that is harmless.
+func registerForTest(t *testing.T, c *Check) {
+	t.Helper()
+	register(c)
+	t.Cleanup(func() {
+		for _, m := range c.Methods {
+			list := registry[m]
+			out := list[:0:0]
+			for _, x := range list {
+				if x != c {
+					out = append(out, x)
+				}
+			}
+			if len(out) == 0 {
+				delete(registry, m)
+			} else {
+				registry[m] = out
+			}
+		}
+		kept := allChecks[:0:0]
+		for _, x := range allChecks {
+			if x != c {
+				kept = append(kept, x)
+			}
+		}
+		allChecks = kept
+	})
+}
+
+// Regression: a panic on the post-PinFresh re-run must record "panic", not
+// "reconfirmed". Discarding the panicked flag made incomplete verification look
+// like successful reorg recovery in erpc_integrity_check.
+func TestReconfirm_PanicOnRerunReportsPanic(t *testing.T) {
+	var calls int
+	c := &Check{
+		ID:      "testPanicOnRerun",
+		Family:  FamilyContinuity,
+		Class:   ReorgSensitive,
+		Methods: []string{"eth_getblockbynumber"},
+		Run: func(ctx context.Context, d *Decoded, cfg CheckConfig) *Violation {
+			calls++
+			if calls == 1 {
+				return failf("disputed pin").disputes(0x10)
+			}
+			panic("simulated check panic on reconfirm re-run")
+		},
+	}
+	registerForTest(t, c)
+
+	hist := &reconfirmingHistory{
+		pins:      map[int64]string{0x10: "0xold"},
+		canonical: map[int64]string{0x10: "0xnew"},
+	}
+	res := validateBlockPolicy(t, blockResult("0x10", "0xnew", "0xparent"), only(c.ID, nil), hist, rejectAll)
+	assert.NoError(t, res.Err, "a panicked check must not reject the response")
+	assert.Equal(t, "panic", outcomeOf(res, c.ID))
+	assert.Equal(t, 1, hist.calls)
+	assert.Equal(t, 2, calls)
 }

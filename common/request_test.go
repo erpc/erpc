@@ -20,7 +20,7 @@ func (m *mockUpstreamForSelection) VendorName() string      { return "mock" }
 func (m *mockUpstreamForSelection) NetworkId() string       { return "evm:1" }
 func (m *mockUpstreamForSelection) NetworkLabel() string    { return "test" }
 func (m *mockUpstreamForSelection) Config() *UpstreamConfig { return &UpstreamConfig{Id: m.id} }
-func (m *mockUpstreamForSelection) Logger() *zerolog.Logger { return nil }
+func (m *mockUpstreamForSelection) Logger() *zerolog.Logger { l := zerolog.Nop(); return &l }
 func (m *mockUpstreamForSelection) Vendor() Vendor          { return nil }
 func (m *mockUpstreamForSelection) Tracker() HealthTracker  { return nil }
 func (m *mockUpstreamForSelection) Forward(ctx context.Context, nq *NormalizedRequest, byPass, isHedgeAttempt bool) (*NormalizedResponse, error) {

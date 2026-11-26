@@ -57,6 +57,7 @@ func init() {
 		// re-confirm before any verdict, exactly as for the other cross-block
 		// checks.
 		Class:   ReorgSensitive,
+		History: true,
 		Methods: []string{MethodTraceBlockByNumber},
 		// An empty trace list for a block that has transactions is the
 		// everything-dropped shape — precisely what this check must see.

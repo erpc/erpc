@@ -242,7 +242,7 @@ Fields used in this preset. For the complete consensus schema see [Consensus](/c
 | `consensus.punishMisbehavior.sitOutPenalty` | Duration | — | How long to cordon a misbehaving upstream. |
 | `misbehaviorsDestination.type` | string | `"file"` | `"file"` or `"s3"`. Source: <SourceLink file="common/defaults.go" lines="2460-2462" /> |
 | `misbehaviorsDestination.path` | string | — | Absolute directory path (file) or `s3://bucket/prefix/` (S3). Relative path is a startup error for file type. |
-| `misbehaviorsDestination.filePattern` | string | `"{timestampMs}-{method}-{networkId}"` | Supports `{dateByHour}`, `{dateByDay}`, `{method}`, `{networkId}`, `{instanceId}`, `{timestampMs}`. `.jsonl` appended automatically. Source: <SourceLink file="common/defaults.go" lines="2464-2466" /> |
+| `misbehaviorsDestination.filePattern` | string | `"{timestampMs}-{instanceId}-{method}-{networkId}"` | Supports `{dateByHour}`, `{dateByDay}`, `{method}`, `{networkId}`, `{instanceId}`, `{timestampMs}`. `.jsonl` appended automatically. Source: <SourceLink file="common/defaults.go" lines="3184-3188" /> |
 | `misbehaviorsDestination.s3.credentials.accessKeyID` | string | — | **YAML key is `accessKeyID` (capital D).** Using `accessKeyId` silently falls back to the SDK default chain. Source: <SourceLink file="common/config.go" lines="483" /> |
 
 ### Worked examples

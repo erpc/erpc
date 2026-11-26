@@ -17,23 +17,35 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func TimeoutHandler(logger *zerolog.Logger, h http.Handler, dt time.Duration) http.Handler {
+// wsEnabled passes WebSocket upgrades through untimed; when false they are
+// ordinary requests.
+func TimeoutHandler(logger *zerolog.Logger, h http.Handler, dt time.Duration, wsEnabled bool) http.Handler {
 	return &timeoutHandler{
-		logger:  logger,
-		handler: h,
-		dt:      dt,
+		logger:    logger,
+		handler:   h,
+		dt:        dt,
+		wsEnabled: wsEnabled,
 	}
 }
 
 var ErrHandlerTimeout = errors.New("http request handling timeout")
 
 type timeoutHandler struct {
-	logger  *zerolog.Logger
-	handler http.Handler
-	dt      time.Duration
+	logger    *zerolog.Logger
+	handler   http.Handler
+	dt        time.Duration
+	wsEnabled bool
 }
 
 func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The timeout writer cannot be hijacked, which a WebSocket upgrade
+	// needs. Each request over the connection gets the same deadline in
+	// ws_server.go instead.
+	if isWebSocketUpgradeRequest(r, h.wsEnabled) {
+		h.handler.ServeHTTP(w, r)
+		return
+	}
+
 	ctx, cancelCtx := context.WithTimeoutCause(r.Context(), h.dt, ErrHandlerTimeout)
 	defer func() {
 		cancelCtx()

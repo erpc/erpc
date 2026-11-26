@@ -7,6 +7,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBlockdaemonVendor_SupportsNetwork(t *testing.T) {
@@ -127,4 +128,46 @@ func TestBlockdaemonVendor_OwnsUpstream(t *testing.T) {
 			assert.Equal(t, c.owned, got)
 		})
 	}
+}
+
+func TestBlockdaemonVendor_Name(t *testing.T) {
+	assert.Equal(t, "blockdaemon", CreateBlockdaemonVendor().Name())
+}
+
+func TestBlockdaemonVendor_SupportsNetworkInvalidChain(t *testing.T) {
+	svtCheckSupports(t, CreateBlockdaemonVendor(), common.VendorSettings{}, []svtSupportCase{
+		{"evm:abc", false, true},
+	})
+}
+
+func TestBlockdaemonVendor_GenerateConfigsBranches(t *testing.T) {
+	key := common.VendorSettings{"apiKey": "k"}
+	svtCheckGenErrors(t, CreateBlockdaemonVendor, []svtErrCase{
+		{"nil evm", &common.UpstreamConfig{}, key, "blockdaemon vendor requires upstream.evm to be defined"},
+		{"zero chain", svtEvm(0), key, "blockdaemon vendor requires upstream.evm.chainId to be defined"},
+	})
+
+	for _, h := range []string{"Authorization", "authorization"} {
+		ups := svtEvm(1)
+		ups.JsonRpc = &common.JsonRpcUpstreamConfig{Headers: map[string]string{h: "Bearer mine"}}
+		cfg, err := svtGenerate(t, CreateBlockdaemonVendor(), ups, key)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{h: "Bearer mine"}, cfg.JsonRpc.Headers, "caller %s header wins", h)
+	}
+}
+
+func TestBlockdaemonVendor_GetVendorSpecificErrorIfAny(t *testing.T) {
+	v := CreateBlockdaemonVendor()
+
+	err, details := vendorErr(t, v, "eth_getLogs", 401, -32000, "invalid token", "d")
+	require.Error(t, err)
+	assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized), "got %v", err)
+	assert.Equal(t, common.JsonRpcErrorUnauthorized, normalizedCode(t, err))
+	assert.Equal(t, "d", details["data"])
+
+	svtCheckDataOnly(t, v)
+
+	jrr, jerr := common.NewJsonRpcResponse(1, nil, common.NewErrJsonRpcExceptionExternal(-32000, "x", ""))
+	require.NoError(t, jerr)
+	assert.NoError(t, v.GetVendorSpecificErrorIfAny(svtReq(), nil, jrr, map[string]interface{}{}), "nil response is generic")
 }

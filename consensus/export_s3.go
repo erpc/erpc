@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -39,21 +40,28 @@ type pendingBatch struct {
 
 // s3MisbehaviorExporter implements buffered S3 uploads
 type s3MisbehaviorExporter struct {
-	mu        sync.Mutex
-	cfg       *common.MisbehaviorsDestinationConfig
-	log       *zerolog.Logger
-	s3Client  s3PutObjectAPI
-	bucket    string
-	keyPrefix string
+	mu         sync.Mutex
+	cfg        *common.MisbehaviorsDestinationConfig
+	log        *zerolog.Logger
+	s3Client   s3PutObjectAPI
+	bucket     string
+	keyPrefix  string
+	policyName string
 
 	// Buffered records awaiting upload, keyed by (method, networkId).
 	batches map[string]*pendingBatch
+
+	// flushSeq disambiguates S3 object keys across flush calls that share the
+	// same {timestampMs} (threshold flushes within one millisecond would
+	// otherwise PutObject-overwrite the earlier batch).
+	flushSeq uint64
 
 	// Channel for async flush
 	flushCh   chan struct{}
 	closeCh   chan struct{}
 	closeWg   sync.WaitGroup
 	closeOnce sync.Once
+	closed    bool // set under mu before final drain; appends rejected after
 }
 
 // Close stops the flush worker and performs a final flush, so records buffered
@@ -65,6 +73,12 @@ type s3MisbehaviorExporter struct {
 func (e *s3MisbehaviorExporter) Close() error {
 	var err error
 	e.closeOnce.Do(func() {
+		// Mark closed BEFORE the drain so a concurrent AppendWithMetadata is
+		// rejected rather than left buffered forever (Copilot finding: Close
+		// was not terminal).
+		e.mu.Lock()
+		e.closed = true
+		e.mu.Unlock()
 		close(e.closeCh)
 		// Let the worker (if one is running) finish its own final flush first,
 		// then flush again ourselves: flush() is a no-op on an empty batch set,
@@ -78,7 +92,7 @@ func (e *s3MisbehaviorExporter) Close() error {
 	return err
 }
 
-func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger) (*s3MisbehaviorExporter, error) {
+func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *zerolog.Logger, policyName string) (*s3MisbehaviorExporter, error) {
 	if cfg == nil || cfg.Path == "" {
 		return nil, fmt.Errorf("empty S3 path configuration")
 	}
@@ -160,14 +174,15 @@ func newS3MisbehaviorExporter(cfg *common.MisbehaviorsDestinationConfig, log *ze
 	}
 
 	exp := &s3MisbehaviorExporter{
-		cfg:       cfg,
-		log:       log,
-		s3Client:  s3Client,
-		bucket:    bucket,
-		keyPrefix: keyPrefix,
-		batches:   make(map[string]*pendingBatch),
-		flushCh:   make(chan struct{}, 1),
-		closeCh:   make(chan struct{}),
+		cfg:        cfg,
+		log:        log,
+		s3Client:   s3Client,
+		bucket:     bucket,
+		keyPrefix:  keyPrefix,
+		policyName: policyName,
+		batches:    make(map[string]*pendingBatch),
+		flushCh:    make(chan struct{}, 1),
+		closeCh:    make(chan struct{}),
 	}
 
 	// Start background flush worker
@@ -234,6 +249,8 @@ func (e *s3MisbehaviorExporter) flush() error {
 		return nil
 	}
 	now := time.Now()
+	e.flushSeq++
+	seq := e.flushSeq
 	// Names already written in THIS pass. A pattern without {method}/{networkId}
 	// resolves every batch to the same name, and an S3 PUT overwrites rather
 	// than appends — so the second batch would silently erase the first.
@@ -243,7 +260,22 @@ func (e *s3MisbehaviorExporter) flush() error {
 			delete(e.batches, groupKey)
 			continue
 		}
-		key := e.keyPrefix + uniqueName(resolveFilePatternWithDefaults(e.cfg, b.method, b.networkId, now), used)
+		base := resolveFilePatternWithDefaults(e.cfg, b.method, b.networkId, now, e.policyName)
+		// Persist a per-exporter flush counter in the key so two flushes in the
+		// same millisecond never collide even when {timestampMs}+{policy} match.
+		// When the configured pattern omits {instanceId}, fold the instance into
+		// the suffix too, so replicas (or a restart, which resets flushSeq) can't
+		// PutObject-overwrite each other's forensic batches (Copilot finding).
+		suffix := fmt.Sprintf("f%d", seq)
+		if !strings.Contains(e.cfg.FilePattern, "{instanceId}") {
+			suffix = fmt.Sprintf("%s-%s", getInstanceID(), suffix)
+		}
+		if dot := strings.LastIndex(base, "."); dot > 0 {
+			base = fmt.Sprintf("%s-%s%s", base[:dot], suffix, base[dot:])
+		} else {
+			base = fmt.Sprintf("%s-%s", base, suffix)
+		}
+		key := e.keyPrefix + uniqueName(base, used)
 		input := &s3.PutObjectInput{
 			Bucket:      aws.String(e.bucket),
 			Key:         aws.String(key),
@@ -286,6 +318,10 @@ func uniqueName(name string, used map[string]struct{}) string {
 func (e *s3MisbehaviorExporter) AppendWithMetadata(line []byte, method string, networkId string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if e.closed {
+		return errors.New("misbehavior S3 exporter is closed")
+	}
 
 	// Group by the metadata, not by the resolved file name — the name is
 	// resolved at flush time so that records accumulate into one object.

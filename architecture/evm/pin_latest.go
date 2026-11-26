@@ -1,0 +1,79 @@
+package evm
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/erpc/erpc/common"
+)
+
+// PinLatestParams returns a copy of a family-3 request's params whose block
+// selector, when it means latest (latestStateSelector), is hex(height),
+// rewritten as interpolation rewrites it: the tag, an EIP-1898 blockNumber
+// leaf, or an absent selector. Otherwise it returns params unchanged and
+// false. Methods outside family 3 are never pinned: for eth_getBlockByNumber
+// and friends, pinning the tag would change the QUESTION, not just the
+// evaluation height.
+func PinLatestParams(method string, params []interface{}, height int64) ([]interface{}, bool) {
+	path, ok := latestStateSelector(method, params)
+	if !ok {
+		return params, false
+	}
+	return replaceParamAtPath(params, path, fmt.Sprintf("0x%x", height))
+}
+
+// LatestSentAs is the block r's "latest" was sent to u as (spec §7): r's
+// Head.Latest when interpolation replaced the tag; when the tag reached u
+// as is, u's own polled head, the closest height to the one u evaluated it
+// at. 0 when unknown.
+func LatestSentAs(ctx context.Context, r *common.NormalizedRequest, u common.Upstream) int64 {
+	if RequestBlockTag(ctx, r) == "latest" {
+		if n := TagBlockNumber(ctx, r); n > 0 {
+			return n
+		}
+	}
+	if eu, ok := u.(common.EvmUpstream); ok {
+		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			return sp.LatestBlock()
+		}
+	}
+	return 0
+}
+
+// PinLatestTag resolves what upstream u must receive for r when u sets
+// evm.pinLatestTag and r asks a family-3 method for latest: r's params with
+// the block selector set to height, r's Head.Latest, the number every attempt
+// and hedge of r uses (spec §7). pinned is false when u does not pin r: u
+// does not set it, or r's tag reaches upstreams as is (translateLatestTag
+// off, skip-interpolation), whatever u sets. pinned with height 0 means the
+// head is unknown, and u must not be sent "latest" at all.
+func PinLatestTag(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest) (params []interface{}, height int64, pinned bool) {
+	if cfg := u.Config(); cfg == nil || cfg.Evm == nil || cfg.Evm.PinLatestTag == nil || !*cfg.Evm.PinLatestTag {
+		return nil, 0, false
+	}
+	if d := r.Directives(); d != nil && d.SkipInterpolation {
+		return nil, 0, false
+	}
+	jrq, err := r.JsonRpcRequest(ctx)
+	if err != nil || jrq == nil {
+		return nil, 0, false
+	}
+	jrq.RLock()
+	method := jrq.Method
+	_, ok := latestStateSelector(method, jrq.Params)
+	jrq.RUnlock()
+	if !ok || keepsLatestTag(common.ResolveMethodConfig(method, n)) {
+		return nil, 0, false
+	}
+	height = common.EvmHeadOf(n, ctx, r).Latest
+	if height <= 0 {
+		return nil, 0, true
+	}
+	jrq.RLock()
+	params, ok = PinLatestParams(jrq.Method, jrq.Params, height)
+	jrq.RUnlock()
+	if !ok {
+		return nil, 0, false
+	}
+	return params, height, true
+}

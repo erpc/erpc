@@ -22,7 +22,7 @@ func (s *SecretStrategy) Supports(ap *AuthPayload) bool {
 
 func (s *SecretStrategy) Authenticate(ctx context.Context, req *common.NormalizedRequest, ap *AuthPayload) (*common.User, error) {
 	if ap.Secret.Value != s.cfg.Value {
-		return nil, common.NewErrAuthUnauthorized("secret", "invalid secret")
+		return nil, common.NewErrAuthUnauthorized("secret", "invalid_secret", "invalid secret")
 	}
 
 	user := &common.User{Id: s.cfg.Id}

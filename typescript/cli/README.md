@@ -39,3 +39,7 @@ Validate a config file.
 ```bash
 npx @erpc-cloud/cli validate
 ```
+
+## Environment variables
+
+- `ERPC_NOSTAR=1`: do not print the one-time stderr line asking for a GitHub star. The line is also skipped when `CI` is set or stderr is not a TTY, and it shows at most once per machine (marker file `$XDG_CONFIG_HOME/erpc/star-prompt-shown`, default `~/.config/erpc/star-prompt-shown`).

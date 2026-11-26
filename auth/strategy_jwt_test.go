@@ -232,6 +232,60 @@ func TestJwtStrategyClaimMatchersRoles(t *testing.T) {
 	})
 }
 
+func TestJwtStrategyParseErrorClassification(t *testing.T) {
+	cfg := &common.JwtStrategyConfig{
+		VerificationKeys:  map[string]string{"default": testJwtHMACSecret},
+		AllowedAlgorithms: []string{"HS256"},
+	}
+
+	t.Run("expired token reports token expired not invalid signature", func(t *testing.T) {
+		s := newTestJwtStrategy(t, cfg)
+		token := signTestJWT(t, jwt.MapClaims{
+			"sub": "service-a",
+			"exp": time.Now().Add(-time.Hour).Unix(),
+		})
+
+		_, err := s.Authenticate(context.Background(), nil, &AuthPayload{
+			Type: common.AuthTypeJwt,
+			Jwt:  &JwtPayload{Token: token},
+		})
+		require.Error(t, err)
+		var authErr *common.ErrAuthUnauthorized
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, common.AuthUnauthorizedReasonTokenExpired, authErr.Reason())
+		assert.Equal(t, common.AuthUnauthorizedReasonTokenExpired.Message(), authErr.Message)
+	})
+
+	t.Run("wrong HMAC secret reports invalid signature", func(t *testing.T) {
+		s := newTestJwtStrategy(t, cfg)
+		bad := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"sub": "service-a",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+		token, err := bad.SignedString([]byte("wrong-hmac-secret"))
+		require.NoError(t, err)
+
+		_, err = s.Authenticate(context.Background(), nil, &AuthPayload{
+			Type: common.AuthTypeJwt,
+			Jwt:  &JwtPayload{Token: token},
+		})
+		require.Error(t, err)
+		var authErr *common.ErrAuthUnauthorized
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature, authErr.Reason())
+		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature.Message(), authErr.Message)
+	})
+
+	t.Run("signature invalid wins when expired bit also set", func(t *testing.T) {
+		err := errAuthUnauthorizedFromJwtParse(&jwt.ValidationError{
+			Errors: jwt.ValidationErrorExpired | jwt.ValidationErrorSignatureInvalid,
+		})
+		var authErr *common.ErrAuthUnauthorized
+		require.ErrorAs(t, err, &authErr)
+		assert.Equal(t, common.AuthUnauthorizedReasonInvalidSignature, authErr.Reason())
+	})
+}
+
 func TestNormalizeClaimToStrings(t *testing.T) {
 	t.Run("array of strings via interface slice", func(t *testing.T) {
 		got, err := normalizeClaimToStrings([]interface{}{"a", "b"})

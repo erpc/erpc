@@ -772,6 +772,22 @@ func clientWireCode(t *testing.T, err error) JsonRpcErrorNumber {
 	return jre.NormalizedCode()
 }
 
+// A method eRPC declines to serve — stateful filter methods under a
+// multi-upstream pool, eth_accounts/eth_sign, or a subscription over HTTP —
+// must reach the client as -32601 "method not supported", not the generic
+// -32603. ethers only downgrades eth_getFilterChanges to polling when the error
+// classifies as UNSUPPORTED_OPERATION (code -32601 / a "not found|supported"
+// message); a -32603 leaves it re-arming the same call on every block forever.
+func TestTranslateToJsonRpcException_NotImplementedIsMethodNotFound(t *testing.T) {
+	err := NewErrNotImplemented("method eth_newFilter is not supported by any configured upstream")
+	translated := TranslateToJsonRpcException(err)
+
+	assert.EqualValues(t, JsonRpcErrorUnsupportedException, clientWireCode(t, translated),
+		"ErrNotImplemented must map to -32601 so clients detect an unsupported method")
+	assert.Contains(t, translated.Error(), "not supported",
+		"the descriptive reason must survive translation for message-matching clients")
+}
+
 func newExhausted(t *testing.T, order []string, causes map[string]error) error {
 	t.Helper()
 	m := &sync.Map{}
@@ -961,10 +977,12 @@ func TestTranslateToJsonRpcException_GetLogsExceededMaxAllowedResponseSize(t *te
 }
 
 // TestJsonRpcRequest_UnmarshalID_NumericPrecision pins the contract that a
-// numeric request id is either preserved exactly as an int64 or rejected — it
-// must never be silently truncated/clamped into a different internal id (see
-// issue #869). Sonic decodes JSON numbers as float64, so a naive int64(v) cast
-// silently corrupts fractional and out-of-int64-range ids.
+// numeric request id is either preserved exactly as an int64, carried, or
+// rejected — it must never be silently truncated/clamped into a different
+// internal id (see issue #869). Sonic decodes JSON numbers as float64, so a
+// naive int64(v) cast silently corrupts fractional and out-of-int64-range ids.
+// An integer above the int64 range, up to the u64 maximum, is carried: the
+// typed id is a random int64 for upstreams, and idRaw keeps the client's bytes.
 func TestJsonRpcRequest_UnmarshalID_NumericPrecision(t *testing.T) {
 	t.Parallel()
 
@@ -972,7 +990,7 @@ func TestJsonRpcRequest_UnmarshalID_NumericPrecision(t *testing.T) {
 		name    string
 		idJSON  string      // raw JSON for the "id" field
 		wantErr bool        // true => UnmarshalJSON must reject it
-		wantID  interface{} // expected typed r.ID when wantErr is false
+		wantID  interface{} // expected typed r.ID when wantErr is false; nil => any int64
 	}
 
 	cases := []tc{
@@ -982,9 +1000,13 @@ func TestJsonRpcRequest_UnmarshalID_NumericPrecision(t *testing.T) {
 		{"exp_1e308", "1e308", true, nil},
 		{"exp_9.3e18", "9.3e18", true, nil},
 		{"neg_exp", "-1e20", true, nil},
-		{"int64_overflow_by_one", "9223372036854775808", true, nil}, // MaxInt64 + 1
-		{"uint64_max", "18446744073709551615", true, nil},           // > MaxInt64
+		{"uint64_overflow_by_one", "18446744073709551616", true, nil}, // u64 max + 1
+		{"neg_int64_underflow", "-9223372036854775809", true, nil},    // MinInt64 - 1
 		{"huge_integer", "99999999999999999999999999", true, nil},
+
+		// Integers above int64, up to the u64 maximum, are carried.
+		{"int64_overflow_by_one", "9223372036854775808", false, nil}, // MaxInt64 + 1
+		{"uint64_max", "18446744073709551615", false, nil},
 
 		// Valid ids that must round-trip unchanged.
 		{"small_positive", "42", false, int64(42)},
@@ -1017,7 +1039,11 @@ func TestJsonRpcRequest_UnmarshalID_NumericPrecision(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			require.Equal(t, c.wantID, r.ID, "typed id for %s", c.idJSON)
+			if c.wantID == nil {
+				require.IsType(t, int64(0), r.ID, "typed id for %s", c.idJSON)
+			} else {
+				require.Equal(t, c.wantID, r.ID, "typed id for %s", c.idJSON)
+			}
 			// The verbatim bytes must always be preserved for the client echo.
 			require.Equal(t, c.idJSON, string(r.IDRawBytes()), "idRaw for %s", c.idJSON)
 		})
@@ -1146,4 +1172,13 @@ func TestJsonRpcRequest_CacheHash_EvmHexCaseInsensitive(t *testing.T) {
 		`["0xabc0000000000000000000000000000000000001", "latest"]`)
 	require.Equal(t, hashUpper, hashLower,
 		"EVM hex params are case-insensitive and must share a CacheHash")
+}
+
+func TestTranslateToJsonRpcException_SubscriptionLimitIsCapacityNotInternal(t *testing.T) {
+	err := NewErrSubscriptionLimitExceeded(10)
+
+	assert.Equal(t, SeverityInfo, ClassifySeverity(err),
+		"subscription limit is a client condition and must never grade critical")
+	assert.EqualValues(t, JsonRpcErrorCapacityExceeded, clientWireCode(t, TranslateToJsonRpcException(err)),
+		"subscription limit must map to -32005, not -32603")
 }

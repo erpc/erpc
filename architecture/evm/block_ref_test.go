@@ -498,6 +498,100 @@ func TestExtractBlockReference(t *testing.T) {
 	}
 }
 
+func TestResolveCacheBlockRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("numeric ref passes through unchanged (no rewrite for non-tag)", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"0x1234", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "4660", ref)
+		assert.Equal(t, int64(0x1234), num)
+	})
+
+	t.Run("latest tag + response with block number rewrites ref to the response's number", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"latest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0xabcdef","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+		nrq.SetLastValidResponse(ctx, nrs)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "11259375", ref, "write path must key by response's actual block number, not 'latest'")
+		assert.Equal(t, int64(0xabcdef), num)
+	})
+
+	// Plan H2 deletes "the cache key on the word `latest`": with no Head
+	// and no response the request is not cached.
+	t.Run("latest tag with no network and no response gets no key", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"latest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "", ref, "with no response and no Head, the request must not be cached")
+		assert.Equal(t, int64(0), num)
+	})
+
+	t.Run("finalized tag rewrite on write path uses response block number", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"finalized", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0x100","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+		nrq.SetLastValidResponse(ctx, nrs)
+
+		ref, num, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "256", ref)
+		assert.Equal(t, int64(0x100), num)
+	})
+
+	t.Run("safe tag keeps the literal key on both paths", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"safe", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+		nrq.SetNetwork(&testNetwork{highestLatest: 0x200})
+		rpcResp := common.MustNewJsonRpcResponseFromBytes(nil, []byte(`{"number":"0x180","hash":"0x1","parentHash":"0x0"}`), nil)
+		nrs := common.NewNormalizedResponse().WithJsonRpcResponse(rpcResp).WithRequest(nrq)
+
+		getRef, _, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		setRef, _, err := ResolveCacheBlockRef(ctx, nrq, nrs)
+		assert.NoError(t, err)
+		assert.Equal(t, "safe", getRef)
+		assert.Equal(t, getRef, setRef, "GET and SET must derive the same key")
+	})
+
+	t.Run("earliest tag not rewritten (not tip-bound, existing semantics preserved)", func(t *testing.T) {
+		rpcReq := &common.JsonRpcRequest{
+			Method: "eth_getBlockByNumber",
+			Params: []interface{}{"earliest", false},
+		}
+		nrq := common.NewNormalizedRequestFromJsonRpcRequest(rpcReq)
+
+		ref, _, err := ResolveCacheBlockRef(ctx, nrq, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, "earliest", ref, "earliest does not move with the tip; must not be rewritten")
+	})
+}
+
 // Operator-defined methods.definitions keys resolve case-insensitively as
 // well, with an exact-case hit taking precedence (see
 // common.FindCacheMethodConfig for the tie-break rules).
@@ -512,8 +606,8 @@ func TestGetMethodConfigOperatorDefinitionsCaseInsensitive(t *testing.T) {
 		},
 	})
 
-	assert.Same(t, customCfg, getMethodConfig("custom_traceThing", n), "exact casing resolves")
-	assert.Same(t, customCfg, getMethodConfig("CUSTOM_TRACETHING", n), "non-canonical casing resolves the operator key")
-	assert.Same(t, customCfg, getMethodConfig("custom_tracething", n), "lowercase casing resolves the operator key")
-	assert.Nil(t, getMethodConfig("custom_otherThing", n), "unrelated methods still miss")
+	assert.Same(t, customCfg, common.ResolveMethodConfig("custom_traceThing", n), "exact casing resolves")
+	assert.Same(t, customCfg, common.ResolveMethodConfig("CUSTOM_TRACETHING", n), "non-canonical casing resolves the operator key")
+	assert.Same(t, customCfg, common.ResolveMethodConfig("custom_tracething", n), "lowercase casing resolves the operator key")
+	assert.Nil(t, common.ResolveMethodConfig("custom_otherThing", n), "unrelated methods still miss")
 }
