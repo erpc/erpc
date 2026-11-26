@@ -1946,9 +1946,36 @@ func (t *ChainTracker) publishCredit() {
 			}
 		}
 	}
-	if old := t.credit.Swap(p); old != nil {
+	old := t.credit.Swap(p)
+	if old != nil {
 		close(old.moved)
 	}
+	t.exportCredit(old, p)
+}
+
+// exportCredit sets erpc_head_hold_wait_seconds to p's hold waits and
+// deletes the series old had that p lacks: a voter that no longer holds
+// leaves no stale after or sure. Runs only on a publish that moved, so
+// it uses the vec directly; a cached handle would outlive its deletion.
+func (t *ChainTracker) exportCredit(old, p *holdCredit) {
+	project, network, lane := t.projectId(), t.networkLabel(), t.laneLabel()
+	export := func(bound string, now map[string]time.Duration, was map[string]time.Duration) {
+		for id, d := range now {
+			telemetry.MetricHeadHoldWaitSeconds.WithLabelValues(project, network, lane, id, bound).Set(d.Seconds())
+		}
+		for id := range was {
+			if _, ok := now[id]; !ok {
+				telemetry.MetricHeadHoldWaitSeconds.DeleteLabelValues(project, network, lane, id, bound)
+			}
+		}
+	}
+	var was holdCredit
+	if old != nil {
+		was = *old
+	}
+	export("after", p.after, was.after)
+	export("wait", p.wait, was.wait)
+	export("sure", p.sure, was.sure)
 }
 
 // CreditMoved is closed at the next publish of hold evidence (holdCredit),
