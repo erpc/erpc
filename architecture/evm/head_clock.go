@@ -1925,7 +1925,8 @@ func (t *ChainTracker) publishCredit() {
 			if isSure {
 				full++
 			}
-			if was, had := p.after[id]; had != ok || ok && was != d || p.wait[id] != v.heldWait() ||
+			wait, voted := p.wait[id]
+			if was, had := p.after[id]; !voted || had != ok || ok && was != d || wait != v.heldWait() ||
 				isSure != (ok && len(v.bounds) == clockFit) || isSure && sure != d {
 				same = false
 				break
