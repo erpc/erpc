@@ -168,9 +168,8 @@ type ChainTracker struct {
 	// credit is the clock's sights and hold waits as last published for
 	// routing on other goroutines (HoldsLikely).
 	credit atomic.Pointer[holdCredit]
-	// arrivals is each source voter's highest number this lane took from
-	// it, with the evidence time of its latest answer at that number
-	// (observeArrival); tracker goroutine only.
+	// arrivals is each source voter's highest number the network-wide
+	// tracker took from it (observeDelays); tracker goroutine only.
 	arrivals map[string]arrivalSeen
 	// offShown is the clock offset last set on its gauge (exportOff).
 	offShown float64
@@ -475,11 +474,7 @@ type trackerMsg struct {
 	hdr      *chainHeader // set when the sender already parsed raw
 	at       time.Time    // a source vote's evidence time
 	via      HeaderKind   // how a source vote came: a poll's, a push's, the cache's
-	// recv is when a source header reached this instance (observeSource),
-	// before any wait in the mailbox; seed marks a lane's copy of the wide
-	// tracker's vote (seedLane), which reached nothing new.
-	recv time.Time
-	seed bool
+	recv     time.Time    // when a source header reached this instance, before the mailbox
 	held     *heldReceipts
 	done     chan struct{}
 	fn       func()
@@ -716,12 +711,6 @@ func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
 // with its evidence time and how it came.
 func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time, via HeaderKind) {
 	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at, via: via, recv: time.Now()})
-}
-
-// observeSeed is observeSource for a vote seedLane copies from the wide
-// tracker: it votes, and bounds no arrival.
-func (t *ChainTracker) observeSeed(upstreamId string, h *chainHeader, at time.Time) {
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at, via: HeaderPolled, seed: true})
 }
 
 // observeFinal takes upstreamId's finalized evidence (finalThrough).
@@ -1025,16 +1014,8 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 			t.clock.bound(msg.upstream, 0, true)
 		}
 	}
-	recv := msg.recv
-	if recv.IsZero() {
-		recv = now
-	}
-	if top := t.clock.top(); top > 0 && h.number > top && h.timestamp > 0 && !msg.seed {
-		telemetry.ObserverHandle(telemetry.MetricHeadSightDelaySeconds, t.projectId(), t.networkLabel(), t.laneLabel(), msg.via.label()).
-			Observe(max(recv.Sub(time.Unix(int64(h.timestamp), 0)), 0).Seconds())
-	}
-	if msg.vote == voteSource && msg.via != HeaderHeld && !msg.seed {
-		t.observeArrival(msg.upstream, h, recv, from, msg.via)
+	if t.selector == "" && h.timestamp > 0 {
+		t.observeDelays(msg, h)
 	}
 	t.clock.saw(h.number, now, from, msg.via, t.sampledBlockTime())
 	t.exportOff()
@@ -2731,38 +2712,64 @@ func (t *ChainTracker) laneLabel() string {
 	return t.group
 }
 
-// arrivalSeen is a source voter's highest number a lane took from it, the
-// evidence time of its latest answer at that number, and whether that
-// answer was a fetch (asked), whose send bounds when the voter lacked the
-// next block.
+// arrivalSeen is a source voter's highest number the network-wide tracker
+// took from it, the evidence time of its latest answer at that number,
+// whether that answer was a fetch (asked), whose send bounds when the voter
+// lacked the next block, and the averages of both arrival bounds.
 type arrivalSeen struct {
-	top   uint64
-	at    time.Time
-	asked bool
+	top       uint64
+	at        time.Time
+	asked     bool
+	hit, miss time.Duration
 }
 
-// observeArrival records how long after its timestamp block h reached
-// this instance from source voter id, once per number the voter rises to
-// (erpc_head_arrival_delay_seconds): hit, recv of id's first answer that
-// held h, an upper bound for a fetch; miss, the send of id's last answer
-// below h when that answer was a fetch, a lower bound. A voter's first
-// answer on this lane bounds nothing. Whole-second timestamps floor the
-// block's time, so on chains faster than 1 s both read up to 1 s high.
-func (t *ChainTracker) observeArrival(id string, h *chainHeader, recv, from time.Time, via HeaderKind) {
-	a, ok := t.arrivals[id]
+// arrivalEMA folds sample d into average avg, 0 before the first sample,
+// at the weight of one block in 8, as the clock's round trips (sampleRTT).
+func arrivalEMA(avg, d time.Duration) time.Duration {
+	if avg == 0 {
+		return d
+	}
+	return avg + (d-avg)/8
+}
+
+// observeDelays records, on the network-wide tracker only (lanes see the
+// same headers), how long after its timestamp header h reached this
+// instance (msg.recv, before the mailbox; whole-second timestamps read up
+// to 1 s high on chains faster than 1 s):
+//   - erpc_head_sight_delay_seconds, once per number above the top sight,
+//     by the channel that brought it;
+//   - erpc_head_arrival_delay_seconds, each source voter's average over the
+//     numbers it rises to: hit, its first answer that held h (an upper
+//     bound for a fetch); miss, the send of its last answer below h when
+//     that answer was a fetch (a lower bound). Its first answer bounds
+//     nothing. A gauge, not a histogram: one series per voter and bound.
+func (t *ChainTracker) observeDelays(msg trackerMsg, h *chainHeader) {
+	ts := time.Unix(int64(h.timestamp), 0)
+	recv := msg.recv
+	if recv.IsZero() {
+		recv = time.Now()
+	}
+	project, network := t.projectId(), t.networkLabel()
+	if top := t.clock.top(); top > 0 && h.number > top {
+		telemetry.ObserverHandle(telemetry.MetricHeadSightDelaySeconds, project, network, msg.via.label()).Observe(max(recv.Sub(ts), 0).Seconds())
+	}
+	if msg.vote != voteSource || msg.via == HeaderHeld {
+		return
+	}
+	a, ok := t.arrivals[msg.upstream]
 	if ok && h.number < a.top {
 		return
 	}
-	t.arrivals[id] = arrivalSeen{top: h.number, at: from, asked: !via.pushed()}
-	if !ok || h.number == a.top || h.timestamp == 0 {
-		return
+	next := arrivalSeen{top: h.number, at: msg.at, asked: !msg.via.pushed(), hit: a.hit, miss: a.miss}
+	if ok && h.number > a.top {
+		next.hit = arrivalEMA(a.hit, max(recv.Sub(ts), 0))
+		telemetry.GaugeHandle(telemetry.MetricHeadArrivalDelaySeconds, project, network, msg.upstream, "hit").Set(next.hit.Seconds())
+		if a.asked && a.at.After(ts) {
+			next.miss = arrivalEMA(a.miss, a.at.Sub(ts))
+			telemetry.GaugeHandle(telemetry.MetricHeadArrivalDelaySeconds, project, network, msg.upstream, "miss").Set(next.miss.Seconds())
+		}
 	}
-	ts := time.Unix(int64(h.timestamp), 0)
-	project, network, lane := t.projectId(), t.networkLabel(), t.laneLabel()
-	telemetry.ObserverHandle(telemetry.MetricHeadArrivalDelaySeconds, project, network, lane, id, "hit").Observe(max(recv.Sub(ts), 0).Seconds())
-	if a.asked && a.at.After(ts) {
-		telemetry.ObserverHandle(telemetry.MetricHeadArrivalDelaySeconds, project, network, lane, id, "miss").Observe(a.at.Sub(ts).Seconds())
-	}
+	t.arrivals[msg.upstream] = next
 }
 
 // exportOff sets erpc_head_clock_offset_blocks to the clock's offset when
@@ -4719,7 +4726,7 @@ func seedLane(ctx context.Context, wide, t *ChainTracker) {
 		}})
 		for id, nd := range wide.votes {
 			if wide.alive(nd) {
-				t.observeSeed(id, nd.h, wide.voteAt[id])
+				t.observeSource(id, nd.h, wide.voteAt[id], HeaderPolled)
 			}
 		}
 	}})
