@@ -357,8 +357,8 @@ func (p *FakeEvmStatePoller) HeadBackingOff() bool {
 }
 
 // CallGasCap is 0: a fake measures no gas cap.
-func (p *FakeEvmStatePoller) CallGasCap() uint64 {
-	return 0
+func (p *FakeEvmStatePoller) CallGasCap() (uint64, bool) {
+	return 0, false
 }
 
 func (p *FakeEvmStatePoller) Poll(ctx context.Context) error {

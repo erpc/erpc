@@ -837,8 +837,8 @@ func TestUpstream_EvmAssertBlockAvailability_Finalized(t *testing.T) {
 	})
 }
 
-func (*mockEvmStatePoller) HeadBackingOff() bool { return false }
-func (*mockEvmStatePoller) CallGasCap() uint64   { return 0 }
+func (*mockEvmStatePoller) HeadBackingOff() bool       { return false }
+func (*mockEvmStatePoller) CallGasCap() (uint64, bool) { return 0, false }
 
-func (*mockEvmStatePollerWithUpdate) HeadBackingOff() bool { return false }
-func (*mockEvmStatePollerWithUpdate) CallGasCap() uint64   { return 0 }
+func (*mockEvmStatePollerWithUpdate) HeadBackingOff() bool       { return false }
+func (*mockEvmStatePollerWithUpdate) CallGasCap() (uint64, bool) { return 0, false }

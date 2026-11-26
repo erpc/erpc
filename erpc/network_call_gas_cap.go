@@ -31,10 +31,12 @@ func (n *Network) lowerCallGas(ctx context.Context, req *common.NormalizedReques
 // callGasCap is the most gas one eth_call may use on the network:
 // evm.callGasCap when set, else the highest cap that evm.callGasCapQuorum
 // of the upstreams serving eth_call give (upstreamCallGasCap), among those
-// the request's use-upstream selector matches; 0 while none is known. The
-// largest cap alone would be a promise one node keeps, broken whenever it is
-// down; the lowest would let one small node refuse every big call. The cap
-// of a request with no selector is the network's gauge.
+// the request's use-upstream selector matches; 0 while none is known or any
+// is still measuring, as the caps known then are a part of the ballot and
+// may name a cap below the network's. The largest cap alone would be a
+// promise one node keeps, broken whenever it is down; the lowest would let
+// one small node refuse every big call. The cap of a request with no
+// selector is the network's gauge.
 func (n *Network) callGasCap(ctx context.Context) uint64 {
 	var c uint64
 	sel := ""
@@ -44,17 +46,24 @@ func (n *Network) callGasCap(ctx context.Context) uint64 {
 		sel = requestSelector(ctx)
 		var buf [16]uint64
 		caps := buf[:0]
+		measuring := false
 		for _, u := range n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId) {
 			if sel != "" {
 				if m, _ := common.UpstreamMatchesSelector(sel, u); !m {
 					continue
 				}
 			}
-			if uc := upstreamCallGasCap(u); uc > 0 && servesMethod(u, "eth_call") {
+			if !servesMethod(u, "eth_call") {
+				continue
+			}
+			// Every upstream is read, so one call starts every probe.
+			uc, m := upstreamCallGasCap(u)
+			measuring = measuring || m
+			if uc > 0 {
 				caps = append(caps, uc)
 			}
 		}
-		if len(caps) > 0 {
+		if len(caps) > 0 && !measuring {
 			var q common.ServedTipQuorum
 			if n.cfg.Evm != nil {
 				q = n.cfg.Evm.CallGasCapQuorum
@@ -74,17 +83,18 @@ func (n *Network) callGasCap(ctx context.Context) uint64 {
 }
 
 // upstreamCallGasCap is u's eth_call gas cap: its evm.callGasCap when set,
-// else as measured (EvmStatePoller.CallGasCap); 0 while unknown.
-func upstreamCallGasCap(u common.Upstream) uint64 {
+// else as measured (EvmStatePoller.CallGasCap); 0 while unknown. measuring
+// is true until u's first probe ends.
+func upstreamCallGasCap(u common.Upstream) (gasCap uint64, measuring bool) {
 	if cfg := u.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.CallGasCap > 0 {
-		return cfg.Evm.CallGasCap
+		return cfg.Evm.CallGasCap, false
 	}
 	if eu, ok := u.(common.EvmUpstream); ok {
 		if sp := eu.EvmStatePoller(); sp != nil && !sp.IsObjectNull() {
 			return sp.CallGasCap()
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // gasFit is the gas an eth_call names, which orders upstreams by their
@@ -107,7 +117,7 @@ func (g gasFit) short(u common.Upstream) bool {
 	if g == 0 {
 		return false
 	}
-	c := upstreamCallGasCap(u)
+	c, _ := upstreamCallGasCap(u)
 	return c > 0 && c < uint64(g)
 }
 
@@ -118,7 +128,9 @@ func (g gasFit) compare(a, b common.Upstream) int {
 	sa, sb := g.short(a), g.short(b)
 	switch {
 	case sa && sb:
-		return cmp.Compare(upstreamCallGasCap(b), upstreamCallGasCap(a))
+		ca, _ := upstreamCallGasCap(a)
+		cb, _ := upstreamCallGasCap(b)
+		return cmp.Compare(cb, ca)
 	case sa:
 		return 1
 	case sb:
