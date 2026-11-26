@@ -2018,6 +2018,9 @@ func (e *EvmNetworkConfig) Validate() error {
 			return fmt.Errorf("network.*.evm.localAnswers.%s: eRPC has no local answer for this method; one of %v", method, LocalAnswerMethods())
 		}
 	}
+	if q := e.CallGasCapQuorum; q < 0 && q != ServedTipQuorumMajority {
+		return fmt.Errorf("network.*.evm.callGasCapQuorum must be an integer >= 1 or \"majority\"")
+	}
 	if e.ServedTip != nil {
 		if q := e.ServedTip.Quorum; q < 0 && q != ServedTipQuorumMajority {
 			return fmt.Errorf("network.*.evm.servedTip.quorum must be an integer >= 1 or \"majority\"")
