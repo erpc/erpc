@@ -708,9 +708,14 @@ func (t *ChainTracker) observeAnswer(upstreamId string, h *chainHeader) {
 }
 
 // observeSource is Observe for a source header intake already parsed,
-// with its evidence time and how it came.
+// with its evidence time and how it came. The network-wide tracker also
+// takes its receipt time, for its arrival delays (observeDelays).
 func (t *ChainTracker) observeSource(upstreamId string, h *chainHeader, at time.Time, via HeaderKind) {
-	t.mb.put(trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at, via: via, recv: time.Now()})
+	msg := trackerMsg{kind: msgHeader, upstream: upstreamId, vote: voteSource, hdr: h, at: at, via: via}
+	if t.selector == "" {
+		msg.recv = time.Now()
+	}
+	t.mb.put(msg)
 }
 
 // observeFinal takes upstreamId's finalized evidence (finalThrough).
@@ -2713,62 +2718,66 @@ func (t *ChainTracker) laneLabel() string {
 }
 
 // arrivalSeen is a source voter's highest number the network-wide tracker
-// took from it, the evidence time of its latest answer at that number,
-// whether that answer was a fetch (asked), whose send bounds when the voter
-// lacked the next block, and the averages of both arrival bounds.
+// took from it, the send of its latest fetch at that number (at, zero when
+// only pushes brought it), which bounds when the voter lacked the next
+// block, and the averages of both arrival bounds (ok once sampled).
 type arrivalSeen struct {
-	top       uint64
-	at        time.Time
-	asked     bool
-	hit, miss time.Duration
+	top           uint64
+	at            time.Time
+	hit, miss     time.Duration
+	hitOk, missOk bool
 }
 
-// arrivalEMA folds sample d into average avg, 0 before the first sample,
-// at the weight of one block in 8, as the clock's round trips (sampleRTT).
-func arrivalEMA(avg, d time.Duration) time.Duration {
-	if avg == 0 {
+// arrivalEMA folds sample d into average avg at the weight of one block in
+// 8, as the clock's round trips (sampleRTT); the first sample is the
+// average.
+func arrivalEMA(avg time.Duration, ok bool, d time.Duration) time.Duration {
+	if !ok {
 		return d
 	}
 	return avg + (d-avg)/8
 }
 
-// observeDelays records, on the network-wide tracker only (lanes see the
-// same headers), how long after its timestamp header h reached this
-// instance (msg.recv, before the mailbox; whole-second timestamps read up
-// to 1 s high on chains faster than 1 s):
+// observeDelays records, for a source header on the network-wide tracker
+// only (lanes see the same headers), how long after its timestamp it
+// reached this instance (msg.recv, before the mailbox; whole-second
+// timestamps read up to 1 s high on chains faster than 1 s):
 //   - erpc_head_sight_delay_seconds, once per number above the top sight,
 //     by the channel that brought it;
 //   - erpc_head_arrival_delay_seconds, each source voter's average over the
 //     numbers it rises to: hit, its first answer that held h (an upper
-//     bound for a fetch); miss, the send of its last answer below h when
-//     that answer was a fetch (a lower bound). Its first answer bounds
-//     nothing. A gauge, not a histogram: one series per voter and bound.
+//     bound for a fetch); miss, the send of its last fetch below h (a lower
+//     bound). Its first answer bounds nothing. A gauge, not a histogram:
+//     one series per voter and bound.
 func (t *ChainTracker) observeDelays(msg trackerMsg, h *chainHeader) {
-	ts := time.Unix(int64(h.timestamp), 0)
-	recv := msg.recv
-	if recv.IsZero() {
-		recv = time.Now()
+	if msg.vote != voteSource || msg.via == HeaderHeld || msg.recv.IsZero() {
+		return
 	}
+	ts := time.Unix(int64(h.timestamp), 0)
+	recv := max(msg.recv.Sub(ts), 0)
 	project, network := t.projectId(), t.networkLabel()
 	if top := t.clock.top(); top > 0 && h.number > top {
-		telemetry.ObserverHandle(telemetry.MetricHeadSightDelaySeconds, project, network, msg.via.label()).Observe(max(recv.Sub(ts), 0).Seconds())
-	}
-	if msg.vote != voteSource || msg.via == HeaderHeld {
-		return
+		telemetry.ObserverHandle(telemetry.MetricHeadSightDelaySeconds, project, network, msg.via.label()).Observe(recv.Seconds())
 	}
 	a, ok := t.arrivals[msg.upstream]
 	if ok && h.number < a.top {
 		return
 	}
-	next := arrivalSeen{top: h.number, at: msg.at, asked: !msg.via.pushed(), hit: a.hit, miss: a.miss}
+	next := a
+	if !msg.via.pushed() {
+		next.at = msg.at
+	} else if !ok || h.number > a.top {
+		next.at = time.Time{}
+	}
 	if ok && h.number > a.top {
-		next.hit = arrivalEMA(a.hit, max(recv.Sub(ts), 0))
+		next.hit, next.hitOk = arrivalEMA(a.hit, a.hitOk, recv), true
 		telemetry.GaugeHandle(telemetry.MetricHeadArrivalDelaySeconds, project, network, msg.upstream, "hit").Set(next.hit.Seconds())
-		if a.asked && a.at.After(ts) {
-			next.miss = arrivalEMA(a.miss, a.at.Sub(ts))
+		if a.at.After(ts) {
+			next.miss, next.missOk = arrivalEMA(a.miss, a.missOk, a.at.Sub(ts)), true
 			telemetry.GaugeHandle(telemetry.MetricHeadArrivalDelaySeconds, project, network, msg.upstream, "miss").Set(next.miss.Seconds())
 		}
 	}
+	next.top = h.number
 	t.arrivals[msg.upstream] = next
 }
 
