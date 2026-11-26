@@ -337,6 +337,26 @@ var (
 		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	}, []string{"project", "network", "lane"})
 
+	MetricHeadSightDelaySeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "head_sight_delay_seconds",
+		Help:      "Time from a block's timestamp to its first local sight on a lane, by the channel that brought it (poll, push, fork_poll, cache, read, held). Whole-second timestamps read up to 1 s high on chains faster than 1 s.",
+		Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 20, 30},
+	}, []string{"project", "network", "lane", "via"})
+
+	MetricHeadArrivalDelaySeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "head_arrival_delay_seconds",
+		Help:      "Time from a block's timestamp to its arrival from one source upstream, once per number the upstream rises to, by bound: hit (receipt of its first answer holding the block, an upper bound for a fetch), miss (send of its last answer below the block, a lower bound, fetches only).",
+		Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 20, 30},
+	}, []string{"project", "network", "lane", "upstream", "bound"})
+
+	MetricHeadClockOffsetBlocks = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_clock_offset_blocks",
+		Help:      "A lane block clock's offset: where its ladder's last rung aims, in block times after the predicted sight, in [-0.5, 1].",
+	}, []string{"project", "network", "lane"})
+
 	MetricHeadFirmLagBlocks = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "head_firm_lag_blocks",
