@@ -69,6 +69,12 @@ var (
 		Help:      "Finalized block number of upstreams.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	MetricUpstreamCallGasCap = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_call_gas_cap",
+		Help:      "Most gas an upstream lets one eth_call use, as eRPC last measured it.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	// MetricUpstreamSvmFirstAvailableSlot is an upstream's oldest stored block,
 	// from getBlocksWithLimit(0, 1). It is probed, and routing uses it, only
 	// for an upstream whose svm.blockAvailability declares a
@@ -127,6 +133,12 @@ var (
 		Namespace: "erpc",
 		Name:      "network_dynamic_block_time_milliseconds",
 		Help:      "Dynamically computed block time per network in milliseconds.",
+	}, []string{"project", "network"})
+
+	MetricNetworkCallGasCap = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_call_gas_cap",
+		Help:      "Most gas one eth_call may use on the network: evm.callGasCap, else the highest cap evm.callGasCapQuorum of its upstreams give; eRPC lowers a larger gas to it.",
 	}, []string{"project", "network"})
 
 	MetricUpstreamWebsocketConnected = DefineGauge(prometheus.GaugeOpts{

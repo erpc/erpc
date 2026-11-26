@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -890,7 +891,9 @@ func (n *Network) EvmPinned(selector string, block int64) bool {
 // follow-ups failed per run, most in a pod's first 10 s). It ends with
 // ctx. The request itself is the probe: no head fetch is sent for it. With
 // no upstream but those whose hash vote left the pins below bn, no holder
-// can come: it sends at once, as before the wait.
+// can come: it sends at once, as before the wait. Upstreams short of an
+// eth_call's gas (gasFit) go after all others, holders or not: a holder
+// short of it runs the call to an out-of-gas answer, never retried.
 func (n *Network) awaitHolder(ctx context.Context, req *common.NormalizedRequest, ups []common.Upstream, bn int64, retry bool) []common.Upstream {
 	t := n.laneTracker(selectorOf(req))
 	if t == nil || len(ups) == 0 || !slices.ContainsFunc(ups, func(u common.Upstream) bool { return !n.forkedBelow(u, bn) }) {
@@ -904,6 +907,7 @@ func (n *Network) awaitHolder(ctx context.Context, req *common.NormalizedRequest
 	}
 	limit := time.Now().Add(most)
 	at := make(map[string]time.Time, len(ups))
+	fit := callGasFit(ctx, req)
 	out := slices.Clone(ups)
 	for {
 		computed, moved := n.headsComputed(), t.CreditMoved()
@@ -918,7 +922,9 @@ func (n *Network) awaitHolder(ctx context.Context, req *common.NormalizedRequest
 			}
 			at[u.Id()] = a
 		}
-		slices.SortStableFunc(out, func(a, b common.Upstream) int { return at[a.Id()].Compare(at[b.Id()]) })
+		slices.SortStableFunc(out, func(a, b common.Upstream) int {
+			return cmp.Or(fit.compare(a, b), at[a.Id()].Compare(at[b.Id()]))
+		})
 		due := at[out[0].Id()]
 		if due.After(limit) {
 			due = limit

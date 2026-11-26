@@ -274,6 +274,9 @@ type EvmStatePoller interface {
 	// after node failures in a row, or answers in a row that brought a
 	// benched upstream no new head: an Ask now fetches nothing.
 	HeadBackingOff() bool
+	// CallGasCap is the most gas the upstream lets one eth_call use, as
+	// measured; 0 while unknown.
+	CallGasCap() uint64
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64, at time.Time)
 	// SuggestLatestBlock reports blockNumber, its evidence taken at at: an
