@@ -155,6 +155,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
+	pr.SetAgentName(common.AgentNameProbe)
 	resp, err := client.SendRequest(ctx, pr)
 	if resp != nil {
 		defer resp.Release()

@@ -964,6 +964,7 @@ func (p *stateProber) proofErred(u common.Upstream) {
 // Use-Upstream request shares a multiplexer only with requests pinned to u.
 func (p *stateProber) forwardTo(ctx context.Context, u common.Upstream, body string) (string, error) {
 	req := common.NewNormalizedRequest([]byte(body))
+	req.SetAgentName(common.AgentNameIntegrity)
 	req.SetDirectives(&common.RequestDirectives{
 		UpstreamPolicies:  common.UpstreamPoliciesTimeoutOnly,
 		UseUpstream:       u.Id(),

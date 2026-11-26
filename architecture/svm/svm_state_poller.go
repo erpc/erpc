@@ -600,6 +600,7 @@ func (e *SvmStatePoller) fetchSlot(ctx context.Context, payload []byte) (slot in
 
 func (e *SvmStatePoller) call(ctx context.Context, payload []byte) (*common.NormalizedResponse, error) {
 	req := common.NewNormalizedRequest(payload)
+	req.SetAgentName(common.AgentNameStatePoller)
 	return e.upstream.Forward(ctx, req, true, false)
 }
 

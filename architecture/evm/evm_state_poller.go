@@ -2505,6 +2505,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, ref string, policies co
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), ref),
 	))
+	pr.SetAgentName(common.AgentNameStatePoller)
 	pr.SetDirectives(&common.RequestDirectives{UpstreamPolicies: policies})
 	resp, err := e.upstream.Forward(ctx, pr, true, false)
 	if resp != nil {

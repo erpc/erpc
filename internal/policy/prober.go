@@ -237,6 +237,7 @@ func probeRequest(req *common.NormalizedRequest, jrq *common.JsonRpcRequest) *co
 		probe.SetDirectives(dirs.Clone())
 	}
 	probe.CopyHttpContextFrom(req)
+	probe.SetAgentName(common.AgentNameProbe)
 	probe.SetNetwork(req.Network())
 	return probe
 }

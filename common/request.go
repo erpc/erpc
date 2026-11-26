@@ -1204,6 +1204,15 @@ func (r *NormalizedRequest) ClientIP() string {
 	return "n/a"
 }
 
+// Agent names of requests eRPC builds itself, so metrics tell them apart from
+// client calls that send no User-Agent ("unknown").
+const (
+	AgentNameStatePoller  = "erpc/state-poller"
+	AgentNameChainTracker = "erpc/chain-tracker"
+	AgentNameIntegrity    = "erpc/integrity"
+	AgentNameProbe        = "erpc/probe"
+)
+
 // SetAgentName stores the agent name directly without HTTP-specific parsing
 func (r *NormalizedRequest) SetAgentName(name string) {
 	if r == nil || name == "" {

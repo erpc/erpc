@@ -522,6 +522,7 @@ func (s *fetchScheduler) do(r *fetchRequest) (res fetchResult) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + r.spec.method + `","params":` + r.spec.params + `}`))
+	req.SetAgentName(common.AgentNameChainTracker)
 	req.SetDirectives(r.spec.directives())
 	var val any
 	resp, err := s.sweep(ctx, req, r.spec.upstream, func(resp *common.NormalizedResponse) error {
