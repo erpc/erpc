@@ -269,6 +269,7 @@ func (e *executor) executeConsensus(
 	}
 	responseChan := make(chan *execResult, maxToSpawn)
 	pace := newRoundPace(maxToSpawn)
+	seats := common.NewRoundSeats(maxToSpawn)
 	// Per-slot cancellable child contexts let us cancel losers explicitly.
 	// Each slot inherits the shared cancellableCtx (which is cancelled
 	// when the analyzer signals a winner / fire-and-forget exits / etc.)
@@ -282,6 +283,7 @@ func (e *executor) executeConsensus(
 		// the X-ERPC-Upstreams trace, and erpc_upstream_selection_total.
 		slotCtx = common.WithConsensusSlot(slotCtx)
 		slotCtx = common.WithSlotPace(slotCtx, pace.slots[i])
+		slotCtx = common.WithSlotSeat(slotCtx, seats[i])
 		slotCtx, attemptCancels[i] = context.WithCancel(slotCtx)
 		go e.executeParticipant(slotCtx, lg, labels, in, originalReq, i, responseChan, pace)
 	}
@@ -899,6 +901,9 @@ func (e *executor) executeParticipant(
 			responseChan <- &execResult{Err: errPanicInConsensus}
 		}
 	}()
+	// A slot that ends without committing an attempt is seated too, so no
+	// sibling waits on it (common.SlotSeat).
+	defer common.SlotSeatOf(ctx).Take()
 
 	// Check for cancellation before execution
 	if ctx.Err() != nil {

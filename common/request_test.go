@@ -678,3 +678,22 @@ func TestSetUserFromTrustedHeader(t *testing.T) {
 		}
 	})
 }
+
+func TestSlotSeat(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	seats := NewRoundSeats(2)
+	seats[0].Take()
+	seats[0].Take()
+	if seats[0].AwaitRound(cancelled) {
+		t.Fatalf("a slot taking its seat twice must not seat its sibling")
+	}
+	seats[1].Take()
+	if !seats[0].AwaitRound(context.Background()) {
+		t.Fatalf("the round must be seated once every slot took its seat")
+	}
+	if !SlotSeatOf(context.Background()).AwaitRound(cancelled) {
+		t.Fatalf("outside a round there is nothing to wait for")
+	}
+}

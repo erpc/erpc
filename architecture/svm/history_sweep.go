@@ -220,15 +220,21 @@ func OrderByHistoryDepth(ups []common.Upstream, sameTier func(a, b common.Upstre
 // the final word.
 //
 // On a consensus slot the peers are the round's own: upstreams r holds
-// (Reserved). A deeper upstream outside the round never answers it, so its
-// floor must not turn the round's data votes into abstentions. A deeper
-// participant that failed retryably is released and stops counting.
+// (Reserved) once every slot of the round is seated (common.SlotSeat). The
+// slots pick concurrently, so judging before then could miss a deeper
+// participant that has not picked yet. A deeper upstream outside the round
+// never answers it, so its floor must not turn the round's data votes into
+// abstentions. A deeper participant that failed retryably is released and
+// stops counting.
 func deeperFloorSelected(ctx context.Context, u common.Upstream, r *common.NormalizedRequest) bool {
 	floor, known := upstreamFloor(u)
 	if !known {
 		return false
 	}
 	inRound := common.IsConsensusSlot(ctx)
+	if inRound {
+		common.SlotSeatOf(ctx).AwaitRound(ctx)
+	}
 	for _, other := range r.Upstreams() {
 		if other == u {
 			continue

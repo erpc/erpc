@@ -3163,6 +3163,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			),
 		)
 		defer execSpan.End()
+		// A consensus slot is seated once it commits its first attempt to an
+		// upstream, or ends this sweep with none to ask (common.SlotSeat).
+		seat := common.SlotSeatOf(execSpanCtx)
+		defer seat.Take()
 
 		if common.IsTracingDetailed() {
 			execSpan.SetAttributes(
@@ -3302,6 +3306,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					).Inc()
 				}
 
+				seat.Take()
 				sent := time.Now()
 				var read *latestRead
 				fwdCtx, cancelBound := loopCtx, context.CancelFunc(func() {})
