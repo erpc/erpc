@@ -4,9 +4,6 @@
     "model": "opus",
     "effort": "high"
   },
-  "planning": {
-    "enabled": true
-  },
   "security": {
     "trusted_author_associations": ["OWNER", "MEMBER", "COLLABORATOR"],
     "expose_issue_in_github": false
