@@ -4367,14 +4367,20 @@ func (n *Network) checkEvmUpstreamBlockAvailability(ctx context.Context, u commo
 	// (mayHold): a counter polled every 10s is blocks stale, so ordering
 	// put a credited upstream first that a gate on the counter alone then
 	// skipped. One that still lacks the block answers missing, and the
-	// refusal rule's retry takes the next.
+	// refusal rule's retry takes the next. So a request whose miss is retried
+	// credits up to the ceiling: on a 0.4 s chain polled every 10s, reads
+	// 6-15 blocks above every counter skipped all upstreams.
 	var upper *common.EvmAvailabilityBoundConfig
 	if cfg := eu.Config(); cfg != nil && cfg.Evm != nil && cfg.Evm.BlockAvailability != nil {
 		upper = cfg.Evm.BlockAvailability.Upper
 	}
 	if maxBound != math.MaxInt64 && bn > maxBound && upper != nil && upper.LatestBlockMinus != nil {
 		head := n.requestHead(ctx, req)
-		reached := n.reachedHead(u, creditCap(head))
+		credit := creditCap(head)
+		if !evm.AnswersAtOnce(req) {
+			credit = max(credit, head.Ceiling)
+		}
+		reached := n.reachedHead(u, credit)
 		if holds := n.thinHolds(req, head, bn); holds != nil && holds(u) {
 			reached = max(reached, bn)
 		}
