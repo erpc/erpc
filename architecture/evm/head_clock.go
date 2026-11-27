@@ -61,14 +61,21 @@ type headClock struct {
 	off    float64
 	offSet bool
 	// arrival: target is planned on its slot (planArrival), its probe sent
-	// to sight the block aim after the slot's timestamp. tsTop is the top
-	// sight's block timestamp (0: its header carries none). aim moves once
-	// per block, at its first sight: up one step (delta) when the probe
-	// answered below the target, down a quarter step when it did not; so
-	// it settles where a fifth of the probes are early, and those find the
-	// block a step later. aimSet: aim was laid.
+	// to sight the block aim after the slot's timestamp, at slotAt (which
+	// an ahead fetch leaves alone, unlike sk). tsTop is the top sight's
+	// block timestamp (0: its header carries none); grid counts the first
+	// sights in a row timestamped a whole number of slots after the one
+	// before, a missed slot included (arrivalSlot). aim moves once per
+	// block, at its first sight within a quarter block of slotAt: up one
+	// step (delta) when the probe answered below the target, down a quarter
+	// step when it did not, within [0, bt/2]; so it settles where a fifth of
+	// the probes are early, and those find the block a step later; a missed
+	// slot or a late proposal moves nothing.
+	// aimSet: aim was laid.
 	arrival bool
 	tsTop   uint64
+	grid    int
+	slotAt  time.Time
 	aim     time.Duration
 	aimSet  bool
 	// out is the fetch off the ladder the clock waits on (catch-up,
@@ -321,6 +328,12 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 		c.confirmed(number, at, from, via, bt)
 		return
 	}
+	if n := len(c.sights); n > 0 && number == c.sights[n-1].number+1 && ts > c.tsTop && c.tsTop > 0 && bt >= 2*time.Second &&
+		int64(ts-c.tsTop)%int64(bt.Round(time.Second)/time.Second) == 0 {
+		c.grid++
+	} else {
+		c.grid = 0
+	}
 	c.tsTop = ts
 	if number >= c.target {
 		if c.scheduled {
@@ -329,8 +342,9 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 		// A shared early fetch sent before S_k answered leaves S_k unrun.
 		if c.ladder && c.provedFor != c.target && (c.aheadFor != c.target || c.kEarly) {
 			switch {
+			case c.arrival && from.After(c.slotAt.Add(bt/4)):
 			case c.arrival && c.kEarly:
-				c.aim = min(c.aim+c.delta, bt)
+				c.aim = min(c.aim+c.delta, bt/2)
 			case c.arrival:
 				c.aim = max(c.aim-c.delta/4, 0)
 			case !c.kEarly:
@@ -967,8 +981,15 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	c.rungs, c.sent, c.votes, c.aheadNull = nil, nil, nil, nil
 	c.k, c.tails, c.tailsSent, c.misses, c.lastDone = 1, 0, 0, 0, time.Time{}
 	if slot, ok := c.arrivalSlot(bt); ok && pace == 0 && !c.pushFed() {
-		t.planArrival(cands, bt, slot)
-		return
+		// A header's timestamp sets this plan: one more than a slot off this
+		// instance's clock (a skewed node, a slot long past) plans by the fit.
+		if !c.aimSet {
+			c.aim, c.aimSet = bt/10, true
+		}
+		if sk := time.Unix(int64(c.tsTop), 0).Add(slot + c.aim); abs(time.Until(sk)) <= slot {
+			t.planArrival(cands, bt, sk)
+			return
+		}
 	}
 	p := c.predict(c.target, bt)
 	sk := p.Add(time.Duration(c.off * float64(bt)))
@@ -1030,30 +1051,26 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 
 // arrivalSlot is the lane's slot when its blocks come on a fixed grid
 // whose timestamps say when each slot began: a block time of 2 s or more
-// within 1% of whole seconds, and a top sight whose header carries a
-// timestamp. On such a chain the slot's timestamp, not this instance's
-// past sights, says when the next block may arrive; on a faster chain
-// whole-second timestamps cannot.
+// within 1% of whole seconds, and the last clockFit first sights each
+// timestamped a whole number of slots after the one before (grid). On such a
+// chain the slot's timestamp, not this instance's past sights, says when
+// the next block may arrive; on a faster or irregular chain whole-second
+// timestamps cannot.
 func (c *headClock) arrivalSlot(bt time.Duration) (time.Duration, bool) {
 	slot := bt.Round(time.Second)
-	return slot, c.tsTop > 0 && slot >= 2*time.Second && abs(bt-slot) <= slot/100
+	return slot, c.grid >= clockFit && slot >= 2*time.Second && abs(bt-slot) <= slot/100
 }
 
 // planArrival lays the target's fires on a slot chain (arrivalSlot), to
-// sight it aim after the target's slot timestamp, the top sight's plus a
-// slot per number between: the due turns as rungs a step (delta,
-// max(2 RTT, bt/40)) apart, the voter likeliest to hold it first
-// (byScore) last, as the probe; with no turn due, that voter's one probe.
-// When every fire answers below the target, retries follow a step apart
-// through a quarter block after the probe's sight (addTail), then at the
-// lane's turn rate.
-func (t *ChainTracker) planArrival(cands []clockCandidate, bt, slot time.Duration) {
+// sight it at sk, aim after the target's slot timestamp: the due turns as
+// rungs a step (delta, max(2 RTT, bt/40)) apart, the voter likeliest to
+// hold it first (byScore) last, as the probe; with no turn due, that
+// voter's one probe. When every fire answers below the target, retries
+// follow a step apart, at most a block's worth of turns of them, within a
+// quarter block after sk (addTail), then at the lane's turn rate.
+func (t *ChainTracker) planArrival(cands []clockCandidate, bt time.Duration, sk time.Time) {
 	c := &t.clock
-	if !c.aimSet {
-		c.aim, c.aimSet = bt/10, true
-	}
-	sk := time.Unix(int64(c.tsTop), 0).Add(time.Duration(c.target-c.top())*slot + c.aim)
-	c.arrival, c.ladder, c.sk, c.predicted = true, true, sk, sk
+	c.arrival, c.ladder, c.sk, c.slotAt, c.predicted = true, true, sk, sk, sk
 	c.delta = max(2*c.bestRTT(cands), bt/40)
 	due, wait := c.dueTurns(cands, sk, bt)
 	for _, cand := range wait {
@@ -1288,7 +1305,8 @@ func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Du
 		if !hedge {
 			r.at = c.lastDone.Add(c.tailGap(cands, cand, bt))
 			switch {
-			case c.arrival && c.ladder && c.lastDone.Add(c.delta).Sub(c.sk) < bt/4:
+			case c.arrival && c.ladder && c.tails <= max(1, int(math.Ceil(turnsPerBlock(cands, bt)-1e-9))) &&
+				c.lastDone.Add(c.delta).Sub(c.slotAt) < bt/4:
 				r.at = c.lastDone.Add(c.delta)
 				cand.poller.ClockTurn(r.at)
 			case c.ladder && c.tails > 1:

@@ -2788,7 +2788,7 @@ func (t *ChainTracker) observeDelays(msg trackerMsg, h *chainHeader) {
 func (t *ChainTracker) exportOff() {
 	off := t.clock.off
 	if t.clock.arrival {
-		off = float64(t.clock.aim) / float64(t.BlockTime())
+		off = float64(t.clock.aim) / float64(t.sampledBlockTime())
 	}
 	if off != t.offShown {
 		t.offShown = off
