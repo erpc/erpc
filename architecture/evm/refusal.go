@@ -123,8 +123,8 @@ func IsRangeQuery(method string) bool {
 // whose one head fetch every such read shares, and is decided again on
 // the ceiling the wait saw: still above it, n is future; Latest stays the
 // request's own (spec §7). Without wait, a near n above a report 1 bt old
-// or older is in the band, the cheaper way to be wrong. A band block is
-// the lane's read ahead too, in the background.
+// or older, or at most 2 above the ceiling, is in the band, the cheaper way
+// to be wrong. A band block is the lane's read ahead too, in the background.
 func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead, sel string, n int64, wait bool) *common.HeadRefusal {
 	net, _ := nw.(headRefuser)
 	bt, cold := health.ColdBlockTime, true
@@ -146,6 +146,10 @@ func DecideHeadRefusal(ctx context.Context, nw common.Network, h common.EvmHead,
 		switch {
 		case !nearFuture(h, bt, n, now):
 			v.Rule = common.HeadFuture
+		case !wait && n-h.Ceiling <= 2:
+			// A node can hold such a block before its report shows it, and
+			// an instance with no push feed reads reports late.
+			v.Rule = common.HeadBand
 		case wait && net != nil:
 			h.Ceiling, h.OldestReportAt = net.EvmAwaitCeiling(ctx, sel, n)
 			if cold {
