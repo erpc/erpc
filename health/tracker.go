@@ -450,10 +450,11 @@ type Tracker struct {
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
 	urdObsCache sync.Map // map[urdoKey]prometheus.Observer
-	// urdObsMu serializes urdObsCache's miss path (acquire + store) against
-	// sweep eviction (delete + release), so each cached full tuple holds its
-	// histogram series exactly once (LabeledHistogram.AcquireLabelValues).
-	urdObsMu sync.Mutex
+	// metricCacheMu serializes the miss path (acquire + store) of urdObsCache
+	// and remoteRateLimitedCounterCache against sweep eviction (delete +
+	// release), so each cached full tuple holds its series exactly once
+	// (AcquireLabelValues).
+	metricCacheMu sync.Mutex
 
 	// Caches for other hot-path metrics
 	remoteRateLimitedCounterCache sync.Map // map[rrltKey]prometheus.Counter
@@ -520,8 +521,8 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 		co.lastAccessedAtMs.Store(nowMs)
 		return co.obs
 	}
-	t.urdObsMu.Lock()
-	defer t.urdObsMu.Unlock()
+	t.metricCacheMu.Lock()
+	defer t.metricCacheMu.Unlock()
 	if v, ok := t.urdObsCache.Load(key); ok {
 		co := v.(*cachedObserver)
 		co.lastAccessedAtMs.Store(nowMs)
@@ -557,8 +558,15 @@ func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId
 		cc.lastAccessedAtMs.Store(nowMs)
 		return cc.ctr
 	}
+	t.metricCacheMu.Lock()
+	defer t.metricCacheMu.Unlock()
+	if v, ok := t.remoteRateLimitedCounterCache.Load(key); ok {
+		cc := v.(*cachedCounter)
+		cc.lastAccessedAtMs.Store(nowMs)
+		return cc.ctr
+	}
 	cc := &cachedCounter{
-		ctr: telemetry.MetricRateLimitsTotal.WithLabelValues(
+		ctr: telemetry.MetricRateLimitsTotal.AcquireLabelValues(
 			key.project,   // project
 			key.network,   // network
 			key.vendor,    // vendor
@@ -574,8 +582,8 @@ func (t *Tracker) getRemoteRateLimitedCounter(up common.Upstream, method, userId
 		),
 	}
 	cc.lastAccessedAtMs.Store(nowMs)
-	actual, _ := t.remoteRateLimitedCounterCache.LoadOrStore(key, cc)
-	return actual.(*cachedCounter).ctr
+	t.remoteRateLimitedCounterCache.Store(key, cc)
+	return cc.ctr
 }
 
 type ubKey struct {
@@ -843,8 +851,8 @@ func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 			return true
 		}
 		k := key.(urdoKey)
-		t.urdObsMu.Lock()
-		defer t.urdObsMu.Unlock()
+		t.metricCacheMu.Lock()
+		defer t.metricCacheMu.Unlock()
 		// Re-check under the lock: a miss may have replaced the entry, or a
 		// hit refreshed it, since Range read it.
 		if v, ok := t.urdObsCache.Load(key); !ok || v.(*cachedObserver).lastAccessedAtMs.Load() >= cutoffMs {
@@ -863,6 +871,11 @@ func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 			return true
 		}
 		k := key.(rrltKey)
+		t.metricCacheMu.Lock()
+		defer t.metricCacheMu.Unlock()
+		if v, ok := t.remoteRateLimitedCounterCache.Load(key); !ok || v.(*cachedCounter).lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
 		t.remoteRateLimitedCounterCache.Delete(key)
 		telemetry.MetricRateLimitsTotal.DeleteLabelValues(
 			k.project, k.network, k.vendor, k.upstream, k.category, k.finality, k.user, k.agentName,

@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"fmt"
-	"sync"
 	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -31,18 +30,11 @@ type LabeledHistogram struct {
 
 // histogramState is the mutable set a rebuild replaces: the underlying Vec, the
 // schema→retained-position projection that matches its label set, and the
-// holds on its projected series.
+// holds on its projected series (nil when nothing is projected away).
 type histogramState struct {
 	activeIdx []int
 	vec       *prometheus.HistogramVec
-
-	// holds counts, per projected series, the full tuples whose holders observe
-	// through it (AcquireLabelValues). A projection maps many full tuples onto
-	// one series, so releasing one tuple must not delete the series the others
-	// still write to. nil when the policy projects nothing away. mu also makes
-	// a hold and its child lookup atomic against the last release's delete.
-	mu    sync.Mutex
-	holds map[string]int
+	holds     *seriesHolds
 }
 
 // NewLabeledHistogram creates a HistogramVec under the current policy without
@@ -69,14 +61,11 @@ func buildHistogramState(opts prometheus.HistogramOpts, schema []string) *histog
 	for i, j := range idx {
 		active[i] = schema[j]
 	}
-	st := &histogramState{
+	return &histogramState{
 		activeIdx: idx,
 		vec:       prometheus.NewHistogramVec(opts, active),
+		holds:     newSeriesHolds(idx, schema),
 	}
-	if len(idx) != len(schema) {
-		st.holds = make(map[string]int)
-	}
-	return st
 }
 
 // rebuildInPlace re-creates the underlying HistogramVec under the CURRENT policy.
@@ -116,10 +105,7 @@ func (lh *LabeledHistogram) WithLabelValues(vals ...string) prometheus.Observer 
 // Reset removes every series, and with them every hold.
 func (lh *LabeledHistogram) Reset() {
 	st := lh.state.Load()
-	st.mu.Lock()
-	st.vec.Reset()
-	clear(st.holds)
-	st.mu.Unlock()
+	st.holds.reset(st.vec.Reset)
 }
 
 // AcquireLabelValues is WithLabelValues for a caller that keeps the returned
@@ -135,12 +121,7 @@ func (lh *LabeledHistogram) AcquireLabelValues(vals ...string) prometheus.Observ
 	if st.holds == nil {
 		return st.vec.WithLabelValues(vals...)
 	}
-	active := project(vals, st.activeIdx)
-	key := labelsKey(active)
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.holds[key]++
-	return st.vec.WithLabelValues(active...)
+	return acquireSeries(st.holds, project(vals, st.activeIdx), st.vec.WithLabelValues)
 }
 
 // DeleteLabelValues releases the FULL-schema tuple vals, in the same schema
@@ -164,16 +145,7 @@ func (lh *LabeledHistogram) DeleteLabelValues(vals ...string) bool {
 	if st.holds == nil {
 		return st.vec.DeleteLabelValues(vals...)
 	}
-	active := project(vals, st.activeIdx)
-	key := labelsKey(active)
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if n := st.holds[key]; n > 1 {
-		st.holds[key] = n - 1
-		return false
-	}
-	delete(st.holds, key)
-	return st.vec.DeleteLabelValues(active...)
+	return st.holds.release(project(vals, st.activeIdx), st.vec.DeleteLabelValues)
 }
 
 // ActiveLabelValues projects full-schema values down to the retained subset.

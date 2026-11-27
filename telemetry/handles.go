@@ -107,7 +107,8 @@ func counterHandle(cv CounterIncrementable, labels []string) *cachedCounterHandl
 	// and the idle sweep would then delete a series another live entry is
 	// still incrementing. Projecting first keeps it one entry per series.
 	keyLabels := labels
-	if lc, ok := cv.(*LabeledCounter); ok {
+	lc, labeled := cv.(*LabeledCounter)
+	if labeled {
 		keyLabels = lc.ActiveLabelValues(labels)
 	}
 	k := counterKey{vec: cv, key: labelsKey(keyLabels)}
@@ -128,8 +129,17 @@ func counterHandle(cv CounterIncrementable, labels []string) *cachedCounterHandl
 		h.lastAccessedAtMs.Store(nowMs)
 		return h
 	}
+	// A LabeledCounter's series may also be held by full tuples cached
+	// elsewhere (the health tracker); acquire so the sweep's delete releases
+	// only this entry's hold.
+	var counter prometheus.Counter
+	if labeled {
+		counter = lc.AcquireLabelValues(labels...)
+	} else {
+		counter = cv.WithLabelValues(labels...)
+	}
 	h := &cachedCounterHandle{
-		counter: cv.WithLabelValues(labels...),
+		counter: counter,
 		vals:    append([]string(nil), labels...),
 	}
 	h.lastAccessedAtMs.Store(nowMs)
