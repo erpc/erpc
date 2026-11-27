@@ -495,7 +495,7 @@ all waiting followers with a response ID patch per follower:
 | `erpc_network_multiplexed_requests_total` | counter | project, network, category | Follower piggybacked on in-flight leader |
 | `erpc_network_static_response_served_total` | counter | project, network, category | Static response matched |
 | `erpc_upstream_wrong_empty_response_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream returned empty while another returned data |
-| `erpc_upstream_request_errors_total` | counter | (upstream error labels) | Upstream skip due to block availability check failure |
+| `erpc_upstream_request_skipped_total` | counter | project, vendor, network, upstream, category, finality, user, agent_name | Upstream skipped before send (block availability, other pre-forward checks) |
 | `erpc_upstream_attempt_outcome_total` | counter | project, network, upstream, category, outcome, is_hedge, is_retry, finality | One increment per upstream attempt with its terminal outcome |
 
 Served-tip and bench metrics: see the [metrics reference](/reference/metrics#area-3-block-number-and-tip-tracking).
