@@ -113,6 +113,75 @@ func SlotPaceOf(ctx context.Context) *SlotPace {
 	return p
 }
 
+// SlotSeat records when one consensus participant slot is seated: it has
+// committed its first attempt to an upstream, or found none to ask. Slots
+// pick their upstreams concurrently, so until every slot of a round is
+// seated, the upstreams the request holds (Reserved) are only part of the
+// round: a slot whose upstream answers first may look before a sibling has
+// picked. AwaitRound lets a slot judge the round's whole participant set.
+type SlotSeat struct {
+	once  sync.Once
+	round *roundSeats
+}
+
+// roundSeats counts the slots of one round not yet seated.
+type roundSeats struct {
+	unseated atomic.Int32
+	seated   chan struct{}
+}
+
+// NewRoundSeats returns one seat per slot of a round of n slots.
+func NewRoundSeats(n int) []*SlotSeat {
+	round := &roundSeats{seated: make(chan struct{})}
+	round.unseated.Store(int32(n))
+	seats := make([]*SlotSeat, n)
+	for i := range seats {
+		seats[i] = &SlotSeat{round: round}
+	}
+	return seats
+}
+
+// Take records that the slot is seated. Calls after the first do nothing.
+func (s *SlotSeat) Take() {
+	if s == nil {
+		return
+	}
+	s.once.Do(func() {
+		if s.round.unseated.Add(-1) == 0 {
+			close(s.round.seated)
+		}
+	})
+}
+
+// AwaitRound waits until every slot of the round is seated or ctx ends, and
+// reports whether the round is seated. Outside a round (nil) it returns true
+// at once.
+func (s *SlotSeat) AwaitRound(ctx context.Context) bool {
+	if s == nil {
+		return true
+	}
+	select {
+	case <-s.round.seated:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// slotSeatContextKey carries the *SlotSeat of one consensus participant slot.
+type slotSeatContextKey struct{}
+
+// WithSlotSeat returns ctx carrying the seat of its consensus slot.
+func WithSlotSeat(ctx context.Context, s *SlotSeat) context.Context {
+	return context.WithValue(ctx, slotSeatContextKey{}, s)
+}
+
+// SlotSeatOf returns the seat of ctx's consensus slot, or nil.
+func SlotSeatOf(ctx context.Context) *SlotSeat {
+	s, _ := ctx.Value(slotSeatContextKey{}).(*SlotSeat)
+	return s
+}
+
 // WithSweepIteration returns ctx marked as a non-first sweep pick.
 func WithSweepIteration(ctx context.Context) context.Context {
 	return context.WithValue(ctx, SweepIterationContextKey, true)
