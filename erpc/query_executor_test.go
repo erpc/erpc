@@ -13,6 +13,7 @@ import (
 	"time"
 	"unsafe"
 
+	bdscommon "github.com/blockchain-data-standards/manifesto/common"
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/clients"
@@ -118,6 +119,37 @@ func TestQueryExecutor_Native(t *testing.T) {
 		_, err = windowed.network.forwardQuery(context.Background(), req, "eth_queryTraces")
 		require.ErrorAs(t, err, &jre)
 		assert.Equal(t, common.JsonRpcErrorNumber(-32001), jre.NormalizedCode())
+	})
+
+	t.Run("only a budget fromBlock alone exceeds is MIP-16 -32005", func(t *testing.T) {
+		// -32005 makes a client stop paging. A slow or rate-limited native
+		// upstream is transient: a retry reads the same range.
+		for _, tc := range []struct {
+			name     string
+			failure  error
+			jsonCode int
+			grpcCode codes.Code
+		}{
+			{"deadline", status.Error(codes.DeadlineExceeded, "slow read"), -32603, codes.DeadlineExceeded},
+			{"BDS timeout", bdscommon.NewError(bdscommon.ErrorCode_TIMEOUT_ERROR, "slow read").ToGRPCStatus().Err(), -32603, codes.DeadlineExceeded},
+			{"BDS rate limit", bdscommon.NewError(bdscommon.ErrorCode_RATE_LIMITED, "slow down").ToGRPCStatus().Err(), -32603, codes.Unavailable},
+			{"budget", status.Error(codes.ResourceExhausted, "block 0x1 alone exceeds the page budget"), -32005, codes.ResourceExhausted},
+			{"BDS budget", bdscommon.NewError(bdscommon.ErrorCode_RANGE_TOO_LARGE, "block 0x1 alone exceeds the page budget").ToGRPCStatus().Err(), -32005, codes.ResourceExhausted},
+		} {
+			failing := newTestQueryUpstream(t, "native-failing", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{
+				queryLogsFn: func(ctx context.Context, in *evm.QueryLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryLogsResponse], error) {
+					return &fakeServerStreamingClient[evm.QueryLogsResponse]{finalErr: tc.failure}, nil
+				},
+			}})
+			qe := newTestQueryExecutor(t, "eth_queryLogs", failing)
+			err := qe.Execute(context.Background(), &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(proto.Message) error { return nil })
+			assert.Equal(t, tc.grpcCode, status.Code(queryGrpcError(err)), tc.name)
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":10,"method":"eth_queryLogs","params":[{"fromBlock":"0x1","toBlock":"0x9"}]}`))
+			_, err = qe.network.forwardQuery(context.Background(), req, "eth_queryLogs")
+			var jre *common.ErrJsonRpcExceptionInternal
+			require.ErrorAs(t, err, &jre, tc.name)
+			assert.Equal(t, common.JsonRpcErrorNumber(tc.jsonCode), jre.NormalizedCode(), tc.name)
+		}
 	})
 
 	t.Run("a real BDS client sends the upstream's grpc.headers on the stream", func(t *testing.T) {
