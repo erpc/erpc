@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -225,9 +226,12 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 
 	limit := 50 // default
 	if limitVal, exists := params["limit"]; exists && limitVal != nil {
-		if limitFloat, ok := limitVal.(float64); ok {
-			limit = int(limitFloat)
+		// 0 rows a page never ends a pager; above 2^53 a JSON number is no exact integer and can overflow int.
+		limitFloat, ok := limitVal.(float64)
+		if !ok || limitFloat < 1 || limitFloat > 1<<53 || limitFloat != math.Trunc(limitFloat) {
+			return nil, common.NewErrInvalidRequest(fmt.Errorf("limit must be an integer from 1 to 2^53"))
 		}
+		limit = int(limitFloat)
 	}
 
 	paginationToken := ""
