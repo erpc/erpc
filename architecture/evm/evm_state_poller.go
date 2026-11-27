@@ -2290,9 +2290,12 @@ func (e *EvmStatePoller) runPeriodicEarliestBlockBoundUpdateLoop(probe common.Ev
 		case <-e.appCtx.Done():
 			return
 		case <-ticker.C:
-			// Use PollEarliestBlockNumber with rate as staleness
-			// TryUpdateIfStale handles cross-instance coordination
-			_, err := e.PollEarliestBlockNumber(e.appCtx, probe, rate)
+			// A search may run until the next one is due. Without a deadline here
+			// it gets only sharedState.fallbackTimeout (3s by default), and a
+			// node with slow probes cannot finish ~30 of them in that time.
+			ctx, cancel := context.WithTimeout(e.appCtx, rate)
+			_, err := e.PollEarliestBlockNumber(ctx, probe, rate)
+			cancel()
 			if err != nil {
 				e.logger.Debug().
 					Err(err).
@@ -3007,6 +3010,12 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 		mid := l + (r-l)/2
 		ok, _, err := e.checkProbe(ctx, eff, mid)
 		if err != nil {
+			return 0, err
+		}
+		// Probes treat a transport error as "not available". After the
+		// deadline every probe fails that way, and the search would settle
+		// on the tip.
+		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
 		e.logger.Debug().
