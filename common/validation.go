@@ -166,6 +166,11 @@ func (m *MetricsConfig) Validate() error {
 		if m.Port == nil {
 			return fmt.Errorf("metrics.port is required when metrics.enabled is true")
 		}
+		// Bind time is the wrong moment to discover that every listener was
+		// switched off: the process is already committed to starting.
+		if _, err := m.ListenAddr(); err != nil {
+			return err
+		}
 	}
 
 	if m.ErrorLabelMode != "" && m.ErrorLabelMode != ErrorLabelModeVerbose && m.ErrorLabelMode != ErrorLabelModeCompact {
