@@ -450,6 +450,10 @@ type Tracker struct {
 	// Cache of pre-bound Prometheus observers for upstream request duration
 	// Keyed by the full label set to avoid per-request MetricVec map lookups.
 	urdObsCache sync.Map // map[urdoKey]prometheus.Observer
+	// urdObsMu serializes urdObsCache's miss path (acquire + store) against
+	// sweep eviction (delete + release), so each cached full tuple holds its
+	// histogram series exactly once (LabeledHistogram.AcquireLabelValues).
+	urdObsMu sync.Mutex
 
 	// Caches for other hot-path metrics
 	remoteRateLimitedCounterCache sync.Map // map[rrltKey]prometheus.Counter
@@ -516,14 +520,21 @@ func (t *Tracker) getUpstreamRequestDurationObserver(up common.Upstream, method,
 		co.lastAccessedAtMs.Store(nowMs)
 		return co.obs
 	}
+	t.urdObsMu.Lock()
+	defer t.urdObsMu.Unlock()
+	if v, ok := t.urdObsCache.Load(key); ok {
+		co := v.(*cachedObserver)
+		co.lastAccessedAtMs.Store(nowMs)
+		return co.obs
+	}
 	co := &cachedObserver{
-		obs: telemetry.MetricUpstreamRequestDuration.WithLabelValues(
+		obs: telemetry.MetricUpstreamRequestDuration.AcquireLabelValues(
 			key.project, key.vendor, key.network, key.upstream, key.category, key.composite, key.finality, key.user,
 		),
 	}
 	co.lastAccessedAtMs.Store(nowMs)
-	actual, _ := t.urdObsCache.LoadOrStore(key, co)
-	return actual.(*cachedObserver).obs
+	t.urdObsCache.Store(key, co)
+	return co.obs
 }
 
 // Reuse the same shape previously used for upstream rate limit counters to keep cache keys stable for remote.
@@ -832,6 +843,13 @@ func (t *Tracker) sweepIdleObservers(cutoffMs int64) {
 			return true
 		}
 		k := key.(urdoKey)
+		t.urdObsMu.Lock()
+		defer t.urdObsMu.Unlock()
+		// Re-check under the lock: a miss may have replaced the entry, or a
+		// hit refreshed it, since Range read it.
+		if v, ok := t.urdObsCache.Load(key); !ok || v.(*cachedObserver).lastAccessedAtMs.Load() >= cutoffMs {
+			return true
+		}
 		t.urdObsCache.Delete(key)
 		telemetry.MetricUpstreamRequestDuration.DeleteLabelValues(
 			k.project, k.vendor, k.network, k.upstream, k.category, k.composite, k.finality, k.user,

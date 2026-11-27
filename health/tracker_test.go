@@ -13,6 +13,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -1737,6 +1738,65 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		require.Less(t, metricAfter, metricBefore,
 			"Prometheus registry must release evicted series — without DeleteLabelValues the count stays sticky (got after=%d, before=%d)",
 			metricAfter, metricBefore)
+
+		// A projected label such as user maps every user's full tuple onto
+		// one series. Releasing an idle user's tuple must keep that series,
+		// which the other users' cached observers still write to.
+		origReg := prometheus.DefaultRegisterer
+		t.Cleanup(func() {
+			prometheus.DefaultRegisterer = prometheus.NewRegistry()
+			require.NoError(t, telemetry.Configure(&telemetry.Options{HistogramBuckets: "0.05,0.5,5,30"}))
+			prometheus.DefaultRegisterer = origReg
+		})
+		reg := prometheus.NewRegistry()
+		prometheus.DefaultRegisterer = reg
+		require.NoError(t, telemetry.Configure(&telemetry.Options{Customizations: []telemetry.Customization{{
+			Subject: "upstream_request_duration_seconds",
+			Labels:  []telemetry.LabelCustomization{{Subject: "user", Action: telemetry.ActionDrop}},
+		}}}))
+
+		projected := NewTracker(&log.Logger, "test-project-projected", 2*time.Second)
+		projected.SetIdleEvictionAfter(150 * time.Millisecond)
+		projected.Bootstrap(ctx)
+		shared := common.NewFakeUpstream("projected-target")
+		observed := 0
+		record := func(user string) {
+			projected.RecordUpstreamDuration(shared, "eth_call", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, user)
+			observed++
+		}
+		idleCached := func() bool {
+			found := false
+			projected.urdObsCache.Range(func(k, _ any) bool {
+				found = found || k.(urdoKey).user == "idle-user"
+				return true
+			})
+			return found
+		}
+		record("idle-user")
+		require.Eventually(t, func() bool {
+			record("busy-user")
+			return !idleCached()
+		}, 5*time.Second, 50*time.Millisecond,
+			"idle user's observer should be evicted while the busy user keeps recording")
+		record("busy-user")
+
+		families, err := reg.Gather()
+		require.NoError(t, err)
+		var sampleCount uint64
+		for _, mf := range families {
+			if mf.GetName() != "erpc_upstream_request_duration_seconds" {
+				continue
+			}
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == "upstream" && lp.GetValue() == "projected-target" {
+						sampleCount += m.GetHistogram().GetSampleCount()
+					}
+				}
+			}
+		}
+		require.EqualValues(t, observed, sampleCount,
+			"the projected series must keep every observation after one of its users is evicted")
 	})
 
 	t.Run("idle_sweep_preserves_cordoned_state", func(t *testing.T) {
