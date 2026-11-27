@@ -1709,7 +1709,7 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "willow", "evm+willow":
+	case "solidrpc", "evm+solidrpc", "willow", "evm+willow":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
