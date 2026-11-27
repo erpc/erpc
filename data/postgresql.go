@@ -508,7 +508,7 @@ func (p *PostgreSQLConnector) applySchema(ctx context.Context, conn *pgxpool.Poo
 		if _, err := conn.Exec(ctx, fmt.Sprintf(`
             SELECT cron.schedule('*/5 * * * *', $$
                 DELETE FROM %s
-                WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
+                WHERE expires_at IS NOT NULL AND expires_at <= NOW()
             $$)
         `, p.table)); err != nil {
 			p.logger.Warn().Err(err).Msg("failed to create pg_cron cleanup job, falling back to local cleanup")
@@ -649,7 +649,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	query = fmt.Sprintf(`
 		SELECT value FROM %s
 		WHERE partition_key = $1 AND range_key = $2
-		AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+		AND (expires_at IS NULL OR expires_at > NOW())
 	`, p.table)
 	args = []interface{}{partitionKey, rangeKey}
 
@@ -1212,7 +1212,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 			SELECT value FROM %s
 			WHERE range_key = $1 AND partition_key LIKE $2 ESCAPE E'\\'
 			  %s
-			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			  AND (expires_at IS NULL OR expires_at > NOW())
 			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table, segment)
@@ -1220,7 +1220,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE partition_key = $1 AND range_key LIKE $2 ESCAPE E'\\'
-			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			  AND (expires_at IS NULL OR expires_at > NOW())
 			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table)
@@ -1277,7 +1277,7 @@ func (p *PostgreSQLConnector) cleanupExpired(ctx context.Context) error {
 
 	result, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		DELETE FROM %s
-		WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
+		WHERE expires_at IS NOT NULL AND expires_at <= NOW()
 	`, p.table))
 	if err != nil {
 		return err
@@ -1387,7 +1387,7 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 		}
 	}
 
-	where := "(expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')"
+	where := "(expires_at IS NULL OR expires_at > NOW())"
 	args := []interface{}{limit + 1} // one extra row says another page follows
 	if after != nil {
 		where += " AND (partition_key, range_key) > ($2, $3)"
