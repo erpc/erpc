@@ -362,6 +362,12 @@ var (
 		Help:      "Blocks between a lane view's Head and its Firm: the thin region.",
 	}, []string{"project", "network", "lane"})
 
+	MetricHeadHoldWaitSeconds = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_hold_wait_seconds",
+		Help:      "A lane clock's learned hold time per upstream, by bound: after (longest current hold bound, while one held), wait (a held block's attempt wait), sure (after, once clockFit bounds fill the window).",
+	}, []string{"project", "network", "lane", "upstream", "bound"})
+
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the
 	// freshest block at least servedTip.quorum eligible upstreams already have

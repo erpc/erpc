@@ -924,6 +924,7 @@ Strict decoding rejects the deleted keys and names the key: a breaking config ch
 | `erpc_head_arrival_delay_seconds{project,network,upstream,bound}` | new gauge, network-wide tracker: each source voter's average (1/8 per new block) of block timestamp → arrival; bound `hit` (its first answer holding the block, upper for a fetch), `miss` (send of its last answer below it when that was a fetch, lower) |
 | `erpc_head_clock_offset_blocks{project,network,lane}` | new gauge: the block clock's `off` (§6.8), where the ladder's last rung aims after the predicted sight, in block times |
 | `erpc_head_firm_lag_blocks{project,network,lane}` | new gauge: Head − Firm, the thin region |
+| `erpc_head_hold_wait_seconds{project,network,lane,upstream,bound}` | new gauge: a lane clock's hold credit per upstream (§6.4 held); bound: `after` (holdAfter, while a bound held), `wait` (heldWait), `sure` (holdAfter once `clockFit` bounds fill); a series leaves when its bound does |
 | `erpc_chain_tracker_confirm_lag_blocks{project,network}` | new: pins head − view Head; with no Head, the number of pins |
 | `erpc_tap_delivery_seconds{transport,kind}` | new: block ready (view-Head stamp, a lane tap's from its lane's view; logs-head stamp for logs taps) → end of the tap's write |
 | `erpc_served_tip_voters`, `erpc_served_tip_quorum` | deleted with the number-vote `Latest` ballot |
