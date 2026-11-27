@@ -69,62 +69,68 @@ func insertExpiredPgRow(t *testing.T, pool *pgxpool.Pool, table, pk, rk, value s
 	require.NoError(t, err)
 }
 
+// Runs under several session time zones: an expiry cutoff that depends on
+// TimeZone hides live rows west of UTC and serves expired rows east of it.
 func TestPostgreSQLConnector_SetGetDelete(t *testing.T) {
-	uri := sharedPostgresURI(t)
-	table := newPgTable("pg_crud")
-	ctx, c := newReadyPgConnector(t, pgConnectorConfig(uri, table))
+	for _, tz := range []string{"UTC", "America/New_York", "Asia/Tokyo"} {
+		t.Run(tz, func(t *testing.T) {
+			uri := sharedPostgresURI(t) + "&timezone=" + tz
+			table := newPgTable("pg_crud")
+			ctx, c := newReadyPgConnector(t, pgConnectorConfig(uri, table))
 
-	t.Run("missing key is record-not-found", func(t *testing.T) {
-		_, err := c.Get(ctx, ConnectorMainIndex, "nope", "nope", nil)
-		require.Error(t, err)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound), "got %v", err)
-	})
+			t.Run("missing key is record-not-found", func(t *testing.T) {
+				_, err := c.Get(ctx, ConnectorMainIndex, "nope", "nope", nil)
+				require.Error(t, err)
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound), "got %v", err)
+			})
 
-	t.Run("set without ttl then overwrite with ttl", func(t *testing.T) {
-		require.NoError(t, c.Set(ctx, "pk1", "rk1", []byte("v1"), nil))
-		got, err := c.Get(ctx, ConnectorMainIndex, "pk1", "rk1", nil)
-		require.NoError(t, err)
-		assert.Equal(t, []byte("v1"), got)
+			t.Run("set without ttl then overwrite with ttl", func(t *testing.T) {
+				require.NoError(t, c.Set(ctx, "pk1", "rk1", []byte("v1"), nil))
+				got, err := c.Get(ctx, ConnectorMainIndex, "pk1", "rk1", nil)
+				require.NoError(t, err)
+				assert.Equal(t, []byte("v1"), got)
 
-		ttl := time.Hour
-		require.NoError(t, c.Set(ctx, "pk1", "rk1", []byte("v2"), &ttl))
-		got, err = c.Get(ctx, ConnectorMainIndex, "pk1", "rk1", nil)
-		require.NoError(t, err)
-		assert.Equal(t, []byte("v2"), got)
-	})
+				ttl := time.Hour
+				require.NoError(t, c.Set(ctx, "pk1", "rk1", []byte("v2"), &ttl))
+				got, err = c.Get(ctx, ConnectorMainIndex, "pk1", "rk1", nil)
+				require.NoError(t, err)
+				assert.Equal(t, []byte("v2"), got)
+			})
 
-	t.Run("binary values round-trip byte-exact", func(t *testing.T) {
-		val := []byte{0x00, 0xff, 0x10, 0x00, 0x7f}
-		require.NoError(t, c.Set(ctx, "bin", "rk", val, nil))
-		got, err := c.Get(ctx, ConnectorMainIndex, "bin", "rk", nil)
-		require.NoError(t, err)
-		assert.Equal(t, val, got)
-	})
+			t.Run("binary values round-trip byte-exact", func(t *testing.T) {
+				val := []byte{0x00, 0xff, 0x10, 0x00, 0x7f}
+				require.NoError(t, c.Set(ctx, "bin", "rk", val, nil))
+				got, err := c.Get(ctx, ConnectorMainIndex, "bin", "rk", nil)
+				require.NoError(t, err)
+				assert.Equal(t, val, got)
+			})
 
-	t.Run("entry with short ttl expires", func(t *testing.T) {
-		ttl := 50 * time.Millisecond
-		require.NoError(t, c.Set(ctx, "short", "rk", []byte("soon-gone"), &ttl))
-		require.Eventually(t, func() bool {
-			_, err := c.Get(ctx, ConnectorMainIndex, "short", "rk", nil)
-			return common.HasErrorCode(err, common.ErrCodeRecordNotFound)
-		}, 5*time.Second, 20*time.Millisecond)
-	})
+			t.Run("entry with short ttl expires", func(t *testing.T) {
+				ttl := 50 * time.Millisecond
+				require.NoError(t, c.Set(ctx, "short", "rk", []byte("soon-gone"), &ttl))
+				require.Eventually(t, func() bool {
+					_, err := c.Get(ctx, ConnectorMainIndex, "short", "rk", nil)
+					return common.HasErrorCode(err, common.ErrCodeRecordNotFound)
+				}, 5*time.Second, 20*time.Millisecond)
+			})
 
-	t.Run("zero ttl stores without expiry", func(t *testing.T) {
-		zero := time.Duration(0)
-		require.NoError(t, c.Set(ctx, "zero", "rk", []byte("forever"), &zero))
-		got, err := c.Get(ctx, ConnectorMainIndex, "zero", "rk", nil)
-		require.NoError(t, err)
-		assert.Equal(t, []byte("forever"), got)
-	})
+			t.Run("zero ttl stores without expiry", func(t *testing.T) {
+				zero := time.Duration(0)
+				require.NoError(t, c.Set(ctx, "zero", "rk", []byte("forever"), &zero))
+				got, err := c.Get(ctx, ConnectorMainIndex, "zero", "rk", nil)
+				require.NoError(t, err)
+				assert.Equal(t, []byte("forever"), got)
+			})
 
-	t.Run("delete removes the entry and is idempotent", func(t *testing.T) {
-		require.NoError(t, c.Set(ctx, "del", "rk", []byte("x"), nil))
-		require.NoError(t, c.Delete(ctx, "del", "rk"))
-		_, err := c.Get(ctx, ConnectorMainIndex, "del", "rk", nil)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound), "got %v", err)
-		require.NoError(t, c.Delete(ctx, "del", "rk"))
-	})
+			t.Run("delete removes the entry and is idempotent", func(t *testing.T) {
+				require.NoError(t, c.Set(ctx, "del", "rk", []byte("x"), nil))
+				require.NoError(t, c.Delete(ctx, "del", "rk"))
+				_, err := c.Get(ctx, ConnectorMainIndex, "del", "rk", nil)
+				assert.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound), "got %v", err)
+				require.NoError(t, c.Delete(ctx, "del", "rk"))
+			})
+		})
+	}
 }
 
 func TestPostgreSQLConnector_WildcardGet(t *testing.T) {
