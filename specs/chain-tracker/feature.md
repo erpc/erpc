@@ -531,7 +531,7 @@ Owner: `health/tracker.go`. Readers: W, the fetch schedule, the refusal band, th
 - A poller method (`latest`, `finalized`, the syncing check) refused 10 times before any success is given up for 10 min, then retried; an upstream given up on `latest` gets no clock fetch meanwhile. Missing data is no refusal of `latest`, nor of `finalized` while the upstream's latest counter holds no block: a node that starts with no block is polled at its cadence until it holds one. Once its latest holds a block, `finalized` missing data counts: a node without the tag can answer so.
 - A panic in an Ask fails its waiters and is counted; no waiter hangs (#1060).
 - At most one live poller per upstream per instance (#1007); a stuck refresh exits within its fallback timeout + 1s (#838).
-- The finalized poll waits `max(debounce, depth × bt × 0.05)` (#1265); an upstream behind the reference's finalized keeps the regular cadence (#1269).
+- The finalized poll waits `max(debounce, depth × bt × 0.05)` (#1265); an upstream behind the reference's finalized keeps the regular cadence (#1269). `evm.finalizedPollerDebounce` is a floor on every finalized poll of its upstream, the refresh and step polls included: a refresh or step slot passes over it to the next voter, and the tracker credits its finalized for that long after each report.
 
 Owner: `architecture/evm/evm_state_poller.go` (`Ask`). Signal: `erpc_head_ask_total`. Keeps: #1256, #790, #240, #1007, #838, #1060, #1265, #1269.
 

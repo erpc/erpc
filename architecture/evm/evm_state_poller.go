@@ -1290,7 +1290,8 @@ func nodeFailedPoll(err error) bool {
 }
 
 // RefreshFinalized polls the finalized block when the stored one was
-// reported more than maxAge ago (0: the poll cadence), or joins the poll
+// reported more than maxAge ago (0: the poll cadence; at least
+// evm.finalizedPollerDebounce), or joins the poll
 // in flight, and waits for it until ctx ends (spec §6.4 Finality),
 // however long past the shared state's foreground budget it takes. The
 // poll itself runs on the app's context, so a waiter that leaves ends no
@@ -1304,6 +1305,7 @@ func (e *EvmStatePoller) RefreshFinalized(ctx context.Context, maxAge time.Durat
 	if maxAge <= 0 {
 		maxAge = e.pollCadence()
 	}
+	maxAge = max(maxAge, e.finalizedPollerDebounce())
 	if !e.finalizedBlockShared.IsStale(maxAge) {
 		return false
 	}
@@ -1889,12 +1891,13 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 
 // finalizedDebounce is the finalized poll's debounce (spec §6.8, #1265):
 // while a benched upstream's polls bring no new head, at least the head's
-// backoff, since its finalized block does not move either.
+// backoff, since its finalized block does not move either; always at
+// least evm.finalizedPollerDebounce.
 func (e *EvmStatePoller) finalizedDebounce() time.Duration {
 	e.stateMu.RLock()
 	cfg := e.cfg
 	e.stateMu.RUnlock()
-	d := e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg))
+	d := max(e.resolveFinalizedDebounce(cfg, e.resolveDebounce(cfg)), e.finalizedPollerDebounce())
 	benched := e.headBenched()
 	e.headAsk.mu.Lock()
 	idle := benched && e.headAsk.idle > 0
@@ -1903,6 +1906,14 @@ func (e *EvmStatePoller) finalizedDebounce() time.Duration {
 		return max(d, e.backoff())
 	}
 	return d
+}
+
+// finalizedPollerDebounce is the upstream's evm.finalizedPollerDebounce.
+func (e *EvmStatePoller) finalizedPollerDebounce() time.Duration {
+	if c := e.upstream.Config(); c != nil && c.Evm != nil {
+		return c.Evm.FinalizedPollerDebounce.Duration()
+	}
+	return 0
 }
 
 // fetchFinalized fetches the upstream's finalized block: the shared

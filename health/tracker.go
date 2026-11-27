@@ -1910,6 +1910,16 @@ func pollPeriod(ups common.Upstream, blockTime time.Duration) time.Duration {
 	return max(period, debounce)
 }
 
+// finalizedPollPeriod is how often an upstream's finalized block is
+// fetched: pollPeriod, at least its evm.finalizedPollerDebounce.
+func finalizedPollPeriod(ups common.Upstream, blockTime time.Duration) time.Duration {
+	period := pollPeriod(ups, blockTime)
+	if cfg := ups.Config(); cfg != nil && cfg.Evm != nil {
+		period = max(period, cfg.Evm.FinalizedPollerDebounce.Duration())
+	}
+	return period
+}
+
 // headReport is an upstream's last head report on one axis: when it came and
 // the network head right after it. A stored head ages between polls by
 // design; counting that age as lag made a healthy upstream polled every 10s
@@ -2991,7 +3001,7 @@ func (t *Tracker) rederiveNetworkFinalized(ntwMeta *NetworkMetadata, net, netLab
 			if meta.headBenched.Load() {
 				return f
 			}
-			return meta.finalizedReport.presumed(f, ntwVal, now, pollPeriod(ups, blockTime))
+			return meta.finalizedReport.presumed(f, ntwVal, now, finalizedPollPeriod(ups, blockTime))
 		},
 		func(tm *TrackedMetrics, lag int64) { tm.FinalizationLag.Store(lag) },
 		t.getFinalizationLagGauge,
