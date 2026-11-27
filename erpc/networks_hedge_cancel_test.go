@@ -472,10 +472,29 @@ func TestHedgeConsensus_SlotAnswerIsKeptAsVote(t *testing.T) {
 	nullRoundBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{
 		"code": 12, "message": "requested epoch was a null round (16)", "data": 16,
 	}}
+	serverErrorBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{
+		"code": -32603, "message": "internal error",
+	}}
+	nullRoundIsTheAnswer := func(t *testing.T, resp *common.NormalizedResponse, err error) {
+		var jre *common.ErrJsonRpcExceptionInternal
+		if err != nil {
+			require.ErrorAs(t, err, &jre, "the agreed null round must reach the client, got: %v", err)
+		} else {
+			require.NotNil(t, resp)
+			jrr, jrrErr := resp.JsonRpcResponse()
+			require.NoError(t, jrrErr)
+			require.NotNil(t, jrr.Error, "the agreed null round must reach the client as an error")
+			require.ErrorAs(t, jrr.Error, &jre)
+		}
+		assert.Equal(t, common.JsonRpcErrorNumber(12), jre.NormalizedCode())
+	}
 	cases := []struct {
 		name               string
 		internal, external map[string]interface{}
-		check              func(t *testing.T, resp *common.NormalizedResponse, err error)
+		// seats, when set, is the round's MaxParticipants with no
+		// participant rules, and the upstreams take the seats in order.
+		seats int
+		check func(t *testing.T, resp *common.NormalizedResponse, err error)
 	}{
 		{
 			// Live smokebox shape: two internals return JSON-RPC null for a pruned
@@ -503,19 +522,19 @@ func TestHedgeConsensus_SlotAnswerIsKeptAsVote(t *testing.T) {
 			name:     "every upstream answers a null round",
 			internal: nullRoundBody,
 			external: nullRoundBody,
-			check: func(t *testing.T, resp *common.NormalizedResponse, err error) {
-				var jre *common.ErrJsonRpcExceptionInternal
-				if err != nil {
-					require.ErrorAs(t, err, &jre, "the agreed null round must reach the client, got: %v", err)
-				} else {
-					require.NotNil(t, resp)
-					jrr, jrrErr := resp.JsonRpcResponse()
-					require.NoError(t, jrrErr)
-					require.NotNil(t, jrr.Error, "the agreed null round must reach the client as an error")
-					require.ErrorAs(t, jrr.Error, &jre)
-				}
-				assert.Equal(t, common.JsonRpcErrorNumber(12), jre.NormalizedCode())
-			},
+			check:    nullRoundIsTheAnswer,
+		},
+		{
+			// A two-seat round: both seats' upstreams answer a null round, and
+			// the two upstreams left fail with a server error. Each seat's
+			// hedge leg re-asked a failing upstream, and its later server
+			// error replaced the seat's null round: the client got the
+			// server error, not the null round the round agreed on.
+			name:     "two null-round seats whose hedge legs fail",
+			internal: nullRoundBody,
+			external: serverErrorBody,
+			seats:    2,
+			check:    nullRoundIsTheAnswer,
 		},
 	}
 	for _, tc := range cases {
@@ -528,9 +547,11 @@ func TestHedgeConsensus_SlotAnswerIsKeptAsVote(t *testing.T) {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x10"`)
 			}
-			for host, reply := range map[string]map[string]interface{}{
-				"rpc1": tc.internal, "rpc2": tc.internal, "rpc3": tc.external, "rpc4": tc.external,
-			} {
+			for i, host := range []string{"rpc1", "rpc2", "rpc3", "rpc4"} {
+				reply := tc.internal
+				if i >= 2 {
+					reply = tc.external
+				}
 				gock.New(fmt.Sprintf("http://%s.localhost", host)).
 					Post("").
 					Filter(isOldBlock).
@@ -567,6 +588,10 @@ func TestHedgeConsensus_SlotAnswerIsKeptAsVote(t *testing.T) {
 					{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
 				},
 			}
+			if tc.seats > 0 {
+				consensusCfg.MaxParticipants = tc.seats
+				consensusCfg.RequiredParticipants = nil
+			}
 			require.NoError(t, consensusCfg.SetDefaults())
 
 			networkConfig := &common.NetworkConfig{
@@ -584,6 +609,9 @@ func TestHedgeConsensus_SlotAnswerIsKeptAsVote(t *testing.T) {
 			}
 
 			network := setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
+			if tc.seats > 0 {
+				network.PinUpstreamOrderForTest("rpc1", "rpc2", "rpc3", "rpc4")
+			}
 			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`))
 			req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
 
