@@ -76,10 +76,11 @@ var supportedMethods = map[string]struct{}{
 	"eth_getBalance":           {},
 	// SVM. Solana method names are unprefixed, so they cannot collide with the
 	// eth_* entries above and one allowlist serves both architectures.
-	"getBlock":           {},
-	"getTransaction":     {},
-	"getBlockTime":       {},
-	"getBlocksWithLimit": {},
+	"getBlock":                {},
+	"getTransaction":          {},
+	"getBlockTime":            {},
+	"getBlocksWithLimit":      {},
+	"getSignaturesForAddress": {},
 }
 
 func NewGrpcConnector(

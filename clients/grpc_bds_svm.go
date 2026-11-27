@@ -2,7 +2,9 @@ package clients
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/blockchain-data-standards/manifesto/svm"
@@ -288,6 +290,229 @@ func (c *GenericGrpcBdsClient) handleSvmGetTransaction(ctx context.Context, conn
 		result["blockTime"] = nil
 	}
 	return svmResult(req, jrReq, result)
+}
+
+// svmMaxSignaturesLimit is Agave's getSignaturesForAddress page cap and its
+// default page size.
+const svmMaxSignaturesLimit = 1000
+
+// svmSignatureInfo is one getSignaturesForAddress row. Field order is the
+// order Agave renders (its JSON keys are sorted).
+type svmSignatureInfo struct {
+	BlockTime          *int64          `json:"blockTime"`
+	ConfirmationStatus string          `json:"confirmationStatus"`
+	Err                json.RawMessage `json:"err"`
+	Memo               *string         `json:"memo"`
+	Signature          string          `json:"signature"`
+	Slot               uint64          `json:"slot"`
+	TransactionIndex   uint32          `json:"transactionIndex"`
+}
+
+// handleSvmGetSignaturesForAddress serves Solana `getSignaturesForAddress`
+// from the reader's address index. The reader answers only a page it can
+// prove complete and refuses everything else with OUT_OF_RANGE, which falls
+// through to a live upstream.
+//
+// Every row carries Agave's confirmationStatus, which needs the network root,
+// so no root known means no answer. At finalized, Agave pages from its root
+// and resolves cursors among rooted slots only, so rows above the root are
+// dropped and a cursor above it is not served.
+//
+// The request names no slot, so a lagging reader would serve a page missing
+// the newest signatures. minContextSlot is raised to at least the root, and
+// the reader refuses a head below it.
+func (c *GenericGrpcBdsClient) handleSvmGetSignaturesForAddress(ctx context.Context, conn *bdsConn, req *common.NormalizedRequest, jrReq *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
+	params, err := svmParams(jrReq)
+	if err != nil {
+		return nil, err
+	}
+	if len(params) < 1 || len(params) > 2 {
+		return nil, svmUnservable("getSignaturesForAddress takes 1 or 2 params, got %d", len(params))
+	}
+	addrStr, ok := params[0].(string)
+	if !ok {
+		return nil, svmUnservable("getSignaturesForAddress address is not a string")
+	}
+	address, err := svm.Base58Decode(addrStr)
+	if err != nil || len(address) != 32 {
+		return nil, svmUnservable("getSignaturesForAddress address is not 32 base58 bytes")
+	}
+	cfg, err := svmConfigObject(params, 1)
+	if err != nil {
+		return nil, err
+	}
+
+	grpcReq := &svm.GetSignaturesForAddressRequest{Address: address}
+	signature := func(key string, v interface{}) ([]byte, error) {
+		s, isString := v.(string)
+		if !isString {
+			return nil, svmUnservable("getSignaturesForAddress %s is not a string", key)
+		}
+		sig, err := svm.Base58Decode(s)
+		if err != nil || len(sig) != 64 {
+			return nil, svmUnservable("getSignaturesForAddress %s is not 64 base58 bytes", key)
+		}
+		return sig, nil
+	}
+	for key, value := range cfg {
+		if value == nil {
+			continue
+		}
+		switch key {
+		case "limit":
+			n, isNum := value.(float64)
+			if !isNum || n < 1 || n > svmMaxSignaturesLimit || n != math.Trunc(n) {
+				return nil, svmUnservable("getSignaturesForAddress limit %v not served by BDS", value)
+			}
+			grpcReq.Limit = uint32(n)
+		case "before":
+			if grpcReq.Before, err = signature(key, value); err != nil {
+				return nil, err
+			}
+		case "until":
+			if grpcReq.Until, err = signature(key, value); err != nil {
+				return nil, err
+			}
+		case "commitment":
+			if grpcReq.Commitment, err = svmStrictCommitment(value); err != nil {
+				return nil, err
+			}
+		case "minContextSlot":
+			n, isNum := value.(float64)
+			if !isNum || n < 0 || n != math.Trunc(n) || n >= 1<<53 {
+				return nil, svmUnservable("getSignaturesForAddress minContextSlot %v is not a u64", value)
+			}
+			slot := uint64(n)
+			grpcReq.MinContextSlot = &slot
+		default:
+			return nil, svmUnservable("getSignaturesForAddress config key %q not served by BDS", key)
+		}
+	}
+
+	root, ok := svmFinalizedSlot(ctx, req)
+	if !ok {
+		return nil, svmUnservable("no finalized root known for confirmationStatus")
+	}
+	finalized := grpcReq.Commitment == svm.Commitment_COMMITMENT_FINALIZED
+	var cursorsRooted chan error
+	if finalized {
+		// The reader serves confirmed to its live tip; the root bounds it below.
+		grpcReq.Commitment = svm.Commitment_COMMITMENT_CONFIRMED
+		if grpcReq.MinContextSlot != nil && *grpcReq.MinContextSlot > root {
+			return nil, svmUnservable("minContextSlot %d is above the finalized root %d", *grpcReq.MinContextSlot, root)
+		}
+		var cursors [][]byte
+		for _, cursor := range [][]byte{grpcReq.Before, grpcReq.Until} {
+			if cursor != nil {
+				cursors = append(cursors, cursor)
+			}
+		}
+		if len(cursors) > 0 {
+			cursorsRooted = make(chan error, 1)
+			go func(ctx context.Context) { cursorsRooted <- svmCursorsRooted(ctx, conn, cursors, root) }(ctx)
+		}
+	}
+	if grpcReq.MinContextSlot == nil || *grpcReq.MinContextSlot < root {
+		grpcReq.MinContextSlot = &root
+	}
+
+	ctx, grpcSpan := common.StartDetailSpan(ctx, "GrpcBdsClient.SvmGetSignaturesForAddress",
+		trace.WithAttributes(
+			attribute.String("commitment", grpcReq.Commitment.String()),
+			attribute.Int64("limit", int64(grpcReq.Limit)),
+		),
+	)
+	grpcResp, err := callBoundedT(ctx, func(ctx context.Context) (*svm.GetSignaturesForAddressResponse, error) {
+		return conn.svmClient.GetSignaturesForAddress(ctx, grpcReq)
+	})
+	if err != nil {
+		common.SetTraceSpanError(grpcSpan, err)
+		grpcSpan.End()
+		return nil, svmMapError(err)
+	}
+	rows := grpcResp.GetSignatures()
+	grpcSpan.SetAttributes(attribute.Int("rows", len(rows)))
+	grpcSpan.End()
+	if cursorsRooted != nil {
+		if err := <-cursorsRooted; err != nil {
+			return nil, err
+		}
+	}
+
+	limit := int(grpcReq.Limit)
+	if limit == 0 {
+		limit = svmMaxSignaturesLimit
+	}
+	if len(rows) > limit {
+		return nil, svmUnservable("BDS returned %d rows for limit %d", len(rows), limit)
+	}
+	history := svmHistoryOf(req)
+	result := make([]svmSignatureInfo, 0, len(rows))
+	dropped := false
+	for i, row := range rows {
+		if len(row.Signature) != 64 || row.TransactionIndex == nil {
+			return nil, svmUnservable("BDS row %d has no 64-byte signature or transactionIndex", i)
+		}
+		if i > 0 {
+			prev := rows[i-1]
+			if row.Slot > prev.Slot || (row.Slot == prev.Slot && *row.TransactionIndex >= *prev.TransactionIndex) {
+				return nil, svmUnservable("BDS rows are not newest-first")
+			}
+		}
+		if finalized && row.Slot > root {
+			dropped = true
+			continue
+		}
+		info := svmSignatureInfo{
+			ConfirmationStatus: "confirmed",
+			Err:                json.RawMessage("null"),
+			Memo:               row.Memo,
+			Signature:          svm.Base58Encode(row.Signature),
+			Slot:               row.Slot,
+			TransactionIndex:   *row.TransactionIndex,
+		}
+		if row.Slot <= root {
+			info.ConfirmationStatus = "finalized"
+		}
+		if row.Err != nil {
+			if !json.Valid([]byte(*row.Err)) {
+				return nil, svmUnservable("BDS row %d err is not JSON", i)
+			}
+			info.Err = json.RawMessage(*row.Err)
+		}
+		if row.BlockTime != nil && history.RecordsBlockTime(row.Slot) {
+			info.BlockTime = row.BlockTime
+		}
+		result = append(result, info)
+	}
+	// Rows above the root were dropped from a full page: the rows under the
+	// page's oldest one that Agave would list next are not in it.
+	if dropped && len(rows) == limit {
+		return nil, svmUnservable("page above the finalized root does not fill limit %d", limit)
+	}
+	return svmResult(req, jrReq, result)
+}
+
+// svmCursorsRooted reports whether every cursor signature landed at or below
+// root. Agave resolves a finalized cursor among rooted slots only: an unrooted
+// `before` gives an empty page (or -32020), an unrooted `until` is ignored.
+func svmCursorsRooted(ctx context.Context, conn *bdsConn, cursors [][]byte, root uint64) error {
+	resp, err := callBoundedT(ctx, func(ctx context.Context) (*svm.GetSignatureStatusesResponse, error) {
+		return conn.svmClient.GetSignatureStatuses(ctx, &svm.GetSignatureStatusesRequest{Signatures: cursors})
+	})
+	if err != nil {
+		return svmMapError(err)
+	}
+	statuses := resp.GetStatuses()
+	if len(statuses) != len(cursors) {
+		return svmUnservable("BDS returned %d statuses for %d cursors", len(statuses), len(cursors))
+	}
+	for _, st := range statuses {
+		if !st.GetFound() || st.GetSlot() > root {
+			return svmUnservable("cursor is not at or below the finalized root %d", root)
+		}
+	}
+	return nil
 }
 
 // handleSvmGetBlockTime serves Solana `getBlockTime`. The call takes no

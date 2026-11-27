@@ -79,6 +79,7 @@ func TestGrpcConnectorSupportedMethodsGatesReads(t *testing.T) {
 		served    bool
 	}{
 		{name: "svm getBlock is served", networkId: "svm:solana-mainnet", method: "getBlock", params: `[42]`, served: true},
+		{name: "svm getSignaturesForAddress is served", networkId: "svm:solana-mainnet", method: "getSignaturesForAddress", params: `["addr"]`, served: true},
 		{name: "eth_getBlockByNumber still served", networkId: "evm:1", method: "eth_getBlockByNumber", params: `["0x1",false]`, served: true},
 		{name: "eth_getBlockByHash still served", networkId: "evm:1", method: "eth_getBlockByHash", params: `["0xabc",false]`, served: true},
 		{name: "eth_getLogs still served", networkId: "evm:1", method: "eth_getLogs", params: `[{}]`, served: true},
@@ -90,7 +91,7 @@ func TestGrpcConnectorSupportedMethodsGatesReads(t *testing.T) {
 		{name: "debug_traceBlockByHash served", networkId: "evm:1", method: "debug_traceBlockByHash", params: `["0xabc",{"tracer":"callTracer"}]`, served: true},
 		{name: "debug_traceTransaction served", networkId: "evm:1", method: "debug_traceTransaction", params: `["0xabc",{"tracer":"callTracer"}]`, served: true},
 		{name: "eth_getBalance served", networkId: "evm:1", method: "eth_getBalance", params: `["0xabc","0x1"]`, served: true},
-		{name: "unlisted svm method is fast-skipped", networkId: "svm:solana-mainnet", method: "getSignaturesForAddress", params: `["addr"]`, served: false},
+		{name: "unlisted svm method is fast-skipped", networkId: "svm:solana-mainnet", method: "getSignatureStatuses", params: `[["sig"]]`, served: false},
 		{name: "unlisted evm method is fast-skipped", networkId: "evm:1", method: "eth_call", params: `[{}]`, served: false},
 	}
 
