@@ -508,7 +508,7 @@ func (p *PostgreSQLConnector) applySchema(ctx context.Context, conn *pgxpool.Poo
 		if _, err := conn.Exec(ctx, fmt.Sprintf(`
             SELECT cron.schedule('*/5 * * * *', $$
                 DELETE FROM %s
-                WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
+                WHERE expires_at IS NOT NULL AND expires_at <= NOW()
             $$)
         `, p.table)); err != nil {
 			p.logger.Warn().Err(err).Msg("failed to create pg_cron cleanup job, falling back to local cleanup")
@@ -649,7 +649,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	query = fmt.Sprintf(`
 		SELECT value FROM %s
 		WHERE partition_key = $1 AND range_key = $2
-		AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+		AND (expires_at IS NULL OR expires_at > NOW())
 	`, p.table)
 	args = []interface{}{partitionKey, rangeKey}
 
@@ -1212,7 +1212,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 			SELECT value FROM %s
 			WHERE range_key = $1 AND partition_key LIKE $2 ESCAPE E'\\'
 			  %s
-			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			  AND (expires_at IS NULL OR expires_at > NOW())
 			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table, segment)
@@ -1220,7 +1220,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE partition_key = $1 AND range_key LIKE $2 ESCAPE E'\\'
-			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			  AND (expires_at IS NULL OR expires_at > NOW())
 			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table)
@@ -1277,7 +1277,7 @@ func (p *PostgreSQLConnector) cleanupExpired(ctx context.Context) error {
 
 	result, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		DELETE FROM %s
-		WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
+		WHERE expires_at IS NOT NULL AND expires_at <= NOW()
 	`, p.table))
 	if err != nil {
 		return err
@@ -1370,34 +1370,40 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	ctx, cancel := context.WithTimeout(ctx, p.getTimeout)
 	defer cancel()
 
-	// Parse pagination token - we'll use base64 encoded JSON with offset info
-	offset := 0
+	// The token names the last row returned and the next page starts after it,
+	// so rows added or removed between pages neither repeat nor hide a key.
+	var after *postgresListToken
 	if paginationToken != "" {
 		decoded, err := base64.StdEncoding.DecodeString(paginationToken)
 		if err != nil {
 			return nil, "", fmt.Errorf("invalid pagination token: %w", err)
 		}
-		var tokenData map[string]int
-		err = json.Unmarshal(decoded, &tokenData)
-		if err != nil {
+		after = &postgresListToken{}
+		if err := json.Unmarshal(decoded, after); err != nil {
 			return nil, "", fmt.Errorf("invalid pagination token format: %w", err)
 		}
-		if o, ok := tokenData["offset"]; ok {
-			offset = o
+		if after.PartitionKey == nil || after.RangeKey == nil {
+			return nil, "", fmt.Errorf("invalid pagination token format: no last row in %s", decoded)
 		}
 	}
 
+	where := "(expires_at IS NULL OR expires_at > NOW())"
+	args := []interface{}{limit + 1} // one extra row says another page follows
+	if after != nil {
+		where += " AND (partition_key, range_key) > ($2, $3)"
+		args = append(args, *after.PartitionKey, *after.RangeKey)
+	}
 	query := fmt.Sprintf(`
-		SELECT partition_key, range_key, value 
-		FROM %s 
-		WHERE expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC'
+		SELECT partition_key, range_key, value
+		FROM %s
+		WHERE %s
 		ORDER BY partition_key, range_key
-		LIMIT $1 OFFSET $2
-	`, p.table)
+		LIMIT $1
+	`, p.table, where)
 
-	p.logger.Debug().Str("query", query).Int("limit", limit).Int("offset", offset).Msg("listing from postgres")
+	p.logger.Debug().Str("query", query).Int("limit", limit).Msg("listing from postgres")
 
-	rows, err := pool.Query(ctx, query, limit+1, offset) // Get one extra to check if there are more
+	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		p.handleConnectionFailure(err)
 		common.SetTraceSpanError(span, err)
@@ -1405,7 +1411,7 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	}
 	defer rows.Close()
 
-	results := make([]KeyValuePair, 0, limit)
+	var results []KeyValuePair // not sized by limit: the caller picks limit, up to 2^53
 	hasMore := false
 	for rows.Next() {
 		if len(results) == limit {
@@ -1435,9 +1441,9 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	}
 
 	nextToken := ""
-	if hasMore {
-		tokenData := map[string]int{"offset": offset + limit}
-		tokenBytes, err := json.Marshal(tokenData)
+	if hasMore && len(results) > 0 {
+		last := results[len(results)-1]
+		tokenBytes, err := json.Marshal(postgresListToken{PartitionKey: &last.PartitionKey, RangeKey: &last.RangeKey})
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to create pagination token: %w", err)
 		}
@@ -1445,6 +1451,12 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	}
 
 	return results, nextToken, nil
+}
+
+// postgresListToken is the last row of a List page. Pointers tell an absent key from "".
+type postgresListToken struct {
+	PartitionKey *string `json:"pk"`
+	RangeKey     *string `json:"rk"`
 }
 
 const postgresPurgeBatchSize = 5000

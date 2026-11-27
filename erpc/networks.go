@@ -1529,10 +1529,12 @@ func (n *Network) rangeHeld(method string, u common.Upstream, refusal *common.He
 }
 
 // holdsBlock reports whether u's evidence (reachedHead, uncredited)
-// reaches block.
+// reaches block. headLagToleranceBlocks is no evidence: it lets the gate
+// send u a block above its head, and a node whose log index lacks the block
+// answers eth_getLogs with an empty range (spec §19 P23-band-tol).
 func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 	head := n.reachedHead(u, 0)
-	return head > 0 && common.EvmHeadReaches(u, head, block)
+	return head > 0 && head >= block
 }
 
 // logsGate is the logs gate on u's empty eth_getLogs answer of req, one
@@ -4159,6 +4161,8 @@ func (n *Network) upstreamHeads(eu common.EvmUpstream) (latest int64, finalized 
 
 // handleBlockSkip records telemetry when a block availability check causes an upstream to be skipped,
 // and triggers an async state poller refresh for retryable cases so subsequent retries see fresh block numbers.
+// The skip counts in upstream_request_skipped_total, never upstream_request_errors_total: no request was
+// sent, so upstream error-rate metrics and alerts must not see it.
 func (n *Network) handleBlockSkip(
 	ctx context.Context,
 	span trace.Span,
@@ -4176,11 +4180,9 @@ func (n *Network) handleBlockSkip(
 		attribute.Bool("skip_retryable", isRetryable),
 	)
 	finality := req.Finality(ctx)
-	telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
+	telemetry.CounterHandle(telemetry.MetricUpstreamSkippedTotal,
 		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
-		common.ErrorFingerprint(skipErr), string(common.SeverityInfo),
-		req.CompositeType(), finality.String(),
-		req.UserId(), req.AgentName()).Inc()
+		finality.String(), req.UserId(), req.AgentName()).Inc()
 	errToStore := skipErr
 	if !isRetryable {
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())

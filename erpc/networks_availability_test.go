@@ -14,10 +14,12 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
@@ -87,12 +89,34 @@ func TestNetworkAvailability_LowerExactBlock_Skip(t *testing.T) {
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1",false]}`))
 	req.SetNetwork(network)
 
+	skippedBefore := sumCounterCollector(t, telemetry.MetricUpstreamSkippedTotal)
+	errorsBefore := sumCounterCollector(t, telemetry.MetricUpstreamErrorTotal)
 	resp, err := network.Forward(ctx, req)
 	require.Error(t, err)
 	require.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted))
 	if resp != nil {
 		resp.Release()
 	}
+	// Nothing was sent, so the skip is not an upstream error.
+	require.Equal(t, float64(1), sumCounterCollector(t, telemetry.MetricUpstreamSkippedTotal)-skippedBefore)
+	require.Equal(t, float64(0), sumCounterCollector(t, telemetry.MetricUpstreamErrorTotal)-errorsBefore)
+}
+
+// sumCounterCollector sums every series of a counter collector. Tests never
+// call telemetry.Configure, so counters are absent from the default registry.
+func sumCounterCollector(t *testing.T, c prometheus.Collector) float64 {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	require.NoError(t, reg.Register(c))
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	var sum float64
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			sum += m.GetCounter().GetValue()
+		}
+	}
+	return sum
 }
 
 // Lower bound: latestBlockMinus, skip when below (latest - N)

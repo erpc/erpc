@@ -138,12 +138,16 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 		for id, gasCap := range map[string]int64{low: 50_000_000, high: 600_000_000} {
 			host := id + ".localhost"
 			for gas, left := range map[string]int64{`"gas":"0x989680"`: 10_000_000 - 2, `"gas":"0x10000000000"`: gasCap - 2} {
-				gock.New("http://" + host).Post("").Persist().
+				probe := gock.New("http://" + host).Post("").Persist().
 					Filter(func(r *http.Request) bool {
 						body := util.SafeReadBody(r)
 						return r.URL.Host == host && strings.Contains(body, `"eth_call"`) && !strings.Contains(body, callTo) && strings.Contains(body, gas)
 					}).
-					Reply(200).JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": fmt.Sprintf("0x%064x", left)})
+					Reply(200)
+				if id == high {
+					probe.Delay(time.Second)
+				}
+				probe.JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": fmt.Sprintf("0x%064x", left)})
 			}
 			countCall := ethCallTo(host, calls[id])
 			if id == high {
@@ -171,11 +175,6 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 			reply.JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": answers[id]})
 		}
 
-		// A read of the cap starts its probe.
-		require.Eventually(t, func() bool {
-			return ups[0].EvmStatePoller().CallGasCap() > 0 && ups[1].EvmStatePoller().CallGasCap() > 0
-		}, 5*time.Second, 20*time.Millisecond)
-
 		forward := func(gas string) string {
 			body := strings.Replace(string(requestBytes), `"gas":"0x8f0d1801"`, gas, 1)
 			resp, err := network.Forward(ctx, common.NewNormalizedRequest([]byte(body)))
@@ -184,6 +183,23 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 			require.NoError(t, err)
 			return strings.Trim(string(jrr.GetResultBytes()), `"`)
 		}
+
+		// A read of the cap starts its probe. The 600M upstream's probe
+		// answers late, so the first call finds the 50M cap alone: it is not
+		// the network's cap while another upstream's first probe runs, so
+		// 100M gas runs whole, on the upstream that may give it.
+		require.Eventually(t, func() bool {
+			gasCap, _ := ups[0].EvmStatePoller().CallGasCap()
+			return gasCap > 0
+		}, 5*time.Second, 20*time.Millisecond)
+		assert.Equal(t, answers[high], forward(`"gas":"0x5f5e100"`))
+		assert.Contains(t, lastCall[high].Load(), `"gas":"0x5f5e100"`)
+
+		require.Eventually(t, func() bool {
+			gasCap, measuring := ups[1].EvmStatePoller().CallGasCap()
+			return gasCap > 0 && !measuring
+		}, 5*time.Second, 20*time.Millisecond)
+
 		// The low upstream's config fixes its cap at 40M, in place of the
 		// 50M measured. Two upstreams give 40M, the default quorum, so the
 		// network's cap is 40M: 100M gas is lowered to it and runs where the
@@ -207,7 +223,7 @@ func TestNetwork_EthCall_ProviderGasCap(t *testing.T) {
 		// 2.4B gas: neither cap gives it, so the larger cap goes first. Its
 		// refusal ends its attempt, so the 40M cap runs the call.
 		assert.Equal(t, answers[low], forward(refusedGas))
-		assert.Equal(t, int32(3), calls[high].Load(), "the 600M upstream runs the 100M call twice and goes first for 2.4B")
+		assert.Equal(t, int32(4), calls[high].Load(), "the 600M upstream runs the 100M call three times and goes first for 2.4B")
 		assert.Equal(t, int32(3), calls[low].Load(), "the 40M upstream runs the lowered call, the 30M call and the refused 2.4B call")
 	})
 }

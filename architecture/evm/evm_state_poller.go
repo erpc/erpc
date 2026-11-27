@@ -148,9 +148,11 @@ type EvmStatePoller struct {
 	// callGasCap is the upstream's measured eth_call gas cap, 0 while
 	// unknown; callGasCapAt is the unix nanoseconds its last probe started,
 	// dated back after one that failed without the node's answer, so a probe
-	// falls due an hour after it (CallGasCap).
-	callGasCap   atomic.Uint64
-	callGasCapAt atomic.Int64
+	// falls due an hour after it (CallGasCap); callGasCapProbed is set once a
+	// probe has ended, so an unknown cap no longer means one being measured.
+	callGasCap       atomic.Uint64
+	callGasCapAt     atomic.Int64
+	callGasCapProbed atomic.Bool
 
 	// chainIdRecheck is the pending eth_chainId check of a chain-identity
 	// cordon, nil while none; chainIdRecheckUnwatch stops watching appCtx
@@ -1438,6 +1440,25 @@ const (
 // pushed: no fetch of the voter brought the header, so to the block clock
 // it arrives as a push does.
 func (k HeaderKind) pushed() bool { return k == HeaderStreamed || k == HeaderCached }
+
+// label names k in metrics: the via of erpc_head_sight_delay_seconds.
+func (k HeaderKind) label() string {
+	switch k {
+	case HeaderPolled:
+		return "poll"
+	case HeaderStreamed:
+		return "push"
+	case HeaderForkPolled:
+		return "fork_poll"
+	case HeaderCached:
+		return "cache"
+	case HeaderReadFull:
+		return "read"
+	case HeaderHeld:
+		return "held"
+	}
+	return "unknown"
+}
 
 // PollIntake takes a bound poller's latest and finalized headers.
 type PollIntake interface {
