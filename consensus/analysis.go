@@ -256,7 +256,7 @@ func newConsensusAnalysis(lg *zerolog.Logger, ctx context.Context, config *confi
 // responseTypeVoteRank orders response types by their usefulness as a
 // consensus vote: a real result beats a consensus-valid error, which beats
 // an infrastructure error. Used by dedupeByUpstream to pick which of an
-// upstream's duplicate responses keeps its vote.
+// upstream's duplicate responses keeps its vote, and by SlotVoteRank.
 func responseTypeVoteRank(rt ResponseType) int {
 	switch rt {
 	case ResponseTypeNonEmpty:
@@ -603,13 +603,7 @@ func classifyAndHashResponse(r *execResult, ctx context.Context, config *config)
 			return
 		}
 
-		// Classify agreed-upon JSON-RPC errors and execution exceptions as consensus-valid errors.
-		// Only true infrastructure issues (like timeouts, network/server failures) are infrastructure errors.
-		if isConsensusValidError(r.Err) || isAgreedUponError(r.Err) {
-			r.CachedResponseType = ResponseTypeConsensusError
-		} else {
-			r.CachedResponseType = ResponseTypeInfrastructureError
-		}
+		r.CachedResponseType = errorResponseType(r.Err)
 		r.CachedHash, _ = resultOrErrorToHash(r, ctx, config)
 		if r.CachedHash == "" {
 			r.CachedHash = "error:generic"
@@ -626,12 +620,7 @@ func classifyAndHashResponse(r *execResult, ctx context.Context, config *config)
 		return
 	}
 
-	// Use NormalizedResponse-aware emptyish check to capture method-specific semantics (e.g., EVM logs)
-	if r.Result != nil && r.Result.IsResultEmptyish(ctx) {
-		r.CachedResponseType = ResponseTypeEmpty
-	} else {
-		r.CachedResponseType = ResponseTypeNonEmpty
-	}
+	r.CachedResponseType = resultResponseType(ctx, r.Result)
 
 	if size, err := jr.Size(ctx); err == nil {
 		r.CachedResponseSize = size
@@ -642,6 +631,44 @@ func classifyAndHashResponse(r *execResult, ctx context.Context, config *config)
 		r.CachedResponseType = ResponseTypeInfrastructureError
 		r.CachedHash = "error:generic"
 	}
+}
+
+// errorResponseType classifies an error answer that is not
+// ErrUpstreamsExhausted. Agreed-upon JSON-RPC errors and execution
+// exceptions are consensus-valid errors. Only true infrastructure issues
+// (like timeouts, network/server failures) are infrastructure errors.
+func errorResponseType(err error) ResponseType {
+	if isConsensusValidError(err) || isAgreedUponError(err) {
+		return ResponseTypeConsensusError
+	}
+	return ResponseTypeInfrastructureError
+}
+
+// resultResponseType classifies a result whose JSON-RPC body parsed, with the
+// NormalizedResponse-aware emptyish check that captures method-specific
+// semantics (e.g., EVM logs).
+func resultResponseType(ctx context.Context, result *common.NormalizedResponse) ResponseType {
+	if result != nil && result.IsResultEmptyish(ctx) {
+		return ResponseTypeEmpty
+	}
+	return ResponseTypeNonEmpty
+}
+
+// SlotVoteRank ranks one answer of a consensus slot by its value as a vote,
+// as classifyAndHashResponse and responseTypeVoteRank rank it. An answer
+// from no upstream at all (ErrUpstreamsExhausted, ErrNoUpstreamsLeftToSelect)
+// ranks below every upstream's own answer.
+func SlotVoteRank(ctx context.Context, result *common.NormalizedResponse, err error) int {
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted, common.ErrCodeNoUpstreamsLeftToSelect) {
+			return -1
+		}
+		return responseTypeVoteRank(errorResponseType(err))
+	}
+	if resultToJsonRpcResponse(result, ctx) == nil {
+		return responseTypeVoteRank(ResponseTypeInfrastructureError)
+	}
+	return responseTypeVoteRank(resultResponseType(ctx, result))
 }
 
 // resultOrErrorToHash computes a hash for a result, considering both success and error cases.
