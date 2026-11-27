@@ -128,6 +128,11 @@ func svmResult(req *common.NormalizedRequest, jrReq *common.JsonRpcRequest, resu
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
+	return svmRawResult(req, jrReq, resultBytes)
+}
+
+// svmRawResult wraps already-encoded result JSON in the envelope.
+func svmRawResult(req *common.NormalizedRequest, jrReq *common.JsonRpcRequest, resultBytes []byte) (*common.NormalizedResponse, error) {
 	jsonRpcResp := &common.JsonRpcResponse{}
 	if err := jsonRpcResp.SetID(jrReq.ID); err != nil {
 		return nil, fmt.Errorf("failed to set ID: %w", err)
