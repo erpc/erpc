@@ -33,11 +33,13 @@ type LabeledCounter struct {
 	state atomic.Pointer[counterState]
 }
 
-// counterState is the mutable pair a rebuild replaces: the underlying Vec and
-// the schema→retained-position projection that matches its label set.
+// counterState is the mutable set a rebuild replaces: the underlying Vec, the
+// schema→retained-position projection that matches its label set, and the
+// holds on its projected series (nil when nothing is projected away).
 type counterState struct {
 	activeIdx []int
 	vec       *prometheus.CounterVec
+	holds     *seriesHolds
 }
 
 // newLabeledCounterUnregistered builds the counter without registering it. This
@@ -68,6 +70,7 @@ func (lc *LabeledCounter) buildState() *counterState {
 	return &counterState{
 		activeIdx: idx,
 		vec:       prometheus.NewCounterVec(lc.opts, active),
+		holds:     newSeriesHolds(idx, lc.schema),
 	}
 }
 
@@ -88,7 +91,12 @@ func (lc *LabeledCounter) rebuildInPlace() {
 
 func (lc *LabeledCounter) Describe(ch chan<- *prometheus.Desc) { lc.state.Load().vec.Describe(ch) }
 func (lc *LabeledCounter) Collect(ch chan<- prometheus.Metric) { lc.state.Load().vec.Collect(ch) }
-func (lc *LabeledCounter) Reset()                              { lc.state.Load().vec.Reset() }
+
+// Reset removes every series, and with them every hold.
+func (lc *LabeledCounter) Reset() {
+	st := lc.state.Load()
+	st.holds.reset(st.vec.Reset)
+}
 
 func (lc *LabeledCounter) assertArity(vals []string) {
 	if len(vals) != len(lc.schema) {
@@ -109,17 +117,31 @@ func (lc *LabeledCounter) WithLabelValues(vals ...string) prometheus.Counter {
 	return st.vec.WithLabelValues(project(vals, st.activeIdx)...)
 }
 
-// DeleteLabelValues removes the series for the given FULL-schema label set,
-// honoring the same convention as WithLabelValues. Returns true if a series
-// existed and was deleted. Used by the idle-counter sweep to release series
-// for label combinations that have gone quiet.
+// AcquireLabelValues is WithLabelValues for a caller that keeps the returned
+// Counter for the full tuple vals and releases it with DeleteLabelValues once
+// idle. Acquire each full tuple once per release: the projected series stays
+// while any full tuple mapped onto it is held.
+func (lc *LabeledCounter) AcquireLabelValues(vals ...string) prometheus.Counter {
+	lc.assertArity(vals)
+	st := lc.state.Load()
+	if st.holds == nil {
+		return st.vec.WithLabelValues(vals...)
+	}
+	return acquireSeries(st.holds, project(vals, st.activeIdx), st.vec.WithLabelValues)
+}
+
+// DeleteLabelValues releases the FULL-schema tuple vals, honoring the same
+// convention as WithLabelValues, and removes its series once no full tuple
+// acquired onto it is still held. Returns true if a series existed and was
+// deleted. Used by the idle sweeps to release series for label combinations
+// that have gone quiet.
 func (lc *LabeledCounter) DeleteLabelValues(vals ...string) bool {
 	lc.assertArity(vals)
 	st := lc.state.Load()
-	if len(st.activeIdx) == len(lc.schema) {
+	if st.holds == nil {
 		return st.vec.DeleteLabelValues(vals...)
 	}
-	return st.vec.DeleteLabelValues(project(vals, st.activeIdx)...)
+	return st.holds.release(project(vals, st.activeIdx), st.vec.DeleteLabelValues)
 }
 
 // ActiveLabelValues projects full-schema values down to the retained subset, so
