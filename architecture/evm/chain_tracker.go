@@ -1022,7 +1022,7 @@ func (t *ChainTracker) handleHeader(msg trackerMsg) {
 	if t.selector == "" && h.timestamp > 0 {
 		t.observeDelays(msg, h)
 	}
-	t.clock.saw(h.number, now, from, msg.via, t.sampledBlockTime())
+	t.clock.saw(h.number, now, from, msg.via, t.sampledBlockTime(), h.timestamp)
 	t.exportOff()
 	if msg.vote != voteSource {
 		if len(t.pins) == 0 {
@@ -2783,9 +2783,14 @@ func (t *ChainTracker) observeDelays(msg trackerMsg, h *chainHeader) {
 
 // exportOff sets erpc_head_clock_offset_blocks to the clock's offset when
 // it moved: where the ladder's last rung aims, in block times after the
-// predicted sight (headClock.off).
+// predicted sight (headClock.off); on a slot chain, where its probe aims
+// after the slot's timestamp (headClock.aim).
 func (t *ChainTracker) exportOff() {
-	if off := t.clock.off; off != t.offShown {
+	off := t.clock.off
+	if t.clock.arrival {
+		off = float64(t.clock.aim) / float64(t.sampledBlockTime())
+	}
+	if off != t.offShown {
 		t.offShown = off
 		telemetry.GaugeHandle(telemetry.MetricHeadClockOffsetBlocks, t.projectId(), t.networkLabel(), t.laneLabel()).Set(off)
 	}
