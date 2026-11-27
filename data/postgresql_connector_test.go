@@ -214,14 +214,33 @@ func TestPostgreSQLConnector_List(t *testing.T) {
 		}
 	})
 
-	t.Run("offset token resumes after the given position", func(t *testing.T) {
-		token := base64.StdEncoding.EncodeToString([]byte(`{"offset":2}`))
-		items, next, err := c.List(ctx, ConnectorMainIndex, 10, token)
-		require.NoError(t, err)
-		assert.Empty(t, next)
-		require.Len(t, items, 1)
-		assert.Equal(t, "pk3", items[0].PartitionKey)
-	})
+	for name, change := range map[string]func(context.Context, *PostgreSQLConnector) error{
+		"row removed": func(ctx context.Context, c *PostgreSQLConnector) error { return c.Delete(ctx, "pk1", "rk") },
+		"row added": func(ctx context.Context, c *PostgreSQLConnector) error {
+			return c.Set(ctx, "pk0", "rk", []byte("v"), nil)
+		},
+	} {
+		t.Run(name+" before the cursor between pages hides and repeats no key", func(t *testing.T) {
+			ctx, c := newReadyPgConnector(t, pgConnectorConfig(uri, newPgTable("pg_list_change")))
+			for i := 1; i <= 5; i++ {
+				require.NoError(t, c.Set(ctx, fmt.Sprintf("pk%d", i), "rk", []byte("v"), nil))
+			}
+			items, next, err := c.List(ctx, ConnectorMainIndex, 2, "")
+			require.NoError(t, err)
+			require.Len(t, items, 2)
+			require.NoError(t, change(ctx, c))
+
+			var rest []string
+			for pages := 0; next != "" && pages < 5; pages++ {
+				items, next, err = c.List(ctx, ConnectorMainIndex, 2, next)
+				require.NoError(t, err)
+				for _, it := range items {
+					rest = append(rest, it.PartitionKey)
+				}
+			}
+			assert.Equal(t, []string{"pk3", "pk4", "pk5"}, rest)
+		})
+	}
 
 	t.Run("limit caps the page and the token reaches every row", func(t *testing.T) {
 		items, next, err := c.List(ctx, ConnectorMainIndex, 2, "")
@@ -245,6 +264,12 @@ func TestPostgreSQLConnector_List(t *testing.T) {
 
 	t.Run("token that is not json is rejected", func(t *testing.T) {
 		token := base64.StdEncoding.EncodeToString([]byte("not-json"))
+		_, _, err := c.List(ctx, ConnectorMainIndex, 2, token)
+		require.ErrorContains(t, err, "invalid pagination token format")
+	})
+
+	t.Run("token without a last row is rejected, not read as the first page", func(t *testing.T) {
+		token := base64.StdEncoding.EncodeToString([]byte(`{"offset":2}`))
 		_, _, err := c.List(ctx, ConnectorMainIndex, 2, token)
 		require.ErrorContains(t, err, "invalid pagination token format")
 	})
