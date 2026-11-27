@@ -246,6 +246,7 @@ func CheckSourceHeader(n common.Network, u common.Upstream, sh SourceHeader) boo
 	}
 	ctx := context.Background()
 	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["` + h.parsed.Number + `",false]}`))
+	req.SetAgentName(common.AgentNameIntegrity)
 	req.SetNetwork(n)
 	jrr, err := common.NewJsonRpcResponseFromBytes([]byte("1"), h.raw, nil)
 	if err != nil {

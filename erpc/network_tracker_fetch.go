@@ -98,6 +98,7 @@ func (n *Network) seedHeadBlock(u common.Upstream, sh evm.SourceHeader) {
 		return
 	}
 	req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x%x",false]}`, sh.Cursor().Number)))
+	req.SetAgentName(common.AgentNameChainTracker)
 	req.SetNetwork(n)
 	req.SetDirectives(&common.RequestDirectives{UpstreamPolicies: common.UpstreamPoliciesTracker})
 	resp := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(jrr)
