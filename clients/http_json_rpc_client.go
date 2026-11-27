@@ -57,6 +57,68 @@ type GenericHttpJsonRpcClient struct {
 
 	// Extractor for architecture-specific error normalization
 	errorExtractor common.JsonRpcErrorExtractor
+
+	// Maximum time a single Read on an upstream HTTP response body may stall
+	// without receiving bytes after headers arrive. Defaults to
+	// defaultBodyIdleTimeout; overridden only in tests.
+	bodyIdleTimeout time.Duration
+}
+
+// defaultBodyIdleTimeout aborts an upstream HTTP response body when no bytes
+// arrive for this long after response headers are received. Unlike
+// ResponseHeaderTimeout (which covers TTFB) and http.Client.Timeout (which
+// covers the whole request), this timer resets on each read so large,
+// steadily streaming responses succeed while stalled bodies fail over fast.
+const defaultBodyIdleTimeout = 10 * time.Second
+
+var errBodyReadIdleTimeout = errors.New("upstream response body read stalled")
+
+// idleTimeoutReadCloser wraps an upstream HTTP response body so that if any
+// individual Read blocks for longer than timeout without returning bytes, it
+// cancels the request context with errBodyReadIdleTimeout. Cancelling the
+// request context lets net/http abort the underlying HTTP/1.1 or HTTP/2 stream
+// cleanly without racing against an active Read.
+type idleTimeoutReadCloser struct {
+	rc      io.ReadCloser
+	timeout time.Duration
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	once    sync.Once
+}
+
+func newIdleTimeoutReadCloser(
+	rc io.ReadCloser,
+	timeout time.Duration,
+	ctx context.Context,
+	cancel context.CancelCauseFunc,
+) io.ReadCloser {
+	return &idleTimeoutReadCloser{
+		rc:      rc,
+		timeout: timeout,
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+}
+
+func (r *idleTimeoutReadCloser) Read(p []byte) (int, error) {
+	if r.timeout <= 0 {
+		return r.rc.Read(p)
+	}
+	timer := time.AfterFunc(r.timeout, func() {
+		r.cancel(errBodyReadIdleTimeout)
+	})
+	n, err := r.rc.Read(p)
+	timer.Stop()
+	if err != nil && err != io.EOF && errors.Is(context.Cause(r.ctx), errBodyReadIdleTimeout) {
+		return n, errBodyReadIdleTimeout
+	}
+	return n, err
+}
+
+func (r *idleTimeoutReadCloser) Close() error {
+	err := r.rc.Close()
+	r.once.Do(func() { r.cancel(nil) })
+	return err
 }
 
 type batchRequest struct {
@@ -100,6 +162,7 @@ func NewGenericHttpJsonRpcClient(
 		gzipPool:        util.NewGzipReaderPool(),
 		gzipWriterPool:  util.NewGzipWriterPool(),
 		errorExtractor:  extractor,
+		bodyIdleTimeout: defaultBodyIdleTimeout,
 	}
 
 	if util.IsTest() {
@@ -418,8 +481,11 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		return
 	}
 
+	reqCtx, cancelReq := context.WithCancelCause(batchCtx)
+	defer cancelReq(nil)
+
 	reqStartTime := time.Now()
-	httpReq, err := c.prepareRequest(batchCtx, requestBody)
+	httpReq, err := c.prepareRequest(reqCtx, requestBody)
 	if err != nil {
 		for _, req := range requests {
 			req.err <- &common.BaseError{
@@ -496,12 +562,21 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		return
 	}
 
-	c.processBatchResponse(requests, resp)
+	c.processBatchResponse(reqCtx, cancelReq, reqStartTime, requests, resp)
 }
 
-func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	bodyBytes, cleanup, err := c.readResponseBody(resp, int(resp.ContentLength))
+func (c *GenericHttpJsonRpcClient) processBatchResponse(
+	reqCtx context.Context,
+	cancelReq context.CancelCauseFunc,
+	reqStartTime time.Time,
+	requests map[interface{}]*batchRequest,
+	resp *http.Response,
+) {
+	bodyBytes, cleanup, err := c.readResponseBody(reqCtx, cancelReq, resp, int(resp.ContentLength))
 	if err != nil {
+		if errors.Is(err, errBodyReadIdleTimeout) || errors.Is(context.Cause(reqCtx), errBodyReadIdleTimeout) {
+			err = common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), errBodyReadIdleTimeout)
+		}
 		for _, req := range requests {
 			req.err <- err
 		}
@@ -719,9 +794,11 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 
+	reqCtx, cancelReq := context.WithCancelCause(ctx)
 	reqStartTime := time.Now()
-	httpReq, err := c.prepareRequest(ctx, requestBody)
+	httpReq, err := c.prepareRequest(reqCtx, requestBody)
 	if err != nil {
+		cancelReq(nil)
 		common.SetTraceSpanError(span, err)
 		return nil, &common.BaseError{
 			Code:    "ErrHttp",
@@ -746,6 +823,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	hc := c.getHttpClient()
 	resp, err := hc.Do(httpReq)
 	if err != nil {
+		cancelReq(nil)
 		cause := effectiveCause(ctx)
 		c.logger.Debug().Err(err).Object("request", req).AnErr("contextError", cause).Msg("transport failure while sending single request")
 		if cause != nil {
@@ -762,15 +840,20 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 	// DO NOT close resp.Body here - it will be closed by NormalizedResponse after reading
 
-	var bodyReader io.ReadCloser = resp.Body
+	var bodyReader io.ReadCloser = newIdleTimeoutReadCloser(resp.Body, c.bodyIdleTimeout, reqCtx, cancelReq)
 	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gzReader, err := c.gzipPool.GetReset(resp.Body)
+		gzReader, err := c.gzipPool.GetReset(bodyReader)
 		if err != nil {
-			_ = resp.Body.Close() // Must close on error path
+			_ = bodyReader.Close() // Closes resp.Body and cancels reqCtx
+			if errors.Is(context.Cause(reqCtx), errBodyReadIdleTimeout) {
+				err = common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), errBodyReadIdleTimeout)
+				common.SetTraceSpanError(span, err)
+				return nil, err
+			}
 			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
-		// The wrapper closes resp.Body too; gzip.Reader.Close does not.
-		bodyReader = c.gzipPool.WrapGzipReader(gzReader, resp.Body)
+		// The wrapper closes bodyReader too (closing resp.Body and cancelling reqCtx); gzip.Reader.Close does not.
+		bodyReader = c.gzipPool.WrapGzipReader(gzReader, bodyReader)
 	}
 
 	nr := common.NewNormalizedResponse().
@@ -779,6 +862,12 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		WithExpectedSize(int(resp.ContentLength))
 
 	err = c.normalizeJsonRpcError(resp, nr)
+	if errors.Is(context.Cause(reqCtx), errBodyReadIdleTimeout) {
+		nr.Release()
+		timeoutErr := common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), errBodyReadIdleTimeout)
+		common.SetTraceSpanError(span, timeoutErr)
+		return nil, timeoutErr
+	}
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 	}
@@ -858,14 +947,23 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	return httpReq, nil
 }
 
-func (c *GenericHttpJsonRpcClient) readResponseBody(resp *http.Response, expectedSize int) ([]byte, func(), error) {
-	var reader io.ReadCloser = resp.Body
-	defer resp.Body.Close()
+func (c *GenericHttpJsonRpcClient) readResponseBody(
+	reqCtx context.Context,
+	cancelReq context.CancelCauseFunc,
+	resp *http.Response,
+	expectedSize int,
+) ([]byte, func(), error) {
+	bodyReader := newIdleTimeoutReadCloser(resp.Body, c.bodyIdleTimeout, reqCtx, cancelReq)
+	var reader io.ReadCloser = bodyReader
+	defer bodyReader.Close()
 
 	// Check if response is gzipped
 	if resp.Header.Get("Content-Encoding") == "gzip" {
-		gr, err := c.gzipPool.GetReset(resp.Body)
+		gr, err := c.gzipPool.GetReset(bodyReader)
 		if err != nil {
+			if errors.Is(context.Cause(reqCtx), errBodyReadIdleTimeout) {
+				return nil, nil, errBodyReadIdleTimeout
+			}
 			return nil, nil, fmt.Errorf("error creating gzip reader: %w", err)
 		}
 		defer c.gzipPool.Put(gr)

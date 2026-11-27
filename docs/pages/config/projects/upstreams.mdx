@@ -202,6 +202,7 @@ Fixed transport parameters (not user-configurable; same values for direct and pr
 | `MaxConnsPerHost` | `0` (unlimited) — prevents connection queuing under high RPS / high latency |
 | `IdleConnTimeout` | `90s` |
 | `ResponseHeaderTimeout` | `30s` |
+| `defaultBodyIdleTimeout` (per-read body stall) | `10s` |
 | `TLSHandshakeTimeout` | `10s` |
 | `ExpectContinueTimeout` | `1s` |
 | `http.Client.Timeout` (end-to-end) | `60s` |
