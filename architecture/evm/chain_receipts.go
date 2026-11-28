@@ -1069,6 +1069,7 @@ func (t *ChainTracker) noteFailed(j *receiptsJob, spec fetchSpec, res fetchResul
 func (t *ChainTracker) noteReceiptsFetch(ok bool) {
 	if ok {
 		t.receiptsFailing.Store(0)
+		t.probeLogs = false
 		if t.probe != nil {
 			t.probe.Stop()
 			t.probe = nil
@@ -1094,9 +1095,11 @@ func (t *ChainTracker) armProbe(after time.Duration) {
 }
 
 // runProbe is one fetch of the head block's receipts during an outage
-// (spec §10), or its logs when no upstream serves receipts or once
-// receipts have failed for LogsFallbackAfter, as a job switches; the next
-// one follows a block time later, at most ReceiptsProbeCeiling, until one
+// (spec §10), or its logs when no upstream serves receipts. Once receipts
+// have failed for LogsFallbackAfter, as a job switches, probes alternate
+// between receipts and logs, receipts first: either may end the outage, and
+// receipts that work again end it while logs keep failing. The next one
+// follows a block time later, at most ReceiptsProbeCeiling, until one
 // succeeds. With integrity on, the logs it fetched end the outage but are
 // not held: one upstream's logs never meet the evidence quorum's agreement.
 func (t *ChainTracker) runProbe() {
@@ -1111,7 +1114,10 @@ func (t *ChainTracker) runProbe() {
 		t.armProbe(next)
 		return
 	}
-	useLogs := !receipts || logs && time.Since(time.Unix(0, since)) >= LogsFallbackAfter.Load()
+	useLogs := !receipts
+	if receipts && logs && time.Since(time.Unix(0, since)) >= LogsFallbackAfter.Load() {
+		useLogs, t.probeLogs = t.probeLogs, !t.probeLogs
+	}
 	spec := t.receiptsSpec(classTipReceipts, head.hash, head, useLogs)
 	w := t.fetch.submit(nil, spec)
 	t.fetch.bg.Go(func() {
