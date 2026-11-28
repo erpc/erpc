@@ -45,6 +45,9 @@ type networkIntake struct {
 	// admitted is the voters topic admission admits, as the last pass
 	// read them, for per-transaction checks that take no lock.
 	admitted atomic.Pointer[[]string]
+	// fallbackHeld: at the last pass, failover was on and a primary source
+	// led, so topic admission held the fallback tier.
+	fallbackHeld atomic.Bool
 	// voterIds are the network-wide voters as they were last read, and the
 	// eligible set they were read from, for counting each header's outcome.
 	voterIds atomic.Pointer[voterSnapshot]
@@ -912,7 +915,16 @@ func (in *networkIntake) admit(now time.Time, w time.Duration) (next time.Durati
 	if old := in.admitted.Load(); old == nil || !slices.Equal(*old, ids) {
 		in.admitted.Store(&ids)
 	}
+	in.fallbackHeld.Store(tiers && leads)
 	return next
+}
+
+// holdsFallback reports whether topic admission held the fallback tier at
+// the last pass: failover is on and a primary source leads. Unlike admits,
+// it asks nothing of the fallback itself, so a fallback that is no voter
+// (benched, or with no head yet) is held only while a primary leads too.
+func (in *networkIntake) holdsFallback() bool {
+	return in.fallbackHeld.Load()
 }
 
 // admits reports whether topic admission admitted upstreamId at the last

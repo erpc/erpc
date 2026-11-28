@@ -788,6 +788,16 @@ type FailoverConfig struct {
 	// advances to the fallback tier within the same request only once every
 	// other upstream failed with an error retryable toward the network.
 	OnDefaultsExhausted *bool `yaml:"onDefaultsExhausted,omitempty" json:"onDefaultsExhausted"`
+
+	// OnDemandFallbackHeads holds the `newHeads` subscription of every
+	// `tier:fallback` WebSocket upstream while a primary source leads (it
+	// streamed heads for 60s without a break), as topic admission holds
+	// their pending-transaction topics; the fallback subscribes again once no
+	// primary streams. Saves a provider that bills each notification its
+	// stream while the primaries are healthy; the fallback's head then comes
+	// from its polls, so the confirmed head is corroborated by the primaries
+	// alone. Requires onDefaultsExhausted.
+	OnDemandFallbackHeads *bool `yaml:"onDemandFallbackHeads,omitempty" json:"onDemandFallbackHeads"`
 }
 
 // Enabled reports whether any failover behaviour is configured.
@@ -796,6 +806,21 @@ func (f *FailoverConfig) Enabled() bool {
 		return false
 	}
 	return f.OnDefaultsExhausted != nil && *f.OnDefaultsExhausted
+}
+
+// FallbackHeadsOnDemand reports whether fallback-tier newHeads are held
+// while a primary source leads (OnDemandFallbackHeads).
+func (f *FailoverConfig) FallbackHeadsOnDemand() bool {
+	return f.Enabled() && f.OnDemandFallbackHeads != nil && *f.OnDemandFallbackHeads
+}
+
+// Validate refuses onDemandFallbackHeads without onDefaultsExhausted: there
+// is no fallback tier to hold then.
+func (f *FailoverConfig) Validate(path string) error {
+	if f != nil && f.OnDemandFallbackHeads != nil && *f.OnDemandFallbackHeads && !f.Enabled() {
+		return fmt.Errorf("%s.onDemandFallbackHeads requires %s.onDefaultsExhausted: true", path, path)
+	}
+	return nil
 }
 
 // UnmarshalYAML provides backward compatibility for old single failsafe object format

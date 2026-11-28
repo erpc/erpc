@@ -302,7 +302,7 @@ poll u:  newHeads                       while demand has newHeads and admitted(u
 push u:  newPendingTransactions:<v>     while demand has it and admitted(u)
 ```
 
-`admitted(u)` is topic admission (§6.2).
+`admitted(u)` is topic admission (§6.2). With `failover.onDemandFallbackHeads`, a fallback-tier push source's `newHeads` is held too while admission holds the fallback tier (a primary leads); it asks nothing of the fallback itself, so a fallback that is no voter still subscribes once no primary leads.
 
 - One reconciler per network, on one goroutine, calls `Set`: at network init, whether or not a WebSocket or gRPC server runs; then on demand changes, hash-voter changes, subscribe answers (`Intake.Subscribed`), and on a timer at W.
 - Idle: no demand for 60s → polls, pending-transaction subscriptions and `onDemand` `newHeads` stop. Only a tap at pace 0 (ws `newHeads` or `logs`, gRPC `StreamBlocks`) wants `onDemand` `newHeads`; the integrity follow tap's pace is the block clock's.

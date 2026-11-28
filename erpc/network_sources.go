@@ -40,7 +40,9 @@ var (
 
 // sourceReconciler decides which topics each source of one network feeds:
 //
-//	push u: newHeads                    always, or onDemand while heads are wanted
+//	push u: newHeads                    always, or onDemand while heads are wanted;
+//	                                    with failover.onDemandFallbackHeads, a
+//	                                    fallback-tier u only while no primary leads
 //	push u: newPendingTransactions:<v>  while demand has it and admitted(u)
 //
 // Heads are wanted while a tap needs every block (pace 0: eth_subscribe
@@ -165,7 +167,9 @@ type source struct {
 	id      string
 	mode    common.SubscriptionSourceMode
 	clocked bool
-	push    *wsupstream.Adapter
+	// fallback: u is tagged tier:fallback.
+	fallback bool
+	push     *wsupstream.Adapter
 	// pushTopics is what push was last Set to; nil before.
 	pushTopics []indexer.Topic
 }
@@ -457,6 +461,10 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 		next = min(next, left)
 	}
 
+	// A fallback's newHeads wait, as its topics do, while a primary leads
+	// (failover.onDemandFallbackHeads): admit decided it just now.
+	holdFallback := r.nw.cfg != nil && r.nw.cfg.Failover.FallbackHeadsOnDemand() && r.nw.intake.holdsFallback()
+
 	heads, push := false, false
 	pushes := make(map[string]*wsupstream.Adapter)
 	for _, s := range r.sources {
@@ -466,7 +474,8 @@ func (r *sourceReconciler) pass(ctx context.Context) (next time.Duration) {
 			continue
 		}
 		push = true
-		r.setPush(s, wantHeads || s.mode == common.SubscriptionSourceAlways, pending, now, txHeadAt)
+		sourceHeads := (wantHeads || s.mode == common.SubscriptionSourceAlways) && !(s.fallback && holdFallback)
+		r.setPush(s, sourceHeads, pending, now, txHeadAt)
 		if slices.Contains(s.pushTopics, indexer.TopicNewHeads) {
 			pushes[s.id] = s.push
 		}
@@ -614,7 +623,7 @@ func (r *sourceReconciler) pushSource(upstreamId string) bool {
 // §6.3), source or not.
 func (r *sourceReconciler) newSource(u *upstream.Upstream) *source {
 	cfg := u.Config()
-	s := &source{id: u.Id(), mode: cfg.SubscriptionSource()}
+	s := &source{id: u.Id(), mode: cfg.SubscriptionSource(), fallback: isFallbackTier(u)}
 	p, ok := u.EvmStatePoller().(*evm.EvmStatePoller)
 	if ok && !p.IsObjectNull() {
 		p.BindIntake(r.nw.intake)
