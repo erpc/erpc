@@ -202,7 +202,7 @@ var (
 	MetricSubscriptionDedupEntries = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "subscription_dedup_entries",
-		Help:      "Transaction hashes held by the network's mempool feed dedup set: those added within 60s, at most 100,000 per network.",
+		Help:      "Dedup keys held by the network's relay feed across its relayed kinds, each kind's within its dedup window and key cap (newPendingTransactions: transaction hashes added within 60s, at most 100,000).",
 	}, []string{"project", "network"})
 
 	MetricNetworkSubscriptionLastHeadTimestamp = DefineGauge(prometheus.GaugeOpts{
@@ -232,7 +232,7 @@ var (
 	MetricSourceResubscribeTotal = DefineCounter(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "source_resubscribe_total",
-		Help:      "Pending-transaction topics a push source subscribed again after 60s without a message while heads carried transactions.",
+		Help:      "Relay topics a push source subscribed again after their kind's silence window (newPendingTransactions: 60s) without a message while heads carried transactions.",
 	}, []string{"project", "network", "upstream", "topic"})
 
 	MetricSharedCounterRemoteRejectedTotal = DefineCounter(prometheus.CounterOpts{

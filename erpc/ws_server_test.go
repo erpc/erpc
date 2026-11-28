@@ -24,9 +24,9 @@ import (
 	"weak"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsupstream"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/test/chainsim"
@@ -2003,7 +2003,7 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		}
 		evm.TrackerFetchHook.Store(&hook)
 		defer evm.TrackerFetchHook.Store(nil)
-		ends := tapEndsOf(indexer.SubTypeLogs)
+		ends := tapEndsOf(evmpubsub.KindLogs)
 		s.blocks(2)
 		require.Eventually(t, func() bool {
 			for _, cl := range s.openLogs() {
@@ -2018,7 +2018,7 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		}, 30*time.Second, 50*time.Millisecond, "both clients hold the logs of blocks %d and %d", a, a+1)
 		evm.TrackerFetchHook.Store(nil)
 		assert.GreaterOrEqual(t, nextCalls.Load(), int32(2), "block %d's receipts were fetched again after they left the feed", a+1)
-		assert.Equal(t, ends, tapEndsOf(indexer.SubTypeLogs), "no logs tap ended")
+		assert.Equal(t, ends, tapEndsOf(evmpubsub.KindLogs), "no logs tap ended")
 		require.Len(t, s.openLogs(), len(chainsim.Filters))
 	})
 
@@ -2112,7 +2112,7 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 		s.blocks(len(plan))
 		tr := s.tracker()
 		require.Eventually(t, func() bool { c, ok := tr.View().Head(); return ok && c.Number >= to }, 10*time.Second, 10*time.Millisecond, "block %d is sendable before the loops start", to)
-		logsEnds, headsEnds := tapEndsOf(indexer.SubTypeLogs), tapEndsOf(indexer.SubTypeNewHeads)
+		logsEnds, headsEnds := tapEndsOf(evmpubsub.KindLogs), tapEndsOf(evmpubsub.KindNewHeads)
 		close(hold)
 		released = true
 		s.blocks(3)
@@ -2123,7 +2123,7 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			for _, cl := range late {
 				cl.mu.Lock()
 				if d := cl.logsDiffLocked(s, from, to); d != "" {
-					diff = fmt.Sprintf("%s (logs of blocks %d..%d, close %d, logs tap ends %s): %s", cl.name, cl.first, cl.high, cl.closeCode, endsSince(logsEnds, tapEndsOf(indexer.SubTypeLogs)), d)
+					diff = fmt.Sprintf("%s (logs of blocks %d..%d, close %d, logs tap ends %s): %s", cl.name, cl.first, cl.high, cl.closeCode, endsSince(logsEnds, tapEndsOf(evmpubsub.KindLogs)), d)
 				}
 				cl.mu.Unlock()
 			}
@@ -2144,8 +2144,8 @@ func TestWebSocket_LogsSubscribeOnAllUpstreamsAndDedupe(t *testing.T) {
 			assert.Empty(t, cl.problems, "logs client %s", cl.name)
 			cl.mu.Unlock()
 		}
-		assert.Equal(t, logsEnds, tapEndsOf(indexer.SubTypeLogs), "no logs tap ended")
-		assert.Equal(t, headsEnds, tapEndsOf(indexer.SubTypeNewHeads), "no newHeads tap ended")
+		assert.Equal(t, logsEnds, tapEndsOf(evmpubsub.KindLogs), "no logs tap ended")
+		assert.Equal(t, headsEnds, tapEndsOf(evmpubsub.KindNewHeads), "no newHeads tap ended")
 	})
 
 	// A newHeads or logs subscribe on a topic the last source pass found

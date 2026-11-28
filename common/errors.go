@@ -3328,11 +3328,13 @@ type ErrNoSubscriptionSource struct{ BaseError }
 
 const ErrCodeNoSubscriptionSource ErrorCode = "ErrNoSubscriptionSource"
 
-var NewErrNoSubscriptionSource = func(networkId, subType string) error {
+// NewErrNoSubscriptionSource refuses a subscribe, made with method, of
+// subType on a network with no source that can feed it.
+var NewErrNoSubscriptionSource = func(networkId, method, subType string) error {
 	return &ErrNoSubscriptionSource{
 		BaseError{
 			Code:    ErrCodeNoSubscriptionSource,
-			Message: fmt.Sprintf("eth_subscribe %s needs a subscription source, none configured for network %s", subType, networkId),
+			Message: fmt.Sprintf("%s %s needs a subscription source, none configured for network %s", method, subType, networkId),
 			Details: map[string]interface{}{
 				"networkId": networkId,
 				"subType":   subType,
@@ -3375,13 +3377,13 @@ var NewErrInstanceSubscriptionLimitExceeded = func(max int) error {
 	}
 }
 
-// NewErrPendingVariantLimitExceeded refuses a newPendingTransactions
-// subscribe whose params would open more than max variants on a network.
-var NewErrPendingVariantLimitExceeded = func(max int) error {
+// NewErrRelayVariantLimitExceeded refuses a subscribe of relayed kind
+// whose params would open more than max variants on a network.
+var NewErrRelayVariantLimitExceeded = func(kind string, max int) error {
 	return &ErrSubscriptionLimitExceeded{
 		BaseError{
 			Code:    ErrCodeSubscriptionLimitExceeded,
-			Message: "maximum distinct newPendingTransactions params per network exceeded",
+			Message: "maximum distinct " + kind + " params per network exceeded",
 			Details: map[string]interface{}{
 				"maxVariantsPerNetwork": max,
 			},

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
 	"github.com/erpc/erpc/indexer/adapters/wsclient"
@@ -124,7 +125,7 @@ func (e wsWriteError) Error() string { return e.err.Error() }
 func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnection, sub wsclient.Subscription, opened <-chan struct{}, nw *Network, lane string, head func(context.Context) (indexer.Cursor, error)) {
 	wsTapLoopStarts()
 	tracker := nw.chainTracker
-	sends := newTapSends(nw, lane, "ws", indexer.SubTypeNewHeads)
+	sends := newTapSends(nw, lane, "ws", evmpubsub.KindNewHeads)
 	notify := wsc.notifier(sub)
 	var lag tapLag
 	emit := func(b indexer.Batch) (int, error) {
@@ -157,7 +158,7 @@ func (sm *SubscriptionManager) runNewHeads(ctx context.Context, wsc *WsConnectio
 	}
 	var feed indexer.ChainFeed = startedFeed{tracker, head}
 	for {
-		err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeNewHeads, gated(feed, nw, lane), nil, indexer.ReadOpts{}, emit)
+		err := nw.taps.RunChain(ctx, nw.Label(), "ws", evmpubsub.KindNewHeads, gated(feed, nw, lane), nil, indexer.ReadOpts{}, emit)
 		feed, lag = tracker, tapLag{}
 		var writeErr wsWriteError
 		if ctx.Err() != nil || errors.As(err, &writeErr) {

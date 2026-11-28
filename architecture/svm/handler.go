@@ -134,3 +134,12 @@ func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 func (h *SvmArchitectureHandler) NewJsonRpcErrorExtractor() common.JsonRpcErrorExtractor {
 	return NewJsonRpcErrorExtractor()
 }
+
+// PubSub is nil: SVM WebSocket subscriptions are not served yet.
+func (h *SvmArchitectureHandler) PubSub() common.PubSubDialect { return nil }
+
+// IgnoresNotification drops the id-less keepalive ping, as Agave does: it
+// is neither run nor answered, so it is not metered either.
+func (h *SvmArchitectureHandler) IgnoresNotification(method string) bool {
+	return method == MethodPing
+}

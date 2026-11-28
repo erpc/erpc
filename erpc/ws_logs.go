@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
+	"github.com/erpc/erpc/architecture/evm/evmpubsub"
 	"github.com/erpc/erpc/architecture/evm/logfilter"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/indexer"
@@ -61,7 +62,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 	wsTapLoopStarts()
 	tracker := nw.chainTracker
 	window := tracker.ReorgWindow()
-	sends := newTapSends(nw, lane, "ws", indexer.SubTypeLogs)
+	sends := newTapSends(nw, lane, "ws", evmpubsub.KindLogs)
 	notify := wsc.notifier(sub)
 	write := func(log json.RawMessage, d tapDelivery) error {
 		if err := notify.write(log, d); err != nil {
@@ -160,7 +161,7 @@ func (sm *SubscriptionManager) runLogs(ctx context.Context, wsc *WsConnection, s
 		}
 		return len(b.Applied), nil
 	}
-	err := nw.taps.RunChain(ctx, nw.Label(), "ws", indexer.SubTypeLogs, gated(startedFeed{logsFeed{tracker}, head}, nw, lane), nil,
+	err := nw.taps.RunChain(ctx, nw.Label(), "ws", evmpubsub.KindLogs, gated(startedFeed{logsFeed{tracker}, head}, nw, lane), nil,
 		indexer.ReadOpts{MayMatch: f.MayMatch}, emit)
 	var writeErr wsWriteError
 	if ctx.Err() != nil || errors.As(err, &writeErr) {

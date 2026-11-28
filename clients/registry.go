@@ -18,6 +18,15 @@ const (
 	ClientTypeWsJsonRpc   ClientType = "WsJsonRpc"
 )
 
+// pubSubDialect is the WebSocket pub/sub dialect of arch; nil if none.
+func pubSubDialect(arch common.NetworkArchitecture) common.PubSubDialect {
+	h, err := common.GetArchitectureHandler(arch)
+	if err != nil {
+		return nil
+	}
+	return h.PubSub()
+}
+
 type ClientInterface interface {
 	GetType() ClientType
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
@@ -124,6 +133,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 							parsedUrl,
 							cfg.JsonRpc,
 							manager.evmExtractor,
+							pubSubDialect(common.ArchitectureEvm),
 						)
 						if err != nil {
 							clientErr = fmt.Errorf("failed to create WebSocket client for upstream %v: %w", cfg.Id, err)
