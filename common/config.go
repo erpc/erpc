@@ -3219,6 +3219,18 @@ type EvmNetworkConfig struct {
 	// enable it where heads arrive promptly (e.g. over WebSocket).
 	ShortCircuitFutureBlocks *bool `yaml:"shortCircuitFutureBlocks,omitempty" json:"shortCircuitFutureBlocks,omitempty"`
 
+	// ProbeNullReceipts checks, on a null eth_getTransactionReceipt, whether the
+	// answering upstream has the transaction mined (one eth_getTransactionByHash
+	// to that upstream). If it does, the receipt exists but this upstream doesn't
+	// hold it (pruned, or not indexed yet), so the null becomes missing data and
+	// the request moves on to other upstreams, up to the fallback tier. The null
+	// is still returned when no upstream has the receipt.
+	// Every null receipt costs one extra upstream request, and clients polling
+	// for pending transactions produce many of them, so it is off by default.
+	// It takes effect only with a failover tier and outside consensus.
+	// DEFAULT: false.
+	ProbeNullReceipts *bool `yaml:"probeNullReceipts,omitempty" json:"probeNullReceipts,omitempty"`
+
 	// SafeBlockSource is an upstream id/tag selector for standard JSON-RPC
 	// requests carrying the `safe` block tag. Matching upstreams define and
 	// serve `safe`; empty (without an inherited network default) keeps existing
@@ -3304,6 +3316,13 @@ type EvmServedTipConfig struct {
 	// tracker, its pins and reorg handling, and every stream (newHeads, gRPC,
 	// taps) never see it.
 	FollowCacheHead bool `yaml:"followCacheHead,omitempty" json:"followCacheHead,omitempty"`
+}
+
+// ProbeNullReceiptsEnabled reports whether a null eth_getTransactionReceipt
+// is checked against the answering upstream's eth_getTransactionByHash.
+// Nil-receiver safe.
+func (c *EvmNetworkConfig) ProbeNullReceiptsEnabled() bool {
+	return c != nil && c.ProbeNullReceipts != nil && *c.ProbeNullReceipts
 }
 
 // ShortCircuitFutureBlocksEnabled reports whether a numbered eth_getBlockByNumber

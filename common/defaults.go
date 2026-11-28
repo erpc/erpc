@@ -2393,6 +2393,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			if n.Evm.ShortCircuitFutureBlocks == nil && defaults.Evm.ShortCircuitFutureBlocks != nil {
 				n.Evm.ShortCircuitFutureBlocks = defaults.Evm.ShortCircuitFutureBlocks
 			}
+			if n.Evm.ProbeNullReceipts == nil && defaults.Evm.ProbeNullReceipts != nil {
+				n.Evm.ProbeNullReceipts = defaults.Evm.ProbeNullReceipts
+			}
 			for method, on := range defaults.Evm.LocalAnswers {
 				if _, set := n.Evm.LocalAnswers[method]; !set {
 					if n.Evm.LocalAnswers == nil {
@@ -2627,8 +2630,10 @@ func DefaultEmptyResultAccept() []string {
 //
 // Note: eth_getBlockByHash is intentionally excluded because subgraph-based
 // upstreams commonly return empty for this method, which is expected behavior.
-// Note: eth_getTransactionReceipt is excluded as a quick remedy. Ideally we'd
-// only allow null for pending txs.
+// Note: eth_getTransactionReceipt is excluded because null is the right answer
+// for a pending tx; with evm.probeNullReceipts a null receipt becomes missing
+// data when the answering upstream has the tx mined
+// (architecture/evm/eth_getTransactionReceipt.go).
 // Note: eth_getBlockReceipts is excluded for the same reason as
 // eth_getTransactionReceipt — an empty array is the legitimate response for
 // blocks with zero transactions and should not be retried as missing data.
