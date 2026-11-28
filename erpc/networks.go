@@ -58,8 +58,11 @@ type Network struct {
 	// with evm.servedTip.followCacheHead it lowers network-wide reads'
 	// Latest (anchorHead). servedLatest is the Latest those reads took
 	// last, its Clamp's floor.
-	cacheHead         *evm.CacheHead
-	servedLatest      atomic.Int64
+	cacheHead    *evm.CacheHead
+	servedLatest atomic.Int64
+	// callGasCapShown is the network eth_call gas cap the gauge shows
+	// (MetricNetworkCallGasCap), so callGasCap sets it only on a change.
+	callGasCapShown   atomic.Uint64
 	metricsTracker    *health.Tracker
 	upstreamsRegistry *upstream.UpstreamsRegistry
 	// policyEngine replaces the legacy `selectionPolicyEvaluator *PolicyEvaluator` field
@@ -1526,10 +1529,12 @@ func (n *Network) rangeHeld(method string, u common.Upstream, refusal *common.He
 }
 
 // holdsBlock reports whether u's evidence (reachedHead, uncredited)
-// reaches block.
+// reaches block. headLagToleranceBlocks is no evidence: it lets the gate
+// send u a block above its head, and a node whose log index lacks the block
+// answers eth_getLogs with an empty range (spec §19 P23-band-tol).
 func (n *Network) holdsBlock(u common.Upstream, block int64) bool {
 	head := n.reachedHead(u, 0)
-	return head > 0 && common.EvmHeadReaches(u, head, block)
+	return head > 0 && head >= block
 }
 
 // logsGate is the logs gate on u's empty eth_getLogs answer of req, one
@@ -2558,7 +2563,9 @@ func (n *Network) heldOrder(ctx context.Context, req *common.NormalizedRequest, 
 // as the tag (bn its Head's Latest), only an upstream whose evidence shows
 // it behind bn goes last (tagHolds): its answer is its own head, served
 // once the view takes it. Then failover tiers, then voters with a stale
-// hash vote, and voters on a minority fork last.
+// hash vote, and voters on a minority fork last. An eth_call that names
+// more gas than some upstreams give puts those after all others
+// (gasShortLast).
 func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedRequest, method string, upsList []common.Upstream, bn int64, tag bool) []common.Upstream {
 	if n.Architecture() == common.ArchitectureEvm && len(upsList) > 1 && (bn > 0 || evm.ReadsBlock(method)) {
 		head := n.requestHead(ctx, req)
@@ -2588,7 +2595,7 @@ func (n *Network) preferUpstreams(ctx context.Context, req *common.NormalizedReq
 	if n.cfg.Failover.Enabled() {
 		upsList = tierUpstreamsByGroup(upsList)
 	}
-	return n.lateLast(upsList)
+	return gasShortLast(ctx, req, n.lateLast(upsList))
 }
 
 // readsHeadTag reports whether req's block tag reads the newest head
@@ -2801,6 +2808,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		common.SetTraceSpanError(forwardSpan, err)
 		return nil, err
 	}
+	if n.cfg.Architecture == common.ArchitectureEvm {
+		n.lowerCallGas(ctx, req)
+	}
 	forwardSpan.SetAttributes(attribute.String("request.finality", req.Finality(ctx).String()))
 
 	// Selector-enabled requests must not share in-flight results across
@@ -2943,25 +2953,25 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 			}
 		}
-		// (2) minContextSlot prefilter — an upstream whose tracked slot (at the
-		// request's commitment) is behind the caller's minContextSlot is a
-		// guaranteed -32016 round-trip; skip it before selection. Applies to any
-		// SVM request carrying the param, with or without consensus. Defensive
-		// fallback inside the filter keeps the pool non-empty so the -32016
-		// failover path still reports the truth when every upstream trails.
+		// (2) minContextSlot ordering — an upstream whose tracked slot (at the
+		// request's commitment) is more than a poll behind the caller's
+		// minContextSlot goes last, never out: the tracked slot trails the node
+		// by up to a poll, and the upstreams ahead may not serve the method.
+		// Applies to any SVM request carrying the param, with or without
+		// consensus.
 		if mcs := svm.MinContextSlotOf(ctx, req); mcs > 0 {
-			before := len(upsList)
 			// Same commitment-vs-finality distinction as (1): pick the slot
 			// counter the upstream will actually evaluate minContextSlot
 			// against.
 			finalized := svm.IsFinalizedCommitment(ctx, n, req)
-			upsList = svm.FilterByMinContextSlot(upsList, mcs, finalized)
-			if len(upsList) != before {
+			var moved int
+			upsList, moved = svm.OrderByMinContextSlot(n, upsList, mcs, finalized)
+			if moved > 0 {
 				lg.Debug().
-					Int("before", before).
-					Int("after", len(upsList)).
+					Int("behind", moved).
+					Int("upstreams", len(upsList)).
 					Int64("minContextSlot", mcs).
-					Msg("svm: filtered upstreams behind minContextSlot")
+					Msg("svm: upstreams behind minContextSlot ordered last")
 			}
 		}
 	}
@@ -3196,6 +3206,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// The fallback escape below swaps in its own picker, leaving the
 		// request's routed list untouched for later retries.
 		nextUpstream := effectiveReq.NextUpstream
+		// gas orders this leg's picks of an eth_call that names its gas.
+		gas := callGasFit(execSpanCtx, effectiveReq)
 		// An empty result is a miss (rather than a legitimate answer, like a
 		// pending tx's null receipt) only for a concrete block whose empty
 		// answer the refusal rule does not call final.
@@ -3240,6 +3252,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// upstream is available for the next failsafe retry round.
 					effectiveReq.ConsumedUpstreams.Delete(u)
 					loopSpan.SetAttributes(attribute.Bool("duplicate_selection", true))
+					loopSpan.End()
+					break
+				}
+				// A node short of the gas waits for a fitter one in flight
+				// (gasFit.waits); a consensus slot keeps its participant.
+				if !oneUpstreamOnly && gas.waits(effectiveReq, u) {
+					effectiveReq.ConsumedUpstreams.Delete(u)
+					loopSpan.SetAttributes(attribute.Bool("gas_short_waits", true))
 					loopSpan.End()
 					break
 				}
@@ -4141,6 +4161,8 @@ func (n *Network) upstreamHeads(eu common.EvmUpstream) (latest int64, finalized 
 
 // handleBlockSkip records telemetry when a block availability check causes an upstream to be skipped,
 // and triggers an async state poller refresh for retryable cases so subsequent retries see fresh block numbers.
+// The skip counts in upstream_request_skipped_total, never upstream_request_errors_total: no request was
+// sent, so upstream error-rate metrics and alerts must not see it.
 func (n *Network) handleBlockSkip(
 	ctx context.Context,
 	span trace.Span,
@@ -4158,11 +4180,9 @@ func (n *Network) handleBlockSkip(
 		attribute.Bool("skip_retryable", isRetryable),
 	)
 	finality := req.Finality(ctx)
-	telemetry.CounterHandle(telemetry.MetricUpstreamErrorTotal,
+	telemetry.CounterHandle(telemetry.MetricUpstreamSkippedTotal,
 		n.projectId, u.VendorName(), n.Label(), u.Id(), method,
-		common.ErrorFingerprint(skipErr), string(common.SeverityInfo),
-		req.CompositeType(), finality.String(),
-		req.UserId(), req.AgentName()).Inc()
+		finality.String(), req.UserId(), req.AgentName()).Inc()
 	errToStore := skipErr
 	if !isRetryable {
 		errToStore = common.NewErrUpstreamRequestSkipped(skipErr, u.Id())
@@ -4947,7 +4967,8 @@ func isFallbackTier(u common.Upstream) bool {
 // not yet attempted that NextUpstream may still select, ordered by their
 // heads as they are now, those holding bn first, with no I/O; for a Held
 // block, by when each most likely holds it, after waiting for the first
-// (awaitHolder). Upstreams the policy did not route stay the fallback
+// (awaitHolder). Upstreams short of an eth_call's gas go last either way
+// (gasShortLast). Upstreams the policy did not route stay the fallback
 // escape's.
 func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, attempted map[string]struct{}, bn int64) func() (common.Upstream, error) {
 	var rest []common.Upstream
@@ -4959,7 +4980,7 @@ func (n *Network) headFirst(ctx context.Context, req *common.NormalizedRequest, 
 	if r := req.HeadRefusal(); r != nil && r.Held {
 		rest = n.awaitHolder(ctx, req, rest, bn, true)
 	} else {
-		rest = n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil)
+		rest = gasShortLast(ctx, req, n.partitionUpstreamsByLatestBlock(rest, bn, creditCap(n.requestHead(ctx, req)), nil))
 	}
 	return func() (common.Upstream, error) {
 		for len(rest) > 0 {

@@ -69,6 +69,12 @@ var (
 		Help:      "Finalized block number of upstreams.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
+	MetricUpstreamCallGasCap = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_call_gas_cap",
+		Help:      "Most gas an upstream lets one eth_call use, as eRPC last measured it.",
+	}, []string{"project", "vendor", "network", "upstream"})
+
 	// MetricUpstreamSvmFirstAvailableSlot is an upstream's oldest stored block,
 	// from getBlocksWithLimit(0, 1). It is probed, and routing uses it, only
 	// for an upstream whose svm.blockAvailability declares a
@@ -127,6 +133,12 @@ var (
 		Namespace: "erpc",
 		Name:      "network_dynamic_block_time_milliseconds",
 		Help:      "Dynamically computed block time per network in milliseconds.",
+	}, []string{"project", "network"})
+
+	MetricNetworkCallGasCap = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "network_call_gas_cap",
+		Help:      "Most gas one eth_call may use on the network: evm.callGasCap, else the highest cap evm.callGasCapQuorum of its upstreams give; eRPC lowers a larger gas to it.",
 	}, []string{"project", "network"})
 
 	MetricUpstreamWebsocketConnected = DefineGauge(prometheus.GaugeOpts{
@@ -325,11 +337,36 @@ var (
 		Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	}, []string{"project", "network", "lane"})
 
+	MetricHeadSightDelaySeconds = DefineLabeledHistogram(prometheus.HistogramOpts{
+		Namespace: "erpc",
+		Name:      "head_sight_delay_seconds",
+		Help:      "Time from a block's timestamp to its first sight on this instance, by the channel that brought it (poll, push, fork_poll, cache, read, held). Whole-second timestamps read up to 1 s high on chains faster than 1 s.",
+		Buckets:   []float64{0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 10},
+	}, []string{"project", "network", "via"})
+
+	MetricHeadArrivalDelaySeconds = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_arrival_delay_seconds",
+		Help:      "Average time (each new block weighs 1/8) from a block's timestamp to its arrival on this instance from one source upstream, by bound: hit (its first answer holding the block, an upper bound for a fetch), miss (send of its last answer below the block when that was a fetch, a lower bound).",
+	}, []string{"project", "network", "upstream", "bound"})
+
+	MetricHeadClockOffsetBlocks = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_clock_offset_blocks",
+		Help:      "A lane block clock's offset: where its ladder's last rung aims, in block times after the predicted sight, in [-0.5, 1].",
+	}, []string{"project", "network", "lane"})
+
 	MetricHeadFirmLagBlocks = DefineGauge(prometheus.GaugeOpts{
 		Namespace: "erpc",
 		Name:      "head_firm_lag_blocks",
 		Help:      "Blocks between a lane view's Head and its Firm: the thin region.",
 	}, []string{"project", "network", "lane"})
+
+	MetricHeadHoldWaitSeconds = DefineGauge(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "head_hold_wait_seconds",
+		Help:      "A lane clock's learned hold time per upstream, by bound: after (longest current hold bound, while one held), wait (a held block's attempt wait), sure (after, once clockFit bounds fill the window).",
+	}, []string{"project", "network", "lane", "upstream", "bound"})
 
 	// MetricNetworkServedTipBlockNumber is the block number the network actually
 	// advertises/serves as the tip for a block tag (axis=latest|finalized): the

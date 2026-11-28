@@ -60,6 +60,24 @@ type headClock struct {
 	// the tail.
 	off    float64
 	offSet bool
+	// arrival: target is planned on its slot (planArrival), its probe sent
+	// to sight the block aim after the slot's timestamp, at slotAt (which
+	// an ahead fetch leaves alone, unlike sk). tsTop is the top sight's
+	// block timestamp (0: its header carries none); grid counts the first
+	// sights in a row timestamped a whole number of slots after the one
+	// before, a missed slot included (arrivalSlot). aim moves once per
+	// block, at its first sight within a quarter block of slotAt: up one
+	// step (delta) when the probe answered below the target, down a quarter
+	// step when it did not, within [0, bt/2]; so it settles where a fifth of
+	// the probes are early, and those find the block a step later; a missed
+	// slot or a late proposal moves nothing.
+	// aimSet: aim was laid.
+	arrival bool
+	tsTop   uint64
+	grid    int
+	slotAt  time.Time
+	aim     time.Duration
+	aimSet  bool
 	// out is the fetch off the ladder the clock waits on (catch-up,
 	// guarantee, holder, idle edge, cold) until it answers or its hedge
 	// time passes; nil while none is.
@@ -305,11 +323,18 @@ func (c *headClock) reset() {
 // s chain's first sights came 11 slots late and a 0.25 s chain's plans
 // went 2, 7, then 28 s out (#1426). Each open fetch answer below number
 // is decided (answered).
-func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt time.Duration) {
+func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt time.Duration, ts uint64) {
 	if n := len(c.sights); n > 0 && number <= c.sights[n-1].number {
 		c.confirmed(number, at, from, via, bt)
 		return
 	}
+	if n := len(c.sights); n > 0 && number == c.sights[n-1].number+1 && ts > c.tsTop && c.tsTop > 0 && bt >= 2*time.Second &&
+		int64(ts-c.tsTop)%int64(bt.Round(time.Second)/time.Second) == 0 {
+		c.grid++
+	} else {
+		c.grid = 0
+	}
+	c.tsTop = ts
 	if number >= c.target {
 		if c.scheduled {
 			c.skips++
@@ -317,6 +342,11 @@ func (c *headClock) saw(number uint64, at, from time.Time, via HeaderKind, bt ti
 		// A shared early fetch sent before S_k answered leaves S_k unrun.
 		if c.ladder && c.provedFor != c.target && (c.aheadFor != c.target || c.kEarly) {
 			switch {
+			case c.arrival && from.After(c.slotAt.Add(bt/4)):
+			case c.arrival && c.kEarly:
+				c.aim = min(c.aim+c.delta, bt/2)
+			case c.arrival:
+				c.aim = max(c.aim-c.delta/4, 0)
 			case !c.kEarly:
 				c.off = max(c.off-1.0/400, -0.5)
 			case c.byFirstTail(from):
@@ -947,9 +977,20 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 	if !c.offSet {
 		c.off, c.offSet = 0.1, true
 	}
-	c.planned, c.ladder, c.kEarly, c.early, c.scheduled = true, false, false, false, true
+	c.planned, c.ladder, c.kEarly, c.early, c.scheduled, c.arrival = true, false, false, false, true, false
 	c.rungs, c.sent, c.votes, c.aheadNull = nil, nil, nil, nil
 	c.k, c.tails, c.tailsSent, c.misses, c.lastDone = 1, 0, 0, 0, time.Time{}
+	if slot, ok := c.arrivalSlot(bt); ok && pace == 0 && !c.pushFed() {
+		// A header's timestamp sets this plan: one more than a slot off this
+		// instance's clock (a skewed node, a slot long past) plans by the fit.
+		if !c.aimSet {
+			c.aim, c.aimSet = bt/10, true
+		}
+		if sk := time.Unix(int64(c.tsTop), 0).Add(slot + c.aim); abs(time.Until(sk)) <= slot {
+			t.planArrival(cands, bt, sk)
+			return
+		}
+	}
 	p := c.predict(c.target, bt)
 	sk := p.Add(time.Duration(c.off * float64(bt)))
 	c.sk = sk
@@ -1006,6 +1047,52 @@ func (t *ChainTracker) plan(cands []clockCandidate, bt, pace time.Duration) {
 		cand.poller.ClockTurn(r.at)
 	}
 	slices.SortStableFunc(c.rungs, func(a, b clockRung) int { return a.at.Compare(b.at) })
+}
+
+// arrivalSlot is the lane's slot when its blocks come on a fixed grid
+// whose timestamps say when each slot began: a block time of 2 s or more
+// within 1% of whole seconds, and the last clockFit first sights each
+// timestamped a whole number of slots after the one before (grid). On such a
+// chain the slot's timestamp, not this instance's past sights, says when
+// the next block may arrive; on a faster or irregular chain whole-second
+// timestamps cannot.
+func (c *headClock) arrivalSlot(bt time.Duration) (time.Duration, bool) {
+	slot := bt.Round(time.Second)
+	return slot, c.grid >= clockFit && slot >= 2*time.Second && abs(bt-slot) <= slot/100
+}
+
+// planArrival lays the target's fires on a slot chain (arrivalSlot), to
+// sight it at sk, aim after the target's slot timestamp: the due turns as
+// rungs a step (delta, max(2 RTT, bt/40)) apart, the voter likeliest to
+// hold it first (byScore) last, as the probe; with no turn due, that
+// voter's one probe. When every fire answers below the target, retries
+// follow a step apart, at most a block's worth of turns of them, within a
+// quarter block after sk (addTail), then at the lane's turn rate.
+func (t *ChainTracker) planArrival(cands []clockCandidate, bt time.Duration, sk time.Time) {
+	c := &t.clock
+	c.arrival, c.ladder, c.sk, c.slotAt, c.predicted = true, true, sk, sk, sk
+	c.delta = max(2*c.bestRTT(cands), bt/40)
+	due, wait := c.dueTurns(cands, sk, bt)
+	for _, cand := range wait {
+		cand.poller.ClockTurn(sk.Add(bt))
+	}
+	turns := c.byScore(due)
+	if len(turns) == 0 {
+		if order := c.byScore(cands); len(order) > 0 {
+			c.rungs = []clockRung{{id: order[0].id, at: sk.Add(-c.rttOf(order[0].id)), kind: "probe"}}
+		}
+		return
+	}
+	slices.Reverse(turns)
+	c.k = len(turns)
+	for j, cand := range turns {
+		r := clockRung{id: cand.id, at: sk.Add(-time.Duration(c.k-1-j)*c.delta - c.rttOf(cand.id)), kind: "rung", turn: true}
+		if j == c.k-1 {
+			r.kind = "probe"
+		}
+		c.rungs = append(c.rungs, r)
+		cand.poller.ClockTurn(r.at)
+	}
 }
 
 // cachedProbe lays a cache-fed lane's fire for the target, predicted at
@@ -1217,9 +1304,14 @@ func (t *ChainTracker) addTail(cands []clockCandidate, now time.Time, bt time.Du
 		r.id = cand.id
 		if !hedge {
 			r.at = c.lastDone.Add(c.tailGap(cands, cand, bt))
-			if c.ladder && c.tails > 1 {
+			switch {
+			case c.arrival && c.ladder && c.tails <= max(1, int(math.Ceil(turnsPerBlock(cands, bt)-1e-9))) &&
+				c.lastDone.Add(c.delta).Sub(c.slotAt) < bt/4:
+				r.at = c.lastDone.Add(c.delta)
+				cand.poller.ClockTurn(r.at)
+			case c.ladder && c.tails > 1:
 				per := time.Duration(float64(bt) / max(1, turnsPerBlock(cands, bt)))
-				if paid := c.sk.Add(time.Duration(c.tails-1) * per); paid.After(r.at) {
+				if paid := c.sk.Add(time.Duration(c.tails-1) * per); paid.After(r.at) && !c.arrival {
 					r.at = paid
 				}
 				if paced := c.lastFire.Add(per); paced.After(r.at) {
@@ -1925,7 +2017,8 @@ func (t *ChainTracker) publishCredit() {
 			if isSure {
 				full++
 			}
-			if was, had := p.after[id]; had != ok || ok && was != d || p.wait[id] != v.heldWait() ||
+			wait, voted := p.wait[id]
+			if was, had := p.after[id]; !voted || had != ok || ok && was != d || wait != v.heldWait() ||
 				isSure != (ok && len(v.bounds) == clockFit) || isSure && sure != d {
 				same = false
 				break
@@ -1946,9 +2039,36 @@ func (t *ChainTracker) publishCredit() {
 			}
 		}
 	}
-	if old := t.credit.Swap(p); old != nil {
+	old := t.credit.Swap(p)
+	if old != nil {
 		close(old.moved)
 	}
+	t.exportCredit(old, p)
+}
+
+// exportCredit sets erpc_head_hold_wait_seconds to p's hold waits and
+// deletes the series old had that p lacks: a voter that no longer holds
+// leaves no stale after or sure. Runs only on a publish that moved, so
+// it uses the vec directly; a cached handle would outlive its deletion.
+func (t *ChainTracker) exportCredit(old, p *holdCredit) {
+	project, network, lane := t.projectId(), t.networkLabel(), t.laneLabel()
+	export := func(bound string, now map[string]time.Duration, was map[string]time.Duration) {
+		for id, d := range now {
+			telemetry.MetricHeadHoldWaitSeconds.WithLabelValues(project, network, lane, id, bound).Set(d.Seconds())
+		}
+		for id := range was {
+			if _, ok := now[id]; !ok {
+				telemetry.MetricHeadHoldWaitSeconds.DeleteLabelValues(project, network, lane, id, bound)
+			}
+		}
+	}
+	var was holdCredit
+	if old != nil {
+		was = *old
+	}
+	export("after", p.after, was.after)
+	export("wait", p.wait, was.wait)
+	export("sure", p.sure, was.sure)
 }
 
 // CreditMoved is closed at the next publish of hold evidence (holdCredit),

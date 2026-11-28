@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
@@ -507,7 +508,7 @@ func (p *PostgreSQLConnector) applySchema(ctx context.Context, conn *pgxpool.Poo
 		if _, err := conn.Exec(ctx, fmt.Sprintf(`
             SELECT cron.schedule('*/5 * * * *', $$
                 DELETE FROM %s
-                WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
+                WHERE expires_at IS NOT NULL AND expires_at <= NOW()
             $$)
         `, p.table)); err != nil {
 			p.logger.Warn().Err(err).Msg("failed to create pg_cron cleanup job, falling back to local cleanup")
@@ -638,14 +639,17 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	ctx, cancel := context.WithTimeout(ctx, p.getTimeout)
 	defer cancel()
 
-	if strings.HasSuffix(partitionKey, "*") || strings.HasSuffix(rangeKey, "*") {
+	// A trailing '*' in the partition key is a wildcard only on the reverse
+	// index. On the main index it is part of the key: SVM writes reads without
+	// minContextSlot under "svm:<cluster>:*", and other connectors read it as is.
+	if strings.HasSuffix(rangeKey, "*") || (index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*")) {
 		return p.getWithWildcard(ctx, pool, index, partitionKey, rangeKey)
 	}
 
 	query = fmt.Sprintf(`
 		SELECT value FROM %s
 		WHERE partition_key = $1 AND range_key = $2
-		AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+		AND (expires_at IS NULL OR expires_at > NOW())
 	`, p.table)
 	args = []interface{}{partitionKey, rangeKey}
 
@@ -1175,6 +1179,11 @@ func postgresLikePattern(s string) string {
 	return b.String()
 }
 
+// postgresPartitionSegmentRegex is common.IsPartitionSegment as a Postgres
+// regex. A reverse-index '*' stands for the block ref only: LIKE alone lets
+// "evm:1:%" read "evm:1:systx:*", the same chain under cacheKeySuffix systx.
+const postgresPartitionSegmentRegex = `^([^:\\]|\\.)*$`
+
 // getWithWildcard takes an already-acquired pool from the caller so it
 // shares the same RLock-scope and skips a redundant nil check. Caller is
 // responsible for ensuring `pool` is non-nil and that the connMu read lock
@@ -1193,27 +1202,30 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, pool *pgxpool
 	var args []interface{}
 
 	if index == ConnectorReverseIndex {
+		args = []interface{}{rangeKey, postgresLikePattern(partitionKey)}
+		segment := ""
+		if prefix, ok := strings.CutSuffix(partitionKey, "*"); ok && prefix != "" {
+			segment = fmt.Sprintf("AND substr(partition_key, %d) ~ $3", utf8.RuneCountInString(prefix)+1)
+			args = append(args, postgresPartitionSegmentRegex)
+		}
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE range_key = $1 AND partition_key LIKE $2 ESCAPE E'\\'
-			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			  %s
+			  AND (expires_at IS NULL OR expires_at > NOW())
 			ORDER BY partition_key DESC
 			LIMIT 1
-		`, p.table)
-		args = []interface{}{
-			strings.ReplaceAll(rangeKey, "*", "%"),
-			postgresLikePattern(partitionKey),
-		}
+		`, p.table, segment)
 	} else {
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE partition_key = $1 AND range_key LIKE $2 ESCAPE E'\\'
-			  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+			  AND (expires_at IS NULL OR expires_at > NOW())
 			ORDER BY partition_key DESC
 			LIMIT 1
 		`, p.table)
 		args = []interface{}{
-			strings.ReplaceAll(partitionKey, "*", "%"),
+			partitionKey,
 			postgresLikePattern(rangeKey),
 		}
 	}
@@ -1265,7 +1277,7 @@ func (p *PostgreSQLConnector) cleanupExpired(ctx context.Context) error {
 
 	result, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		DELETE FROM %s
-		WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
+		WHERE expires_at IS NOT NULL AND expires_at <= NOW()
 	`, p.table))
 	if err != nil {
 		return err
@@ -1358,34 +1370,40 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	ctx, cancel := context.WithTimeout(ctx, p.getTimeout)
 	defer cancel()
 
-	// Parse pagination token - we'll use base64 encoded JSON with offset info
-	offset := 0
+	// The token names the last row returned and the next page starts after it,
+	// so rows added or removed between pages neither repeat nor hide a key.
+	var after *postgresListToken
 	if paginationToken != "" {
 		decoded, err := base64.StdEncoding.DecodeString(paginationToken)
 		if err != nil {
 			return nil, "", fmt.Errorf("invalid pagination token: %w", err)
 		}
-		var tokenData map[string]int
-		err = json.Unmarshal(decoded, &tokenData)
-		if err != nil {
+		after = &postgresListToken{}
+		if err := json.Unmarshal(decoded, after); err != nil {
 			return nil, "", fmt.Errorf("invalid pagination token format: %w", err)
 		}
-		if o, ok := tokenData["offset"]; ok {
-			offset = o
+		if after.PartitionKey == nil || after.RangeKey == nil {
+			return nil, "", fmt.Errorf("invalid pagination token format: no last row in %s", decoded)
 		}
 	}
 
+	where := "(expires_at IS NULL OR expires_at > NOW())"
+	args := []interface{}{limit + 1} // one extra row says another page follows
+	if after != nil {
+		where += " AND (partition_key, range_key) > ($2, $3)"
+		args = append(args, *after.PartitionKey, *after.RangeKey)
+	}
 	query := fmt.Sprintf(`
-		SELECT partition_key, range_key, value 
-		FROM %s 
-		WHERE expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC'
+		SELECT partition_key, range_key, value
+		FROM %s
+		WHERE %s
 		ORDER BY partition_key, range_key
-		LIMIT $1 OFFSET $2
-	`, p.table)
+		LIMIT $1
+	`, p.table, where)
 
-	p.logger.Debug().Str("query", query).Int("limit", limit).Int("offset", offset).Msg("listing from postgres")
+	p.logger.Debug().Str("query", query).Int("limit", limit).Msg("listing from postgres")
 
-	rows, err := pool.Query(ctx, query, limit+1, offset) // Get one extra to check if there are more
+	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		p.handleConnectionFailure(err)
 		common.SetTraceSpanError(span, err)
@@ -1393,12 +1411,12 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 	}
 	defer rows.Close()
 
-	results := make([]KeyValuePair, 0, limit)
-	count := 0
-
+	var results []KeyValuePair // not sized by limit: the caller picks limit, up to 2^53
+	hasMore := false
 	for rows.Next() {
-		if count >= limit {
-			break // We got the extra record, so there are more results
+		if len(results) == limit {
+			hasMore = true // the extra row: another page follows
+			break
 		}
 
 		var partitionKey, rangeKey string
@@ -1414,7 +1432,6 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 			RangeKey:     rangeKey,
 			Value:        value,
 		})
-		count++
 	}
 
 	if err := rows.Err(); err != nil {
@@ -1423,27 +1440,23 @@ func (p *PostgreSQLConnector) List(ctx context.Context, index string, limit int,
 		return nil, "", err
 	}
 
-	// Prepare next token
 	nextToken := ""
-	if count == limit {
-		// Check if there's a next page by seeing if we got more than limit records
-		hasMore := false
-		for rows.Next() {
-			hasMore = true
-			break
+	if hasMore && len(results) > 0 {
+		last := results[len(results)-1]
+		tokenBytes, err := json.Marshal(postgresListToken{PartitionKey: &last.PartitionKey, RangeKey: &last.RangeKey})
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to create pagination token: %w", err)
 		}
-
-		if hasMore {
-			tokenData := map[string]int{"offset": offset + limit}
-			tokenBytes, err := json.Marshal(tokenData)
-			if err != nil {
-				return nil, "", fmt.Errorf("failed to create pagination token: %w", err)
-			}
-			nextToken = base64.StdEncoding.EncodeToString(tokenBytes)
-		}
+		nextToken = base64.StdEncoding.EncodeToString(tokenBytes)
 	}
 
 	return results, nextToken, nil
+}
+
+// postgresListToken is the last row of a List page. Pointers tell an absent key from "".
+type postgresListToken struct {
+	PartitionKey *string `json:"pk"`
+	RangeKey     *string `json:"rk"`
 }
 
 const postgresPurgeBatchSize = 5000

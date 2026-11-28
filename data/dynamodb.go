@@ -447,15 +447,18 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		}
 
 		// In the reverse index, the rangeKey is the HASH key and partitionKey is the RANGE key
+		segmentPrefix, segmentOnly := "", false
 		if partitionKey != "" && partitionKey != "*" {
-			if strings.HasSuffix(partitionKey, "*") {
+			prefix, wildcard := strings.CutSuffix(partitionKey, "*")
+			if wildcard {
 				keyCondition += " AND begins_with(#rkey, :rkey)"
+				segmentPrefix, segmentOnly = prefix, true
 			} else {
 				keyCondition += " AND #rkey = :rkey"
 			}
 			exprAttrNames["#rkey"] = aws.String(d.partitionKeyName)
 			exprAttrValues[":rkey"] = &dynamodb.AttributeValue{
-				S: aws.String(strings.TrimSuffix(partitionKey, "*")),
+				S: aws.String(prefix),
 			}
 		}
 
@@ -479,6 +482,10 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		qi.ExpressionAttributeNames["#ttl"] = aws.String(d.ttlAttributeName)
 		qi.ExpressionAttributeValues[":now"] = &dynamodb.AttributeValue{N: aws.String(strconv.FormatInt(now, 10))}
 		qi.ExpressionAttributeValues[":zero"] = &dynamodb.AttributeValue{N: aws.String("0")}
+		if segmentOnly {
+			// begins_with lets "evm:1:" match "evm:1:systx:*"; the '*' stands for the block ref only.
+			qi.ProjectionExpression = aws.String("#val, #ttl, #rkey")
+		}
 
 		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
 		defer cancel()
@@ -492,6 +499,12 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		// Find the first non-expired item from the page (FilterExpression already helps)
 		var chosen map[string]*dynamodb.AttributeValue
 		for _, it := range result.Items {
+			if segmentOnly {
+				pk := it[d.partitionKeyName]
+				if pk == nil || pk.S == nil || !common.IsPartitionSegment(strings.TrimPrefix(*pk.S, segmentPrefix)) {
+					continue
+				}
+			}
 			// Extra safeguard: client-side TTL validation
 			if ttl, exists := it[d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
 				expirationTime, perr := strconv.ParseInt(*ttl.N, 10, 64)

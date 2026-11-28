@@ -144,7 +144,7 @@ func routedResponseOnNetwork(t *testing.T, method, networkId, networkLabel strin
 	t.Helper()
 	resp := routedResponse(t, method)
 	req := resp.Request()
-	req.SetNetwork(&Network{networkId: networkId, networkLabel: networkLabel})
+	req.SetNetwork(&Network{networkId: networkId, networkLabel: networkLabel, cfg: &common.NetworkConfig{Architecture: common.ArchitectureEvm}})
 	return resp
 }
 
@@ -154,7 +154,7 @@ func TestCostHeaders_NetworkIdAndAlias(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	s.writeCostHeaders(context.Background(), w, []interface{}{
-		routedResponseOnNetwork(t, "eth_call", "evm:42161", "arbitrum-one"),
+		routedResponseOnNetwork(t, "eth_call", "evm:42161", "arbitrum-one").WithFinality(common.DataFinalityStateUnfinalized),
 	})
 
 	h := w.Header()
@@ -162,6 +162,7 @@ func TestCostHeaders_NetworkIdAndAlias(t *testing.T) {
 	// The alias is exactly what eRPC's own `network` metric label carries, so a
 	// proxy attributing usage per network matches eRPC's numbers by construction.
 	assert.Equal(t, "arbitrum-one", h.Get("X-ERPC-Network-Alias"))
+	assert.Equal(t, "unfinalized", h.Get("X-ERPC-Finality"))
 }
 
 func TestCostHeaders_NetworkAliasFallsBackToId(t *testing.T) {
@@ -204,12 +205,13 @@ func TestCostHeaders_NetworkOmittedWhenBatchDisagrees(t *testing.T) {
 	// about the response — omit rather than pick a side.
 	w := httptest.NewRecorder()
 	s.writeCostHeaders(context.Background(), w, []interface{}{
-		routedResponseOnNetwork(t, "eth_call", "evm:1", "mainnet"),
-		routedResponseOnNetwork(t, "eth_call", "evm:8453", "base"),
+		routedResponseOnNetwork(t, "eth_call", "evm:1", "mainnet").WithFinality(common.DataFinalityStateFinalized),
+		routedResponseOnNetwork(t, "eth_call", "evm:8453", "base").WithFinality(common.DataFinalityStateRealtime),
 	})
 
 	h := w.Header()
 	assert.Empty(t, h.Get("X-ERPC-Network-Id"))
 	assert.Empty(t, h.Get("X-ERPC-Network-Alias"))
+	assert.Empty(t, h.Get("X-ERPC-Finality"), "a batch of mixed finality has no single value")
 	assert.Equal(t, "2", h.Get("X-ERPC-Calls"))
 }

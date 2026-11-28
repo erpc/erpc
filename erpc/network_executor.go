@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/architecture/svm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/consensus"
 	"github.com/erpc/erpc/failsafe"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
@@ -723,7 +724,25 @@ func (e *networkExecutor) runHedge(
 		_ = idx // hedge tag could be carried via a typed context value
 		return inner(hctx, req)
 	}
+	// A consensus slot casts one vote. The race returned its kept or last
+	// leg's answer, often a leg that re-asked another seat's failing
+	// upstream or found none left: that replaced this seat's own answer,
+	// and a tie's verdict then hung on which leg finished last. The slot
+	// never votes below the best answer it got, ranked as the round ranks
+	// votes (consensus.SlotVoteRank): the earliest on a tie, the race's
+	// answer over an equal one.
+	var (
+		vote     *common.NormalizedResponse
+		voteErr  error
+		voteRank int
+		voted    bool
+	)
 	keep := func(r *common.NormalizedResponse, err error) bool {
+		if consensusSlot {
+			if rank := consensus.SlotVoteRank(ctx, r, err); !voted || rank > voteRank {
+				vote, voteErr, voteRank, voted = r, err, rank, true
+			}
+		}
 		kept := false
 		defer func() {
 			if !kept || r == nil || r.Upstream() == nil {
@@ -817,9 +836,16 @@ func (e *networkExecutor) runHedge(
 		},
 		OnIdle: pace.IdleUntil,
 	}
-	return failsafe.RunHedged[*common.NormalizedResponse](
+	resp, err := failsafe.RunHedged[*common.NormalizedResponse](
 		ctx, e.cfg.Hedge.MaxCount, delayFn, wrapInner, keep, release, hooks,
 	)
+	if consensusSlot && voted && ctx.Err() == nil && consensus.SlotVoteRank(ctx, resp, err) < voteRank {
+		if resp != nil {
+			resp.Release()
+		}
+		return vote, voteErr
+	}
+	return resp, err
 }
 
 // settledNull reports whether req's empty result ends its hedge race: a

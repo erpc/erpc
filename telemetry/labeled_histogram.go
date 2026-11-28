@@ -28,11 +28,13 @@ type LabeledHistogram struct {
 	state atomic.Pointer[histogramState]
 }
 
-// histogramState is the mutable pair a rebuild replaces: the underlying Vec and
-// the schema→retained-position projection that matches its label set.
+// histogramState is the mutable set a rebuild replaces: the underlying Vec, the
+// schema→retained-position projection that matches its label set, and the
+// holds on its projected series (nil when nothing is projected away).
 type histogramState struct {
 	activeIdx []int
 	vec       *prometheus.HistogramVec
+	holds     *seriesHolds
 }
 
 // NewLabeledHistogram creates a HistogramVec under the current policy without
@@ -62,6 +64,7 @@ func buildHistogramState(opts prometheus.HistogramOpts, schema []string) *histog
 	return &histogramState{
 		activeIdx: idx,
 		vec:       prometheus.NewHistogramVec(opts, active),
+		holds:     newSeriesHolds(idx, schema),
 	}
 }
 
@@ -99,17 +102,35 @@ func (lh *LabeledHistogram) WithLabelValues(vals ...string) prometheus.Observer 
 	return st.vec.WithLabelValues(project(vals, st.activeIdx)...)
 }
 
-func (lh *LabeledHistogram) Reset() { lh.state.Load().vec.Reset() }
+// Reset removes every series, and with them every hold.
+func (lh *LabeledHistogram) Reset() {
+	st := lh.state.Load()
+	st.holds.reset(st.vec.Reset)
+}
 
-// DeleteLabelValues removes the series for the given label set from the
-// underlying HistogramVec — wrapper around `prometheus.HistogramVec.DeleteLabelValues`
-// that honors the same FULL-schema convention as WithLabelValues. The
-// active-filter projection has to match exactly with what was used at
-// creation time; passing the full schema in schema-order is how every
-// call site already does it.
+// AcquireLabelValues is WithLabelValues for a caller that keeps the returned
+// Observer for the full tuple vals and releases it with DeleteLabelValues once
+// idle. Acquire each full tuple once per release: the projected series stays
+// while any full tuple mapped onto it is held.
+func (lh *LabeledHistogram) AcquireLabelValues(vals ...string) prometheus.Observer {
+	if len(vals) != len(lh.schema) {
+		panic(fmt.Sprintf("labeled_histogram: %s expected %d label values (%v), got %d",
+			lh.metricName, len(lh.schema), lh.schema, len(vals)))
+	}
+	st := lh.state.Load()
+	if st.holds == nil {
+		return st.vec.WithLabelValues(vals...)
+	}
+	return acquireSeries(st.holds, project(vals, st.activeIdx), st.vec.WithLabelValues)
+}
+
+// DeleteLabelValues releases the FULL-schema tuple vals, in the same schema
+// order as WithLabelValues, and removes its series from the underlying
+// HistogramVec once no full tuple acquired onto that series is still held.
+// Without projection every tuple is its own series and is removed at once.
 //
 // Returns true if a series existed and was deleted, false if no such
-// label combination was registered (idempotent / safe-to-call-twice).
+// label combination was registered or other holds keep it.
 //
 // Used by the health tracker's idle-sweep loop to release Prometheus
 // series for label combinations (method × userId × agentName, …) that
@@ -121,10 +142,10 @@ func (lh *LabeledHistogram) DeleteLabelValues(vals ...string) bool {
 			lh.metricName, len(lh.schema), lh.schema, len(vals)))
 	}
 	st := lh.state.Load()
-	if len(st.activeIdx) == len(lh.schema) {
+	if st.holds == nil {
 		return st.vec.DeleteLabelValues(vals...)
 	}
-	return st.vec.DeleteLabelValues(project(vals, st.activeIdx)...)
+	return st.holds.release(project(vals, st.activeIdx), st.vec.DeleteLabelValues)
 }
 
 // ActiveLabelValues projects full-schema values down to the retained subset.

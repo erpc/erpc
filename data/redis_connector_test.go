@@ -122,7 +122,7 @@ func TestRedisConnector_List(t *testing.T) {
 	require.NoError(t, c.Set(ctx, "b", "2", []byte("vb"), nil))
 	require.NoError(t, c.Set(rctx, "evm:1:100", "rk", []byte("vblock"), nil))
 
-	t.Run("main index lists primary keys split on the first colon", func(t *testing.T) {
+	t.Run("main index lists primary keys split on the last colon", func(t *testing.T) {
 		items, next, err := c.List(ctx, ConnectorMainIndex, 100, "")
 		require.NoError(t, err)
 		assert.Empty(t, next)
@@ -132,7 +132,7 @@ func TestRedisConnector_List(t *testing.T) {
 		}
 		assert.Equal(t, "va", got["a|1"])
 		assert.Equal(t, "vb", got["b|2"])
-		assert.Equal(t, "vblock", got["evm|1:100:rk"])
+		assert.Equal(t, "vblock", got["evm:1:100|rk"])
 	})
 
 	t.Run("reverse index lists only reverse entries", func(t *testing.T) {

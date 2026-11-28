@@ -462,97 +462,163 @@ func TestHedgeConsensus_MissingDataSlotIdlePastCap_RoundEndsEarly(t *testing.T) 
 	})
 }
 
-func TestHedgeConsensus_EmptyOldBlockIsKeptAsSlotVote(t *testing.T) {
-	// Live smokebox shape: two internals return JSON-RPC null for a pruned
-	// block; two archives agree on it. Hedge keep() used to reject that null
-	// and the recovery leg then returned n/a ErrUpstreamsExhausted, so the
-	// empty vote never reached analysis.groups and the empty-outside-retention
-	// waiver could not fire.
-	util.ResetGock()
-	t.Cleanup(util.ResetGock)
-	util.SetupMocksForEvmStatePoller()
-
+func TestHedgeConsensus_SlotAnswerIsKeptAsVote(t *testing.T) {
 	block := map[string]interface{}{
 		"hash":   "0x5c504ed432cb51138bcf09aa5e8a410dd4a1e204ef84bfed1be16dfba1b22060",
 		"number": "0x10",
 	}
 	nullBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": nil}
 	blockBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": block}
-	isOldBlock := func(r *http.Request) bool {
-		body := util.SafeReadBody(r)
-		return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x10"`)
+	nullRoundBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{
+		"code": 12, "message": "requested epoch was a null round (16)", "data": 16,
+	}}
+	serverErrorBody := map[string]interface{}{"jsonrpc": "2.0", "id": 1, "error": map[string]interface{}{
+		"code": -32603, "message": "internal error",
+	}}
+	nullRoundIsTheAnswer := func(t *testing.T, resp *common.NormalizedResponse, err error) {
+		var jre *common.ErrJsonRpcExceptionInternal
+		if err != nil {
+			require.ErrorAs(t, err, &jre, "the agreed null round must reach the client, got: %v", err)
+		} else {
+			require.NotNil(t, resp)
+			jrr, jrrErr := resp.JsonRpcResponse()
+			require.NoError(t, jrrErr)
+			require.NotNil(t, jrr.Error, "the agreed null round must reach the client as an error")
+			require.ErrorAs(t, jrr.Error, &jre)
+		}
+		assert.Equal(t, common.JsonRpcErrorNumber(12), jre.NormalizedCode())
 	}
-	for _, host := range []string{"rpc1", "rpc2"} {
-		gock.New(fmt.Sprintf("http://%s.localhost", host)).
-			Post("").
-			Filter(isOldBlock).
-			Persist().
-			Reply(200).
-			JSON(nullBody)
-	}
-	for _, host := range []string{"rpc3", "rpc4"} {
-		gock.New(fmt.Sprintf("http://%s.localhost", host)).
-			Post("").
-			Filter(isOldBlock).
-			Persist().
-			Reply(200).
-			JSON(blockBody)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	upstreamConfigs := []*common.UpstreamConfig{
-		{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "rpc3", Endpoint: "http://rpc3.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-		{Type: common.UpstreamTypeEvm, Id: "rpc4", Endpoint: "http://rpc4.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-	}
-	consensusCfg := &common.ConsensusPolicyConfig{
-		MaxParticipants:       4,
-		AgreementThreshold:    2,
-		DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
-		PreferNonEmpty:        &common.TRUE,
-		PreferLargerResponses: &common.TRUE,
-		// The waiver needs every internal's vote, and a wait cap seals a
-		// partial bag fail-closed. The default 5 ms result cap arms once one
-		// internal and one external answered, so a slot scheduled late on a
-		// busy host lost its vote.
-		MaxWaitOnResult: common.NewStaticDuration(5 * time.Second),
-		MaxWaitOnEmpty:  common.NewStaticDuration(5 * time.Second),
-		// Head 0x11118888 (util.SetupMocksForEvmStatePoller): block 16 is far
-		// past retention 100, proven from the request, not from an answer.
-		RequiredParticipants: []*common.ConsensusRequiredParticipant{
-			{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1, WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 100},
-			{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
+	cases := []struct {
+		name               string
+		internal, external map[string]interface{}
+		// seats, when set, is the round's MaxParticipants with no
+		// participant rules, and the upstreams take the seats in order.
+		seats int
+		check func(t *testing.T, resp *common.NormalizedResponse, err error)
+	}{
+		{
+			// Live smokebox shape: two internals return JSON-RPC null for a pruned
+			// block; two archives agree on it. Hedge keep() used to reject that null
+			// and the recovery leg then returned n/a ErrUpstreamsExhausted, so the
+			// empty vote never reached analysis.groups and the empty-outside-retention
+			// waiver could not fire.
+			name:     "pruned internals answer null",
+			internal: nullBody,
+			external: blockBody,
+			check: func(t *testing.T, resp *common.NormalizedResponse, err error) {
+				require.NoError(t, err, "empty internals must remain consensus votes so the empty-outside-retention waiver can fire, got: %v", err)
+				require.NotNil(t, resp)
+				jrr, jrrErr := resp.JsonRpcResponse()
+				require.NoError(t, jrrErr)
+				assert.Contains(t, jrr.GetResultString(), `"number":"0x10"`)
+			},
+		},
+		{
+			// Every upstream answers that the height holds no block, as a
+			// skipped Solana slot does: a permanent missing-data verdict. Each
+			// slot's recovery leg found no upstream left, and its
+			// ErrUpstreamsExhausted replaced the slot's answer, so the round
+			// failed with low participants.
+			name:     "every upstream answers a null round",
+			internal: nullRoundBody,
+			external: nullRoundBody,
+			check:    nullRoundIsTheAnswer,
+		},
+		{
+			// A two-seat round: both seats' upstreams answer a null round, and
+			// the two upstreams left fail with a server error. Each seat's
+			// hedge leg re-asked a failing upstream, and its later server
+			// error replaced the seat's null round: the client got the
+			// server error, not the null round the round agreed on.
+			name:     "two null-round seats whose hedge legs fail",
+			internal: nullRoundBody,
+			external: serverErrorBody,
+			seats:    2,
+			check:    nullRoundIsTheAnswer,
 		},
 	}
-	require.NoError(t, consensusCfg.SetDefaults())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			t.Cleanup(util.ResetGock)
+			util.SetupMocksForEvmStatePoller()
 
-	networkConfig := &common.NetworkConfig{
-		Architecture: common.ArchitectureEvm,
-		Evm:          &common.EvmNetworkConfig{ChainId: 123},
-		Failsafe: []*common.FailsafeConfig{{
-			MatchMethod: "*",
-			Hedge: &common.HedgePolicyConfig{
-				Delay:    common.NewStaticDuration(50 * time.Millisecond),
-				MaxCount: 1,
-			},
-			Retry:     &common.RetryPolicyConfig{MaxAttempts: 1},
-			Consensus: consensusCfg,
-		}},
+			isOldBlock := func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x10"`)
+			}
+			for i, host := range []string{"rpc1", "rpc2", "rpc3", "rpc4"} {
+				reply := tc.internal
+				if i >= 2 {
+					reply = tc.external
+				}
+				gock.New(fmt.Sprintf("http://%s.localhost", host)).
+					Post("").
+					Filter(isOldBlock).
+					Persist().
+					Reply(200).
+					JSON(reply)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			upstreamConfigs := []*common.UpstreamConfig{
+				{Type: common.UpstreamTypeEvm, Id: "rpc1", Endpoint: "http://rpc1.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc2", Endpoint: "http://rpc2.localhost", Tags: []string{"type:internal"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc3", Endpoint: "http://rpc3.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+				{Type: common.UpstreamTypeEvm, Id: "rpc4", Endpoint: "http://rpc4.localhost", Tags: []string{"type:external"}, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			}
+			consensusCfg := &common.ConsensusPolicyConfig{
+				MaxParticipants:       4,
+				AgreementThreshold:    2,
+				DisputeBehavior:       common.ConsensusDisputeBehaviorReturnError,
+				PreferNonEmpty:        &common.TRUE,
+				PreferLargerResponses: &common.TRUE,
+				// The waiver needs every internal's vote, and a wait cap seals a
+				// partial bag fail-closed. The default 5 ms result cap arms once one
+				// internal and one external answered, so a slot scheduled late on a
+				// busy host lost its vote.
+				MaxWaitOnResult: common.NewStaticDuration(5 * time.Second),
+				MaxWaitOnEmpty:  common.NewStaticDuration(5 * time.Second),
+				// Head 0x11118888 (util.SetupMocksForEvmStatePoller): block 16 is far
+				// past retention 100, proven from the request, not from an answer.
+				RequiredParticipants: []*common.ConsensusRequiredParticipant{
+					{Tag: "type:internal", MinParticipants: 2, MinAgreement: 1, WaiveAgreementOnEmptyOutsideRetention: true, RetentionBlocks: 100},
+					{Tag: "type:external", MinParticipants: 2, MinAgreement: 1},
+				},
+			}
+			if tc.seats > 0 {
+				consensusCfg.MaxParticipants = tc.seats
+				consensusCfg.RequiredParticipants = nil
+			}
+			require.NoError(t, consensusCfg.SetDefaults())
+
+			networkConfig := &common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm:          &common.EvmNetworkConfig{ChainId: 123},
+				Failsafe: []*common.FailsafeConfig{{
+					MatchMethod: "*",
+					Hedge: &common.HedgePolicyConfig{
+						Delay:    common.NewStaticDuration(50 * time.Millisecond),
+						MaxCount: 1,
+					},
+					Retry:     &common.RetryPolicyConfig{MaxAttempts: 1},
+					Consensus: consensusCfg,
+				}},
+			}
+
+			network := setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
+			if tc.seats > 0 {
+				network.PinUpstreamOrderForTest("rpc1", "rpc2", "rpc3", "rpc4")
+			}
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`))
+			req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
+
+			resp, err := network.Forward(ctx, req)
+			tc.check(t, resp, err)
+		})
 	}
-
-	network := setupTestNetwork(t, ctx, upstreamConfigs, networkConfig)
-	req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x10",false]}`))
-	req.SetDirectives(&common.RequestDirectives{RetryEmpty: false})
-
-	resp, err := network.Forward(ctx, req)
-	require.NoError(t, err, "empty internals must remain consensus votes so the empty-outside-retention waiver can fire, got: %v", err)
-	require.NotNil(t, resp)
-	jrr, jrrErr := resp.JsonRpcResponse()
-	require.NoError(t, jrrErr)
-	assert.Contains(t, jrr.GetResultString(), `"number":"0x10"`)
 }
 
 func setupTestNetworkWithHedgeAndConsensus(

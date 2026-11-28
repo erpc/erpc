@@ -792,11 +792,11 @@ func (r *RedisConnector) List(ctx context.Context, index string, limit int, pagi
 				rangeKey = parts[2]
 			}
 		} else {
-			// For regular keys: partitionKey:rangeKey
-			parts := strings.SplitN(keys[i], ":", 2)
-			if len(parts) == 2 {
-				partitionKey = parts[0]
-				rangeKey = parts[1]
+			// For regular keys: partitionKey:rangeKey. Only API keys are listed,
+			// and their range key holds no ':' while the key itself may.
+			if sep := strings.LastIndex(keys[i], ":"); sep > 0 {
+				partitionKey = keys[i][:sep]
+				rangeKey = keys[i][sep+1:]
 			}
 		}
 

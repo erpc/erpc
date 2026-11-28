@@ -910,7 +910,8 @@ func isJSONNull(result []byte) bool {
 }
 
 // forwardOnce returns the result and the id of the upstream that served it
-// ("" when it came from the cache).
+// ("" when it came from the cache). Each call, a retry or re-ask included,
+// bills into the parent as the same call sent by a client would.
 func (qe *EvmQueryExecutor) forwardOnce(ctx context.Context, pg *shimPageState, method string, params []interface{}, pin string) ([]byte, string, error) {
 	ctx, span := common.StartDetailSpan(ctx, "Query.ForwardSubrequest")
 	defer span.End()
@@ -922,8 +923,8 @@ func (qe *EvmQueryExecutor) forwardOnce(ctx context.Context, pg *shimPageState, 
 	}
 	req := common.NewNormalizedRequestFromJsonRpcRequest(jrq)
 	req.SetNetwork(qe.network)
-	if qe.parentRequestId != nil {
-		req.SetParentRequestId(qe.parentRequestId)
+	if qe.parent != nil {
+		req.SetParentRequestId(qe.parent.ID())
 	}
 	req.ApplyDirectiveDefaults(qe.network.Config().DirectiveDefaults)
 	if pin != "" || pg.skipCache {
@@ -937,6 +938,9 @@ func (qe *EvmQueryExecutor) forwardOnce(ctx context.Context, pg *shimPageState, 
 		req.SetDirectives(d)
 	}
 	resp, err := qe.network.Forward(ctx, req)
+	if qe.parent != nil {
+		qe.parent.ExecState().RecordSubrequest(method, isBillableResult(ctx, resp, err), req.ExecState())
+	}
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, "", err

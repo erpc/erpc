@@ -137,7 +137,7 @@ https://docs.erpc.cloud/config/projects/providers.llms.txt`}
 | `id` | string | vendor name (`p.Id = p.Vendor`) | Unique handle; appears in `<PROVIDER>` placeholder and bootstrap task names `network/<networkId>/provider/<id>`. Shorthand-converted providers get `<vendor>-<n>` (process-wide counter). No duplicate-id check — two providers with the same default id both run and may produce upstream-id collisions. <SourceLink file="common/defaults.go" lines="1474-1476" /> <SourceLink file="util/ids.go" lines="32-41" /> |
 | `vendor` | string | — (required) | Must exactly match one of 26 registered `Name()` strings: `goldsky, alchemy, blastapi, conduit, drpc, dwellir, envio, etherspot, infura, pimlico, quicknode, llama, thirdweb, repository, superchain, tenderly, chainstack, onfinality, erpc, blockpi, ankr, routemesh, blockdaemon, satelink, spectrum, willow`. Unknown vendor → startup error. <SourceLink file="thirdparty/vendors_registry.go" lines="12-37" /> |
 | `settings` | `map[string]any` (VendorSettings) | `nil` | Free-form, vendor-interpreted. Redacted in JSON/YAML marshaling (never echoed in admin dump). See per-vendor tables below. <SourceLink file="common/config.go" lines="667-700" /> |
-| `settings.creditUnits` | `map[string]int64` | `nil` | Vendor-generic (works for every vendor): per-method **credit-unit** overrides for the cost accounting behind `X-ERPC-Credits` (`server.costHeaders`). Merged per method over the vendor's built-in `CreditUnitsProvider` table (alchemy and quicknode ship their public pricing); `"*"` = the vendor's fallback for unlisted methods. Vendors with no table default to a flat **1 credit per request** — set `"*": 0` to opt a vendor out entirely. Overriding one method keeps the rest; copied onto every upstream the provider generates. <SourceLink file="thirdparty/provider.go" lines="59-77" /> |
+| `settings.creditUnits` | `map[string]int64` | `nil` | Vendor-generic (works for every vendor): per-method **credit-unit** overrides for the cost accounting behind `X-ERPC-Credits` (`server.costHeaders`). Merged per method over the vendor's built-in `CreditUnitsProvider` table (alchemy, quicknode, drpc and conduit ship their public pricing); `"*"` = the vendor's fallback for unlisted methods. Vendors with no table default to a flat **1 credit per request** — set `"*": 0` to opt a vendor out entirely. Overriding one method keeps the rest; copied onto every upstream the provider generates. <SourceLink file="thirdparty/provider.go" lines="59-77" /> |
 | `onlyNetworks` | `[]string` | `nil` | Exhaustive allow-list (`evm:<positiveInt>` format, validated). If set, vendor's own `SupportsNetwork` is **not** called. Mutually exclusive with `ignoreNetworks` (validation error). <SourceLink file="thirdparty/provider.go" lines="42-49" /> |
 | `ignoreNetworks` | `[]string` | `nil` | Exact-match deny-list checked **before** `onlyNetworks` and before vendor. Same `evm:<positiveInt>` validation. Omitted from `MarshalJSON` (present in YAML marshal). <SourceLink file="thirdparty/provider.go" lines="34-40" /> |
 | `upstreamIdTemplate` | string | `"<PROVIDER>-<NETWORK>"` | Placeholders: `<VENDOR>`, `<PROVIDER>`, `<NETWORK>` (full network id e.g. `evm:1`), `<EVM_CHAIN_ID>` (numeric; `N/A` for non-evm networks). Validation requires non-empty. <SourceLink file="common/defaults.go" lines="1477-1479" /> |
@@ -263,15 +263,18 @@ Account-level node discovery: paginated GET `https://api.chainstack.com/v1/nodes
 
 #### conduit
 
-Dynamic-only discovery from `networksUrl`; no static fallback → cold start returns `ErrRemoteCacheCold`. URL: `{httpEndpoint}/{apiKey}`. OwnsUpstream: scheme prefixes or `vendorName=="conduit"` only (no domain heuristic — chains live on customer domains). Preset endpoint bypasses discovery entirely. Error mapping: `-32600` + auth/api-key message → `ErrEndpointUnauthorized`; message `"limit exceeded"`/`"capacity limit"` → `ErrEndpointCapacityExceeded`; code in range `[-32099, -32000]` → `ErrEndpointServerSideException` (note: as written the condition `code >= -32000 && code <= -32099` is never true — same impossible-range pattern as alchemy, so this branch is dead code).
+Dynamic-only discovery from `networksUrl`; no static fallback → cold start returns `ErrRemoteCacheCold`. URL: `{httpEndpoint}/{apiKey}`. OwnsUpstream: scheme prefixes or `vendorName=="conduit"` only (no domain heuristic — chains live on customer domains), so an explicit upstream on a Conduit-hosted custom domain needs `vendorName: conduit` to get Conduit's error mapping and pricing. Preset endpoint bypasses discovery entirely. Error mapping: `-32600` + auth/api-key message → `ErrEndpointUnauthorized`; message `"limit exceeded"`/`"capacity limit"` → `ErrEndpointCapacityExceeded`; code in range `[-32099, -32000]` → `ErrEndpointServerSideException` (note: as written the condition `code >= -32000 && code <= -32099` is never true — same impossible-range pattern as alchemy, so this branch is dead code).
 
 | key | required | default |
 |---|---|---|
 | `apiKey` | yes | — |
 | `networksUrl` | no | `https://api.conduit.xyz/public/network/all` |
 | `recheckInterval` | no | `24h` |
+| `creditUnits` | no | Conduit's CU table |
 
-<SourceLink file="thirdparty/conduit.go" lines="16-222" />
+Cost accounting: implements `CreditUnitsProvider` with Conduit's [documented compute-unit costs](https://docs.conduit.xyz/rpc-nodes/information/compute-units) (`eth_call` 75, `eth_getLogs` 75, `eth_getBlockByNumber` 15, `eth_getBlockReceipts` 200, `debug_traceTransaction` 300, `eth_chainId` 0, …), and `"*"` = 10 for anything unlisted, as the docs state; `settings.creditUnits` overrides per method. <SourceLink file="thirdparty/conduit.go" lines="48-144" />
+
+<SourceLink file="thirdparty/conduit.go" lines="16-320" />
 
 #### drpc
 

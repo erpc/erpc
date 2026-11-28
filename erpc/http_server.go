@@ -1544,11 +1544,21 @@ func (s *HttpServer) costHeadersEnabled() bool {
 func isBillableItem(ctx context.Context, item interface{}) bool {
 	switch v := item.(type) {
 	case *common.NormalizedResponse:
-		return v != nil && !v.IsObjectNull(ctx)
+		return v != nil && isBillableResult(ctx, v, nil)
 	case *HttpJsonRpcErrorResponse:
-		return v != nil && common.HasErrorCode(v.Cause, common.ErrCodeEndpointExecutionException)
+		return v != nil && isBillableResult(ctx, nil, v.Cause)
 	}
 	return false
+}
+
+// isBillableResult is isBillableItem for a (response, error) pair as
+// Network.Forward returns it, so query shim sub-requests bill by the same
+// rule as the calls a client sends.
+func isBillableResult(ctx context.Context, resp *common.NormalizedResponse, err error) bool {
+	if err != nil {
+		return common.HasErrorCode(err, common.ErrCodeEndpointExecutionException)
+	}
+	return resp != nil && !resp.IsObjectNull(ctx)
 }
 
 // costHeaders builds the opt-in cost/billing header group for the routed
@@ -1556,14 +1566,19 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 // responses, and for HTTP (writeCostHeaders) and WebSocket cost frames:
 //
 //	X-ERPC-Calls:           routed JSON-RPC sub-calls in this response
-//	X-ERPC-Billable:        how many were billable (isBillableItem)
+//	X-ERPC-Billable:        how many were billable (isBillableItem); an
+//	                        eth_query* call served by the query shim counts
+//	                        its billable sub-requests, at least 1 when the
+//	                        call itself is billable
 //	X-ERPC-Methods:         distinct methods, sorted, comma-joined
 //	X-ERPC-Credits:         `vendor:method=<units>` segments, sorted and
 //	                        ';'-joined — the credit units accrued by every
 //	                        physical upstream attempt (retries, hedges,
 //	                        consensus slots; see UpstreamAttempt.CreditUnits),
 //	                        read from the request-object aggregate
-//	                        (NormalizedRequest.CreditUnitsByVendor).
+//	                        (NormalizedRequest.CreditUnitsByVendor), plus the
+//	                        credits of an eth_query* call's shim sub-requests
+//	                        keyed `vendor:<sub-request method>`.
 //	                        Omitted when nothing accrued (e.g. pure cache hits).
 //	X-ERPC-Credits-Total:   the grand total credit units across all vendors
 //	                        and sub-calls in this response; alongside X-ERPC-Credits.
@@ -1581,6 +1596,12 @@ func isBillableItem(ctx context.Context, item interface{}) bool {
 //	                        single network, so a disagreement means the value
 //	                        is not a fact about the response and is omitted
 //	                        rather than guessed.
+//	X-ERPC-Finality:        `finalized`, `unfinalized`, `realtime` or `unknown`:
+//	                        the response's finality, else the request's — the
+//	                        value eRPC's own `finality` metric label carries,
+//	                        so a proxy can split its latency by how recent the
+//	                        data is. Emitted only when every routed sub-call
+//	                        has the same one, for the reason the network is.
 //
 // nil when the group is off or there are no items: early errors that never
 // routed a request have no routed call to account for.
@@ -1588,20 +1609,28 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 	if !s.costHeadersEnabled() || len(items) == 0 {
 		return nil
 	}
-	billable := 0
+	billed := 0
 	methods := map[string]struct{}{}
 	credits := map[string]int64{} // "vendor:method" → units
 	var creditsTotal int64
 	networkId, networkAlias := "", ""
 	networkAmbiguous := false
+	finality, finalityAmbiguous := "", false
 	for _, item := range items {
-		if isBillableItem(ctx, item) {
-			billable++
-		}
+		billable := isBillableItem(ctx, item)
 		req := extractRequest(item)
 		if req == nil {
+			if billable {
+				billed++
+			}
 			continue
 		}
+		st := req.ExecState()
+		units := st.SubrequestBillable()
+		if billable && units == 0 {
+			units = 1
+		}
+		billed += units
 		// Network of the routed call. "n/a" is what NetworkId/NetworkLabel
 		// return when the network was never resolved (e.g. internal
 		// eth_chainId probes), so it is not a network and is skipped.
@@ -1612,6 +1641,11 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 			case networkId != id:
 				networkAmbiguous = true
 			}
+		}
+		if f := itemFinality(ctx, item, req); finality == "" {
+			finality = f
+		} else if finality != f {
+			finalityAmbiguous = true
 		}
 		method, _ := req.Method()
 		if method != "" {
@@ -1628,15 +1662,22 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 				creditsTotal += units
 			}
 		}
+		for key, units := range st.SubrequestCredits() {
+			credits[key] += units
+			creditsTotal += units
+		}
 	}
 	h := make(http.Header, 8)
 	h.Set("X-ERPC-Calls", strconv.Itoa(len(items)))
-	h.Set("X-ERPC-Billable", strconv.Itoa(billable))
+	h.Set("X-ERPC-Billable", strconv.Itoa(billed))
 	if networkId != "" && !networkAmbiguous {
 		h.Set("X-ERPC-Network-Id", networkId)
 		if networkAlias != "" && networkAlias != "n/a" {
 			h.Set("X-ERPC-Network-Alias", networkAlias)
 		}
+	}
+	if finality != "" && !finalityAmbiguous {
+		h.Set("X-ERPC-Finality", finality)
 	}
 	if len(methods) > 0 {
 		names := make([]string, 0, len(methods))
@@ -1661,6 +1702,16 @@ func (s *HttpServer) costHeaders(ctx context.Context, items []interface{}) http.
 		h.Set("X-ERPC-Credits-Version", common.ErpcVersion)
 	}
 	return h
+}
+
+// itemFinality is the finality eRPC's own metrics give one routed sub-call:
+// the response's when there is one (it can read the block from the answer),
+// else the request's.
+func itemFinality(ctx context.Context, item interface{}, req *common.NormalizedRequest) string {
+	if resp, ok := item.(*common.NormalizedResponse); ok && resp != nil {
+		return resp.Finality(ctx).String()
+	}
+	return req.Finality(ctx).String()
 }
 
 // writeCostHeaders sets costHeaders on an HTTP response, before WriteHeader.

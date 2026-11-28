@@ -164,6 +164,7 @@ func catalogue() []phaseSpec {
 		{"p23-busy", 15551, []spec{p23(p23Busy), p23(p23BusyThin), p23(p23BusyOff)}},
 		{"p23-slow", 15151, []spec{p23(p23Slow)}},
 		{"p23-band", 15201, []spec{p23(p23Band)}},
+		{"p23-band-tol", 15651, []spec{p23(p23BandTol)}},
 		{"p23-band-prod", 15251, []spec{p23(p23BandProd)}},
 		{"p23-band-ahead", 15301, []spec{p23(p23BandAhead)}},
 		{"p23-band-sc", 15351, []spec{p23(p23Band.shortCircuited())}},

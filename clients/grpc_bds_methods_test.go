@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -817,7 +818,8 @@ func TestGrpcBdsClient_DetailedTracingRecordsResponseMetadata(t *testing.T) {
 
 // The maintainer's recycle swaps a fresh verified conn into the slot; a
 // replacement that proves to serve another chain is discarded and the slot
-// keeps its conn.
+// keeps its conn. A replacement takes the slot connected, so its first call
+// does not wait for DNS and the handshake.
 func TestBdsPool_RecycleConn(t *testing.T) {
 	s := &scriptedBdsServer{chainID: 1}
 	client := newTestClient(t, startScriptedBdsServer(t, s))
@@ -841,6 +843,13 @@ func TestBdsPool_RecycleConn(t *testing.T) {
 
 	p.recycleConn(old, "age")
 	assert.Same(t, replaced, slot0(), "a conn no longer pooled is not recycled again")
+
+	// No chainId to verify (an SVM client): no probe connects the replacement.
+	p.expectedChainId.Store(0)
+	p.recycleConn(replaced, "age")
+	fresh := slot0()
+	require.NotSame(t, replaced, fresh, "an age recycle installs a replacement")
+	assert.Equal(t, connectivity.Ready, fresh.conn.GetState(), "the replacement took the slot before it connected")
 
 	_, err := bdsCall(t, client, "eth_chainId", `[]`)
 	require.NoError(t, err, "pool keeps serving after a recycle")

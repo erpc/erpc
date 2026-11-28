@@ -10,12 +10,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/blockchain-data-standards/manifesto/evm"
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	upstreampkg "github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -148,6 +150,75 @@ func TestQueryExecutor_Native(t *testing.T) {
 		require.NotNil(t, qs.apiKey.Load(), "the QueryService server got no call")
 		assert.Equal(t, []string{"demo"}, *qs.apiKey.Load(), "x-api-key must reach the QueryService server")
 	})
+
+	t.Run("a down or silent native upstream yields before its first page, and selection learns it", func(t *testing.T) {
+		logger := zerolog.Nop()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		realUpstream := func(id string, qs evm.QueryServiceServer) (*upstreampkg.Upstream, *grpc.Server) {
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			server := grpc.NewServer()
+			evm.RegisterQueryServiceServer(server, qs)
+			go func() { _ = server.Serve(lis) }()
+			t.Cleanup(server.Stop)
+			endpoint, err := url.Parse("grpc://" + lis.Addr().String())
+			require.NoError(t, err)
+			client, err := clients.NewGrpcBdsClient(ctx, &logger, "prjA", nil, endpoint, 0, "")
+			require.NoError(t, err)
+			t.Cleanup(client.(clients.ShutdownableClient).Shutdown)
+			return newTestQueryUpstream(t, id, client), server
+		}
+		// down: its server stopped after the client connected. With
+		// waitForReady the stream would queue for a reconnect that never comes.
+		down, downServer := realUpstream("native-down", &headerRecordingQueryServer{})
+		downServer.Stop()
+		// No first-page deadline here: only fail-fast ends the wait early.
+		waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer waitCancel()
+		start := time.Now()
+		err := newTestQueryExecutor(t, "eth_queryLogs", down).Execute(waitCtx, &evm.QueryLogsRequest{FromBlock: util.StringPtr("0x1"), ToBlock: util.StringPtr("0x9")}, func(proto.Message) error { return nil })
+		assert.Equal(t, codes.Unavailable, status.Code(err), "%v", err)
+		assert.Less(t, time.Since(start), 2*time.Second, "a down upstream fails at once, not at the caller's deadline")
+		// silent: accepts the stream and never sends a page.
+		silent, _ := realUpstream("native-silent", &silentQueryServer{})
+		serving := newTestQueryUpstream(t, "native-serving", &fakeGrpcBdsClient{queryClient: &fakeQueryServiceClient{
+			queryLogsFn: func(ctx context.Context, in *evm.QueryLogsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[evm.QueryLogsResponse], error) {
+				return &fakeServerStreamingClient[evm.QueryLogsResponse]{responses: []*evm.QueryLogsResponse{page(1, 9)}}, nil
+			},
+		}})
+		qe := newTestQueryExecutor(t, "eth_queryLogs", down, silent, serving)
+		fe, err := NewNetworkExecutor(&common.FailsafeConfig{
+			MatchMethod: "eth_query*",
+			Timeout:     &common.TimeoutPolicyConfig{Duration: common.NewStaticDuration(300 * time.Millisecond)},
+		}, &logger, nil, nil)
+		require.NoError(t, err)
+		qe.network.failsafeExecutors = []*networkExecutor{fe}
+
+		reqCtx, reqCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer reqCancel()
+		start = time.Now()
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":10,"method":"eth_queryLogs","params":[{"fromBlock":"0x1","toBlock":"0x9"}]}`))
+		resp, err := qe.network.forwardQuery(reqCtx, req, "eth_queryLogs")
+		require.NoError(t, err)
+		assert.Less(t, time.Since(start), 3*time.Second, "the down upstream fails at once and the silent one at the 300ms first-page deadline")
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		var result map[string]interface{}
+		require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &result))
+		assert.Equal(t, "0x9", result["cursorBlock"].(map[string]interface{})["number"], "the serving upstream's page")
+
+		metrics := func(u *upstreampkg.Upstream) *health.TrackedMetrics {
+			return u.MetricsTracker().GetUpstreamMethodMetrics(u, "eth_queryLogs", common.DataFinalityStateAll)
+		}
+		for _, u := range []*upstreampkg.Upstream{down, silent} {
+			assert.EqualValues(t, 1, metrics(u).RequestsTotal.Load(), u.Id())
+			assert.EqualValues(t, 1, metrics(u).ErrorsTotal.Load(), "%s failed before its first page", u.Id())
+		}
+		assert.EqualValues(t, 1, metrics(serving).RequestsTotal.Load())
+		assert.EqualValues(t, 0, metrics(serving).ErrorsTotal.Load())
+		assert.Positive(t, metrics(serving).ResponseQuantiles.GetQuantile(0.5), "time to the first page feeds the latency quantile")
+	})
 }
 
 // headerRecordingQueryServer is a QueryService server that records the
@@ -163,6 +234,17 @@ func (s *headerRecordingQueryServer) QueryLogs(req *evm.QueryLogsRequest, stream
 	s.apiKey.Store(&key)
 	ref := &evm.CursorBlock{Number: 9, Hash: make([]byte, 32), ParentHash: make([]byte, 32)}
 	return stream.Send(&evm.QueryLogsResponse{FromBlock: ref, ToBlock: ref, CursorBlock: ref})
+}
+
+// silentQueryServer accepts a QueryLogs stream and sends nothing until the
+// client leaves.
+type silentQueryServer struct {
+	evm.UnimplementedQueryServiceServer
+}
+
+func (s *silentQueryServer) QueryLogs(req *evm.QueryLogsRequest, stream grpc.ServerStreamingServer[evm.QueryLogsResponse]) error {
+	<-stream.Context().Done()
+	return stream.Context().Err()
 }
 
 type fakeGrpcBdsClient struct {
@@ -302,6 +384,7 @@ func newTestQueryUpstream(t *testing.T, id string, client clients.ClientInterfac
 		Evm:      &common.EvmUpstreamConfig{ChainId: 1},
 	})
 	setUnexportedField(t, ups, "logger", &logger)
+	setUnexportedField(t, ups, "metricsTracker", health.NewTracker(&logger, "prjA", time.Minute))
 
 	return ups
 }

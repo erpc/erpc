@@ -62,7 +62,7 @@ func parseServedTipQuorum(s string) (ServedTipQuorum, error) {
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 {
-		return 0, fmt.Errorf("servedTip.quorum must be an integer >= 1 or \"majority\", got %q", s)
+		return 0, fmt.Errorf("a quorum must be an integer >= 1 or \"majority\", got %q", s)
 	}
 	return ServedTipQuorum(n), nil
 }

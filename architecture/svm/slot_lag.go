@@ -2,6 +2,7 @@ package svm
 
 import (
 	"context"
+	"sort"
 	"strconv"
 
 	"github.com/erpc/erpc/common"
@@ -111,42 +112,64 @@ func ReferenceFinalizedSlot(upstreams []common.Upstream, maxLag int64) int64 {
 	return first
 }
 
-// FilterByMinContextSlot excludes upstreams that are known to be behind the
-// request's minContextSlot at the relevant commitment — forwarding to them is
-// a guaranteed -32016 round-trip. Same defensive posture as
-// FilterByFinalizedSlotLag: unknown state (no poller, zero slot, non-SVM)
-// never excludes, and if every upstream would be excluded the original list is
-// returned so the -32016 failover path (rather than an empty pool) reports the
-// truth.
-func FilterByMinContextSlot(upstreams []common.Upstream, minContextSlot int64, finalized bool) []common.Upstream {
-	if minContextSlot <= 0 || len(upstreams) == 0 {
-		return upstreams
+// OrderByMinContextSlot moves the upstreams whose tracked slot (at the
+// request's commitment) is more than tipStalenessMargin behind minContextSlot
+// to the end of the list, closest first, and reports how many it moved. It
+// never drops one: the tracked slot is a poll that trails the node by up to
+// one poll interval, so an upstream it calls behind has often reached the
+// slot, and the upstreams ahead may not serve the method at all. Within the
+// margin the poll cannot tell the upstreams apart, so their order stays: a
+// client that asks for the newest slot would otherwise be routed by which
+// poll ran last, not by the upstream's score. Unknown state (no poller, zero
+// slot, non-SVM) counts as at or ahead. An upstream that really trails answers
+// -32016, which fails over to the next one like any server error.
+func OrderByMinContextSlot(n common.Network, upstreams []common.Upstream, minContextSlot int64, finalized bool) ([]common.Upstream, int) {
+	if minContextSlot <= 0 {
+		return upstreams, 0
 	}
-	filtered := make([]common.Upstream, 0, len(upstreams))
-	for _, u := range upstreams {
-		if !isAtOrAheadOfSlot(u, minContextSlot, finalized) {
+	type trailing struct {
+		upstream common.Upstream
+		slot     int64
+	}
+	margin := tipStalenessMargin(n)
+	var behind []trailing
+	var ahead []common.Upstream
+	for i, u := range upstreams {
+		slot, known := trackedSlot(u, finalized)
+		if !known || minContextSlot-slot <= margin {
+			if behind != nil {
+				ahead = append(ahead, u)
+			}
 			continue
 		}
-		filtered = append(filtered, u)
+		if behind == nil {
+			ahead = make([]common.Upstream, i, len(upstreams))
+			copy(ahead, upstreams[:i])
+		}
+		behind = append(behind, trailing{upstream: u, slot: slot})
 	}
-	if len(filtered) == 0 {
-		return upstreams
+	if behind == nil {
+		return upstreams, 0
 	}
-	return filtered
+	sort.SliceStable(behind, func(a, b int) bool { return behind[a].slot > behind[b].slot })
+	for _, t := range behind {
+		ahead = append(ahead, t.upstream)
+	}
+	return ahead, len(behind)
 }
 
-// isAtOrAheadOfSlot returns true when the upstream should pass the
-// minContextSlot filter. The comparison slot matches the request's
-// commitment: a finalized-commitment request needs the node's *finalized*
-// slot at minContextSlot, anything weaker needs only the processed tip.
-func isAtOrAheadOfSlot(u common.Upstream, minContextSlot int64, finalized bool) bool {
+// trackedSlot is the upstream's polled slot at the request's commitment: a
+// finalized-commitment request needs the node's *finalized* slot at
+// minContextSlot, anything weaker needs only the processed tip. false when
+// there is no observation yet.
+func trackedSlot(u common.Upstream, finalized bool) (int64, bool) {
 	sup, ok := u.(common.SvmUpstream)
 	if !ok {
-		return true
+		return 0, false
 	}
 	poller := sup.SvmStatePoller()
 	if poller == nil || poller.IsObjectNull() {
-		return true
+		return 0, false
 	}
 	var slot int64
 	if finalized {
@@ -154,10 +177,7 @@ func isAtOrAheadOfSlot(u common.Upstream, minContextSlot int64, finalized bool) 
 	} else {
 		slot = poller.LatestSlot()
 	}
-	if slot <= 0 {
-		return true // no observation yet → too early to judge
-	}
-	return slot >= minContextSlot
+	return slot, slot > 0
 }
 
 // MinContextSlotOf extracts the caller-supplied minContextSlot from the

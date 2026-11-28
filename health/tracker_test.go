@@ -15,7 +15,6 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1739,80 +1738,84 @@ func TestTracker_CordonEventMetrics(t *testing.T) {
 		require.Less(t, metricAfter, metricBefore,
 			"Prometheus registry must release evicted series — without DeleteLabelValues the count stays sticky (got after=%d, before=%d)",
 			metricAfter, metricBefore)
-	})
 
-	t.Run("idle_sweep_keeps_series_a_hot_tuple_shares", func(t *testing.T) {
-		// Edge drops `user` from histograms, so every user's tuple for one
-		// (upstream, method, finality) writes one series. Evicting a quiet
-		// user's tuple must not delete the series a busy user still writes.
+		// A projected label maps several full tuples onto one series:
+		// user on the duration histogram, category on the rate-limit
+		// counter. Releasing an idle tuple must keep that series, which the
+		// other tuples' cached handles still write to.
 		origReg := prometheus.DefaultRegisterer
-		prometheus.DefaultRegisterer = prometheus.NewRegistry()
-		require.NoError(t, telemetry.Configure(&telemetry.Options{
-			LegacyLabels: telemetry.LegacyLabelConfig{HistogramDropLabels: []string{"user"}},
-		}))
 		t.Cleanup(func() {
 			prometheus.DefaultRegisterer = prometheus.NewRegistry()
-			_ = telemetry.Configure(&telemetry.Options{})
+			require.NoError(t, telemetry.Configure(&telemetry.Options{HistogramBuckets: "0.05,0.5,5,30"}))
 			prometheus.DefaultRegisterer = origReg
 		})
+		reg := prometheus.NewRegistry()
+		prometheus.DefaultRegisterer = reg
+		require.NoError(t, telemetry.Configure(&telemetry.Options{Customizations: []telemetry.Customization{
+			{
+				Subject: "upstream_request_duration_seconds",
+				Labels:  []telemetry.LabelCustomization{{Subject: "user", Action: telemetry.ActionDrop}},
+			},
+			{
+				Subject: "rate_limits_total",
+				Labels:  []telemetry.LabelCustomization{{Subject: "category", Action: telemetry.ActionDrop}},
+			},
+		}}))
 
-		tracker := NewTracker(&log.Logger, "test-project-shared", 2*time.Second)
-		tracker.SetIdleEvictionAfter(150 * time.Millisecond)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		tracker.Bootstrap(ctx)
-
-		ups := common.NewFakeUpstream("shared-series-target")
-		recorded := uint64(0)
-		record := func(user string) {
-			tracker.RecordUpstreamDuration(ups, "eth_call", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, user)
-			recorded++
+		projected := NewTracker(&log.Logger, "test-project-projected", 2*time.Second)
+		projected.SetIdleEvictionAfter(150 * time.Millisecond)
+		projected.Bootstrap(ctx)
+		shared := common.NewFakeUpstream("projected-target")
+		observed, limited := 0, 0
+		record := func(user, method string) {
+			projected.RecordUpstreamDuration(shared, "eth_call", 5*time.Millisecond, true, "none", common.DataFinalityStateUnknown, user)
+			observed++
+			projected.RecordUpstreamRemoteRateLimited(ctx, shared, method, nil)
+			limited++
 		}
-		// collected returns the sample count and series count of ups.
-		collected := func() (uint64, int) {
-			ch := make(chan prometheus.Metric, 64)
-			go func() {
-				telemetry.MetricUpstreamRequestDuration.Collect(ch)
-				close(ch)
-			}()
-			var n uint64
-			series := 0
-			for m := range ch {
-				var d dto.Metric
-				require.NoError(t, m.Write(&d))
-				for _, lp := range d.GetLabel() {
-					if lp.GetName() == "upstream" && lp.GetValue() == ups.Id() {
-						n += d.GetHistogram().GetSampleCount()
-						series++
+		idleCached := func() bool {
+			found := false
+			projected.urdObsCache.Range(func(k, _ any) bool {
+				found = found || k.(urdoKey).user == "idle-user"
+				return true
+			})
+			projected.remoteRateLimitedCounterCache.Range(func(k, _ any) bool {
+				found = found || k.(rrltKey).category == "eth_idle"
+				return true
+			})
+			return found
+		}
+		record("idle-user", "eth_idle")
+		require.Eventually(t, func() bool {
+			record("busy-user", "eth_call")
+			return !idleCached()
+		}, 5*time.Second, 50*time.Millisecond,
+			"idle tuples' handles should be evicted while the busy tuples keep recording")
+		record("busy-user", "eth_call")
+
+		families, err := reg.Gather()
+		require.NoError(t, err)
+		var sampleCount uint64
+		var limitCount float64
+		for _, mf := range families {
+			for _, m := range mf.GetMetric() {
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() != "upstream" || lp.GetValue() != "projected-target" {
+						continue
+					}
+					switch mf.GetName() {
+					case "erpc_upstream_request_duration_seconds":
+						sampleCount += m.GetHistogram().GetSampleCount()
+					case "erpc_rate_limits_total":
+						limitCount += m.GetCounter().GetValue()
 					}
 				}
 			}
-			return n, series
 		}
-
-		record("quiet-user")
-		// The sweep fires once per windowSize (2s); stay busy past one.
-		for deadline := time.Now().Add(2500 * time.Millisecond); time.Now().Before(deadline); {
-			record("busy-user")
-			time.Sleep(20 * time.Millisecond)
-		}
-		samples, _ := collected()
-		assert.Equal(t, recorded, samples,
-			"every observation must reach the collected series after the quiet tuple is swept")
-		users := []string{}
-		tracker.urdObsCache.Range(func(k, _ any) bool {
-			users = append(users, k.(urdoKey).user)
-			return true
-		})
-		assert.Equal(t, []string{"busy-user"}, users,
-			"the quiet tuple must leave the cache even though its series stays hot")
-
-		// Label values are caller-controlled: a method name holding a
-		// separator byte must not merge into another tuple's series.
-		tracker.RecordUpstreamDuration(ups, "eth_call\x1fnone", time.Millisecond, true, "x", common.DataFinalityStateUnknown, "busy-user")
-		tracker.RecordUpstreamDuration(ups, "eth_call", time.Millisecond, true, "none\x1fx", common.DataFinalityStateUnknown, "busy-user")
-		_, series := collected()
-		assert.Equal(t, 3, series, "two distinct label sets must stay two series")
+		require.EqualValues(t, observed, sampleCount,
+			"the projected histogram series must keep every observation after one of its tuples is evicted")
+		require.EqualValues(t, limited, limitCount,
+			"the projected counter series must keep every increment after one of its tuples is evicted")
 	})
 
 	t.Run("idle_sweep_preserves_cordoned_state", func(t *testing.T) {

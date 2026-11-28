@@ -164,6 +164,71 @@ type ExecState struct {
 	// the slice is safe across concurrent participant goroutines.
 	upstreamMu       sync.Mutex
 	upstreamAttempts []UpstreamAttempt
+
+	// Sub-request billing: an eth_query* request served by the query shim
+	// does its work in sub-requests, each its own NormalizedRequest with its
+	// own attempt log. Their billable count and credits roll up here so the
+	// parent's cost headers bill that work; the parent's attempt log stays
+	// its own.
+	subBillable atomic.Int32
+	subMu       sync.Mutex
+	subCredits  map[string]int64 // "vendor:method" → units
+}
+
+// RecordSubrequest rolls one finished sub-request into s: one billable unit
+// when billable, and the vendor credits of every attempt in sub keyed
+// "vendor:method". Thread-safe.
+func (s *ExecState) RecordSubrequest(method string, billable bool, sub *ExecState) {
+	if s == nil {
+		return
+	}
+	if billable {
+		s.subBillable.Add(1)
+	}
+	if sub == nil || sub == s {
+		return
+	}
+	sub.upstreamMu.Lock()
+	defer sub.upstreamMu.Unlock()
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for i := range sub.upstreamAttempts {
+		a := &sub.upstreamAttempts[i]
+		if a.CreditUnits == 0 || a.VendorName == "" {
+			continue
+		}
+		if s.subCredits == nil {
+			s.subCredits = make(map[string]int64, 2)
+		}
+		s.subCredits[a.VendorName+":"+method] += a.CreditUnits
+	}
+}
+
+// SubrequestBillable returns how many billable sub-requests RecordSubrequest
+// rolled into s.
+func (s *ExecState) SubrequestBillable() int {
+	if s == nil {
+		return 0
+	}
+	return int(s.subBillable.Load())
+}
+
+// SubrequestCredits returns the sub-request credits keyed "vendor:method",
+// nil when none accrued. Thread-safe; the returned map is a fresh copy.
+func (s *ExecState) SubrequestCredits() map[string]int64 {
+	if s == nil {
+		return nil
+	}
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	if len(s.subCredits) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(s.subCredits))
+	for k, v := range s.subCredits {
+		out[k] = v
+	}
+	return out
 }
 
 // RecordUpstreamAttempt appends a participant record. Called by the

@@ -219,9 +219,9 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 **Forward pipeline order** (exact sequence, `erpc/networks.go:L931-1603`):
 1. Apply `directiveDefaults` + start OTel span.
 2. **Static response** match — returns immediately if hit (before multiplexer, cache, upstreams).
-3. **Multiplexer** — leader/follower on `CacheHash`; followers copy the leader's response.
+3. **Multiplexer** — leader/follower on `CacheHash`; followers copy the leader's response. Before it, an `eth_call` whose `gas` is above the network's `callGasCap` is lowered to it, so the multiplexer, the cache and every upstream see the lowered call.
 4. **Cache read** — non-null hit closes the mux and returns.
-5. **Policy-engine upstream ordering** — falls back to registration order if empty; `ErrNoUpstreamsFound` (404) if still empty.
+5. **Policy-engine upstream ordering** — falls back to registration order if empty; `ErrNoUpstreamsFound` (404) if still empty. An `eth_call` that names more `gas` than an upstream's cap (`upstreams[*].evm.callGasCap`, else `erpc_upstream_call_gas_cap`) tries that upstream after all others: the node lowers the gas to its cap, and the out-of-gas answer that follows is never retried. Only a `callGasCap` above an upstream's cap leaves it short of a call's gas.
 6. EVM pre-forward hook (future-block short-circuit; never cached).
 7. Stateful-method guard, network rate-limit, request normalization.
 8. **Failsafe executor selection** — first config-order entry matching method + finality.
@@ -279,6 +279,8 @@ https://docs.erpc.cloud/config/projects/networks.llms.txt`}
 | `blockUnavailableDelayMultiplier` | `*float64` | `1.0` (<SourceLink file="common/defaults.go" lines="1978" />) | Retry delay for block-unavailable = EMA block time × multiplier. |
 | `enforceBlockAvailability` | `*bool` | `nil` (defer; fallback = enabled) | Network-level priority 2 in 5-step chain. `nil` defers to upstream bounds and system defaults. `false` disables enforcement even when an upstream has explicit bounds configured. |
 | `maxRetryableBlockDistance` | `*int64` | `nil` → `128` at use site (<SourceLink file="erpc/networks.go" lines="1973-1979" />) | Block-unavailable errors within this distance of upstream head are retryable; beyond → non-retryable skip. |
+| `callGasCap` | `uint64` | `0` = the highest cap that `callGasCapQuorum` of the upstreams serving `eth_call` give | Most `gas` one `eth_call` may use; a larger `gas` is lowered to it, as a node lowers it to its own cap. Upstreams that give the gas get the call first. A value above an upstream's cap is a promise only the upstreams that give it keep: when they are down, the call runs out of gas. The default is unset, and no call is lowered, until every upstream's first cap probe has ended: the caps known before then may all be the small ones. Gauge: `erpc_network_call_gas_cap`. |
+| `callGasCapQuorum` | `int` or `"majority"` | `2` | How many upstreams must give the default `callGasCap`. `1` takes the largest cap, so one node keeps the promise; with fewer upstreams than the quorum, the cap is the lowest. |
 | `getLogsMaxAllowedRange` | `int64` | `30_000` (<SourceLink file="common/defaults.go" lines="2092-2094" />) | Hard limit on `eth_getLogs` block range. Must be &gt; 0; `0` inherits defaults value. |
 | `getLogsMaxAllowedAddresses` | `int64` | `0` = unlimited | Enforced only when &gt; 0 (<SourceLink file="architecture/evm/eth_getLogs.go" lines="212" />). |
 | `getLogsMaxAllowedTopics` | `int64` | `0` = unlimited | Enforced only when &gt; 0. |

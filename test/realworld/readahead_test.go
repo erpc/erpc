@@ -131,7 +131,8 @@ var p23Origins = map[string]string{
 // blooms omit logs (chainsim Config.ThinBloom). Every shape's network
 // enables the logs gate's check alone (integrity.GetLogsEmptyGate, the
 // config that keeps the gate where integrity is otherwise off), on its
-// new-image pods; with off, no integrity at all (p23OffBody).
+// new-image pods; with off, no integrity at all (p23OffBody). With
+// tolerance, every vendor's headLagToleranceBlocks.
 type p23Shape struct {
 	name              string
 	ups               []freshUp
@@ -146,6 +147,7 @@ type p23Shape struct {
 	split             int64
 	lone              bool
 	busy, thin, off   bool
+	tolerance         int64
 	pre               *p23Pre
 	gate              *p23Gate
 }
@@ -280,6 +282,16 @@ var p23Band = p23Shape{name: "P23-band", bt: 2 * time.Second, jitter: 200 * time
 		{"http-d", "vendor-d", 35 * time.Millisecond, 10 * time.Second, 0, 750 * time.Millisecond},
 	}}
 
+// p23BandTol: P23-band with every vendor at headLagToleranceBlocks 1, as
+// Edge's BSC QuickNode and Chainstack polled every 1 s on 0.45 s blocks:
+// the gate sends a read-ahead block to a vendor one block short, which
+// answers its range [] until it serves it.
+var p23BandTol = func() p23Shape {
+	sh := p23Band
+	sh.name, sh.tolerance = "P23-band-tol", 1
+	return sh
+}()
+
 // p23BandProd: P23-band as production's 2 s chains: vendor-b serves each
 // block at its mint, so a holder exists when vendor-a answers empty, and
 // the old image's immediate sweep found it within a round trip (3460a579
@@ -392,6 +404,11 @@ func p23(sh p23Shape) spec {
 	if sh.split > 0 {
 		for _, ev := range sp.upEvm {
 			ev["getLogsAutoSplittingRangeThreshold"] = sh.split
+		}
+	}
+	if sh.tolerance > 0 {
+		for _, ev := range sp.upEvm {
+			ev["headLagToleranceBlocks"] = sh.tolerance
 		}
 	}
 	return sp

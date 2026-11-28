@@ -428,8 +428,9 @@ func TestCovSvm_SlotLagFilters_NonSvmAndPollerless(t *testing.T) {
 
 	require.EqualValues(t, 1000, ReferenceFinalizedSlot([]common.Upstream{nonSvm, noPoller, fresh, stale}, 0))
 
-	got = FilterByMinContextSlot([]common.Upstream{nonSvm, nullPoller, stale}, 500, true)
-	require.Equal(t, []common.Upstream{nonSvm, nullPoller}, got)
+	got, moved := OrderByMinContextSlot(&fakeNetwork{}, []common.Upstream{stale, nonSvm, nullPoller}, 500, true)
+	require.Equal(t, []common.Upstream{nonSvm, nullPoller, stale}, got)
+	require.Equal(t, 1, moved)
 }
 
 // ---- cache ---------------------------------------------------------------------

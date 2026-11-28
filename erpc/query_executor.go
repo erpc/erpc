@@ -30,9 +30,11 @@ import (
 // order and falls back to the query shim, which builds pages from standard
 // JSON-RPC sub-requests sent through Network.Forward.
 type EvmQueryExecutor struct {
-	network         *Network
-	logger          *zerolog.Logger
-	parentRequestId interface{}
+	network *Network
+	logger  *zerolog.Logger
+	// parent is the eth_query* request: shim sub-requests carry its id and
+	// roll their billing into it (ExecState.RecordSubrequest).
+	parent *common.NormalizedRequest
 	// projectShimPages clears unselected fields on shim pages for gRPC
 	// clients; the JSON renderer reads only the selected fields anyway.
 	projectShimPages bool
@@ -121,8 +123,9 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 	}
 
 	var nativeErr error
+	firstPage := qe.firstPageTimeout(ctx)
 	for _, ups := range natives {
-		err := qe.pipeThrough(ctx, ups, req, onPage)
+		err := qe.pipeThrough(ctx, ups, req, firstPage, onPage)
 		if err == nil {
 			trace.SpanFromContext(ctx).SetAttributes(attribute.String("query.path", "native"), attribute.String("query.upstream", ups.Id()))
 			return nil
@@ -146,6 +149,24 @@ func (qe *EvmQueryExecutor) execute(ctx context.Context, method string, req prot
 	}
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String("query.path", "shim"))
 	return qe.runShim(ctx, plan, onPage)
+}
+
+// firstPageTimeout is how long a native upstream may take to send its first
+// page: the timeout of the network failsafe policy that matches the eth_query*
+// request (e.g. `matchMethod: eth_query*`), or 0 for none. The JSON-RPC path
+// skips the network executor, so this is where that policy applies.
+func (qe *EvmQueryExecutor) firstPageTimeout(ctx context.Context) time.Duration {
+	if qe.parent == nil {
+		return 0
+	}
+	fe := qe.network.getFailsafeExecutor(ctx, qe.parent)
+	if fe == nil || fe.timeout == nil {
+		return 0
+	}
+	if d := fe.timeout(ctx, qe.parent); d != nil {
+		return *d
+	}
+	return 0
 }
 
 // nativeUpstreams returns, in selection-policy order (registration order
@@ -605,7 +626,7 @@ func (n *Network) forwardQuery(ctx context.Context, req *common.NormalizedReques
 
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Logger()
 	executor := NewEvmQueryExecutor(n, &lg)
-	executor.parentRequestId = req.ID()
+	executor.parent = req
 	var page proto.Message
 	err = executor.Execute(ctx, queryReq, func(p proto.Message) error {
 		page = p

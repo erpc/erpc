@@ -260,7 +260,7 @@ Lists all loaded projects, their networks (with aliases if configured), and per-
 
 **Params**: `[{"projectId": string, "connectorId": string, "apiKey": string, "userId": string, "rateLimitBudget"?: string, "enabled"?: bool}]`
 
-`enabled` defaults to `true` when omitted. `connectorId` must match a `database` strategy connector in the **project's consumer auth config** (not admin auth). Source: [`erpc/admin.go:L102-L192`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L102-L192)
+`enabled` defaults to `true` when omitted. `connectorId` must match a `database` strategy connector in the **project's consumer auth config** (not admin auth). The record is stored at partition key = API key, range key `*`, where the `database` strategy reads it; adding an existing key replaces its record. Source: [`erpc/admin.go:L102-L192`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L102-L192)
 
 **Response**:
 ```json
@@ -273,7 +273,7 @@ Lists all loaded projects, their networks (with aliases if configured), and per-
 
 **Params**: `[{"projectId": string, "connectorId": string, "limit"?: number, "paginationToken"?: string}]`
 
-`limit` defaults to `50`. `paginationToken` is the opaque `nextToken` from a previous response. Source: [`erpc/admin.go:L195-L291`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L195-L291)
+`limit` defaults to `50` and must be an integer from `1` to `2^53`; any other value, including a non-number, returns HTTP 400. `paginationToken` is the opaque `nextToken` from a previous response. Not supported on the `memory` driver. Source: [`erpc/admin.go:L195-L291`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L195-L291)
 
 **Response**:
 ```json
@@ -314,7 +314,7 @@ Applies patch semantics: `null` values in `updates` delete fields from the store
 
 **Params**: `[{"projectId": string, "connectorId": string, "apiKey": string}]`
 
-Fetches the current record to retrieve `userId` (range key for deletion), then calls `connector.Delete`. Source: [`erpc/admin.go:L384-L453`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L384-L453)
+Reads the record to fail on an absent key and to report its `userId`, then deletes it; a record that is not JSON is deleted too. Source: [`erpc/admin.go:L384-L453`](https://github.com/erpc/erpc/blob/main/erpc/admin.go#L384-L453)
 
 **Response**:
 ```json

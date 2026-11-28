@@ -627,11 +627,28 @@ func TestNetworkQuery_Shim(t *testing.T) {
 		}
 		lagging := setupQueryTestNetwork(t, ctx, &common.EvmQueryShimConfig{Enabled: util.BoolPtr(true)}, nil, "rpc2", "rpc1")
 
-		result, code := queryJson(t, ctx, lagging, "eth_queryBlocks", `[{"fromBlock":"0x64","toBlock":"0x66","fields":{"blocks":["number","hash"]}}]`)
-		require.Zero(t, code)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_queryBlocks","params":[{"fromBlock":"0x64","toBlock":"0x66","fields":{"blocks":["number","hash"]}}]}`))
+		resp, err := lagging.Forward(ctx, req)
+		require.NoError(t, err)
+		jrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		var result map[string]interface{}
+		require.NoError(t, sonic.Unmarshal(jrr.GetResultBytes(), &result))
 		assert.Equal(t, []interface{}{"0x64", "0x65", "0x66"}, qtField(qtData(result, "blocks"), "number"))
 		assert.Equal(t, map[string]interface{}{"number": "0x66", "hash": qtHash(0x66), "parentHash": qtHash(0x65)}, result["cursorBlock"])
 		assert.Positive(t, lagged.Load(), "rpc2 must have been asked for 0x66 and answered null")
+
+		// The call bills one unit per sub-request (0x64, 0x65 and 0x66; the
+		// network swept 0x66's empty answer to rpc1 inside one sub-request)
+		// and carries the credits of every attempt they made. Its own
+		// attempt log stays empty: the sub-requests keep theirs.
+		h := (&HttpServer{serverCfg: &common.ServerConfig{CostHeaders: util.BoolPtr(true)}}).costHeaders(ctx, []interface{}{resp})
+		assert.Equal(t, "1", h.Get("X-ERPC-Calls"))
+		assert.Equal(t, "eth_queryBlocks", h.Get("X-ERPC-Methods"))
+		assert.Equal(t, "3", h.Get("X-ERPC-Billable"))
+		assert.Equal(t, "unknown-rpc1.localhost:eth_getBlockByNumber=1;unknown-rpc2.localhost:eth_getBlockByNumber=3", h.Get("X-ERPC-Credits"))
+		assert.Equal(t, "4", h.Get("X-ERPC-Credits-Total"))
+		assert.Empty(t, req.ExecState().UpstreamAttemptLog())
 	})
 }
 

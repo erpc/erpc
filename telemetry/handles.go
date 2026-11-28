@@ -63,10 +63,10 @@ var (
 	observerHandleCache sync.Map // map[observerKey]prometheus.Observer
 )
 
-// LabelsKey encodes a label tuple as a map key. Each value is prefixed with
+// labelsKey encodes a label tuple as a map key. Each value is prefixed with
 // its length, so two different tuples never share a key whatever bytes the
 // values hold; a plain separator join let a method name merge two series.
-func LabelsKey(labels []string) string {
+func labelsKey(labels []string) string {
 	if len(labels) == 0 {
 		return ""
 	}
@@ -111,10 +111,11 @@ func counterHandle(cv CounterIncrementable, labels []string) *cachedCounterHandl
 	// and the idle sweep would then delete a series another live entry is
 	// still incrementing. Projecting first keeps it one entry per series.
 	keyLabels := labels
-	if lc, ok := cv.(*LabeledCounter); ok {
+	lc, labeled := cv.(*LabeledCounter)
+	if labeled {
 		keyLabels = lc.ActiveLabelValues(labels)
 	}
-	k := counterKey{vec: cv, key: LabelsKey(keyLabels)}
+	k := counterKey{vec: cv, key: labelsKey(keyLabels)}
 	nowMs := time.Now().UnixMilli()
 	if v, ok := counterHandleCache.Load(k); ok {
 		h := v.(*cachedCounterHandle)
@@ -132,8 +133,17 @@ func counterHandle(cv CounterIncrementable, labels []string) *cachedCounterHandl
 		h.lastAccessedAtMs.Store(nowMs)
 		return h
 	}
+	// A LabeledCounter's series may also be held by full tuples cached
+	// elsewhere (the health tracker); acquire so the sweep's delete releases
+	// only this entry's hold.
+	var counter prometheus.Counter
+	if labeled {
+		counter = lc.AcquireLabelValues(labels...)
+	} else {
+		counter = cv.WithLabelValues(labels...)
+	}
 	h := &cachedCounterHandle{
-		counter: cv.WithLabelValues(labels...),
+		counter: counter,
 		vals:    append([]string(nil), labels...),
 	}
 	h.lastAccessedAtMs.Store(nowMs)
@@ -272,7 +282,7 @@ func sweepIdleCounterHandlesBefore(cutoffMs int64) int {
 
 // GaugeHandle returns a cached child gauge for the given labels.
 func GaugeHandle(gv *prometheus.GaugeVec, labels ...string) prometheus.Gauge {
-	k := gaugeKey{vec: gv, key: LabelsKey(labels)}
+	k := gaugeKey{vec: gv, key: labelsKey(labels)}
 	if v, ok := gaugeHandleCache.Load(k); ok {
 		return v.(prometheus.Gauge)
 	}
@@ -292,7 +302,7 @@ func ObserverHandle(hv HistogramObservable, labels ...string) prometheus.Observe
 	if lh, ok := hv.(*LabeledHistogram); ok {
 		keyLabels = lh.ActiveLabelValues(labels)
 	}
-	k := observerKey{vec: hv, key: LabelsKey(keyLabels)}
+	k := observerKey{vec: hv, key: labelsKey(keyLabels)}
 	if v, ok := observerHandleCache.Load(k); ok {
 		return v.(prometheus.Observer)
 	}

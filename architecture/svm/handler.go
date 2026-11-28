@@ -31,6 +31,7 @@ func (h *SvmArchitectureHandler) HandleProjectPreForward(ctx context.Context, ne
 	if handled, resp, perr := projectPreForward_u64Params(ctx, req, method); handled {
 		return handled, resp, perr
 	}
+	projectPreForward_scanCursor(ctx, req, method)
 	switch method {
 	case "getGenesisHash":
 		if handled, resp, gerr := projectPreForward_getGenesisHash(ctx, network, req); handled || gerr != nil {
@@ -119,6 +120,7 @@ func (h *SvmArchitectureHandler) HandleUpstreamPostForward(ctx context.Context, 
 	// this never walks a multi-megabyte getBlock payload. Silent on miss.
 	if err == nil {
 		upstreamPostForward_trackContextSlot(ctx, network, upstream, req, resp)
+		upstreamPostForward_scanCursor(ctx, req, resp, method)
 		if method == "getBlockTime" {
 			return resp, upstreamPostForward_getBlockTimeNull(ctx, network, upstream, req, resp)
 		}

@@ -1307,6 +1307,8 @@ func TestEvmAssertBlockAvailability_HeadLagTolerance(t *testing.T) {
 	})
 }
 
-func (*mockEvmStatePollerEnhanced) HeadBackingOff() bool { return false }
+func (*mockEvmStatePollerEnhanced) HeadBackingOff() bool       { return false }
+func (*mockEvmStatePollerEnhanced) CallGasCap() (uint64, bool) { return 0, false }
 
-func (*mockEvmStatePollerWithCustomBehavior) HeadBackingOff() bool { return false }
+func (*mockEvmStatePollerWithCustomBehavior) HeadBackingOff() bool       { return false }
+func (*mockEvmStatePollerWithCustomBehavior) CallGasCap() (uint64, bool) { return 0, false }

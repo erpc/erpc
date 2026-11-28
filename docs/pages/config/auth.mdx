@@ -171,7 +171,7 @@ Authenticate fast paths (in evaluation order):
   "rateLimitBudget": "budget-id (optional)"
 }
 ```
-`enabled: false` → `ErrAuthUnauthorized` + 5-second negative-cache entry. Missing `userId` → auth error. Missing `enabled` → treated as `true`.
+Each record sits at partition key = API key, range key `*` (`auth.DatabaseApiKeyRangeKey`): one record per key. `enabled: false` → `ErrAuthUnauthorized` + 5-second negative-cache entry. Missing `userId` → auth error. Missing `enabled` → treated as `true`.
 
 **Connector-down circuit-breaker** (added after 2026-05-13 production incident). The strategy tracks `connectorDown bool` and `connectorDownSince int64`. On transport/timeout/not-ready errors, `markConnectorDown()` sets the latch. While down, `tryFastFailOpen()` bypasses singleflight and the DB entirely — returning the emergency user (if `failOpen.enabled=true`) or rejecting immediately. One probe per second is elected via CAS to run the real DB path. A successful probe calls `markConnectorUp()`.
 

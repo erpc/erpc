@@ -100,7 +100,12 @@ func (f *mc3TestNode) answer(method string, params []interface{}) (interface{}, 
 		return nil, nil
 	}
 	call := params[0].(map[string]interface{})
-	to := call["to"].(string)
+	to, _ := call["to"].(string)
+	if to == "" {
+		// A contract creation, as the eth_call gas cap probe sends: this node
+		// runs no init code.
+		return nil, map[string]interface{}{"code": -32000, "message": "contract creation not supported"}
+	}
 	data, _ := hex.DecodeString(strings.TrimPrefix(call["data"].(string), "0x"))
 	block, _ := params[1].(string)
 

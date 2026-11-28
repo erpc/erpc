@@ -3,6 +3,7 @@ package erpc
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -191,6 +192,7 @@ func TestAdminApi_ReadOnlyMethods(t *testing.T) {
 
 func TestAdminApi_ApiKeyLifecycle(t *testing.T) {
 	f := newAdminApiFixture(t, adminSecretConfig())
+	httpPathsMockBalance()
 	const keyParams = `"projectId":"test_project","connectorId":"keys"`
 
 	// The Redis connector initializes asynchronously; the first successful
@@ -204,13 +206,23 @@ func TestAdminApi_ApiKeyLifecycle(t *testing.T) {
 	res := f.result(t, "erpc_addApiKey", `[{`+keyParams+`,"apiKey":"key-2","userId":"bob","enabled":false}]`)
 	assert.Equal(t, map[string]interface{}{"success": true, "apiKey": "key-2", "userId": "bob"}, res)
 
-	stored, err := f.redis.Get("key-1:alice")
-	require.NoError(t, err)
+	stored, err := f.redis.Get("key-1:*")
+	require.NoError(t, err, "a key is stored where the database strategy reads it")
 	assert.JSONEq(t, `{"userId":"alice","enabled":true,"rateLimitBudget":"gold"}`, stored)
+
+	f.result(t, "erpc_addApiKey", `[{`+keyParams+`,"apiKey":"key-6","userId":"frank"}]`)
+	assert.Equal(t, http.StatusOK, f.consumer(t, "key-6"), "an added key authenticates")
+	assert.Equal(t, http.StatusUnauthorized, f.consumer(t, "key-2"), "a disabled key does not")
+
+	f.result(t, "erpc_addApiKey", `[{"projectId":"test_project","connectorId":"memkeys","apiKey":"mem-1","userId":"gina"}]`)
+	assert.Equal(t, http.StatusOK, f.consumer(t, "mem-1"), "a key added on the memory connector authenticates")
+
+	// Redis joins partition and range key with ':', which an API key may hold too.
+	f.result(t, "erpc_addApiKey", `[{`+keyParams+`,"apiKey":"team:key-7","userId":"hana"}]`)
 
 	listed := f.result(t, "erpc_listApiKeys", `[{`+keyParams+`,"limit":100,"paginationToken":"0"}]`)
 	assert.Equal(t, false, listed["hasMore"])
-	assert.EqualValues(t, 2, listed["totalReturned"])
+	assert.EqualValues(t, 4, listed["totalReturned"])
 	keys := map[string]map[string]interface{}{}
 	for _, k := range listed["apiKeys"].([]interface{}) {
 		km := k.(map[string]interface{})
@@ -218,46 +230,61 @@ func TestAdminApi_ApiKeyLifecycle(t *testing.T) {
 	}
 	require.Contains(t, keys, "key-1")
 	require.Contains(t, keys, "key-2")
+	require.Contains(t, keys, "team:key-7")
 	assert.Equal(t, "alice", keys["key-1"]["userId"])
 	assert.Equal(t, true, keys["key-1"]["enabled"])
 	assert.Equal(t, "gold", keys["key-1"]["rateLimitBudget"])
 	assert.Equal(t, false, keys["key-2"]["enabled"])
+	assert.Equal(t, "hana", keys["team:key-7"]["userId"])
 
 	// Records that are not JSON are skipped by the listing.
 	f.redis.Set("broken:entry", "not-json")
 	listed = f.result(t, "erpc_listApiKeys", `[{`+keyParams+`}]`)
-	assert.EqualValues(t, 2, listed["totalReturned"])
+	assert.EqualValues(t, 4, listed["totalReturned"])
 
-	// Update and delete read the current record through the connector's
-	// wildcard lookup (apiKey, "*"); seed that record as the connector
-	// returns it.
-	f.redis.Set("key-3:*", `{"userId":"carol","enabled":true,"rateLimitBudget":"silver"}`)
-	res = f.result(t, "erpc_updateApiKey", `[{`+keyParams+`,"apiKey":"key-3","updates":{"enabled":false,"rateLimitBudget":null,"tier":"pro"}}]`)
+	f.result(t, "erpc_addApiKey", `[{`+keyParams+`,"apiKey":"key-3","userId":"carol","enabled":false,"rateLimitBudget":"silver"}]`)
+	res = f.result(t, "erpc_updateApiKey", `[{`+keyParams+`,"apiKey":"key-3","updates":{"enabled":true,"rateLimitBudget":null,"tier":"pro"}}]`)
 	assert.Equal(t, true, res["success"])
 	assert.Equal(t, "key-3", res["apiKey"])
-	updated, err := f.redis.Get("key-3:carol")
+	updated, err := f.redis.Get("key-3:*")
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"userId":"carol","enabled":false,"tier":"pro"}`, updated, "null removes a field, values overwrite")
+	assert.JSONEq(t, `{"userId":"carol","enabled":true,"tier":"pro"}`, updated, "null removes a field, values overwrite")
+	assert.Equal(t, http.StatusOK, f.consumer(t, "key-3"), "the updated record is the one auth reads")
 
-	res = f.result(t, "erpc_deleteApiKey", `[{`+keyParams+`,"apiKey":"key-3"}]`)
-	assert.Equal(t, map[string]interface{}{"success": true, "apiKey": "key-3", "userId": "carol"}, res)
-	assert.False(t, f.redis.Exists("key-3:carol"))
+	f.result(t, "erpc_addApiKey", `[{`+keyParams+`,"apiKey":"key-4","userId":"erin"}]`)
+	res = f.result(t, "erpc_deleteApiKey", `[{`+keyParams+`,"apiKey":"key-4"}]`)
+	assert.Equal(t, map[string]interface{}{"success": true, "apiKey": "key-4", "userId": "erin"}, res)
+	assert.False(t, f.redis.Exists("key-4:*"))
+	assert.Equal(t, http.StatusUnauthorized, f.consumer(t, "key-4"), "a deleted key no longer authenticates")
 
-	f.redis.Set("key-4:*", `{"enabled":true}`)
 	f.redis.Set("key-5:*", `not-json`)
+	assert.Contains(t, f.errorMessage(t, http.StatusOK, "erpc_updateApiKey", `[{`+keyParams+`,"apiKey":"key-5","updates":{}}]`), "failed to parse current data")
+	res = f.result(t, "erpc_deleteApiKey", `[{`+keyParams+`,"apiKey":"key-5"}]`)
+	assert.Equal(t, map[string]interface{}{"success": true, "apiKey": "key-5", "userId": ""}, res, "a record that is not JSON can still be deleted")
+	assert.False(t, f.redis.Exists("key-5:*"))
 	for _, method := range []string{"erpc_updateApiKey", "erpc_deleteApiKey"} {
-		extra := ""
-		if method == "erpc_updateApiKey" {
-			extra = `,"updates":{}`
-		}
-		assert.Contains(t, f.errorMessage(t, http.StatusOK, method, `[{`+keyParams+`,"apiKey":"key-4"`+extra+`}]`), "missing or invalid userId in current data", method)
-		assert.Contains(t, f.errorMessage(t, http.StatusOK, method, `[{`+keyParams+`,"apiKey":"key-5"`+extra+`}]`), "failed to parse current data", method)
-		assert.Contains(t, f.errorMessage(t, http.StatusOK, method, `[{`+keyParams+`,"apiKey":"absent"`+extra+`}]`), "failed to get current API key data", method)
+		assert.Contains(t, f.errorMessage(t, http.StatusOK, method, `[{`+keyParams+`,"apiKey":"absent","updates":{}}]`), "failed to get current API key data", method)
 	}
 
 	assert.Contains(t,
 		f.errorMessage(t, http.StatusOK, "erpc_listApiKeys", `[{"projectId":"test_project","connectorId":"memkeys"}]`),
 		"failed to list API keys")
+}
+
+// consumer sends one JSON-RPC request to test_project with the API key and
+// returns the HTTP status.
+func (f *adminApiFixture) consumer(t *testing.T, apiKey string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, f.baseURL+"/test_project/evm/123", strings.NewReader(httpPathsBalanceBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-ERPC-Secret-Token", apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode
 }
 
 func TestAdminApi_ApiKeyParamValidation(t *testing.T) {
@@ -288,6 +315,11 @@ func TestAdminApi_ApiKeyParamValidation(t *testing.T) {
 		),
 		"erpc_listApiKeys": append(common4("list"),
 			tc{"unknown connector", `[{"projectId":"test_project","connectorId":"ghost"}]`, http.StatusOK, "database connector with ID 'ghost' not found"},
+			tc{"zero limit", `[{"projectId":"test_project","connectorId":"keys","limit":0}]`, http.StatusBadRequest, "limit must be an integer from 1 to 2^53"},
+			tc{"negative limit", `[{"projectId":"test_project","connectorId":"keys","limit":-1}]`, http.StatusBadRequest, "limit must be an integer from 1 to 2^53"},
+			tc{"fractional limit", `[{"projectId":"test_project","connectorId":"keys","limit":2.5}]`, http.StatusBadRequest, "limit must be an integer from 1 to 2^53"},
+			tc{"limit past int range", `[{"projectId":"test_project","connectorId":"keys","limit":1e19}]`, http.StatusBadRequest, "limit must be an integer from 1 to 2^53"},
+			tc{"limit not a number", `[{"projectId":"test_project","connectorId":"keys","limit":"5"}]`, http.StatusBadRequest, "limit must be an integer from 1 to 2^53"},
 		),
 		"erpc_updateApiKey": append(common4("update"),
 			tc{"missing apiKey", `[{"projectId":"test_project","connectorId":"keys"}]`, http.StatusBadRequest, "apiKey is required and must be a string"},

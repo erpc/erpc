@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -178,7 +179,7 @@ func (e *ERPC) handleAddApiKey(ctx context.Context, nq *common.NormalizedRequest
 		return nil, fmt.Errorf("failed to marshal user data: %w", err)
 	}
 
-	err = connector.Set(ctx, apiKey, userId, userDataBytes, nil)
+	err = connector.Set(ctx, apiKey, auth.DatabaseApiKeyRangeKey, userDataBytes, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to store API key: %w", err)
 	}
@@ -225,9 +226,12 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 
 	limit := 50 // default
 	if limitVal, exists := params["limit"]; exists && limitVal != nil {
-		if limitFloat, ok := limitVal.(float64); ok {
-			limit = int(limitFloat)
+		// 0 rows a page never ends a pager; above 2^53 a JSON number is no exact integer and can overflow int.
+		limitFloat, ok := limitVal.(float64)
+		if !ok || limitFloat < 1 || limitFloat > 1<<53 || limitFloat != math.Trunc(limitFloat) {
+			return nil, common.NewErrInvalidRequest(fmt.Errorf("limit must be an integer from 1 to 2^53"))
 		}
+		limit = int(limitFloat)
 	}
 
 	paginationToken := ""
@@ -242,7 +246,6 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	// List from main index to get all API keys (optimized: only 1 row per API key)
 	results, nextToken, err := connector.List(ctx, data.ConnectorMainIndex, limit, paginationToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list API keys: %w", err)
@@ -256,12 +259,12 @@ func (e *ERPC) handleListApiKeys(ctx context.Context, nq *common.NormalizedReque
 			continue // Skip invalid records
 		}
 
-		// Create API key object
+		userId, _ := userData["userId"].(string)
 		apiKey := ApiKey{
 			Key:       item.PartitionKey,
-			UserId:    item.RangeKey, // Range key is now the userId directly
-			Enabled:   true,          // Default to enabled if not specified
-			CreatedAt: time.Now(),    // TODO: Add actual timestamps
+			UserId:    userId,
+			Enabled:   true,       // Default to enabled if not specified
+			CreatedAt: time.Now(), // TODO: Add actual timestamps
 			UpdatedAt: time.Now(),
 		}
 
@@ -337,7 +340,7 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*", nil)
+	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, auth.DatabaseApiKeyRangeKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current API key data: %w", err)
 	}
@@ -345,12 +348,6 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 	var currentData map[string]interface{}
 	if err := json.Unmarshal(currentBytes, &currentData); err != nil {
 		return nil, fmt.Errorf("failed to parse current data: %w", err)
-	}
-
-	// Get the userId from current data to know the range key
-	userId, ok := currentData["userId"].(string)
-	if !ok || userId == "" {
-		return nil, fmt.Errorf("missing or invalid userId in current data")
 	}
 
 	// Apply updates
@@ -362,13 +359,13 @@ func (e *ERPC) handleUpdateApiKey(ctx context.Context, nq *common.NormalizedRequ
 		}
 	}
 
-	// Save updated data to the same location
+	// Save updated data to the same record
 	updatedBytes, err := json.Marshal(currentData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal updated data: %w", err)
 	}
 
-	if err := connector.Set(ctx, apiKey, userId, updatedBytes, nil); err != nil {
+	if err := connector.Set(ctx, apiKey, auth.DatabaseApiKeyRangeKey, updatedBytes, nil); err != nil {
 		return nil, fmt.Errorf("failed to update API key: %w", err)
 	}
 
@@ -422,24 +419,19 @@ func (e *ERPC) handleDeleteApiKey(ctx context.Context, nq *common.NormalizedRequ
 		return nil, fmt.Errorf("failed to find connector: %w", err)
 	}
 
-	// Get current data to find the userId (range key) for deletion
-	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, "*", nil)
+	// The record is read to fail on an absent key and to report its user; a
+	// record that is not JSON is still deleted.
+	currentBytes, err := connector.Get(ctx, data.ConnectorMainIndex, apiKey, auth.DatabaseApiKeyRangeKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current API key data: %w", err)
 	}
-
-	var currentData map[string]interface{}
-	if err := json.Unmarshal(currentBytes, &currentData); err != nil {
-		return nil, fmt.Errorf("failed to parse current data: %w", err)
+	var current struct {
+		UserId string `json:"userId"`
 	}
+	_ = json.Unmarshal(currentBytes, &current)
+	userId := current.UserId
 
-	// Get the userId from current data to know the range key
-	userId, ok := currentData["userId"].(string)
-	if !ok || userId == "" {
-		return nil, fmt.Errorf("missing or invalid userId in current data")
-	}
-
-	err = connector.Delete(ctx, apiKey, userId)
+	err = connector.Delete(ctx, apiKey, auth.DatabaseApiKeyRangeKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to delete API key: %w", err)
 	}
