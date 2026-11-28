@@ -2977,7 +2977,22 @@ func (e *EvmStatePoller) checkTraceDataProbe(ctx context.Context, block int64) (
 	return false, false, nil
 }
 
+var (
+	// errEarliestProbeUnsupported means the upstream does not implement the
+	// probe at all. That is a missing capability, not a pruned history, so it
+	// must not become a block number.
+	errEarliestProbeUnsupported = errors.New("upstream does not support the availability probe")
+	// errEarliestBlockUnavailable means no block in the searched range answered
+	// the probe, so the search observed no earliest block.
+	errEarliestBlockUnavailable = errors.New("no block in the searched range answered the availability probe")
+)
+
 // binarySearchEarliest finds the first available block for the given probe in [low, high].
+//
+// It returns an error, not a block number, when it learns nothing: the
+// upstream does not support the probe, or no probed block answers. The caller
+// then keeps the bound unknown and fails open. Returning the converged value
+// instead would record the tip as the earliest retained block.
 func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.EvmAvailabilityProbeType, low, high int64) (int64, error) {
 	eff := probe
 	if eff == "" {
@@ -2989,23 +3004,39 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 	if low < 0 {
 		low = 0
 	}
-	// Fast-path: block 0
-	if ok, _, err := e.checkProbe(ctx, eff, 0); err == nil && ok {
-		return 0, nil
-	} else if err != nil {
-		return 0, err
+
+	// probeAt folds checkProbe's answer into (available, error). An
+	// unsupported probe does not depend on the height, so the first such
+	// answer ends the search.
+	probeAt := func(block int64) (bool, error) {
+		ok, unsupported, err := e.checkProbe(ctx, eff, block)
+		if err != nil {
+			return false, err
+		}
+		if unsupported {
+			return false, fmt.Errorf("%w: probe=%s upstream=%s", errEarliestProbeUnsupported, eff, e.upstream.Config().Id)
+		}
+		return ok, nil
 	}
-	// Fast-path: block 1
-	if ok, _, err := e.checkProbe(ctx, eff, 1); err == nil && ok {
-		return 1, nil
-	} else if err != nil {
-		return 0, err
+
+	// Fast-path: block 0, then block 1.
+	for _, block := range []int64{0, 1} {
+		ok, err := probeAt(block)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			return block, nil
+		}
 	}
 
 	l, r := low, high
+	// found is true once r sits on a block that answered. The loop only moves
+	// r onto such a block, so found means the converged value is available.
+	found := false
 	for l < r {
 		mid := l + (r-l)/2
-		ok, _, err := e.checkProbe(ctx, eff, mid)
+		ok, err := probeAt(mid)
 		if err != nil {
 			return 0, err
 		}
@@ -3019,8 +3050,21 @@ func (e *EvmStatePoller) binarySearchEarliest(ctx context.Context, probe common.
 			Msg("binary search iteration")
 		if ok {
 			r = mid
+			found = true
 		} else {
 			l = mid + 1
+		}
+	}
+	if !found {
+		// The loop never probes the value it converges on. Probe it now: an
+		// upstream that retains only the tip answers here, and an upstream
+		// that answers nothing does not.
+		ok, err := probeAt(l)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			return 0, fmt.Errorf("%w: probe=%s upstream=%s range=[%d,%d]", errEarliestBlockUnavailable, eff, e.upstream.Config().Id, low, high)
 		}
 	}
 	return l, nil
