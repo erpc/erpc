@@ -2692,6 +2692,10 @@ func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
 	if defaults.SkipProcessedSlotProbe {
 		dst.SkipProcessedSlotProbe = true
 	}
+	if dst.ServedTip == nil && defaults.ServedTip != nil {
+		cp := *defaults.ServedTip
+		dst.ServedTip = &cp
+	}
 }
 
 // SetDefaults populates SVM-network config fields that were left empty.

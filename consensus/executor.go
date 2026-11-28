@@ -1409,8 +1409,8 @@ func (e *executor) waivedQuotas(ctx context.Context, analysis *consensusAnalysis
 // chainHead returns the observed "latest" block for the round, or 0 when
 // unknown. The chain's corroborated head comes first: a value a quorum of the
 // network's voters backs, including ones that did not participate in this
-// round (EVM: only under servedTip.quorum "majority", since the default
-// quorum (2) can still be one voter's report on a small pool). When it is
+// round (only under servedTip.quorum "majority", EVM's opt-in and SVM's
+// default: a lower quorum can be one voter's report on a small pool). When it is
 // unknown, fall back to the MIN latest among this round's own participants
 // (at least two distinct upstreams with a positive latest, at least one
 // outside the winning group). A zero head from both sources means the
