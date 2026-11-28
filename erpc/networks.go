@@ -3214,6 +3214,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		emptyIsMiss := func(ctx context.Context) bool {
 			return requestBlockNumber(ctx, effectiveReq) > 0 && !evm.EmptyResultBeyondConfidence(ctx, effectiveReq)
 		}
+		// failover.emptyTriesNextFallback: set once the request escalated
+		sweepingFallbacks := false
 
 	escalationLoop:
 		for {
@@ -3504,7 +3506,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					emptyish := isEmptyNetworkResult(method, r)
 					acceptEmpty := !emptyish || finalEmpty ||
 						(!failsafeExecutor.HasConsensus() && (refusal.AboveFirm() && !emptyAnswer ||
-							!refusal.AboveFirm() && failsafeExecutor.acceptsEmptyResult(method, r)))
+							!refusal.AboveFirm() && failsafeExecutor.acceptsEmptyResult(method, r) && !sweepingFallbacks))
 					if acceptEmpty && emptyish && method == "eth_getLogs" {
 						if toBlock, maybe := n.logsGate(loopCtx, effectiveReq, u); maybe {
 							effectiveReq.ClearLastValidResponseIf(r)
@@ -3632,6 +3634,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				}
 				if len(fallbacks) > 0 && effectiveReq.MarkEscalatedToFallbacks() {
+					sweepingFallbacks = n.cfg.Failover.EmptyTriesNextFallback != nil && *n.cfg.Failover.EmptyTriesNextFallback
 					// Keep bestResp: if every fallback fails, the routed
 					// upstreams' empty answer is still the result.
 					lastErr = nil

@@ -150,6 +150,8 @@ The escape:
 
 The validation report warns when `onDefaultsExhausted` is enabled but no upstream is tagged `tier:fallback`.
 
+Once a request has escalated, the first fallback's empty answer (`eth_getLogs` `[]`, a zero balance) ends it by default. A provider that load-balances over pruned nodes answers old blocks that way now and then. With `failover.emptyTriesNextFallback: true` (default `false`), an empty answer from one fallback moves on to the next one, and the empty answer is returned only when every fallback gave it. Each further fallback asked is one more request to that provider. <SourceLink file="erpc/networks.go" lines="3487-3489" /> <SourceLink file="erpc/networks.go" lines="3616-3617" />
+
 ## Agent reference
 
 Copy one of these prompts into your AI agent session (Claude Code, Cursor, …) — each one
