@@ -29,19 +29,22 @@ func sleepMs(t *testing.T) {
 
 // A future-cutoff sweep evicts every idle series from BOTH the cache and the
 // parent vec: DeleteLabelValues must release the registry series, not just
-// drop the cache entry.
+// drop the cache entry. The last two tuples join to the same bytes under a
+// separator join; each must still keep its own handle and series.
 func TestSweepIdleCounterHandles_EvictsIdleSeries(t *testing.T) {
 	vec := newTestCounterVec(t, "test_sweep_evicts_total")
 
 	CounterHandle(vec, "x", "1").Inc()
 	CounterHandle(vec, "y", "2").Inc()
-	if got := testutil.CollectAndCount(vec); got != 2 {
-		t.Fatalf("precondition: expected 2 series, got %d", got)
+	CounterHandle(vec, "p\x1fq", "r").Inc()
+	CounterHandle(vec, "p", "q\x1fr").Inc()
+	if got := testutil.CollectAndCount(vec); got != 4 {
+		t.Fatalf("precondition: expected 4 series, got %d", got)
 	}
 
 	evicted := sweepIdleCounterHandlesBefore(time.Now().UnixMilli() + 1000)
-	if evicted != 2 {
-		t.Fatalf("expected 2 evicted, got %d", evicted)
+	if evicted != 4 {
+		t.Fatalf("expected 4 evicted, got %d", evicted)
 	}
 	if got := testutil.CollectAndCount(vec); got != 0 {
 		t.Fatalf("expected 0 series after sweep, got %d — DeleteLabelValues did not release the series", got)

@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"encoding/binary"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,19 +63,22 @@ var (
 	observerHandleCache sync.Map // map[observerKey]prometheus.Observer
 )
 
+// labelsKey encodes a label tuple as a map key. Each value is prefixed with
+// its length, so two different tuples never share a key whatever bytes the
+// values hold; a plain separator join let a method name merge two series.
 func labelsKey(labels []string) string {
 	if len(labels) == 0 {
 		return ""
 	}
-	// Use a small, zero-alloc builder for common small label sets.
-	// Separator '\x1f' (unit separator) minimizes collision with label values.
+	n := 0
+	for _, s := range labels {
+		n += binary.MaxVarintLen64 + len(s)
+	}
 	var b strings.Builder
-	// Pre-size: assume avg 12 chars per label
-	b.Grow(len(labels) * 12)
-	for i, s := range labels {
-		if i > 0 {
-			b.WriteByte('\x1f')
-		}
+	b.Grow(n)
+	var lenBuf [binary.MaxVarintLen64]byte
+	for _, s := range labels {
+		b.Write(lenBuf[:binary.PutUvarint(lenBuf[:], uint64(len(s)))])
 		b.WriteString(s)
 	}
 	return b.String()
