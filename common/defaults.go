@@ -2685,6 +2685,10 @@ func mergeSvmNetworkDefaults(dst, defaults *SvmNetworkConfig) {
 		v := *defaults.EnforceBlockAvailability
 		dst.EnforceBlockAvailability = &v
 	}
+	if dst.ProbeSkippedSlots == nil && defaults.ProbeSkippedSlots != nil {
+		v := *defaults.ProbeSkippedSlots
+		dst.ProbeSkippedSlots = &v
+	}
 	// SkipProcessedSlotProbe is a plain bool (default false = poll). Only an
 	// opt-in true is worth propagating — same shape as upstream
 	// CheckGenesisHash. A per-network opt-OUT of an inherited true would need
