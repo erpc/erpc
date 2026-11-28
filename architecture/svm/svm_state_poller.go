@@ -115,6 +115,12 @@ type SvmStatePoller struct {
 	maxShredInsertSlotLag atomic.Int64
 	healthy               atomic.Bool
 
+	// prevShredSlot and prevFinalizedSlot are the previous poll's raw
+	// getMaxShredInsertSlot answer and this upstream's finalized slot then.
+	// Together they tell a frozen watermark from a moving one (see Poll).
+	prevShredSlot     atomic.Int64
+	prevFinalizedSlot atomic.Int64
+
 	// debounceInterval is the GATE: the minimum wall-clock interval between
 	// network polls (see SvmNetworkConfig.StatePollerDebounce). The ticker fires
 	// at the fixed, cheap DefaultPollInterval; this gate throttles the actual
@@ -485,7 +491,23 @@ func (e *SvmStatePoller) Poll(ctx context.Context) error {
 	// Safe to read LatestSlot() now — the processed-slot goroutine has joined
 	// (and on a skipped tick the shared value is traffic-fed and current).
 	if shredSlot > 0 {
-		e.shredInsertSlot.Store(shredSlot)
+		// A watermark that has not moved since the previous poll, while this
+		// upstream had already finalized past it then, bounds nothing: the node
+		// holds every slot it finalized. On a Firedancer-based client the answer
+		// has been seen to sit thousands of slots below the finalized slot for
+		// minutes, then jump to the tip and freeze again. Read as the indexed
+		// frontier it freezes the getSlot(finalized) cap at that value. Report it as unknown
+		// instead, as for a node without the method. A watermark that moves, even
+		// one behind finalized (a provider whose indexer lags), is kept.
+		finalized := e.FinalizedSlot()
+		frozen := shredSlot == e.prevShredSlot.Load() && e.prevFinalizedSlot.Load() > shredSlot
+		e.prevShredSlot.Store(shredSlot)
+		e.prevFinalizedSlot.Store(finalized)
+		if frozen {
+			e.shredInsertSlot.Store(0)
+		} else {
+			e.shredInsertSlot.Store(shredSlot)
+		}
 		if latest := e.LatestSlot(); latest > 0 {
 			// getMaxShredInsertSlot is the BLOCKSTORE-INGESTION watermark and is
 			// structurally >= the replayed (processed) slot, so ingestion lag is

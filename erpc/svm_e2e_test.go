@@ -977,6 +977,49 @@ func TestSvm_GetSlot_FinalizedIndexingLag_BlockFetchable(t *testing.T) {
 		"getBlock on the clamped slot must succeed")
 }
 
+// TestSvm_GetSlot_FinalizedFrozenShredWatermark_NotACap: an upstream whose
+// getMaxShredInsertSlot answer stays put far below its finalized slot (seen on a
+// Firedancer-based client) must not freeze getSlot(finalized) at that value. Once
+// two polls show it frozen, the watermark reads as unknown and the cap falls
+// back to finalizedTip - 32, as for a provider without the method.
+func TestSvm_GetSlot_FinalizedFrozenShredWatermark_NotACap(t *testing.T) {
+	const (
+		host          = "svm-frozenshred-rpc1.localhost"
+		finalizedSlot = int64(10064)
+		frozenShred   = int64(5000)
+	)
+
+	util.ResetGock()
+	t.Cleanup(util.ResetGock)
+	util.SetupMocksForSvmStatePollerWithShred(host, 10100, finalizedSlot, frozenShred)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	net, upsReg := setupTestSvmNetworkFinalized(t, ctx, []*common.UpstreamConfig{
+		svmUpstreamConfig("rpc1", host),
+	})
+
+	var poller common.SvmStatePoller
+	for _, u := range upsReg.GetNetworkUpstreams(ctx, util.SvmNetworkId("", "mainnet-beta")) {
+		if sp := u.SvmStatePoller(); sp != nil && !sp.IsObjectNull() {
+			poller = sp
+		}
+	}
+	require.NotNil(t, poller)
+	require.Eventually(t, func() bool {
+		return poller.FinalizedSlot() == finalizedSlot && poller.ShredInsertSlot() == 0
+	}, 5*time.Second, 20*time.Millisecond, "a watermark frozen below finalized must read as unknown")
+
+	slotResp, err := svmProjectForward(ctx, net, common.NewNormalizedRequest(
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[{"commitment":"finalized"}]}`)))
+	require.NoError(t, err)
+	slotJrr, err := slotResp.JsonRpcResponse()
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("%d", finalizedSlot-32), string(slotJrr.GetResultBytes()),
+		"getSlot(finalized) must fall back to finalizedTip - 32, not stay at the frozen watermark %d", frozenShred)
+}
+
 // TestSvm_GetBlock_UnpinnedCommitment_SkewedRoots_ServedByLeadingUpstream is the
 // end-to-end proof for both halves of the availability-guard fix, on the
 // deployment shape that carries the traffic: no svm.commitment, and a client
